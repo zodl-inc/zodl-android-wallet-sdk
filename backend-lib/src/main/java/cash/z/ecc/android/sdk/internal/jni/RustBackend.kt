@@ -4,7 +4,8 @@ import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.SdkDispatchers
 import cash.z.ecc.android.sdk.internal.ext.deleteRecursivelySuspend
 import cash.z.ecc.android.sdk.internal.ext.deleteSuspend
-import cash.z.ecc.android.sdk.internal.ext.isInUIntRange
+import cash.z.ecc.android.sdk.internal.ext.requireNonNegative
+import cash.z.ecc.android.sdk.internal.ext.requireValidHeight
 import cash.z.ecc.android.sdk.internal.model.JniAccount
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
@@ -61,43 +62,6 @@ class RustBackend private constructor(
             }
         }
         return cacheClearResult && dataClearResult
-    }
-
-    /**
-     * Validates that [height] is within the unsigned 32-bit range accepted by the Rust layer
-     * before it crosses the JNI boundary.
-     *
-     * @throws IllegalArgumentException if [height] is outside the valid UInt range.
-     */
-    private fun requireValidHeight(
-        height: Long,
-        name: String
-    ) {
-        require(height.isInUIntRange()) { "$name $height is outside of allowed UInt range" }
-    }
-
-    /**
-     * Validates that [value] is nonnegative before it crosses the JNI boundary.
-     *
-     * @throws IllegalArgumentException if [value] is negative.
-     */
-    private fun requireNonNegative(
-        value: Long,
-        name: String
-    ) {
-        require(value >= 0) { "$name $value must be nonnegative" }
-    }
-
-    /**
-     * Validates that [value] is nonnegative before it crosses the JNI boundary.
-     *
-     * @throws IllegalArgumentException if [value] is negative.
-     */
-    private fun requireNonNegative(
-        value: Int,
-        name: String
-    ) {
-        require(value >= 0) { "$name $value must be nonnegative" }
     }
 
     //
