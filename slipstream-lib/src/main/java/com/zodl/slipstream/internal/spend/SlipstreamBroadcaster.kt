@@ -4,6 +4,7 @@ package com.zodl.slipstream.internal.spend
 
 import cash.z.ecc.android.sdk.Broadcaster
 import cash.z.ecc.android.sdk.internal.Backend
+import cash.z.ecc.android.sdk.internal.ext.clearContents
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
@@ -51,7 +52,13 @@ internal class SlipstreamBroadcaster(
         usk: UnifiedSpendingKey
     ): List<CreatedTransaction> {
         SaplingParams.ensureDownloaded(saplingParamsDir)
-        val txIds = backend.createProposedTransactions(proposal.toUnsafe(), usk.copyBytes())
+        val uskBytes = usk.copyBytes()
+        val txIds =
+            try {
+                backend.createProposedTransactions(proposal.toUnsafe(), uskBytes)
+            } finally {
+                uskBytes.clearContents()
+            }
         val created = txIds.map { txId -> storeAsAwaitingSubmission(FirstClassByteArray(txId)) }
         engine.notifyTxChange()
         return created
