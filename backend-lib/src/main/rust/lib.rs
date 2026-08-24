@@ -2932,12 +2932,14 @@ fn encode_metadata_key<'a>(
     env: &mut JNIEnv<'a>,
     key: zip32::registered::SecretKey,
 ) -> anyhow::Result<JObject<'a>> {
+    let sk = SecretVec::new(key.data().to_vec());
+    let chain_code = SecretVec::new(key.chain_code().as_bytes().to_vec());
     Ok(env.new_object(
         "cash/z/ecc/android/sdk/internal/model/JniMetadataKey",
         "([B[B)V",
         &[
-            (&env.byte_array_from_slice(key.data())?).into(),
-            (&env.byte_array_from_slice(key.chain_code().as_bytes())?).into(),
+            (&env.byte_array_from_slice(sk.expose_secret())?).into(),
+            (&env.byte_array_from_slice(chain_code.expose_secret())?).into(),
         ],
     )?)
 }
@@ -2989,20 +2991,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustDerivationTool.derivePrivateUseMetadataKey").entered();
-        let account_metadata_key_sk = utils::java_bytes_to_rust(env, &account_metadata_key_sk)?;
-        let account_metadata_key_c = utils::java_bytes_to_rust(env, &account_metadata_key_c)?;
+        let account_metadata_key_sk = secret_from_jni(env, account_metadata_key_sk)?;
+        let account_metadata_key_c = secret_from_jni(env, account_metadata_key_c)?;
         let ufvk_string = utils::java_nullable_string_to_rust(env, &ufvk_string)?;
         let private_use_subject = utils::java_bytes_to_rust(env, &private_use_subject)?;
         let network = parse_network(network_id as u32)?;
 
         let account_metadata_key = {
             let sk = account_metadata_key_sk
+                .expose_secret()
                 .as_slice()
                 .try_into()
                 .map_err(|_| anyhow!("Incorrect length for account_metadata_key_sk"))?;
 
             let chain_code = ChainCode::new(
                 account_metadata_key_c
+                    .expose_secret()
                     .as_slice()
                     .try_into()
                     .map_err(|_| anyhow!("Incorrect length for account_metadata_key_c"))?,
@@ -3054,7 +3058,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
 
         Ok(
             utils::rust_vec_to_java(env, private_use_keys, "[B", |env, key| {
-                utils::rust_bytes_to_java(env, key.data())
+                let key_bytes = SecretVec::new(key.data().to_vec());
+                utils::rust_bytes_to_java(env, key_bytes.expose_secret())
             })?
             .into_raw(),
         )
@@ -3079,8 +3084,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
 
         let key =
             zip32::arbitrary::SecretKey::from_path(&context_string, seed.expose_secret(), &[]);
+        let key_bytes = SecretVec::new(key.data().to_vec());
 
-        Ok(utils::rust_bytes_to_java(&env, key.data())?.into_raw())
+        Ok(utils::rust_bytes_to_java(&env, key_bytes.expose_secret())?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -3113,8 +3119,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
                 ChildIndex::hardened(account.into()),
             ],
         );
+        let key_bytes = SecretVec::new(key.data().to_vec());
 
-        Ok(utils::rust_bytes_to_java(&env, key.data())?.into_raw())
+        Ok(utils::rust_bytes_to_java(&env, key_bytes.expose_secret())?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
