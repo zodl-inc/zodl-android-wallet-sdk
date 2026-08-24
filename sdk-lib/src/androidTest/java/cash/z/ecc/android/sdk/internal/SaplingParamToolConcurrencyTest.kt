@@ -68,56 +68,12 @@ class SaplingParamToolConcurrencyTest {
             val finalStatePerRound = mutableListOf<Triple<Boolean, Boolean, String>>()
 
             repeat(rounds) { round ->
-                // Fresh directory state for every round.
-                SaplingParamsFixture.clearAllFilesFromDirectory(SaplingParamsFixture.DESTINATION_DIRECTORY)
-
-                val results: List<Result<Unit>> =
-                    coroutineScope {
-                        List(concurrencyLevel) {
-                            async {
-                                runCatching {
-                                    saplingParamTool.fetchParams(outputSaplingParams)
-                                }
-                            }
-                        }.awaitAll()
-                    }
+                val (results, finalState) = runConcurrentFetchRound(round, saplingParamTool)
                 outcomesPerRound += results
-
-                val finalFile =
-                    File(
-                        SaplingParamsFixture.DESTINATION_DIRECTORY,
-                        SaplingParamsFixture.OUTPUT_FILE_NAME
-                    )
-                val exists = finalFile.existsSuspend()
-                val hashValid =
-                    exists &&
-                        runCatching { finalFile.getSha1Hash() == SaplingParamsFixture.OUTPUT_FILE_HASH }
-                            .getOrDefault(false)
-                val sizeReported = if (exists) finalFile.length().toString() else "N/A"
-
-                finalStatePerRound += Triple(exists, hashValid, sizeReported)
-
-                val successCount = results.count { it.isSuccess }
-                val failureTypes = results.mapNotNull { it.exceptionOrNull()?.let { e -> e::class.simpleName } }
-
-                println(
-                    "PRO97_RACE_ROUND[$round]: successes=$successCount/${results.size} " +
-                        "failures=$failureTypes finalFileExists=$exists finalFileHashValid=$hashValid " +
-                        "finalFileSize=$sizeReported"
-                )
+                finalStatePerRound += finalState
             }
 
-            // Summarize everything at the end for easy grepping from logcat/test output.
-            outcomesPerRound.forEachIndexed { round, results ->
-                results.forEachIndexed { idx, result ->
-                    result.onFailure { e ->
-                        println(
-                            "PRO97_RACE_ROUND[$round]_TASK[$idx]_EXCEPTION: ${e::class.qualifiedName}: " +
-                                "${e.message}"
-                        )
-                    }
-                }
-            }
+            logRoundExceptions(outcomesPerRound)
 
             val roundsWithInvalidFinalState =
                 finalStatePerRound.withIndex().filter { (_, state) ->
@@ -136,4 +92,60 @@ class SaplingParamToolConcurrencyTest {
                     "${roundsWithInvalidFinalState.map { it.index }} - see PRO97_RACE_ROUND logs above."
             )
         }
+
+    // Runs one round of [concurrencyLevel] concurrent fetchParams() calls against a freshly-cleared
+    // directory, and returns the per-task outcomes plus the final on-disk state (exists, hashValid, size).
+    private suspend fun runConcurrentFetchRound(
+        round: Int,
+        saplingParamTool: SaplingParamTool
+    ): Pair<List<Result<Unit>>, Triple<Boolean, Boolean, String>> {
+        SaplingParamsFixture.clearAllFilesFromDirectory(SaplingParamsFixture.DESTINATION_DIRECTORY)
+
+        val results: List<Result<Unit>> =
+            coroutineScope {
+                List(concurrencyLevel) {
+                    async {
+                        runCatching {
+                            saplingParamTool.fetchParams(outputSaplingParams)
+                        }
+                    }
+                }.awaitAll()
+            }
+
+        val finalFile =
+            File(
+                SaplingParamsFixture.DESTINATION_DIRECTORY,
+                SaplingParamsFixture.OUTPUT_FILE_NAME
+            )
+        val exists = finalFile.existsSuspend()
+        val hashValid =
+            exists &&
+                runCatching { finalFile.getSha1Hash() == SaplingParamsFixture.OUTPUT_FILE_HASH }
+                    .getOrDefault(false)
+        val sizeReported = if (exists) finalFile.length().toString() else "N/A"
+
+        val successCount = results.count { it.isSuccess }
+        val failureTypes = results.mapNotNull { it.exceptionOrNull()?.let { e -> e::class.simpleName } }
+        println(
+            "PRO97_RACE_ROUND[$round]: successes=$successCount/${results.size} " +
+                "failures=$failureTypes finalFileExists=$exists finalFileHashValid=$hashValid " +
+                "finalFileSize=$sizeReported"
+        )
+
+        return results to Triple(exists, hashValid, sizeReported)
+    }
+
+    // Summarizes every round's failures at the end for easy grepping from logcat/test output.
+    private fun logRoundExceptions(outcomesPerRound: List<List<Result<Unit>>>) {
+        outcomesPerRound.forEachIndexed { round, results ->
+            results.forEachIndexed { idx, result ->
+                result.onFailure { e ->
+                    println(
+                        "PRO97_RACE_ROUND[$round]_TASK[$idx]_EXCEPTION: ${e::class.qualifiedName}: " +
+                            "${e.message}"
+                    )
+                }
+            }
+        }
+    }
 }
