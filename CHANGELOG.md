@@ -22,6 +22,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `proposeOrchardToIronwoodMigration` now report failures with the same `TransactionEncoderException`
   subtypes the upstream engine uses, instead of letting the raw Rust `RuntimeException` escape
   (MOB-1723).
+- The raw `Backend`/`RustBackend` API now validates numeric arguments (block heights must be
+  in the unsigned 32-bit range; indices and counts must be nonnegative) and throws
+  `IllegalArgumentException` before crossing the JNI boundary (MOB-1765).
 
 ## [3.1.0] - 2026-08-20
 
