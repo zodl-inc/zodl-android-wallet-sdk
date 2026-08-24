@@ -23,6 +23,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subtypes the upstream engine uses, instead of letting the raw Rust `RuntimeException` escape
   (MOB-1723).
 
+### Fixed
+- All JNI entry points now convert caller-supplied numeric arguments (network ids, the UTXO
+  output index, Tor dormant mode) with checked conversions instead of unchecked casts, so
+  out-of-range values fail with an exception instead of silently wrapping (MOB-1764).
+
 ## [3.1.0] - 2026-08-20
 
 ### Added
