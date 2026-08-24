@@ -132,7 +132,8 @@ interface DerivationTool {
      *
      * @param contextString a globally-unique non-empty sequence of at most 252 bytes that
      *        identifies the desired context.
-     * @return an array of 32 bytes.
+     * @return an array of 32 bytes. This array is secret key material; callers should zero
+     *         it (e.g. via `ByteArray.fill(0)`) once they are done with it.
      */
     suspend fun deriveArbitraryWalletKey(
         contextString: ByteArray,
@@ -148,7 +149,8 @@ interface DerivationTool {
      *        identifies the desired context.
      * @param seed the seed from which to derive the arbitrary key.
      * @param accountIndex the ZIP 32 account index for which to derive the arbitrary key.
-     * @return an array of 32 bytes.
+     * @return an array of 32 bytes. This array is secret key material; callers should zero
+     *         it (e.g. via `ByteArray.fill(0)`) once they are done with it.
      */
     suspend fun deriveArbitraryAccountKey(
         contextString: ByteArray,
