@@ -259,6 +259,13 @@ internal class SaplingParamTool(
     )
     internal suspend fun fetchParams(paramsToFetch: SaplingParameters) {
         fetchParamsMutex.withLock {
+            val resultFile = File(paramsToFetch.destinationDirectory, paramsToFetch.fileName)
+            if (resultFile.existsSuspend()) {
+                // A concurrent caller already fetched this file while we were waiting for the lock.
+                Twig.debug { "Param file ${paramsToFetch.fileName} was fetched by a concurrent caller. Skipping." }
+                return@withLock
+            }
+
             val url = URL("$CLOUD_PARAM_DIR_URL${paramsToFetch.fileName}")
             Twig.debug { "Sapling params fetch URL: $url" }
             val temporaryFile =
@@ -313,7 +320,6 @@ internal class SaplingParamTool(
                                 )
                         )
                     }
-                    val resultFile = File(paramsToFetch.destinationDirectory, paramsToFetch.fileName)
                     if (!renameParametersFile(temporaryFile, resultFile)) {
                         finalizeAndReportError(
                             temporaryFile,
