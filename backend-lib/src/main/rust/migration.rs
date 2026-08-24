@@ -410,6 +410,15 @@ fn target_height(wallet: &Wallet) -> anyhow::Result<BlockHeight> {
     Ok(tip + 1)
 }
 
+/// Converts a non-negative `jlong` tip height reported by a caller into a [`BlockHeight`],
+/// erroring instead of silently truncating a value above the `u32` range into a different
+/// height. Callers own any negative-sentinel handling ("no estimate available") themselves —
+/// this only decodes the case where the caller has already established the value is meant to
+/// be taken literally.
+fn decode_tip_height(height: jlong) -> anyhow::Result<BlockHeight> {
+    BlockHeight::try_from(height).map_err(|_| anyhow!("Invalid tip height: {}", height))
+}
+
 /// The wallet's real, currently-witnessable anchor height (the same one ordinary, non-migration
 /// sends use, via `get_target_and_anchor_heights`) — NOT just "chain tip minus one", which isn't
 /// necessarily checkpointed (confirmed live: `root_at_checkpoint_id` returned `None` for a raw
@@ -747,6 +756,12 @@ fn decode_transfer_id(id: jlong) -> anyhow::Result<MigrationTransferId> {
     Ok(MigrationTransferId::new(idx))
 }
 
+/// Decodes the `proposalHandle` field Kotlin echoes back into a cache lookup key, rejecting a
+/// negative handle rather than reinterpreting its bit pattern as a large `u64`.
+fn decode_plan_handle(handle: jlong) -> anyhow::Result<crate::migration_plan_cache::PlanHandle> {
+    u64::try_from(handle).map_err(|_| anyhow!("Invalid proposal handle: {}", handle))
+}
+
 /// One preparation (note-split) transaction entry, ready to encode into [`JniPreparationStep`].
 ///
 /// - `id` is the stable [`MigrationTransferId`] the engine assigns at commit time (same ordinal as
@@ -1061,7 +1076,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     let res = catch_unwind(&mut env, |env| {
         let (_network, wallet, _store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let plan_handle = proposal_handle as u64;
+        let plan_handle = decode_plan_handle(proposal_handle)?;
         let migration_plan = crate::migration_plan_cache::get(account, plan_handle)?;
         let tip = wallet
             .chain_height()
@@ -1392,7 +1407,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 store_conn: &mut store_conn,
                 target,
             },
-            proposal_handle as u64,
+            decode_plan_handle(proposal_handle)?,
             |network, target, backend, migration_plan, rng| {
                 let state = engine::commit_preparation(
                     network,
@@ -1585,7 +1600,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     .map_err(|e| anyhow!("Error reading migration state: {:?}", e))?
                     .ok_or_else(|| anyhow!("No migration in progress"))?;
                 let tip = if observed_tip >= 0 {
-                    BlockHeight::from_u32(observed_tip as u32)
+                    decode_tip_height(observed_tip)?
                 } else {
                     target_height(&wallet)? - 1
                 };
@@ -2002,7 +2017,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let scanned_tip = target_height(&wallet)? - 1;
         let effective_tip = if estimated_tip >= 0 {
-            std::cmp::max(scanned_tip, BlockHeight::from(estimated_tip as u32))
+            std::cmp::max(scanned_tip, decode_tip_height(estimated_tip)?)
         } else {
             scanned_tip
         };
@@ -2080,7 +2095,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 store_conn: &mut store_conn,
                 target,
             },
-            proposal_handle as u64,
+            decode_plan_handle(proposal_handle)?,
             |network, target, backend, migration_plan, rng| {
                 let state = engine::commit_preparation(
                     network,
@@ -2570,7 +2585,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let scanned_tip = target_height(&wallet)? - 1;
         let effective_tip = if estimated_tip >= 0 {
-            std::cmp::max(scanned_tip, BlockHeight::from(estimated_tip as u32))
+            std::cmp::max(scanned_tip, decode_tip_height(estimated_tip)?)
         } else {
             scanned_tip
         };
@@ -3475,7 +3490,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 store_conn: &mut store_conn,
                 target,
             },
-            proposal_handle as u64,
+            decode_plan_handle(proposal_handle)?,
             |network, target, backend, migration_plan, rng| {
                 let (state, unsigned) = engine::build_preparation_unsigned(
                     network,
@@ -3605,7 +3620,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 store_conn: &mut store_conn,
                 target,
             },
-            proposal_handle as u64,
+            decode_plan_handle(proposal_handle)?,
             |network, target, backend, migration_plan, rng| {
                 let (state, unsigned) = engine::build_preparation_unsigned(
                     network,
@@ -3699,7 +3714,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 store_conn: &mut store_conn,
                 target,
             },
-            proposal_handle as u64,
+            decode_plan_handle(proposal_handle)?,
             |network, target, backend, migration_plan, rng| {
                 let (state, unsigned) = engine::build_preparation_unsigned(
                     network,
@@ -3813,6 +3828,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 // Pure PCZT/UR operations over caller-held bytes — no wallet database, no migration engine.
 // Unaffected by this rewire.
 
+/// Decodes the Keystone QR-fragmenting `maxFragmentLen` parameter into a `usize`, rejecting a
+/// non-positive value (zero or negative bytes per fragment cannot produce any QR parts) rather
+/// than truncating it into an unrelated fragment size.
+fn decode_max_fragment_len(max_fragment_len: jint) -> anyhow::Result<usize> {
+    usize::try_from(max_fragment_len)
+        .ok()
+        .filter(|&len| len > 0)
+        .ok_or_else(|| anyhow!("Invalid max fragment length: {}", max_fragment_len))
+}
+
 fn decode_byte_array_list(env: &mut JNIEnv, list: &JObjectArray) -> anyhow::Result<Vec<Vec<u8>>> {
     let count = env.get_array_length(list)?;
     let mut out = Vec::with_capacity(count as usize);
@@ -3845,7 +3870,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             request_id,
             split_unsigned.as_deref(),
             &transfer_unsigned,
-            max_fragment_len as usize,
+            decode_max_fragment_len(max_fragment_len)?,
         )
         .map_err(|e| anyhow!("Error building Keystone sign-batch QR parts: {}", e))?;
         Ok(
@@ -7721,7 +7746,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let estimated = if estimated_tip < 0 {
             scanned
         } else {
-            std::cmp::max(scanned, BlockHeight::from_u32(estimated_tip as u32) + 1)
+            // `Add<u32> for BlockHeight` saturates, so a decoded `u32::MAX` cannot wrap or panic
+            // here — it just clamps `estimated` at the maximum representable height.
+            std::cmp::max(scanned, decode_tip_height(estimated_tip)? + 1)
         };
         let mut backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
         let Some(mut state) = backend
