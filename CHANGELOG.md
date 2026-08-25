@@ -6,6 +6,33 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-08-25
+
+### Added
+- `TransactionEncoderException.InsufficientFundsException` is thrown - by both the upstream and the
+  Slipstream engine - when a proposal cannot be created because the account lacks the spendable funds
+  to cover the requested amount together with its fee. It replaces
+  `ProposalFromParametersException`/`ProposalFromUriException`/`ProposalShieldingException` for that
+  specific failure, so callers no longer have to match on the Rust layer's error message (MOB-1723,
+  #680).
+- `PcztException.MultiStepProposalUnsupportedException` is thrown by `createPcztFromProposal` when the
+  given proposal needs more than one transaction. Only TEX (ZIP-320) payments produce such proposals,
+  so this is what a caller sees when it tries to pay a TEX address with an external signer (MOB-1723).
+
+### Changed
+- The Slipstream engine's `proposeTransfer`, `proposeFulfillingPaymentUri`, `proposeShielding` and
+  `proposeOrchardToIronwoodMigration` now report failures with the same `TransactionEncoderException`
+  subtypes the upstream engine uses, instead of letting the raw Rust `RuntimeException` escape
+  (MOB-1723).
+- The raw `Backend`/`RustBackend` API now validates numeric arguments (block heights must be
+  in the unsigned 32-bit range; indices and counts must be nonnegative) and throws
+  `IllegalArgumentException` before crossing the JNI boundary (MOB-1765).
+
+### Fixed
+- All JNI entry points now convert caller-supplied numeric arguments (network ids, the UTXO
+  output index, Tor dormant mode) with checked conversions instead of unchecked casts, so
+  out-of-range values fail with an exception instead of silently wrapping (MOB-1764).
+
 ## [3.1.0] - 2026-08-20
 
 ### Added
