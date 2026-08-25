@@ -7,6 +7,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `PaymentUriParser`, a Rust-backed API that validates Bitcoin, Ethereum, Litecoin, and Solana
+  payment URIs and returns typed payment request models without floating-point amount conversion.
 - `TransactionEncoderException.InsufficientFundsException` is thrown - by both the upstream and the
   Slipstream engine - when a proposal cannot be created because the account lacks the spendable funds
   to cover the requested amount together with its fee. It replaces
