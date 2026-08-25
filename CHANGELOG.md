@@ -22,6 +22,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `proposeOrchardToIronwoodMigration` now report failures with the same `TransactionEncoderException`
   subtypes the upstream engine uses, instead of letting the raw Rust `RuntimeException` escape
   (MOB-1723).
+- The raw `Backend`/`RustBackend` API now validates numeric arguments (block heights must be
+  in the unsigned 32-bit range; indices and counts must be nonnegative) and throws
+  `IllegalArgumentException` before crossing the JNI boundary (MOB-1765).
+
+### Fixed
+- All JNI entry points now convert caller-supplied numeric arguments (network ids, the UTXO
+  output index, Tor dormant mode) with checked conversions instead of unchecked casts, so
+  out-of-range values fail with an exception instead of silently wrapping (MOB-1764).
 
 ### Fixed
 - The JNI entry points `branchIdForHeight`, `putUtxo`, and the pool-migration entry points

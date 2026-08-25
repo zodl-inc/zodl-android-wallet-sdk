@@ -46,13 +46,14 @@ use rusqlite::Connection;
 use std::num::NonZeroUsize;
 use std::ptr;
 
-use zcash_client_backend::data_api::wallet::input_selection::LockFilter;
+use zcash_client_backend::data_api::wallet::input_selection::{LockFilter, LockedInputPolicy};
 use zcash_client_backend::data_api::{InputSource, OutputLockStore, WalletRead};
 #[cfg(test)]
 use zcash_client_backend::keys::UnifiedSpendingKey;
 use zcash_client_backend::wallet::{LockOwner, OutputRef};
 use zcash_client_sqlite::AccountUuid;
 use zcash_client_sqlite::util::SystemClock;
+use zcash_primitives::transaction::fees::zip317::MARGINAL_FEE;
 use zcash_protocol::consensus::{
     BLOCKS_PER_HOUR, BlockHeight, Network, NetworkConstants, Parameters,
 };
@@ -110,9 +111,17 @@ const JNI_KEYSTONE_BATCH_SIGNED_PCZTS: &str =
 
 /// The zatoshi value below which a leftover post-migration Orchard balance is treated as dust
 /// rather than a residual worth migrating in its own (non-round-number, more identifiable)
-/// transfer. 100,000 zatoshi = 0.001 ZEC. A fixed protocol-level constant, not derived from wallet
-/// or account state, so it needs no database access to read.
-pub const MIGRATION_DUST_THRESHOLD_ZATOSHI: u64 = 100_000;
+/// transfer. Defined as `2 * MARGINAL_FEE` per Kris Nuttycombe's migratable-total algorithm (team
+/// Slack, 2026-08): currently 10,000 zatoshi (0.0001 ZEC), but this now tracks `MARGINAL_FEE`
+/// rather than being a bare literal, so it moves automatically if ZIP-317's marginal fee ever
+/// changes. Not derived from wallet or account state, so it needs no database access to read.
+///
+/// A plain fn, not a `const`, only because [`Zatoshis::into_u64`] (which `u64::from(MARGINAL_FEE)`
+/// goes through) isn't a `const fn` — this is still fixed/deterministic, just recomputed (cheaply)
+/// on every read instead of baked in at compile time.
+fn migration_dust_threshold_zatoshi() -> u64 {
+    u64::from(MARGINAL_FEE) * 2
+}
 
 /// The per-run prepared-note cap for zodl's own in-process signer, well above the crate's
 /// [`MIGRATION_MAX_PREPARED_NOTES_PER_RUN`](zcash_pool_migration::denomination::MIGRATION_MAX_PREPARED_NOTES_PER_RUN)
@@ -393,7 +402,7 @@ fn open(
     db_data: JString,
     network_id: jint,
 ) -> anyhow::Result<(Network, Wallet, Connection)> {
-    let network = crate::parse_network(network_id as u32)?;
+    let network = crate::parse_network(network_id)?;
     let db_path = crate::path_from_jni(env, db_data)?;
     let (wallet, store_conn) = open_at(&db_path, network)?;
     Ok((network, wallet, store_conn))
@@ -3354,7 +3363,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     network_id: jint,
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
-        let network = crate::parse_network(network_id as u32)?;
+        let network = crate::parse_network(network_id)?;
         let db = crate::wallet_db(env, network, db_data)?;
         let account_ids = match db.get_account_ids() {
             Ok(ids) => ids,
@@ -3487,10 +3496,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
-/// A pure constant read — [`MIGRATION_DUST_THRESHOLD_ZATOSHI`] is a fixed protocol-level value,
-/// not derived from any wallet or account state, so unlike every other export in this file this
-/// needs no `db_data`/`network_id`/account argument and can't fail or panic (no `catch_unwind` /
-/// `unwrap_exc_or` needed).
+/// A fixed protocol-level value (`2 * MARGINAL_FEE`), not derived from any wallet or account
+/// state, so unlike every other export in this file this needs no `db_data`/`network_id`/account
+/// argument and can't fail or panic (no `catch_unwind` / `unwrap_exc_or` needed).
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migrationDustThresholdZatoshiNative<
     'local,
@@ -3498,7 +3506,64 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     _env: JNIEnv<'local>,
     _: JClass<'local>,
 ) -> jlong {
-    MIGRATION_DUST_THRESHOLD_ZATOSHI as jlong
+    migration_dust_threshold_zatoshi() as jlong
+}
+
+/// Kris Nuttycombe's per-note "is the leftover balance actually worth prompting to migrate"
+/// total (Zcash Foundation Slack, MOB-1750 follow-up, 2026-08): `sum(value - MARGINAL_FEE)` over
+/// every spendable Orchard note whose value exceeds `MARGINAL_FEE`. Notes at or below
+/// `MARGINAL_FEE` cost more to spend than they're worth, so summing net-of-fee value only across
+/// notes actually worth spending answers "how much would the user actually receive if they
+/// migrated everything right now" — replacing the raw aggregate Orchard balance the Kotlin call
+/// site compared against [`migration_dust_threshold_zatoshi`] before this.
+///
+/// [`InputSource::select_unspent_notes`] already applies the `value > MARGINAL_FEE` filter at the
+/// SQL layer (`zcash_client_sqlite::wallet::common::select_unspent_notes`), so every note this
+/// call sees already qualifies for the sum — no re-filtering needed here.
+///
+/// `LockFilter::Policy(&LockedInputPolicy::Exclude)` matches `migration_engine::Backend`'s own
+/// `spendable_orchard()` (the migration engine's real note-selection view), not the `Unfiltered`
+/// view [`lockRemainingOrchardBalanceNative`] uses — this answers "what could a NEW migration
+/// actually move", so notes already locked by a prior "Lock balance" tap or an in-flight proposal
+/// correctly don't count toward it.
+///
+/// The threshold this total is compared against (`migratable_total > 2 * MARGINAL_FEE`) is left
+/// to the caller: [`migration_dust_threshold_zatoshi`] already computes `2 * MARGINAL_FEE`, so no
+/// separate threshold is needed here — only the total this compares.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migratableOrchardTotalNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+) -> jlong {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, _store_conn) = open(env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let target = target_height(&wallet)?;
+
+        let received = wallet
+            .select_unspent_notes(
+                account,
+                &[ShieldedPool::Orchard],
+                target.into(),
+                &[],
+                LockFilter::Policy(&LockedInputPolicy::Exclude),
+            )
+            .map_err(|e| anyhow!("Error reading migratable Orchard total: {}", e))?;
+
+        let marginal_fee = u64::from(MARGINAL_FEE);
+        let total: u64 = received
+            .orchard()
+            .iter()
+            .map(|rn| rn.note().value().inner().saturating_sub(marginal_fee))
+            .sum();
+        Ok(total as jlong)
+    });
+    unwrap_exc_or(&mut env, res, 0)
 }
 
 // ----- External signer (Keystone hardware wallet) -----
