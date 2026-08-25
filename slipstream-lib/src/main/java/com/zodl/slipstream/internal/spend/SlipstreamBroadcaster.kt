@@ -45,13 +45,18 @@ internal class SlipstreamBroadcaster(
     private val engine: SlipstreamEngine,
     private val planStore: SubmitPlanStore,
     private val saplingParamsDir: File,
-    private val transactionReader: SlipstreamTransactionReader
+    private val transactionReader: SlipstreamTransactionReader,
+    /**
+     * Production: `{ SaplingParams.ensureDownloaded(saplingParamsDir) }`. Injected so tests never
+     * trigger a real download.
+     */
+    private val ensureSaplingParams: suspend () -> Unit = { SaplingParams.ensureDownloaded(saplingParamsDir) }
 ) : Broadcaster {
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey
     ): List<CreatedTransaction> {
-        SaplingParams.ensureDownloaded(saplingParamsDir)
+        ensureSaplingParams()
         val uskBytes = usk.copyBytes()
         val txIds =
             try {
