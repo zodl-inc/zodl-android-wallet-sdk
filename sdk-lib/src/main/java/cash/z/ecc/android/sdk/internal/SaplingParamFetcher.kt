@@ -39,13 +39,10 @@ internal class SaplingParamFetcher(
             }
         }
 
-    @Suppress("TooGenericExceptionCaught")
     suspend fun forceDownload() =
         mutex.withLock {
-            try {
+            retryAndRethrow {
                 saplingParamTool.ensureParams(saplingParamTool.properties.paramsDirectory)
-            } catch (e: Exception) {
-                Twig.error(e) { "Caught exception while fetching sapling params." }
             }
         }
 
@@ -60,6 +57,25 @@ internal class SaplingParamFetcher(
                 failedAttempts++
                 if (failedAttempts == 2) return
                 delay(10.seconds)
+            }
+        }
+    }
+
+    // Unlike retryAndContinue (best-effort background prefetch), this is called synchronously
+    // right before proving/tx creation, so a download failure must propagate instead of letting
+    // the caller proceed against missing/incomplete param files (see PRO-97, MOB-1674).
+    private suspend inline fun retryAndRethrow(block: () -> Unit) {
+        var failedAttempts = 0
+        while (true) {
+            @Suppress("TooGenericExceptionCaught")
+            try {
+                block()
+                return
+            } catch (e: Throwable) {
+                failedAttempts++
+                Twig.error(e) { "Caught exception while fetching sapling params (attempt $failedAttempts)." }
+                if (failedAttempts >= 2) throw e
+                delay(3.seconds)
             }
         }
     }
