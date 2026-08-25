@@ -419,6 +419,45 @@ fn decode_tip_height(height: jlong) -> anyhow::Result<BlockHeight> {
     BlockHeight::try_from(height).map_err(|_| anyhow!("Invalid tip height: {}", height))
 }
 
+#[cfg(test)]
+mod decode_tip_height_tests {
+    use super::*;
+
+    #[test]
+    fn negative_height_is_error() {
+        assert!(decode_tip_height(-1).is_err());
+    }
+
+    #[test]
+    fn zero_height_succeeds() {
+        assert_eq!(
+            decode_tip_height(0).expect("zero is a valid height"),
+            BlockHeight::from_u32(0)
+        );
+    }
+
+    #[test]
+    fn typical_height_succeeds() {
+        assert_eq!(
+            decode_tip_height(2_500_000).expect("typical height is valid"),
+            BlockHeight::from_u32(2_500_000)
+        );
+    }
+
+    #[test]
+    fn max_u32_height_succeeds() {
+        assert_eq!(
+            decode_tip_height(u32::MAX as i64).expect("u32::MAX is the largest valid height"),
+            BlockHeight::from_u32(u32::MAX)
+        );
+    }
+
+    #[test]
+    fn one_above_max_u32_height_is_error() {
+        assert!(decode_tip_height(u32::MAX as i64 + 1).is_err());
+    }
+}
+
 /// The wallet's real, currently-witnessable anchor height (the same one ordinary, non-migration
 /// sends use, via `get_target_and_anchor_heights`) — NOT just "chain tip minus one", which isn't
 /// necessarily checkpointed (confirmed live: `root_at_checkpoint_id` returned `None` for a raw
@@ -760,6 +799,34 @@ fn decode_transfer_id(id: jlong) -> anyhow::Result<MigrationTransferId> {
 /// negative handle rather than reinterpreting its bit pattern as a large `u64`.
 fn decode_plan_handle(handle: jlong) -> anyhow::Result<crate::migration_plan_cache::PlanHandle> {
     u64::try_from(handle).map_err(|_| anyhow!("Invalid proposal handle: {}", handle))
+}
+
+#[cfg(test)]
+mod decode_plan_handle_tests {
+    use super::*;
+
+    #[test]
+    fn negative_handle_is_error() {
+        assert!(decode_plan_handle(-1).is_err());
+    }
+
+    #[test]
+    fn zero_handle_succeeds() {
+        assert_eq!(decode_plan_handle(0).expect("zero is a valid handle"), 0);
+    }
+
+    #[test]
+    fn typical_handle_succeeds() {
+        assert_eq!(decode_plan_handle(42).expect("typical handle is valid"), 42);
+    }
+
+    #[test]
+    fn max_jlong_handle_succeeds() {
+        assert_eq!(
+            decode_plan_handle(i64::MAX).expect("i64::MAX is the largest representable jlong"),
+            i64::MAX as u64
+        );
+    }
 }
 
 /// One preparation (note-split) transaction entry, ready to encode into [`JniPreparationStep`].
@@ -3836,6 +3903,37 @@ fn decode_max_fragment_len(max_fragment_len: jint) -> anyhow::Result<usize> {
         .ok()
         .filter(|&len| len > 0)
         .ok_or_else(|| anyhow!("Invalid max fragment length: {}", max_fragment_len))
+}
+
+#[cfg(test)]
+mod decode_max_fragment_len_tests {
+    use super::*;
+
+    #[test]
+    fn negative_len_is_error() {
+        assert!(decode_max_fragment_len(-1).is_err());
+    }
+
+    #[test]
+    fn zero_len_is_error() {
+        assert!(decode_max_fragment_len(0).is_err());
+    }
+
+    #[test]
+    fn typical_len_succeeds() {
+        assert_eq!(
+            decode_max_fragment_len(90).expect("typical fragment length is valid"),
+            90
+        );
+    }
+
+    #[test]
+    fn max_i32_len_succeeds() {
+        assert_eq!(
+            decode_max_fragment_len(i32::MAX).expect("i32::MAX is the largest representable jint"),
+            i32::MAX as usize
+        );
+    }
 }
 
 fn decode_byte_array_list(env: &mut JNIEnv, list: &JObjectArray) -> anyhow::Result<Vec<Vec<u8>>> {
