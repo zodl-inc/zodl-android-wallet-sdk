@@ -27,6 +27,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drives the classic `Synchronizer`.
 
 ### Changed
+- The SDK is now licensed under the GNU Affero General Public License, version 3 only
+  (AGPL-3.0-only) instead of the MIT License. An application that incorporates it must make the
+  complete corresponding source of that application available under the AGPL to its users,
+  including users who interact with it over a network, and no permission is granted to distribute
+  such an application through Google Play or any other channel whose terms are incompatible with
+  the AGPL. A commercial license is available for applications that cannot meet those conditions;
+  see `COMMERCIAL-LICENSE.md`. `LICENSE-EXCEPTIONS.md` covers Google Play distribution, the
+  MIT-licensed upstream this work derives from (reproduced in `LICENSE-MIT`), and trademark use.
 - Updated the `zcash_voting` dependency to `2.0.0-rc.5` 
 - **Shielded voting works again, on a source-incompatible API.** 2.8.0-rc.1 shipped with the
   voting module switched off and `VotingRustBackend` deprecated at `ERROR` level; the module is
