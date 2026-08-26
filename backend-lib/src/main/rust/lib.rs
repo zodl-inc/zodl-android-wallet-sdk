@@ -180,10 +180,8 @@ fn wallet_db<P: Parameters>(
         .map_err(|e| anyhow!("Error loading SQLite array module: {}", e))?;
     conn.busy_timeout(std::time::Duration::from_secs(15))
         .map_err(|e| anyhow!("Error setting wallet busy_timeout: {}", e))?;
-    Ok(
-        WalletDb::from_connection(conn, params, SystemClock, OsRng)
-            .with_anchor_retention_interval(retention_interval),
-    )
+    Ok(WalletDb::from_connection(conn, params, SystemClock, OsRng)
+        .with_anchor_retention_interval(retention_interval))
 }
 
 fn block_db(env: &mut JNIEnv, fsblockdb_root: JString) -> anyhow::Result<FsBlockDb> {
