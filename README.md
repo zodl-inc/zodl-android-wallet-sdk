@@ -1,4 +1,4 @@
-[![license](https://img.shields.io/github/license/zcash/zcash-android-wallet-sdk.svg?maxAge=2592000&style=plastic)](https://github.com/zcash/zcash-android-wallet-sdk/blob/master/LICENSE)
+[![license](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg?style=plastic)](LICENSE)
 ![Maven Central](https://img.shields.io/maven-central/v/cash.z.ecc.android/zcash-android-sdk?color=success&style=plastic)
 
 This is a beta build and is currently under active development. Please be advised of the following:
@@ -58,3 +58,28 @@ Note that we aim for the main branch of this repository to be stable and releasa
 `CompactBlockProcessor` now processes compact blocks from the lightwalletd server in non-linear order with the 
 **Spend-before-Sync** algorithm. This feature speeds up discovering the wallet's spendable balance. Please note that 
 this new block synchronization algorithm is still under development.
+
+# License
+
+Copyright © 2026 Znewco, Inc. (d/b/a Zcash Open Development Lab)
+
+ZODL Zcash Android Wallet SDK is free software, licensed under the GNU Affero
+General Public License, version 3 only (AGPL-3.0-only). See [LICENSE](LICENSE).
+
+In short: you may use, study, modify, and redistribute ZODL Zcash Android Wallet
+SDK, but if you incorporate it into an application, the complete source of that
+application must be made available under the AGPL to its users, including users
+who interact with it over a network.
+
+If those terms don't fit your project, **commercial licenses are available** —
+see [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md). Official Zodl builds
+distributed through Google Play are released by Znewco under separate terms; no
+Google Play distribution permission is granted to AGPL licensees — see
+[LICENSE-EXCEPTIONS.md](LICENSE-EXCEPTIONS.md).
+
+ZODL Zcash Android Wallet SDK is derived from the Zcash Android Wallet SDK,
+Copyright (c) 2017-2024 Electric Coin Company, which was made available under
+the MIT License; that license is reproduced in [LICENSE-MIT](LICENSE-MIT). It
+also depends on the Zcash Rust crates (librustzcash and related) and other
+third-party libraries, which are separately licensed by their respective
+copyright holders and are not covered by this notice.
