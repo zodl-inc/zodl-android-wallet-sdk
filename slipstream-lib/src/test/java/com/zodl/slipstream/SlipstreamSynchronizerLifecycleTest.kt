@@ -936,6 +936,58 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
+    /**
+     * MOB-1397: a wallet database that belongs to a different seed makes `initDataDb` throw
+     * [InitializeException.SeedNotRelevant] - the very first step of [SlipstreamSynchronizer.prepare],
+     * well before the anchor or `DbReady`. This pins the exact mechanism
+     * `WalletCoordinator.synchronizerOrLockoutId` now relies on to turn that failure into
+     * `isSeedMismatch`: the failure is latched, `status` flips to `DISCONNECTED`, and a handler
+     * attached only AFTER the failure already happened - exactly what happens when the coordinator
+     * attaches its handler right after `trySend(Available)` - still receives it via the
+     * latch-and-replay in [SlipstreamSynchronizer.onSetupErrorHandler]'s setter. Before the
+     * coordinator fix, nothing ever attached a handler here, so this replay had no listener and the
+     * failure was silently stranded.
+     */
+    @Test
+    fun seed_not_relevant_during_data_db_init_latches_and_replays_to_a_handler_attached_after_the_fact() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val engineStatus = MutableStateFlow(Synchronizer.Status.INITIALIZING)
+        val key = newKey()
+        runBlocking { `when`(backend.initDataDb(null)).thenReturn(SEED_NOT_RELEVANT_CODE) }
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                engineStatusOverride = engineStatus,
+                prepareInputs = prepareInputs()
+            )
+        try {
+            runBlocking {
+                withTimeout(TIMEOUT_MS) { synchronizer.status.first { it == Synchronizer.Status.DISCONNECTED } }
+            }
+
+            // Attached only now, strictly after the failure above already landed - the same
+            // ordering WalletCoordinator uses (handler assigned after trySend(Available)).
+            val recorded = AtomicReference<Throwable?>()
+            val handlerCalls = AtomicInteger(0)
+            synchronizer.onSetupErrorHandler = { t ->
+                recorded.set(t)
+                handlerCalls.incrementAndGet()
+                false
+            }
+
+            assertEquals(1, handlerCalls.get())
+            assertTrue(recorded.get() is InitializeException.SeedNotRelevant)
+
+            val thrown = assertFailsWith<SlipstreamNotReadyException> { runBlocking { synchronizer.getAccounts() } }
+            assertTrue(thrown.cause is InitializeException.SeedNotRelevant)
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
     @Test
     fun close_during_preparation_cancels_it_without_opening_the_engine_or_erroring() {
         val engine = mock(SlipstreamEngine::class.java)
@@ -1787,6 +1839,9 @@ class SlipstreamSynchronizerLifecycleTest {
 
         /** What a never-scanned database answers the summary read with, per the Rust backend. */
         private const val SEED_FAILURE_MESSAGE = "Target height not available"
+
+        /** [Backend.initDataDb]'s return code mapped to [InitializeException.SeedNotRelevant]. */
+        private const val SEED_NOT_RELEVANT_CODE = 2
 
         /** Non-zero throughout, so a hard-zero balance can never be mistaken for the seed. */
         private val SEEDED_POOL_BALANCE =
