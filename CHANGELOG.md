@@ -35,6 +35,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sends no longer crash with "database is locked" when they race the synchronizer's own
   block-write bursts on the same wallet database; the connection now waits up to 15s for the
   lock instead of failing instantly (MOB-1743).
+- The Sapling proving parameters download (`SaplingParams`, ~50MB spend params) now retries up to
+  3 attempts with exponential backoff on `IOException` instead of failing outright on the first
+  transient network blip. Previously, a single `SocketTimeoutException` or `UnknownHostException`
+  resolving `download.z.cash` mid-download aborted `createProposedTransactions` before the actual
+  broadcast was ever attempted, and since nothing was cached on failure, the same full download
+  re-ran from scratch on every subsequent send attempt (MOB-1744).
 
 ## [3.1.0] - 2026-08-20
 

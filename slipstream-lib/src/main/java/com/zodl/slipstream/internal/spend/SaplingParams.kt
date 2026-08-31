@@ -2,9 +2,12 @@
 
 package com.zodl.slipstream.internal.spend
 
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -27,6 +30,13 @@ internal object SaplingParams {
     private const val CONNECT_TIMEOUT_MS = 30_000
     private const val READ_TIMEOUT_MS = 30_000
 
+    // MOB-1744: a single stalled attempt (SocketTimeoutException) or a transient DNS hiccup
+    // (UnknownHostException resolving download.z.cash) used to fail the whole 50MB spend-params
+    // download outright, on the synchronous path a broadcast blocks on. Retry a few times with
+    // backoff before surfacing the error to the caller.
+    private const val MAX_DOWNLOAD_ATTEMPTS = 3
+    private const val INITIAL_RETRY_BACKOFF_MS = 1_000L
+
     suspend fun ensureDownloaded(destinationDir: File): SaplingParamPaths =
         withContext(Dispatchers.IO) {
             destinationDir.mkdirs()
@@ -37,7 +47,7 @@ internal object SaplingParams {
             SaplingParamPaths(spendFile, outputFile)
         }
 
-    private fun ensureFile(
+    private suspend fun ensureFile(
         file: File,
         expectedSha1: String,
         maxSizeBytes: Long
@@ -45,9 +55,42 @@ internal object SaplingParams {
         if (file.exists() && file.length() in 1..maxSizeBytes && sha1Of(file).equals(expectedSha1, ignoreCase = true)) {
             return
         }
-        download(file, maxSizeBytes)
+        retryOnIOException { download(file, maxSizeBytes) }
         check(sha1Of(file).equals(expectedSha1, ignoreCase = true)) {
             "SHA-1 mismatch downloading ${file.name}: expected $expectedSha1"
+        }
+    }
+
+    /**
+     * Retries [block] on [IOException] (covers both `SocketTimeoutException` and transient
+     * `UnknownHostException` DNS failures, MOB-1744) up to [maxAttempts] attempts total, with
+     * exponential backoff between attempts. Once attempts are exhausted, the original exception is
+     * rethrown as-is - never wrapped or swallowed - so callers can still distinguish a timeout
+     * from a DNS failure from any other I/O error.
+     *
+     * Extracted as its own function (rather than inlined into [ensureFile]) so retry/backoff
+     * behavior can be unit tested directly against a fake failing/succeeding [block], without a
+     * real network call.
+     */
+    @VisibleForTesting
+    internal suspend fun retryOnIOException(
+        maxAttempts: Int = MAX_DOWNLOAD_ATTEMPTS,
+        initialBackoffMs: Long = INITIAL_RETRY_BACKOFF_MS,
+        block: suspend () -> Unit
+    ) {
+        var attempt = 1
+        while (true) {
+            try {
+                block()
+                return
+            } catch (e: IOException) {
+                if (attempt >= maxAttempts) {
+                    throw e
+                }
+                // Exponential backoff: 1s, 2s, 4s, ...
+                delay(initialBackoffMs shl (attempt - 1))
+                attempt++
+            }
         }
     }
 
