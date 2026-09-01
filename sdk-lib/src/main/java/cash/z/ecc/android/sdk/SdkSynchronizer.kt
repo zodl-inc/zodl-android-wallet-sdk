@@ -444,6 +444,14 @@ class SdkSynchronizer private constructor(
     override var onSetupErrorHandler: ((Throwable?) -> Boolean)? = null
 
     /**
+     * Always `null`: this engine's setup failures are thrown synchronously out of [Synchronizer.new]
+     * (e.g. `InitializeException.SeedNotRelevant`) rather than latched past construction, so there is
+     * never anything for a state-flow-based consumer to observe here. See [Synchronizer.setupError]'s
+     * KDoc for the engine that actually latches one.
+     */
+    override val setupError: StateFlow<Throwable?> = MutableStateFlow(null)
+
+    /**
      * A callback to invoke whenever a chain error is encountered. These occur whenever the
      * processor detects a missing or non-chain-sequential block (i.e. a reorg).
      */

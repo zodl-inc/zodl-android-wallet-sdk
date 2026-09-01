@@ -35,6 +35,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sends no longer crash with "database is locked" when they race the synchronizer's own
   block-write bursts on the same wallet database; the connection now waits up to 15s for the
   lock instead of failing instantly (MOB-1743).
+- `WalletCoordinator` no longer crashes the app on every launch when the persisted wallet's seed
+  does not match the existing wallet database (`InitializeException.SeedNotRelevant`, e.g. a
+  long-lived wallet originally created under a different app). The failure is now caught and
+  exposed via the new `WalletCoordinator.isSeedMismatch: StateFlow<Boolean>` instead of
+  propagating out of `synchronizerOrLockoutId`. This is also caught for the Slipstream engine,
+  which defers this failure past `Synchronizer.new()` rather than throwing it synchronously -
+  the previous fix attempt only covered the synchronous (default-engine) case, so it was dead
+  code on the default Slipstream build. New `Synchronizer.setupError: StateFlow<Throwable?>`
+  carries the same latched failure `onSetupErrorHandler` does, so `WalletCoordinator` can detect
+  it without taking over that single-slot handler - which a host app assigns its own handler to
+  on every synchronizer it receives, and whichever side assigned it last would otherwise silently
+  disable the other's setup-error handling (MOB-1397).
 - The Sapling proving parameters download (`SaplingParams`, ~50MB spend params) now retries up to
   3 attempts with exponential backoff on `IOException` instead of failing outright on the first
   transient network blip. Previously, a single `SocketTimeoutException` or `UnknownHostException`

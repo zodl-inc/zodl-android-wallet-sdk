@@ -3,6 +3,7 @@
 package cash.z.ecc.android.sdk
 
 import android.content.Context
+import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.ext.onFirst
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.engineSynchronizerFactory
@@ -20,11 +21,13 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -85,7 +88,23 @@ class WalletCoordinator(
         class Lockout(
             val id: UUID
         ) : InternalSynchronizerStatus()
+
+        /**
+         * The wallet database belongs to a different seed than the one currently persisted (e.g. a
+         * long-lived wallet originally created under a different app whose keystore/seed no longer
+         * matches). See [isSeedMismatch].
+         */
+        object SeedMismatch : InternalSynchronizerStatus()
     }
+
+    /**
+     * True while the current [persistableWallet] does not match the seed the wallet database was
+     * created with ([InitializeException.SeedNotRelevant]). Resets to false as soon as this flow's
+     * synchronizer-building block is torn down - e.g. by a host-side seed-mismatch recovery flow
+     * triggering a lockout, or by [persistableWallet] itself changing.
+     */
+    private val _isSeedMismatch = MutableStateFlow(false)
+    val isSeedMismatch: StateFlow<Boolean> = _isSeedMismatch.asStateFlow()
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val synchronizerOrLockoutId: Flow<InternalSynchronizerStatus> =
@@ -108,41 +127,99 @@ class WalletCoordinator(
                 } else if (null == persistableWallet) {
                     flowOf(InternalSynchronizerStatus.NoWallet)
                 } else {
-                    callbackFlow<InternalSynchronizerStatus.Available> {
-                        val closeableSynchronizer =
-                            engineSynchronizerFactory.new(
-                                context = context,
-                                zcashNetwork = persistableWallet.network,
-                                lightWalletEndpoint = persistableWallet.endpoint,
-                                birthday = persistableWallet.birthday,
-                                setup =
-                                    AccountCreateSetup(
-                                        accountName = accountName,
-                                        keySource = keySource,
-                                        seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
-                                    ),
-                                walletInitMode = persistableWallet.walletInitMode,
-                                isTorEnabled = isTorEnabled == true,
-                                isExchangeRateEnabled = isExchangeRateEnabled == true
-                            )
+                    callbackFlow<InternalSynchronizerStatus> {
+                        try {
+                            val closeableSynchronizer =
+                                engineSynchronizerFactory.new(
+                                    context = context,
+                                    zcashNetwork = persistableWallet.network,
+                                    lightWalletEndpoint = persistableWallet.endpoint,
+                                    birthday = persistableWallet.birthday,
+                                    setup =
+                                        AccountCreateSetup(
+                                            accountName = accountName,
+                                            keySource = keySource,
+                                            seed = FirstClassByteArray(persistableWallet.seedPhrase.toByteArray())
+                                        ),
+                                    walletInitMode = persistableWallet.walletInitMode,
+                                    isTorEnabled = isTorEnabled == true,
+                                    isExchangeRateEnabled = isExchangeRateEnabled == true
+                                )
 
-                        trySend(InternalSynchronizerStatus.Available(closeableSynchronizer))
+                            trySend(InternalSynchronizerStatus.Available(closeableSynchronizer))
 
-                        // Keep this Synchronizer alive across migration sync-blocks: instead of tearing
-                        // it down (which nulled the app's balance/snapshot into a stuck loading state),
-                        // pause its polling for decorrelation and resume when the block clears. Scoped to
-                        // this callbackFlow so it is torn down with the synchronizer (wallet change/lockout).
-                        val pauseJob =
-                            launch {
-                                isSyncBlocked.distinctUntilChanged().collect { blocked ->
-                                    if (blocked) closeableSynchronizer.pause() else closeableSynchronizer.resume()
+                            /*
+                             * The Slipstream engine defers its actual preparation (initDataDb, account
+                             * creation, engine.open/start) to a background job - `.new()` above returns
+                             * before any of that runs, so a SeedNotRelevant failure can never leave it as
+                             * a thrown exception the way it does for the non-Slipstream engine (caught by
+                             * the try/catch around this block instead). Under Slipstream it instead
+                             * surfaces through `closeableSynchronizer.setupError`.
+                             *
+                             * Collected here rather than assigned via `onSetupErrorHandler`: that single-slot
+                             * `var` is also assigned by the host app (e.g. zodl-android's
+                             * `SynchronizerProviderImpl.initializeErrorHandling`, which installs its own
+                             * generic Setup handler on every synchronizer it receives from `synchronizer`
+                             * below), so whichever side assigns it last would silently disable the other's
+                             * setup-error handling - the Slipstream failure lands asynchronously, typically
+                             * after the app has already replaced this coordinator's handler, which made this
+                             * exact SeedNotRelevant detection dead code again (MOB-1397 review follow-up).
+                             * `setupError` is a StateFlow instead, so both sides can observe the same latched
+                             * failure independently. Subscribing here, AFTER trySend(Available), is race-safe
+                             * because `setupError` is latched: even if preparation already failed by the time
+                             * this line runs, the state flow already holds that value, so collecting it now
+                             * still observes it (a `StateFlow` always replays its current value to a new
+                             * collector).
+                             */
+                            val setupErrorJob =
+                                launch {
+                                    closeableSynchronizer.setupError.filterNotNull().collect { throwable ->
+                                        if (throwable is InitializeException.SeedNotRelevant) {
+                                            Twig.error(throwable) {
+                                                "Seed does not match the wallet database — emitting SeedMismatch"
+                                            }
+                                            _isSeedMismatch.value = true
+                                            trySend(InternalSynchronizerStatus.SeedMismatch)
+                                        }
+                                    }
                                 }
-                            }
 
-                        awaitClose {
-                            Twig.info { "Closing flow and stopping synchronizer" }
-                            pauseJob.cancel()
-                            closeableSynchronizer.close()
+                            // Keep this Synchronizer alive across migration sync-blocks: instead of tearing
+                            // it down (which nulled the app's balance/snapshot into a stuck loading state),
+                            // pause its polling for decorrelation and resume when the block clears. Scoped to
+                            // this callbackFlow so it is torn down with the synchronizer (wallet change/lockout).
+                            val pauseJob =
+                                launch {
+                                    isSyncBlocked.distinctUntilChanged().collect { blocked ->
+                                        if (blocked) closeableSynchronizer.pause() else closeableSynchronizer.resume()
+                                    }
+                                }
+
+                            awaitClose {
+                                Twig.info { "Closing flow and stopping synchronizer" }
+                                pauseJob.cancel()
+                                /*
+                                 * Cancelled before the flag reset below, and on the same (single-threaded)
+                                 * walletScope dispatcher as this whole block: unlike the old direct
+                                 * `onSetupErrorHandler` invocation (which ran on `runPrepare`'s own
+                                 * Dispatchers.IO thread with no ordering relative to this teardown), a
+                                 * `setupErrorJob` collection can now only resume on this same confined
+                                 * dispatcher, so cancelling it here rules out a late `_isSeedMismatch.value =
+                                 * true` landing after the `= false` reset just below.
+                                 */
+                                setupErrorJob.cancel()
+                                closeableSynchronizer.close()
+                                _isSeedMismatch.value = false
+                            }
+                        } catch (e: InitializeException.SeedNotRelevant) {
+                            // The non-Slipstream engine throws this synchronously out of `.new()` above,
+                            // before any CloseableSynchronizer instance even exists.
+                            Twig.error(e) { "Seed does not match the wallet database — emitting SeedMismatch" }
+                            _isSeedMismatch.value = true
+                            trySend(InternalSynchronizerStatus.SeedMismatch)
+                            // Reset when flatMapLatest cancels this flow (e.g. on lockout triggered by
+                            // RecoverFromSeedMismatchUseCase or when persistableWallet changes).
+                            awaitClose { _isSeedMismatch.value = false }
                         }
                     }
                 }
@@ -161,6 +238,7 @@ class WalletCoordinator(
                 when (it) {
                     is InternalSynchronizerStatus.Available -> it.synchronizer
                     is InternalSynchronizerStatus.Lockout -> null
+                    InternalSynchronizerStatus.SeedMismatch -> null
                     InternalSynchronizerStatus.NoWallet -> null
                 }
             }.stateIn(
@@ -203,34 +281,43 @@ class WalletCoordinator(
     }
 
     /**
+     * Runs [block] after publishing a lockout status and observing it on a fresh subscription of
+     * [synchronizerOrLockoutId]. That subscription only guarantees the lockout status itself was
+     * published and seen; it does NOT synchronize with the shared [synchronizer] `StateFlow`'s own
+     * teardown of whatever synchronizer was previously active - that teardown runs as an
+     * independent collection of the same upstream flow, and [block] can start before it has
+     * actually finished. Nor does a finished teardown mean the synchronizer is fully gone:
+     * [CloseableSynchronizer.close] is not guaranteed to be synchronous (the Slipstream engine's
+     * implementation tears down asynchronously). The actual safety net against [block] racing a
+     * still-active synchronizer is callers such as [resetSdk] treating [Synchronizer.erase]
+     * returning `false` (a synchronizer for the same key is still active) as a signal to retry,
+     * bounded, on the app side - not any ordering guarantee made here.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun withSynchronizerLockout(block: suspend () -> Unit) {
+        lockoutMutex.withLock {
+            val lockoutId = UUID.randomUUID()
+            synchronizerLockoutId.update { lockoutId }
+            synchronizerOrLockoutId
+                .filterIsInstance<InternalSynchronizerStatus.Lockout>()
+                .filter { it.id == lockoutId }
+                .onFirst { block() }
+            synchronizerLockoutId.update { null }
+        }
+    }
+
+    /**
      * Resets persisted data in the SDK, but preserves the wallet secret.  This will cause the
      * WalletCoordinator to emit a new synchronizer instance.
      */
-    @OptIn(ExperimentalCoroutinesApi::class)
     fun resetSdk() {
         walletScope.launch {
-            val zcashNetwork = persistableWallet.first()?.network
-            if (null != zcashNetwork) {
-                lockoutMutex.withLock {
-                    val lockoutId = UUID.randomUUID()
-                    synchronizerLockoutId.update { lockoutId }
-
-                    synchronizerOrLockoutId
-                        .filterIsInstance<InternalSynchronizerStatus.Lockout>()
-                        .filter { it.id == lockoutId }
-                        .onFirst {
-                            synchronizerMutex.withLock {
-                                val didDeleteSdk =
-                                    Synchronizer.erase(
-                                        appContext = applicationContext,
-                                        network = zcashNetwork
-                                    )
-                                val didDelete = eraseEngineData(zcashNetwork) && didDeleteSdk
-                                Twig.info { "SDK erase result: $didDelete" }
-                            }
-                        }
-
-                    synchronizerLockoutId.update { null }
+            val zcashNetwork = persistableWallet.first()?.network ?: return@launch
+            withSynchronizerLockout {
+                synchronizerMutex.withLock {
+                    val didDeleteSdk = Synchronizer.erase(appContext = applicationContext, network = zcashNetwork)
+                    val didDelete = eraseEngineData(zcashNetwork) && didDeleteSdk
+                    Twig.info { "SDK erase result: $didDelete" }
                 }
             }
         }
@@ -244,23 +331,17 @@ class WalletCoordinator(
     fun deleteSdkDataFlow(): Flow<Boolean> =
         callbackFlow {
             walletScope.launch {
-                val zcashNetwork = persistableWallet.first()?.network
-                if (null != zcashNetwork) {
+                val zcashNetwork = persistableWallet.first()?.network ?: return@launch
+                withSynchronizerLockout {
                     synchronizerMutex.withLock {
-                        val didDeleteSdk =
-                            Synchronizer.erase(
-                                appContext = applicationContext,
-                                network = zcashNetwork
-                            )
+                        val didDeleteSdk = Synchronizer.erase(appContext = applicationContext, network = zcashNetwork)
                         val didDelete = eraseEngineData(zcashNetwork) && didDeleteSdk
                         Twig.info { "SDK erase result: $didDelete" }
                         trySend(didDelete)
                     }
                 }
             }
-            awaitClose {
-                // Nothing to close here
-            }
+            awaitClose { }
         }
 
     /**
