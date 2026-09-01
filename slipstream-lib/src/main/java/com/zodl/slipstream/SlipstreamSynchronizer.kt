@@ -116,6 +116,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.emitAll
@@ -141,7 +142,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 
 /**
@@ -282,9 +282,19 @@ class SlipstreamSynchronizer internal constructor(
 
     /**
      * The preparation failure, latched so it can be replayed to an [onSetupErrorHandler] that is
-     * attached after the failure already happened (see that property's KDoc).
+     * attached after the failure already happened (see that property's KDoc), and exposed as
+     * [setupError] for consumers that would rather collect it than take over the single
+     * [onSetupErrorHandler] slot.
      */
-    private val latchedSetupError = AtomicReference<Throwable?>(null)
+    private val _setupError = MutableStateFlow<Throwable?>(null)
+
+    /**
+     * The [Synchronizer.setupError] override: the same latched failure as [onSetupErrorHandler],
+     * published so a coordinator-level consumer (e.g. `WalletCoordinator`) can observe it without
+     * racing whichever handler a host app assigns to [onSetupErrorHandler] of its own - unlike that
+     * single-slot `var`, any number of independent collectors can read this concurrently.
+     */
+    override val setupError: StateFlow<Throwable?> = _setupError.asStateFlow()
 
     /*
      * Last lifecycle signal seen via [onForeground]/[onBackground]; [syncBurst]'s restore reads it
@@ -462,10 +472,12 @@ class SlipstreamSynchronizer internal constructor(
      * since the host maps it onto the same latched error state.
      *
      * The two sides run on different threads - [runPrepare] fails on `Dispatchers.IO` while the host
-     * attaches from its own - so the `@Volatile` backing field pairs with the atomic
-     * [latchedSetupError]: each side stores into its own before loading the other's, which makes at
-     * least one of the two loads observe the other's store. Neither side can therefore miss the
-     * error; the worst case is the benign double invocation above.
+     * attaches from its own - so the `@Volatile` backing field pairs with [_setupError] (a
+     * [MutableStateFlow], itself backed by an atomic reference): each side stores into its own
+     * before loading the other's, which makes at least one of the two loads observe the other's
+     * store. Neither side can therefore miss the error; the worst case is the benign double
+     * invocation above. [setupError] carries the exact same latched value for consumers that would
+     * rather collect it than take over this slot.
      *
      * Server-mismatch and runtime sync problems still surface through [onProcessorErrorHandler].
      */
@@ -474,7 +486,7 @@ class SlipstreamSynchronizer internal constructor(
         set(value) {
             field = value
             if (value != null) {
-                latchedSetupError.get()?.let { value.invoke(it) }
+                _setupError.value?.let { value.invoke(it) }
             }
         }
 
@@ -646,7 +658,7 @@ class SlipstreamSynchronizer internal constructor(
                  * open's own tick already reported.
                  */
                 engine.status.value = Synchronizer.Status.DISCONNECTED
-                latchedSetupError.set(t)
+                _setupError.value = t
                 onSetupErrorHandler?.invoke(t)
             }
         }

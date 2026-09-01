@@ -51,6 +51,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
@@ -983,6 +984,51 @@ class SlipstreamSynchronizerLifecycleTest {
 
             val thrown = assertFailsWith<SlipstreamNotReadyException> { runBlocking { synchronizer.getAccounts() } }
             assertTrue(thrown.cause is InitializeException.SeedNotRelevant)
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * MOB-1397 PR review follow-up: [SlipstreamSynchronizer.setupError] must carry the same
+     * latched failure as [SlipstreamSynchronizer.onSetupErrorHandler] WITHOUT ever needing that
+     * single slot assigned - this is what lets `WalletCoordinator` detect
+     * [InitializeException.SeedNotRelevant] without racing whichever handler a host app assigns to
+     * [SlipstreamSynchronizer.onSetupErrorHandler] of its own. Assigning that handler afterward
+     * (as a host app does) must not steal or clear the state-flow value either - the two expose
+     * the same latch independently, neither one clobbering the other.
+     */
+    @Test
+    fun setup_error_state_flow_latches_the_failure_independently_of_the_handler_slot() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val engineStatus = MutableStateFlow(Synchronizer.Status.INITIALIZING)
+        val key = newKey()
+        runBlocking { `when`(backend.initDataDb(null)).thenReturn(SEED_NOT_RELEVANT_CODE) }
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                engineStatusOverride = engineStatus,
+                prepareInputs = prepareInputs()
+            )
+        try {
+            // Observed without ever touching onSetupErrorHandler.
+            val recorded =
+                runBlocking {
+                    withTimeout(TIMEOUT_MS) { synchronizer.setupError.filterNotNull().first() }
+                }
+            assertTrue(recorded is InitializeException.SeedNotRelevant)
+
+            // A host app's own handler, assigned afterward, neither clears nor steals the state-flow value.
+            val handlerCalls = AtomicInteger(0)
+            synchronizer.onSetupErrorHandler = {
+                handlerCalls.incrementAndGet()
+                false
+            }
+            assertEquals(1, handlerCalls.get())
+            assertTrue(synchronizer.setupError.value is InitializeException.SeedNotRelevant)
         } finally {
             InstanceGuard.release(key)
         }

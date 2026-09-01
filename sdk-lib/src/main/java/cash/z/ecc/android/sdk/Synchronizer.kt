@@ -902,6 +902,21 @@ interface Synchronizer {
     var onSetupErrorHandler: ((Throwable?) -> Boolean)?
 
     /**
+     * The state-flow twin of [onSetupErrorHandler]'s latched failure, for consumers that want to
+     * observe it rather than own the single [onSetupErrorHandler] slot. [onSetupErrorHandler] is a
+     * `var`: whichever caller assigns it last silently replaces any handler a different caller
+     * already installed, which is a real hazard when both an SDK-internal coordinator and a host
+     * app each want to react to the same failure. A [StateFlow] has no such single-slot problem -
+     * any number of independent collectors can observe the same latched value.
+     *
+     * Always emits `null` on an engine whose setup failures are thrown synchronously out of
+     * [Synchronizer.new] instead of latched (the default engine). An engine that instead defers
+     * setup failures past construction - surfacing them only through [onSetupErrorHandler] - is
+     * expected to latch the same failure here too.
+     */
+    val setupError: StateFlow<Throwable?>
+
+    /**
      * A callback to invoke whenever a chain error is encountered. These occur whenever the
      * processor detects a missing or non-chain-sequential block (i.e. a reorg). At a minimum, it is
      * best to log these errors because they are the most common source of bugs and unexpected

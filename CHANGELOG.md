@@ -40,9 +40,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   long-lived wallet originally created under a different app). The failure is now caught and
   exposed via the new `WalletCoordinator.isSeedMismatch: StateFlow<Boolean>` instead of
   propagating out of `synchronizerOrLockoutId`. This is also caught for the Slipstream engine,
-  which defers this failure into `SlipstreamSynchronizer.onSetupErrorHandler` rather than throwing
-  it synchronously out of `new()` - the previous fix attempt only covered the latter case, so it
-  was dead code on the default Slipstream build (MOB-1397).
+  which defers this failure past `Synchronizer.new()` rather than throwing it synchronously -
+  the previous fix attempt only covered the synchronous (default-engine) case, so it was dead
+  code on the default Slipstream build. New `Synchronizer.setupError: StateFlow<Throwable?>`
+  carries the same latched failure `onSetupErrorHandler` does, so `WalletCoordinator` can detect
+  it without taking over that single-slot handler - which a host app assigns its own handler to
+  on every synchronizer it receives, and whichever side assigned it last would otherwise silently
+  disable the other's setup-error handling (MOB-1397).
 
 ## [3.1.0] - 2026-08-20
 

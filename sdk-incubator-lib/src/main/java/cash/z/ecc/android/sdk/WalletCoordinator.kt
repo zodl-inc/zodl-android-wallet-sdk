@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -153,23 +154,35 @@ class WalletCoordinator(
                              * before any of that runs, so a SeedNotRelevant failure can never leave it as
                              * a thrown exception the way it does for the non-Slipstream engine (caught by
                              * the try/catch around this block instead). Under Slipstream it instead
-                             * surfaces through `onSetupErrorHandler`.
+                             * surfaces through `closeableSynchronizer.setupError`.
                              *
-                             * Attaching here, AFTER trySend(Available), is race-safe specifically because
-                             * `onSetupErrorHandler`'s setter latches-and-replays: even if preparation
-                             * already failed by the time this line runs, assigning the handler replays the
-                             * latched failure into it immediately, so nothing is missed.
+                             * Collected here rather than assigned via `onSetupErrorHandler`: that single-slot
+                             * `var` is also assigned by the host app (e.g. zodl-android's
+                             * `SynchronizerProviderImpl.initializeErrorHandling`, which installs its own
+                             * generic Setup handler on every synchronizer it receives from `synchronizer`
+                             * below), so whichever side assigns it last would silently disable the other's
+                             * setup-error handling - the Slipstream failure lands asynchronously, typically
+                             * after the app has already replaced this coordinator's handler, which made this
+                             * exact SeedNotRelevant detection dead code again (MOB-1397 review follow-up).
+                             * `setupError` is a StateFlow instead, so both sides can observe the same latched
+                             * failure independently. Subscribing here, AFTER trySend(Available), is race-safe
+                             * because `setupError` is latched: even if preparation already failed by the time
+                             * this line runs, the state flow already holds that value, so collecting it now
+                             * still observes it (a `StateFlow` always replays its current value to a new
+                             * collector).
                              */
-                            closeableSynchronizer.onSetupErrorHandler = { throwable ->
-                                if (throwable is InitializeException.SeedNotRelevant) {
-                                    Twig.error(throwable) {
-                                        "Seed does not match the wallet database — emitting SeedMismatch"
+                            val setupErrorJob =
+                                launch {
+                                    closeableSynchronizer.setupError.filterNotNull().collect { throwable ->
+                                        if (throwable is InitializeException.SeedNotRelevant) {
+                                            Twig.error(throwable) {
+                                                "Seed does not match the wallet database — emitting SeedMismatch"
+                                            }
+                                            _isSeedMismatch.value = true
+                                            trySend(InternalSynchronizerStatus.SeedMismatch)
+                                        }
                                     }
-                                    _isSeedMismatch.value = true
-                                    trySend(InternalSynchronizerStatus.SeedMismatch)
                                 }
-                                false
-                            }
 
                             // Keep this Synchronizer alive across migration sync-blocks: instead of tearing
                             // it down (which nulled the app's balance/snapshot into a stuck loading state),
@@ -185,6 +198,16 @@ class WalletCoordinator(
                             awaitClose {
                                 Twig.info { "Closing flow and stopping synchronizer" }
                                 pauseJob.cancel()
+                                /*
+                                 * Cancelled before the flag reset below, and on the same (single-threaded)
+                                 * walletScope dispatcher as this whole block: unlike the old direct
+                                 * `onSetupErrorHandler` invocation (which ran on `runPrepare`'s own
+                                 * Dispatchers.IO thread with no ordering relative to this teardown), a
+                                 * `setupErrorJob` collection can now only resume on this same confined
+                                 * dispatcher, so cancelling it here rules out a late `_isSeedMismatch.value =
+                                 * true` landing after the `= false` reset just below.
+                                 */
+                                setupErrorJob.cancel()
                                 closeableSynchronizer.close()
                                 _isSeedMismatch.value = false
                             }
@@ -258,8 +281,17 @@ class WalletCoordinator(
     }
 
     /**
-     * Runs [block] with the synchronizer stopped via lockout. Guarantees no synchronizer is
-     * active during the block, even if one was starting up concurrently.
+     * Runs [block] after publishing a lockout status and observing it on a fresh subscription of
+     * [synchronizerOrLockoutId]. That subscription only guarantees the lockout status itself was
+     * published and seen; it does NOT synchronize with the shared [synchronizer] `StateFlow`'s own
+     * teardown of whatever synchronizer was previously active - that teardown runs as an
+     * independent collection of the same upstream flow, and [block] can start before it has
+     * actually finished. Nor does a finished teardown mean the synchronizer is fully gone:
+     * [CloseableSynchronizer.close] is not guaranteed to be synchronous (the Slipstream engine's
+     * implementation tears down asynchronously). The actual safety net against [block] racing a
+     * still-active synchronizer is callers such as [resetSdk] treating [Synchronizer.erase]
+     * returning `false` (a synchronizer for the same key is still active) as a signal to retry,
+     * bounded, on the app side - not any ordering guarantee made here.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun withSynchronizerLockout(block: suspend () -> Unit) {
