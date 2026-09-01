@@ -47,6 +47,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it without taking over that single-slot handler - which a host app assigns its own handler to
   on every synchronizer it receives, and whichever side assigned it last would otherwise silently
   disable the other's setup-error handling (MOB-1397).
+- The Sapling proving parameters download (`SaplingParams`, ~50MB spend params) now retries up to
+  3 attempts with exponential backoff on `IOException` instead of failing outright on the first
+  transient network blip. Previously, a single `SocketTimeoutException` or `UnknownHostException`
+  resolving `download.z.cash` mid-download aborted `createProposedTransactions` before the actual
+  broadcast was ever attempted, and since nothing was cached on failure, the same full download
+  re-ran from scratch on every subsequent send attempt (MOB-1744).
 
 ## [3.1.0] - 2026-08-20
 
