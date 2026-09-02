@@ -18,10 +18,12 @@ import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
 import co.electriccoin.lightwallet.client.model.ShieldedProtocolEnum
 import co.electriccoin.lightwallet.client.model.SubtreeRootUnsafe
 import co.electriccoin.lightwallet.client.model.TreeStateUnsafe
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.Mockito.mock
@@ -130,6 +132,35 @@ class FastestServerFetcherTest {
         }
 
     @Test
+    fun `evaluateServerSwitch stops benchmarking once cancelled`() =
+        runBlocking {
+            val clients =
+                listOf("a.example", "b.example", "c.example").associate {
+                    endpoint(it) to FakeWalletClient(delayPerBlock = 10.seconds)
+                }
+            val fetcher = fetcher(clients)
+
+            val evaluation =
+                launch {
+                    fetcher.evaluateServerSwitch(
+                        current = clients.keys.first(),
+                        candidates = clients.keys.toList(),
+                        fetchThreshold = 60.seconds,
+                        blocksToFetch = 1
+                    )
+                }
+            while (clients.values.sumOf { it.blockRangeRequests.size } == 0) {
+                delay(10.milliseconds)
+            }
+            evaluation.cancelAndJoin()
+
+            assertEquals(1, clients.values.sumOf { it.blockRangeRequests.size })
+            clients.forEach { (endpoint, client) ->
+                assertTrue(client.disposed, "Client for $endpoint was not disposed")
+            }
+        }
+
+    @Test
     fun `evaluateServerSwitch disposes every wallet client`() =
         runBlocking {
             val current = endpoint("current.example")
@@ -186,6 +217,24 @@ class FastestServerFetcherTest {
             )
             assertEquals(LEGACY_BLOCK_COUNT, client.collectedBlocks)
             assertEquals(listOf(only), (results.last() as FastestServersResult.Done).servers)
+        }
+
+    @Test
+    fun `getFastestServers disposes the survivors it never streams`() =
+        runBlocking {
+            val clients =
+                listOf("a.example", "b.example", "c.example", "d.example", "e.example").associate {
+                    endpoint(it) to FakeWalletClient()
+                }
+            val fetcher = fetcher(clients)
+
+            val done = fetcher(clients.keys.toList()).toList().last() as FastestServersResult.Done
+
+            assertEquals(3, done.servers.size)
+            assertEquals(3, clients.values.sumOf { it.blockRangeRequests.size })
+            clients.forEach { (endpoint, client) ->
+                assertTrue(client.disposed, "Client for $endpoint was not disposed")
+            }
         }
 
     private fun fetcher(clients: Map<LightWalletEndpoint, FakeWalletClient>): FastestServerFetcher {

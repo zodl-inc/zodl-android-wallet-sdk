@@ -15,20 +15,18 @@ import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.util.Disposable
 import co.electriccoin.lightwallet.client.util.use
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.mapNotNull
-import kotlinx.coroutines.flow.take
-import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -53,6 +51,7 @@ internal class FastestServerFetcher(
                             result
                         } else {
                             Twig.debug { "Fastest Server: '${result.endpoint}' RULED OUT by SORTING by RPC latency" }
+                            result.disposeQuietly()
                             null
                         }
                     }
@@ -64,17 +63,13 @@ internal class FastestServerFetcher(
             emit(FastestServersResult.Validating(serversByRpcMeanLatency.map { it.endpoint }.take(K)))
 
             val serversByGetBlockRangeTimeout =
-                serversByRpcMeanLatency
-                    .asFlow()
-                    .mapNotNull { result ->
-                        measureBlockFetch(
-                            result = result,
-                            blocksToFetch = N,
-                            fetchThreshold = FETCH_THRESHOLD,
-                            logPrefix = "Fastest Server"
-                        )?.let { result.endpoint }
-                    }.take(K)
-                    .toList()
+                measureBlockFetches(
+                    survivors = serversByRpcMeanLatency,
+                    blocksToFetch = N,
+                    fetchThreshold = FETCH_THRESHOLD,
+                    logPrefix = "Fastest Server",
+                    limit = K
+                ).map { it.endpoint }
 
             Twig.debug { "Fastest Server: '$serversByGetBlockRangeTimeout' VALIDATED by getBlockRange timeout" }
 
@@ -102,15 +97,13 @@ internal class FastestServerFetcher(
             require(fetchThreshold.isPositive()) { "fetchThreshold must be positive, was $fetchThreshold" }
 
             val ranked =
-                measureRpcLatency(candidates)
-                    .mapNotNull { result ->
-                        measureBlockFetch(
-                            result = result,
-                            blocksToFetch = blocksToFetch,
-                            fetchThreshold = fetchThreshold,
-                            logPrefix = "Server Switch"
-                        )?.let { MeasuredEndpoint(endpoint = result.endpoint, score = it) }
-                    }.sortedBy { it.score }
+                measureBlockFetches(
+                    survivors = measureRpcLatency(candidates),
+                    blocksToFetch = blocksToFetch,
+                    fetchThreshold = fetchThreshold,
+                    logPrefix = "Server Switch",
+                    limit = Int.MAX_VALUE
+                ).sortedBy { it.score }
 
             val outcome = ServerSwitchPolicy.decide(current = current, ranked = ranked)
 
@@ -126,6 +119,40 @@ internal class FastestServerFetcher(
             }.sortedBy {
                 it.meanDuration
             }
+
+    /**
+     * Runs the block-fetch stage sequentially over [survivors] in their given order, keeping at most [limit]
+     * measured endpoints. Survivors that are never reached, because [limit] was hit or the caller was cancelled,
+     * are disposed before returning.
+     */
+    private suspend fun measureBlockFetches(
+        survivors: List<ValidateServerResult>,
+        blocksToFetch: Int,
+        fetchThreshold: Duration,
+        logPrefix: String,
+        limit: Int
+    ): List<MeasuredEndpoint> {
+        val pending = ArrayDeque(survivors)
+        val measured = mutableListOf<MeasuredEndpoint>()
+        try {
+            while (pending.isNotEmpty() && measured.size < limit) {
+                val result = pending.removeFirst()
+                measureBlockFetch(
+                    result = result,
+                    blocksToFetch = blocksToFetch,
+                    fetchThreshold = fetchThreshold,
+                    logPrefix = logPrefix
+                )?.let { measured += MeasuredEndpoint(endpoint = result.endpoint, score = it) }
+            }
+        } finally {
+            withContext(NonCancellable) {
+                pending.forEach { it.disposeQuietly() }
+            }
+        }
+        return measured
+    }
+
+    private suspend fun ValidateServerResult.disposeQuietly() = use { }
 
     /**
      * Streams [blocksToFetch] blocks ending at the server's tip and times the stream. Fetched the same way as in
@@ -154,6 +181,7 @@ internal class FastestServerFetcher(
                                 ).firstOrNull { it is Response.Failure }
                         }
                     }.getOrElse {
+                        if (it is CancellationException) throw it
                         Twig.debug(it) { "$logPrefix: '${result.endpoint}' RULED OUT by getBlockRange exception" }
                         null
                     }
