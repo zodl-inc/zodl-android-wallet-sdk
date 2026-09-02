@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import kotlin.time.Duration
@@ -45,12 +46,8 @@ internal class FastestServerFetcher(
             emit(FastestServersResult.Measuring)
 
             val serversByRpcMeanLatency =
-                servers
-                    .parallelMapNotNull {
-                        validateServerEndpointAndMeasure(it)
-                    }.sortedBy {
-                        it.meanDuration
-                    }.mapIndexedNotNull { index, result ->
+                measureRpcLatency(servers)
+                    .mapIndexedNotNull { index, result ->
                         if (index <= K - 1 || result.meanDuration <= LATENCY_THRESHOLD) {
                             Twig.debug { "Fastest Server: '${result.endpoint}' VALIDATED by SORTING by RPC latency" }
                             result
@@ -83,6 +80,52 @@ internal class FastestServerFetcher(
 
             emit(FastestServersResult.Done(serversByGetBlockRangeTimeout))
         }.flowOn(Dispatchers.Default)
+
+    /**
+     * Benchmarks every endpoint in [candidates] and decides whether the wallet should move away from [current].
+     *
+     * @param current the endpoint the wallet is connected to right now
+     * @param candidates the endpoints to benchmark; callers are expected to include [current] among them
+     * @param fetchThreshold per-candidate cap for the block-fetch stage
+     * @param blocksToFetch how many blocks ending at the candidate's tip to stream while timing it
+     *
+     * @return the endpoint to switch to, or null when the wallet should stay on [current]
+     */
+    suspend fun evaluateServerSwitch(
+        current: LightWalletEndpoint,
+        candidates: List<LightWalletEndpoint>,
+        fetchThreshold: Duration,
+        blocksToFetch: Int
+    ): LightWalletEndpoint? =
+        withContext(Dispatchers.Default) {
+            require(blocksToFetch >= 1) { "blocksToFetch must be at least 1, was $blocksToFetch" }
+            require(fetchThreshold.isPositive()) { "fetchThreshold must be positive, was $fetchThreshold" }
+
+            val ranked =
+                measureRpcLatency(candidates)
+                    .mapNotNull { result ->
+                        measureBlockFetch(
+                            result = result,
+                            blocksToFetch = blocksToFetch,
+                            fetchThreshold = fetchThreshold,
+                            logPrefix = "Server Switch"
+                        )?.let { MeasuredEndpoint(endpoint = result.endpoint, score = it) }
+                    }.sortedBy { it.score }
+
+            val outcome = ServerSwitchPolicy.decide(current = current, ranked = ranked)
+
+            Twig.info { ServerSwitchPolicy.describe(current = current, ranked = ranked, outcome = outcome) }
+
+            outcome.endpointToSwitchTo
+        }
+
+    private suspend fun measureRpcLatency(servers: List<LightWalletEndpoint>): List<ValidateServerResult> =
+        servers
+            .parallelMapNotNull {
+                validateServerEndpointAndMeasure(it)
+            }.sortedBy {
+                it.meanDuration
+            }
 
     /**
      * Streams [blocksToFetch] blocks ending at the server's tip and times the stream. Fetched the same way as in

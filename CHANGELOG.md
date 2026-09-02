@@ -6,6 +6,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Synchronizer.evaluateServerSwitch(current, candidates, fetchThreshold, blocksToFetch)` benchmarks every
+  candidate endpoint (RPC validation, then a timed compact-block stream capped at `fetchThreshold`) and
+  applies a hysteresis policy, returning the endpoint to switch to or `null` to stay. A switch is only
+  recommended when the best candidate beats the current server by at least 200 ms and by at least 25 % of
+  the current score, or when the current server fails benchmarking. `Synchronizer` gains this abstract
+  member, so any implementer or test fake must now provide it (MOB-1832).
+
 ### Fixed
 - `Synchronizer.getFastestServers` now actually streams the latest blocks in its second validation stage.
   The `getBlockRange` call returned a cold flow that was never collected, so the 60-second fetch check

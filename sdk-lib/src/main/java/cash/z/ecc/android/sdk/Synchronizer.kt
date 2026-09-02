@@ -265,6 +265,32 @@ interface Synchronizer {
     suspend fun getFastestServers(servers: List<LightWalletEndpoint>): Flow<FastestServersResult>
 
     /**
+     * This function decides whether automatic server selection should move the wallet away from [current].
+     *
+     * Every endpoint in [candidates] is benchmarked in full: its server info and latest block height are
+     * fetched and timed, and it is ruled out unless its chain name, consensus branch and sync state match
+     * this SDK. Each survivor then streams [blocksToFetch] blocks ending at its own tip; the stream time is
+     * its score and a candidate that needs longer than [fetchThreshold] is ruled out.
+     *
+     * A switch is only recommended when the best candidate beats [current] by at least 200 milliseconds and
+     * by at least 25 percent of the current server's score, or when [current] does not survive benchmarking.
+     * This hysteresis keeps the wallet from flip-flopping between two near-equal servers.
+     *
+     * @param current the endpoint the wallet is connected to right now
+     * @param candidates the endpoints to benchmark; this list should include [current]
+     * @param fetchThreshold per-candidate cap for the block-fetch stage
+     * @param blocksToFetch how many blocks ending at the candidate's tip to stream while timing it
+     *
+     * @return the endpoint to switch to, or null when the wallet should stay on [current]
+     */
+    suspend fun evaluateServerSwitch(
+        current: LightWalletEndpoint,
+        candidates: List<LightWalletEndpoint>,
+        fetchThreshold: Duration = 5.seconds,
+        blocksToFetch: Int = 1
+    ): LightWalletEndpoint?
+
+    /**
      * Gets the current unified address for the given account.
      *
      * @param account the account whose address is of interest.
