@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-08-25
+
 ### Added
 - `PaymentUriParser`, a Rust-backed API that validates Bitcoin, Ethereum, Litecoin, and Solana
   payment URIs and returns typed payment request models without floating-point amount conversion.
