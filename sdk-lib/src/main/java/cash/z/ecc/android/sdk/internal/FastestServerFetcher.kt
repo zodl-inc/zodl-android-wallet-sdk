@@ -20,6 +20,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapNotNull
@@ -31,6 +32,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.measureTime
+import kotlin.time.measureTimedValue
 
 internal class FastestServerFetcher(
     private val backend: TypesafeBackend,
@@ -68,28 +70,12 @@ internal class FastestServerFetcher(
                 serversByRpcMeanLatency
                     .asFlow()
                     .mapNotNull { result ->
-                        result.use {
-                            val didTimeOut =
-                                withTimeoutOrNull(FETCH_THRESHOLD) {
-                                    runCatching {
-                                        val to = result.remoteInfo.blockHeightUnsafe
-                                        val from = BlockHeightUnsafe((to.value - N).coerceAtLeast(0))
-                                        // Fetched the same way as in `downloadBatchOfBlocks()`.
-                                        result.lightWalletClient.getBlockRange(
-                                            heightRange = from..to,
-                                            serviceMode = ServiceMode.Direct
-                                        )
-                                    }.getOrNull()
-                                } == null
-
-                            if (didTimeOut) {
-                                Twig.debug { "Fastest Server: '${result.endpoint}' RULED OUT by getBlockRange timeout" }
-                                null
-                            } else {
-                                Twig.debug { "Fastest Server: '${result.endpoint}' VALIDATED by getBlockRange timeout" }
-                                result.endpoint
-                            }
-                        }
+                        measureBlockFetch(
+                            result = result,
+                            blocksToFetch = N,
+                            fetchThreshold = FETCH_THRESHOLD,
+                            logPrefix = "Fastest Server"
+                        )?.let { result.endpoint }
                     }.take(K)
                     .toList()
 
@@ -97,6 +83,61 @@ internal class FastestServerFetcher(
 
             emit(FastestServersResult.Done(serversByGetBlockRangeTimeout))
         }.flowOn(Dispatchers.Default)
+
+    /**
+     * Streams [blocksToFetch] blocks ending at the server's tip and times the stream. Fetched the same way as in
+     * `downloadBatchOfBlocks()`. Always disposes [result].
+     *
+     * @return the stream duration, or null when the stream failed or exceeded [fetchThreshold]
+     */
+    private suspend fun measureBlockFetch(
+        result: ValidateServerResult,
+        blocksToFetch: Int,
+        fetchThreshold: Duration,
+        logPrefix: String
+    ): Duration? =
+        result.use {
+            val to = result.remoteInfo.blockHeightUnsafe
+            val from = BlockHeightUnsafe((to.value - (blocksToFetch - 1)).coerceAtLeast(0))
+
+            val timed =
+                withTimeoutOrNull(fetchThreshold) {
+                    runCatching {
+                        measureTimedValue {
+                            result.lightWalletClient
+                                .getBlockRange(
+                                    heightRange = from..to,
+                                    serviceMode = ServiceMode.Direct
+                                ).firstOrNull { it is Response.Failure }
+                        }
+                    }.getOrElse {
+                        Twig.debug(it) { "$logPrefix: '${result.endpoint}' RULED OUT by getBlockRange exception" }
+                        null
+                    }
+                }
+
+            val failure = timed?.value as? Response.Failure
+
+            when {
+                timed == null -> {
+                    Twig.debug { "$logPrefix: '${result.endpoint}' RULED OUT by getBlockRange timeout" }
+                    null
+                }
+
+                failure != null -> {
+                    Twig.debug {
+                        "$logPrefix: '${result.endpoint}' RULED OUT by getBlockRange failure " +
+                            "${failure.code}: ${failure.description}"
+                    }
+                    null
+                }
+
+                else -> {
+                    Twig.debug { "$logPrefix: '${result.endpoint}' VALIDATED by getBlockRange in ${timed.duration}" }
+                    timed.duration
+                }
+            }
+        }
 
     @Suppress("LongMethod", "ReturnCount", "CyclomaticComplexMethod")
     private suspend fun validateServerEndpointAndMeasure(endpoint: LightWalletEndpoint): ValidateServerResult? {

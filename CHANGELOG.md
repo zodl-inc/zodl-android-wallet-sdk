@@ -6,6 +6,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `Synchronizer.getFastestServers` now actually streams the latest blocks in its second validation stage.
+  The `getBlockRange` call returned a cold flow that was never collected, so the 60-second fetch check
+  measured nothing and every server that passed RPC validation also passed the fetch stage. Servers that
+  fail or time out while streaming the latest 100 blocks are now ruled out, and the call can take
+  correspondingly longer (MOB-1832).
+
 ## [3.1.1] - 2026-08-25
 
 ### Added
