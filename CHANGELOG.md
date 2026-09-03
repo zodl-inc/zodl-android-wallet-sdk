@@ -56,6 +56,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   broadcast was ever attempted, and since nothing was cached on failure, the same full download
   re-ran from scratch on every subsequent send attempt (MOB-1744).
 
+### Security
+- Hardened key handling across the JNI boundary: on the Rust side, transit buffers carrying spending
+  and metadata key material are now zeroized on drop; on the Kotlin side, transient copies of that key
+  material created while crossing the JNI boundary are zeroed as soon as they are no longer needed.
+  This is defense-in-depth and best-effort only - the JVM may retain unreachable copies (GC
+  compaction, JIT) that cannot be cleared from application code - and it makes no changes to the
+  public API (MOB-1689).
+
 ## [3.1.0] - 2026-08-20
 
 ### Added
