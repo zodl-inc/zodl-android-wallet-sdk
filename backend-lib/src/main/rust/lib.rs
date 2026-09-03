@@ -2097,7 +2097,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_putUtxo<'
                     .map_err(|_| anyhow!("Invalid UTXO value"))?,
                 script_pubkey,
             },
-            Some(BlockHeight::from(height as u32)),
+            Some(
+                BlockHeight::try_from(height)
+                    .map_err(|_| anyhow!("Invalid block height: {}", height))?,
+            ),
             // This JNI entry point has no account context to attribute the UTXO to.
             None,
             None,
@@ -2758,7 +2761,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_branchIdF
     let res = panic::catch_unwind(|| {
         let _span = tracing::info_span!("RustBackend.branchIdForHeight").entered();
         let network = parse_network(network_id)?;
-        let branch: BranchId = BranchId::for_height(&network, BlockHeight::from(height as u32));
+        let height = BlockHeight::try_from(height)
+            .map_err(|_| anyhow!("Invalid block height: {}", height))?;
+        let branch: BranchId = BranchId::for_height(&network, height);
         let branch_id: u32 = u32::from(branch);
         debug!(
             "For height {} found consensus branch {:?} with id {}",
