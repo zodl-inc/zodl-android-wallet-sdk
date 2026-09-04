@@ -7,14 +7,18 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TestTimeSource
 
 /**
  * The state the failure-path hysteresis reads (MOB-1832): the consecutive count of evaluations that could
- * not measure the current server, and the cooldown after a recommended switch. The gates themselves are
- * pinned in [ServerSwitchPolicyTest]; this covers what happens across a series of evaluations, which is
- * where the A to B to A round trip lives.
+ * not measure the current server, and the cooldown after a switch the caller confirmed. The gates
+ * themselves are pinned in [ServerSwitchPolicyTest]; this covers what happens across a series of
+ * evaluations, which is where the A to B to A round trip lives.
+ *
+ * Evaluating and confirming are deliberately separate: an evaluation only counts failures, and
+ * [ServerSwitchEvaluator.onSwitchApplied] is what clears the count and starts the cooldown.
  */
 class ServerSwitchEvaluatorTest {
     private val a = endpoint("a.example")
@@ -65,7 +69,19 @@ class ServerSwitchEvaluatorTest {
         }
 
     @Test
-    fun `the reversed evaluation right after a switch cannot make the return trip`() =
+    fun `a recommendation the caller declined is offered again by the next evaluation`() =
+        runBlocking {
+            val evaluator = ServerSwitchEvaluator(TestTimeSource())
+            val unhealthy = listOf(measured(b, 100.milliseconds))
+
+            evaluator.switchTarget(current = a, ranked = unhealthy)
+            assertEquals(b, evaluator.switchTarget(current = a, ranked = unhealthy))
+
+            assertEquals(b, evaluator.switchTarget(current = a, ranked = unhealthy))
+        }
+
+    @Test
+    fun `the reversed evaluation right after a confirmed switch cannot make the return trip`() =
         runBlocking {
             val timeSource = TestTimeSource()
             val evaluator = ServerSwitchEvaluator(timeSource)
@@ -77,6 +93,7 @@ class ServerSwitchEvaluatorTest {
                     ranked = listOf(measured(b, 150.milliseconds), measured(a, 400.milliseconds))
                 )
             )
+            evaluator.onSwitchApplied(b)
 
             timeSource += 30.seconds
 
@@ -98,6 +115,7 @@ class ServerSwitchEvaluatorTest {
 
             evaluator.switchTarget(current = a, ranked = aIsUnhealthy)
             assertEquals(b, evaluator.switchTarget(current = a, ranked = aIsUnhealthy))
+            evaluator.onSwitchApplied(b)
 
             timeSource += 30.seconds
 
@@ -115,6 +133,7 @@ class ServerSwitchEvaluatorTest {
                 current = a,
                 ranked = listOf(measured(b, 150.milliseconds), measured(a, 400.milliseconds))
             )
+            evaluator.onSwitchApplied(b)
 
             timeSource += ServerSwitchThresholds.SWITCH_COOLDOWN
 
@@ -125,6 +144,45 @@ class ServerSwitchEvaluatorTest {
                     ranked = listOf(measured(a, 150.milliseconds), measured(b, 400.milliseconds))
                 )
             )
+        }
+
+    /**
+     * The app evaluates at most every ten minutes, so the cooldown only defers anything if it outlasts
+     * several of those evaluations - which is what makes it a second gate rather than a restatement of the
+     * app's own rate limit.
+     */
+    @Test
+    fun `evaluations every ten minutes cannot switch twice inside the cooldown`() =
+        runBlocking {
+            val timeSource = TestTimeSource()
+            val evaluator = ServerSwitchEvaluator(timeSource)
+            val bIsFaster = listOf(measured(b, 150.milliseconds), measured(a, 400.milliseconds))
+            val aIsFaster = listOf(measured(a, 150.milliseconds), measured(b, 400.milliseconds))
+
+            assertEquals(b, evaluator.switchTarget(current = a, ranked = bIsFaster))
+            evaluator.onSwitchApplied(b)
+
+            repeat(2) {
+                timeSource += 10.minutes
+                assertNull(evaluator.switchTarget(current = b, ranked = aIsFaster))
+            }
+
+            timeSource += 10.minutes
+
+            assertEquals(a, evaluator.switchTarget(current = b, ranked = aIsFaster))
+        }
+
+    @Test
+    fun `confirming a switch clears the consecutive failure count`() =
+        runBlocking {
+            val evaluator = ServerSwitchEvaluator(TestTimeSource())
+            val aIsUnhealthy = listOf(measured(b, 100.milliseconds))
+
+            evaluator.switchTarget(current = a, ranked = aIsUnhealthy)
+            assertEquals(b, evaluator.switchTarget(current = a, ranked = aIsUnhealthy))
+            evaluator.onSwitchApplied(b)
+
+            assertNull(evaluator.switchTarget(current = a, ranked = aIsUnhealthy))
         }
 
     private suspend fun ServerSwitchEvaluator.switchTarget(

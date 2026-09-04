@@ -943,6 +943,9 @@ class SlipstreamSynchronizer internal constructor(
             blocksToFetch = blocksToFetch
         )
 
+    override suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint) =
+        fastestServerFetcher.confirmServerSwitch(endpoint)
+
     override suspend fun getUnifiedAddress(account: Account): String =
         wrapGetAddress { backend.getCurrentAddress(account.accountUuid.value) }
 

@@ -85,6 +85,10 @@ internal class FastestServerFetcher(
      * an app update must be given the chance to keep the wallet, rather than losing it to a decision made
      * without a single measurement of it.
      *
+     * The decision is a recommendation, not a record: an evaluation counts a failed measurement of
+     * [current] but never clears that count and never starts the switch cooldown. [confirmServerSwitch] is
+     * what does both, so a recommendation the caller declines cannot silence a genuinely dead server.
+     *
      * @param current the endpoint the wallet is connected to right now
      * @param candidates the endpoints to benchmark alongside [current]
      * @param fetchThreshold per-candidate cap for the block-fetch stage
@@ -125,6 +129,11 @@ internal class FastestServerFetcher(
             outcome.endpointToSwitchTo
         }
     }
+
+    /**
+     * Records that the wallet was actually moved to [endpoint] after [evaluateServerSwitch] recommended it.
+     */
+    suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint) = switchEvaluator.onSwitchApplied(endpoint)
 
     private suspend fun measureRpcLatency(servers: List<LightWalletEndpoint>): List<ValidateServerResult> =
         servers
@@ -263,7 +272,13 @@ internal class FastestServerFetcher(
      * channel.
      */
     private suspend fun validateServerEndpointAndMeasure(endpoint: LightWalletEndpoint): ValidateServerResult? {
-        val lightWalletClient = runCatching { walletClientFactory.create(endpoint) }.getOrNull() ?: return null
+        val lightWalletClient =
+            runCatching { walletClientFactory.create(endpoint) }
+                .getOrElse { throwable ->
+                    if (throwable is CancellationException) throw throwable
+                    Twig.debug(throwable) { "Fastest Server: Server '$endpoint' RULED OUT, client creation failed" }
+                    return null
+                }
         var validated: ValidateServerResult? = null
         try {
             validated = measureValidatedServer(endpoint = endpoint, lightWalletClient = lightWalletClient)
@@ -394,26 +409,34 @@ internal class FastestServerFetcher(
             getLatestBlockHeightDuration = getLatestBlockHeightDuration
         )
     }
-
-    /**
-     * Disposes the receiver outside cancellation and swallows any failure. The real wallet clients suspend
-     * while shutting their gRPC channel down, so disposing from an already cancelled coroutine would
-     * abandon the channel at the first suspension point instead of closing it.
-     */
-    private suspend fun Disposable.disposeQuietly() {
-        withContext(NonCancellable) {
-            runCatching { dispose() }
-                .onFailure { Twig.debug(it) { "Fastest Server: failed to dispose a benchmarked wallet client" } }
-        }
-    }
-
-    private suspend fun <T, R> Iterable<T>.parallelMapNotNull(block: suspend (T) -> R?): List<R> =
-        coroutineScope {
-            map { async { block(it) } }
-                .awaitAll()
-                .filterNotNull()
-        }
 }
+
+/**
+ * Disposes the receiver outside cancellation and swallows any failure. The real wallet clients suspend
+ * while shutting their gRPC channel down, so disposing from an already cancelled coroutine would abandon
+ * the channel at the first suspension point instead of closing it.
+ *
+ * The disposal is capped: it runs uncancellably, so a gRPC shutdown that hangs rather than throws would
+ * otherwise be unstoppable, and the caller joins the cancelled evaluation before starting the next one -
+ * one wedged channel would wedge automatic selection for the lifetime of the process. A
+ * [withTimeoutOrNull] child still cancels itself on its own timeout inside [NonCancellable].
+ */
+private suspend fun Disposable.disposeQuietly() {
+    withContext(NonCancellable) {
+        runCatching {
+            withTimeoutOrNull(DISPOSE_TIMEOUT) { dispose() } ?: Twig.debug {
+                "Fastest Server: gave up disposing a benchmarked wallet client after $DISPOSE_TIMEOUT"
+            }
+        }.onFailure { Twig.debug(it) { "Fastest Server: failed to dispose a benchmarked wallet client" } }
+    }
+}
+
+private suspend fun <T, R> Iterable<T>.parallelMapNotNull(block: suspend (T) -> R?): List<R> =
+    coroutineScope {
+        map { async { block(it) } }
+            .awaitAll()
+            .filterNotNull()
+    }
 
 private data class ValidateServerResult(
     val remoteInfo: LightWalletEndpointInfoUnsafe,
@@ -470,6 +493,11 @@ private val FETCH_THRESHOLD = 60.seconds
  * Cap for a single benchmarking RPC call, in case a server accepts the connection and then never answers.
  */
 private val RPC_TIMEOUT = 5.seconds
+
+/**
+ * Cap for shutting one benchmarked wallet client down, in case its gRPC channel never finishes closing.
+ */
+private val DISPOSE_TIMEOUT = 5.seconds
 
 private const val SYNCED_THRESHOLD_BLOCKS = 288
 

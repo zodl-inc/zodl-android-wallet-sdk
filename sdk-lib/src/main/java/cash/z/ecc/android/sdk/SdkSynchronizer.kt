@@ -489,6 +489,9 @@ class SdkSynchronizer private constructor(
             blocksToFetch = blocksToFetch
         )
 
+    override suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint) =
+        fetchFastestServers.confirmServerSwitch(endpoint)
+
     internal fun start() {
         coroutineScope.onReady()
     }

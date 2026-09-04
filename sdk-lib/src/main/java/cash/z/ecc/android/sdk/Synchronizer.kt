@@ -276,9 +276,14 @@ interface Synchronizer {
      *
      * A switch is only recommended when the best candidate beats [current] by at least 200 milliseconds and
      * by at least 25 percent of the current server's score, or when [current] fails benchmarking in two
-     * consecutive evaluations. No switch is recommended within ten minutes of the previous one. This
+     * consecutive evaluations. No switch is recommended within thirty minutes of the previous one. This
      * hysteresis keeps the wallet from flip-flopping between two near-equal or intermittently slow servers;
      * the consecutive-failure count and the cooldown are held in memory for the lifetime of the process.
+     *
+     * This call only counts a failed measurement of [current]; it never clears that count and never starts
+     * the cooldown, because the caller is free to decline the recommendation. Call [confirmServerSwitch]
+     * once the returned endpoint has actually been applied - without it the cooldown never starts, and with
+     * it on a switch that never happened a genuinely broken server would be given another thirty minutes.
      *
      * @param current the endpoint the wallet is connected to right now
      * @param candidates the endpoints to benchmark alongside [current]
@@ -293,6 +298,16 @@ interface Synchronizer {
         fetchThreshold: Duration = 5.seconds,
         blocksToFetch: Int = 1
     ): LightWalletEndpoint?
+
+    /**
+     * Tells the SDK that the wallet has actually been moved to [endpoint], which [evaluateServerSwitch]
+     * recommended. The consecutive-failure count starts over and the switch cooldown starts now.
+     *
+     * Call this only after the switch was applied, and always when it was; see [evaluateServerSwitch].
+     *
+     * @param endpoint the endpoint the wallet was moved to
+     */
+    suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint)
 
     /**
      * Gets the current unified address for the given account.

@@ -12,11 +12,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capped at `fetchThreshold`) and applies a hysteresis policy, returning the endpoint to switch to or
   `null` to stay. A switch is only recommended when the best candidate beats the current server by at
   least 200 ms and by at least 25 % of the current score, or when the current server fails benchmarking in
-  two consecutive evaluations; and never within ten minutes of the previous switch. The current server is
-  measured whether or not `candidates` contains it, so a host dropped from the caller's list keeps its
+  two consecutive evaluations; and never within thirty minutes of the previous switch. The current server
+  is measured whether or not `candidates` contains it, so a host dropped from the caller's list keeps its
   chance to win instead of being abandoned unmeasured. The consecutive-failure count and the cooldown live
-  in memory for the lifetime of the process, so they survive the Synchronizer rebuild a switch causes.
-  `Synchronizer` gains this abstract member, so any implementer or test fake must now provide it
+  in memory for the lifetime of the process, so they survive the Synchronizer rebuild a switch causes
+  (MOB-1832).
+- `Synchronizer.confirmServerSwitch(endpoint)` tells the SDK that a recommended switch was actually
+  applied: it clears the consecutive-failure count and starts the switch cooldown. `evaluateServerSwitch`
+  itself only counts failures, so a recommendation the caller declines - a transaction in flight, a failed
+  write - leaves the wallet able to be offered the same way off a broken server on the next evaluation
+  (MOB-1832).
+- `Synchronizer` gains both members as abstract, so any implementer or test fake must now provide them
   (MOB-1832).
 
 ### Fixed
@@ -37,8 +43,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `getLatestBlockHeight` with the same five-second timeout `getServerInfo` already had, so a server that
   accepts a connection and then never answers can no longer stall the whole evaluation (MOB-1832).
 - The server benchmark's block-fetch stage honours the Tor flag instead of always opening a direct
-  connection, so benchmarking no longer exposes the user's address to every bundled host while Tor is on
+  connection, so benchmarking no longer exposes the user's address to every bundled host while Tor is on.
+  The stage is shared, so this covers `Synchronizer.getFastestServers` as well as the switch evaluation
   (MOB-1832).
+- The benchmark's wallet-client disposal is capped at five seconds. It runs uncancellably, so a gRPC
+  shutdown that hangs rather than throws would otherwise be unstoppable and would wedge every later
+  evaluation behind it (MOB-1832).
 
 ## [3.1.1] - 2026-08-25
 

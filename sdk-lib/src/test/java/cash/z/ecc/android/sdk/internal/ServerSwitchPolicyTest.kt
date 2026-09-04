@@ -72,13 +72,29 @@ class ServerSwitchPolicyTest {
     fun `current unmeasured and no longer offered switches with its own outcome`() {
         val best = endpoint("best.example")
         assertEquals(
-            ServerSwitchOutcome.CurrentNotOffered(best),
+            ServerSwitchOutcome.CurrentNotOffered(
+                switchTo = best,
+                consecutiveEvaluations = ServerSwitchThresholds.UNHEALTHY_EVALUATIONS_BEFORE_SWITCH
+            ),
             decide(
                 ranked = listOf(measured(best, 500.milliseconds)),
                 isCurrentOffered = false,
                 consecutiveUnhealthyEvaluations = ServerSwitchThresholds.UNHEALTHY_EVALUATIONS_BEFORE_SWITCH
             )
         )
+    }
+
+    @Test
+    fun `the unhealthy outcome carries the live consecutive count`() {
+        val best = endpoint("best.example")
+        val outcome =
+            decide(
+                ranked = listOf(measured(best, 500.milliseconds)),
+                consecutiveUnhealthyEvaluations = 5
+            )
+
+        assertEquals(ServerSwitchOutcome.CurrentUnhealthy(switchTo = best, consecutiveEvaluations = 5), outcome)
+        assertTrue(outcome.reason.contains("5 consecutive times"), "Unexpected reason ${outcome.reason}")
     }
 
     @Test
@@ -257,8 +273,8 @@ class ServerSwitchPolicyTest {
                 ServerSwitchOutcome.NoResults,
                 ServerSwitchOutcome.AlreadyBest,
                 ServerSwitchOutcome.CurrentUnhealthyUnconfirmed(1),
-                ServerSwitchOutcome.CurrentUnhealthy(endpoint("best.example")),
-                ServerSwitchOutcome.CurrentNotOffered(endpoint("best.example")),
+                ServerSwitchOutcome.CurrentUnhealthy(endpoint("best.example"), 2),
+                ServerSwitchOutcome.CurrentNotOffered(endpoint("best.example"), 2),
                 ServerSwitchOutcome.ImprovementSufficient(endpoint("best.example"), 250.milliseconds),
                 ServerSwitchOutcome.ImprovementInsufficient(15.milliseconds),
                 ServerSwitchOutcome.SwitchOnCooldown(endpoint("best.example"), 3.minutes)

@@ -30,11 +30,15 @@ internal object ServerSwitchThresholds {
     const val UNHEALTHY_EVALUATIONS_BEFORE_SWITCH: Int = 2
 
     /**
-     * No switch is recommended within this window of the previous one, whatever the benchmark says. A
-     * switch tears the Synchronizer down and rebuilds it, so the cost of an unnecessary one is high and
-     * the benefit of reacting fast to a second one is low.
+     * No switch is recommended within this window of the previous one the caller confirmed, whatever the
+     * benchmark says. A switch tears the Synchronizer down and rebuilds it, so the cost of an unnecessary
+     * one is high and the benefit of reacting fast to a second one is low.
+     *
+     * The window has to be comfortably longer than the interval at which the caller evaluates - the app
+     * evaluates at most every ten minutes - or every evaluation already finds it elapsed and the cooldown
+     * defers nothing.
      */
-    val SWITCH_COOLDOWN: Duration = 10.minutes
+    val SWITCH_COOLDOWN: Duration = 30.minutes
 }
 
 internal sealed interface ServerSwitchOutcome {
@@ -63,21 +67,22 @@ internal sealed interface ServerSwitchOutcome {
     }
 
     data class CurrentUnhealthy(
-        val switchTo: LightWalletEndpoint
+        val switchTo: LightWalletEndpoint,
+        val consecutiveEvaluations: Int
     ) : ServerSwitchOutcome {
         override val endpointToSwitchTo: LightWalletEndpoint = switchTo
         override val reason: String =
-            "current server failed benchmarking " +
-                "${ServerSwitchThresholds.UNHEALTHY_EVALUATIONS_BEFORE_SWITCH} consecutive times"
+            "current server failed benchmarking $consecutiveEvaluations consecutive times"
     }
 
     data class CurrentNotOffered(
-        val switchTo: LightWalletEndpoint
+        val switchTo: LightWalletEndpoint,
+        val consecutiveEvaluations: Int
     ) : ServerSwitchOutcome {
         override val endpointToSwitchTo: LightWalletEndpoint = switchTo
         override val reason: String =
             "current server is no longer offered as a candidate and failed benchmarking " +
-                "${ServerSwitchThresholds.UNHEALTHY_EVALUATIONS_BEFORE_SWITCH} consecutive times"
+                "$consecutiveEvaluations consecutive times"
     }
 
     data class ImprovementSufficient(
@@ -127,7 +132,8 @@ internal object ServerSwitchPolicy {
      * measures [current] either way, so a host dropped from the bundled list is still given its chance
      * @param consecutiveUnhealthyEvaluations how many evaluations in a row, this one included, have failed
      * to measure [current]; zero whenever it was measured
-     * @param sinceLastSwitch how long ago this policy last recommended a switch, or null when it never did
+     * @param sinceLastSwitch how long ago the caller last confirmed a switch through
+     * [ServerSwitchEvaluator.onSwitchApplied], or null when it never did
      *
      * @return the outcome of the decision; it can never name [current] as the endpoint to switch to
      */
@@ -186,11 +192,17 @@ internal object ServerSwitchPolicy {
             }
 
             isCurrentOffered -> {
-                ServerSwitchOutcome.CurrentUnhealthy(best)
+                ServerSwitchOutcome.CurrentUnhealthy(
+                    switchTo = best,
+                    consecutiveEvaluations = consecutiveUnhealthyEvaluations
+                )
             }
 
             else -> {
-                ServerSwitchOutcome.CurrentNotOffered(best)
+                ServerSwitchOutcome.CurrentNotOffered(
+                    switchTo = best,
+                    consecutiveEvaluations = consecutiveUnhealthyEvaluations
+                )
             }
         }
 
@@ -226,7 +238,12 @@ internal object ServerSwitchPolicy {
 
 /**
  * The stateful half of the switch decision: how many consecutive evaluations have failed to measure the
- * current server, and how long ago a switch was last recommended.
+ * current server, and how long ago a switch was last applied.
+ *
+ * An evaluation only counts failures. It never clears the count and never starts the cooldown, because a
+ * recommendation is not a switch - the caller is free to decline one, and a wallet left on a server that
+ * has already failed twice has to be able to be offered the same way out again. [onSwitchApplied] is what
+ * records a switch that actually happened.
  *
  * The state has to outlive any single Synchronizer, because acting on the decision tears the Synchronizer
  * down and rebuilds it - state held by the instance that made the call would be gone before the cooldown
@@ -243,9 +260,9 @@ internal class ServerSwitchEvaluator(
     private var lastSwitchAt: TimeMark? = null
 
     /**
-     * Folds the state of the earlier evaluations into [ServerSwitchPolicy.decide] and records what this
-     * one concluded. An evaluation in which nothing at all survived says nothing about the current server
-     * either, so it neither counts against it nor clears its count.
+     * Folds the state of the earlier evaluations into [ServerSwitchPolicy.decide] and records how this one
+     * measured the current server. An evaluation in which nothing at all survived says nothing about the
+     * current server either, so it neither counts against it nor clears its count.
      *
      * @param ranked healthy survivors of the benchmark, sorted ascending by score
      * @param isCurrentOffered whether the caller offered [current] among its candidates
@@ -262,21 +279,25 @@ internal class ServerSwitchEvaluator(
                     ranked.isEmpty() -> consecutiveUnhealthyEvaluations
                     else -> consecutiveUnhealthyEvaluations + 1
                 }
-            val outcome =
-                ServerSwitchPolicy.decide(
-                    current = current,
-                    ranked = ranked,
-                    isCurrentOffered = isCurrentOffered,
-                    consecutiveUnhealthyEvaluations = consecutive,
-                    sinceLastSwitch = lastSwitchAt?.elapsedNow()
-                )
-            if (outcome.endpointToSwitchTo == null) {
-                consecutiveUnhealthyEvaluations = consecutive
-            } else {
-                consecutiveUnhealthyEvaluations = 0
-                lastSwitchAt = timeSource.markNow()
-            }
-            outcome
+            consecutiveUnhealthyEvaluations = consecutive
+            ServerSwitchPolicy.decide(
+                current = current,
+                ranked = ranked,
+                isCurrentOffered = isCurrentOffered,
+                consecutiveUnhealthyEvaluations = consecutive,
+                sinceLastSwitch = lastSwitchAt?.elapsedNow()
+            )
+        }
+
+    /**
+     * Records that the wallet was actually moved to [endpoint]: the consecutive-failure count starts over
+     * and the cooldown starts now.
+     */
+    suspend fun onSwitchApplied(endpoint: LightWalletEndpoint) =
+        mutex.withLock {
+            Twig.info { "Server Switch: switch to ${endpoint.describe()} applied, cooldown starts now" }
+            consecutiveUnhealthyEvaluations = 0
+            lastSwitchAt = timeSource.markNow()
         }
 
     companion object {

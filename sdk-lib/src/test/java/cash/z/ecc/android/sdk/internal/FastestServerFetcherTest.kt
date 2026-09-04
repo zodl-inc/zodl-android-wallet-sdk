@@ -18,6 +18,7 @@ import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
 import co.electriccoin.lightwallet.client.model.ShieldedProtocolEnum
 import co.electriccoin.lightwallet.client.model.SubtreeRootUnsafe
 import co.electriccoin.lightwallet.client.model.TreeStateUnsafe
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -39,6 +40,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.measureTime
 
 /**
  * Covers the benchmark stages shared by [FastestServerFetcher.evaluateServerSwitch] and the legacy
@@ -208,6 +210,30 @@ class FastestServerFetcherTest {
             }
         }
 
+    /**
+     * The disposal runs inside [kotlinx.coroutines.NonCancellable], so nothing outside it can interrupt a
+     * disposal that hangs - a regression here hangs this test rather than failing it, and the elapsed-time
+     * assertion is what catches a cap that merely grew too large.
+     */
+    @Test
+    fun `evaluateServerSwitch gives up on a wallet client whose disposal never returns`() =
+        runBlocking {
+            val only = endpoint("only.example")
+            val fetcher = fetcher(mapOf(only to FakeWalletClient(disposeHangs = true)))
+
+            val elapsed =
+                measureTime {
+                    fetcher.evaluateServerSwitch(
+                        current = only,
+                        candidates = listOf(only),
+                        fetchThreshold = 5.seconds,
+                        blocksToFetch = 1
+                    )
+                }
+
+            assertTrue(elapsed < HUNG_DISPOSAL_BUDGET, "The hung disposal was not bounded, it took $elapsed")
+        }
+
     @Test
     fun `evaluateServerSwitch stays when nothing survives`() =
         runBlocking {
@@ -339,7 +365,8 @@ class FastestServerFetcherTest {
         val tip: Long = TIP,
         private val serverInfoFails: Boolean = false,
         private val blockFailureAtIndex: Int? = null,
-        private val delayPerBlock: Duration = Duration.ZERO
+        private val delayPerBlock: Duration = Duration.ZERO,
+        private val disposeHangs: Boolean = false
     ) : CombinedWalletClient {
         val blockRangeRequests = mutableListOf<ClosedRange<BlockHeightUnsafe>>()
 
@@ -391,6 +418,9 @@ class FastestServerFetcherTest {
          */
         override suspend fun dispose() {
             yield()
+            if (disposeHangs) {
+                awaitCancellation()
+            }
             disposeMutex.withLock { disposed = true }
         }
 
@@ -461,6 +491,12 @@ class FastestServerFetcherTest {
         const val BRANCH_ID = 0xC2D6D0B4L
         const val LEGACY_BLOCK_COUNT = 100
         val BUSY_WAIT_TIMEOUT = 10.seconds
+
+        /**
+         * Comfortably above the production disposal cap of five seconds, well below the wall-clock cost of
+         * an unbounded one.
+         */
+        val HUNG_DISPOSAL_BUDGET = 15.seconds
 
         /**
          * [LightWalletEndpointInfoUnsafe] wraps a generated protobuf message whose supertypes are not on
