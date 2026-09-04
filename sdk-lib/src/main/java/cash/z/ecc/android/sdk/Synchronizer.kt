@@ -267,19 +267,23 @@ interface Synchronizer {
     /**
      * This function decides whether automatic server selection should move the wallet away from [current].
      *
-     * Every endpoint in [candidates] is benchmarked in full: its server info and latest block height are
-     * fetched and timed, and it is ruled out unless its chain name, consensus branch and sync state match
-     * this SDK. Each survivor then streams [blocksToFetch] blocks ending at its own tip; the stream time is
-     * its score and a candidate that needs longer than [fetchThreshold] is ruled out.
+     * [current] and every endpoint in [candidates] are benchmarked in full: server info and latest block
+     * height are fetched and timed, and an endpoint is ruled out unless its chain name, consensus branch
+     * and sync state match this SDK. Each survivor then streams the same [blocksToFetch] blocks, ending at
+     * the lowest tip any survivor reported; the stream time is its score and a candidate that needs longer
+     * than [fetchThreshold] is ruled out. [current] is measured whether or not [candidates] contains it,
+     * so a host dropped from the caller's list is never abandoned without being measured.
      *
      * A switch is only recommended when the best candidate beats [current] by at least 200 milliseconds and
-     * by at least 25 percent of the current server's score, or when [current] does not survive benchmarking.
-     * This hysteresis keeps the wallet from flip-flopping between two near-equal servers.
+     * by at least 25 percent of the current server's score, or when [current] fails benchmarking in two
+     * consecutive evaluations. No switch is recommended within ten minutes of the previous one. This
+     * hysteresis keeps the wallet from flip-flopping between two near-equal or intermittently slow servers;
+     * the consecutive-failure count and the cooldown are held in memory for the lifetime of the process.
      *
      * @param current the endpoint the wallet is connected to right now
-     * @param candidates the endpoints to benchmark; this list should include [current]
+     * @param candidates the endpoints to benchmark alongside [current]
      * @param fetchThreshold per-candidate cap for the block-fetch stage
-     * @param blocksToFetch how many blocks ending at the candidate's tip to stream while timing it
+     * @param blocksToFetch how many blocks to stream from every candidate while timing it
      *
      * @return the endpoint to switch to, or null when the wallet should stay on [current]
      */

@@ -25,6 +25,10 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
@@ -84,7 +88,7 @@ class FastestServerFetcherTest {
         }
 
     @Test
-    fun `evaluateServerSwitch discards a candidate whose stream reports a failure`() =
+    fun `evaluateServerSwitch leaves a current server whose stream reports a failure twice in a row`() =
         runBlocking {
             val current = endpoint("current.example")
             val healthy = endpoint("healthy.example")
@@ -96,6 +100,14 @@ class FastestServerFetcherTest {
                     )
                 )
 
+            assertNull(
+                fetcher.evaluateServerSwitch(
+                    current = current,
+                    candidates = listOf(current, healthy),
+                    fetchThreshold = 5.seconds,
+                    blocksToFetch = 1
+                )
+            )
             assertEquals(
                 healthy,
                 fetcher.evaluateServerSwitch(
@@ -108,7 +120,7 @@ class FastestServerFetcherTest {
         }
 
     @Test
-    fun `evaluateServerSwitch discards a candidate that exceeds the fetch threshold`() =
+    fun `evaluateServerSwitch leaves a current server that exceeds the fetch threshold twice in a row`() =
         runBlocking {
             val current = endpoint("current.example")
             val healthy = endpoint("healthy.example")
@@ -120,6 +132,14 @@ class FastestServerFetcherTest {
                     )
                 )
 
+            assertNull(
+                fetcher.evaluateServerSwitch(
+                    current = current,
+                    candidates = listOf(current, healthy),
+                    fetchThreshold = 50.milliseconds,
+                    blocksToFetch = 1
+                )
+            )
             assertEquals(
                 healthy,
                 fetcher.evaluateServerSwitch(
@@ -149,8 +169,10 @@ class FastestServerFetcherTest {
                         blocksToFetch = 1
                     )
                 }
-            while (clients.values.sumOf { it.blockRangeRequests.size } == 0) {
-                delay(10.milliseconds)
+            withTimeout(BUSY_WAIT_TIMEOUT) {
+                while (clients.values.sumOf { it.blockRangeRequests.size } == 0) {
+                    delay(10.milliseconds)
+                }
             }
             evaluation.cancelAndJoin()
 
@@ -203,6 +225,53 @@ class FastestServerFetcherTest {
         }
 
     @Test
+    fun `evaluateServerSwitch benchmarks a current server the caller did not offer`() =
+        runBlocking {
+            val dropped = endpoint("dropped.example")
+            val offered = endpoint("offered.example")
+            val droppedClient = FakeWalletClient()
+            val fetcher =
+                fetcher(
+                    mapOf(
+                        dropped to droppedClient,
+                        offered to FakeWalletClient(delayPerBlock = 20.milliseconds)
+                    )
+                )
+
+            val decision =
+                fetcher.evaluateServerSwitch(
+                    current = dropped,
+                    candidates = listOf(offered),
+                    fetchThreshold = 5.seconds,
+                    blocksToFetch = 1
+                )
+
+            assertEquals(1, droppedClient.blockRangeRequests.size)
+            assertNull(decision)
+        }
+
+    @Test
+    fun `evaluateServerSwitch times every candidate on the same block range`() =
+        runBlocking {
+            val ahead = endpoint("ahead.example")
+            val behind = endpoint("behind.example")
+            val clients = mapOf(ahead to FakeWalletClient(), behind to FakeWalletClient(tip = TIP - 5))
+            val fetcher = fetcher(clients)
+
+            fetcher.evaluateServerSwitch(
+                current = ahead,
+                candidates = listOf(ahead, behind),
+                fetchThreshold = 5.seconds,
+                blocksToFetch = 3
+            )
+
+            val expected = listOf(BlockHeightUnsafe(TIP - 7)..BlockHeightUnsafe(TIP - 5))
+            clients.forEach { (endpoint, client) ->
+                assertEquals(expected, client.blockRangeRequests, "Unexpected range for $endpoint")
+            }
+        }
+
+    @Test
     fun `getFastestServers collects the block stream`() =
         runBlocking {
             val only = endpoint("only.example")
@@ -239,7 +308,9 @@ class FastestServerFetcherTest {
 
     private fun fetcher(clients: Map<LightWalletEndpoint, FakeWalletClient>): FastestServerFetcher {
         val backend = mock(TypesafeBackend::class.java)
-        `when`(backend.getBranchIdForHeight(BlockHeight.new(TIP))).thenReturn(BRANCH_ID)
+        clients.values.map { it.tip }.distinct().forEach {
+            `when`(backend.getBranchIdForHeight(BlockHeight.new(it))).thenReturn(BRANCH_ID)
+        }
 
         val walletClientFactory = mock(WalletClientFactory::class.java)
         runBlocking {
@@ -252,7 +323,8 @@ class FastestServerFetcherTest {
             backend = backend,
             network = ZcashNetwork.Mainnet,
             walletClientFactory = walletClientFactory,
-            sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false)
+            sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false),
+            switchEvaluator = ServerSwitchEvaluator()
         )
     }
 
@@ -264,6 +336,7 @@ class FastestServerFetcherTest {
         )
 
     private class FakeWalletClient(
+        val tip: Long = TIP,
         private val serverInfoFails: Boolean = false,
         private val blockFailureAtIndex: Int? = null,
         private val delayPerBlock: Duration = Duration.ZERO
@@ -276,15 +349,17 @@ class FastestServerFetcherTest {
         var disposed = false
             private set
 
+        private val disposeMutex = Mutex()
+
         override suspend fun getServerInfo(serviceMode: ServiceMode): Response<LightWalletEndpointInfoUnsafe> =
             if (serverInfoFails) {
                 Response.Failure.Connection(IOException("getServerInfo unavailable"))
             } else {
-                Response.Success(REMOTE_INFO)
+                Response.Success(remoteInfo(tip))
             }
 
         override suspend fun getLatestBlockHeight(serviceMode: ServiceMode): Response<BlockHeightUnsafe> =
-            Response.Success(BlockHeightUnsafe(TIP))
+            Response.Success(BlockHeightUnsafe(tip))
 
         override suspend fun getBlockRange(
             heightRange: ClosedRange<BlockHeightUnsafe>,
@@ -307,8 +382,16 @@ class FastestServerFetcherTest {
             }
         }
 
+        /**
+         * The real clients suspend before releasing anything - `CombinedWalletClientImpl` takes a
+         * semaphore, `TorWalletClient` hops to `Dispatchers.IO` - so a disposal issued from an already
+         * cancelled coroutine reaches its first suspension point and throws before it shuts the channel
+         * down. The fake reproduces that, otherwise the cancellation tests would pass without the
+         * production code ever disposing anything.
+         */
         override suspend fun dispose() {
-            disposed = true
+            yield()
+            disposeMutex.withLock { disposed = true }
         }
 
         override fun reconnect() = Unit
@@ -377,19 +460,20 @@ class FastestServerFetcherTest {
         const val TIP = 2_000_000L
         const val BRANCH_ID = 0xC2D6D0B4L
         const val LEGACY_BLOCK_COUNT = 100
+        val BUSY_WAIT_TIMEOUT = 10.seconds
 
         /**
          * [LightWalletEndpointInfoUnsafe] wraps a generated protobuf message whose supertypes are not on
          * the sdk-lib test classpath, so the remote info is stubbed rather than built from a real
          * `LightdInfo`.
          */
-        val REMOTE_INFO: LightWalletEndpointInfoUnsafe =
+        fun remoteInfo(tip: Long): LightWalletEndpointInfoUnsafe =
             mock(LightWalletEndpointInfoUnsafe::class.java).also {
                 `when`(it.matchingNetwork(ZcashNetwork.Mainnet.networkName)).thenReturn(true)
                 `when`(it.saplingActivationHeightUnsafe)
                     .thenReturn(BlockHeightUnsafe(ZcashNetwork.Mainnet.saplingActivationHeight.value))
-                `when`(it.blockHeightUnsafe).thenReturn(BlockHeightUnsafe(TIP))
-                `when`(it.estimatedHeight).thenReturn(TIP)
+                `when`(it.blockHeightUnsafe).thenReturn(BlockHeightUnsafe(tip))
+                `when`(it.estimatedHeight).thenReturn(tip)
                 `when`(it.consensusBranchId).thenReturn("c2d6d0b4")
             }
     }

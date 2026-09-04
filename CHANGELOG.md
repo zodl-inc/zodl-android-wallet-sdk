@@ -7,12 +7,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `Synchronizer.evaluateServerSwitch(current, candidates, fetchThreshold, blocksToFetch)` benchmarks every
-  candidate endpoint (RPC validation, then a timed compact-block stream capped at `fetchThreshold`) and
-  applies a hysteresis policy, returning the endpoint to switch to or `null` to stay. A switch is only
-  recommended when the best candidate beats the current server by at least 200 ms and by at least 25 % of
-  the current score, or when the current server fails benchmarking. `Synchronizer` gains this abstract
-  member, so any implementer or test fake must now provide it (MOB-1832).
+- `Synchronizer.evaluateServerSwitch(current, candidates, fetchThreshold, blocksToFetch)` benchmarks the
+  current server together with every candidate endpoint (RPC validation, then a timed compact-block stream
+  capped at `fetchThreshold`) and applies a hysteresis policy, returning the endpoint to switch to or
+  `null` to stay. A switch is only recommended when the best candidate beats the current server by at
+  least 200 ms and by at least 25 % of the current score, or when the current server fails benchmarking in
+  two consecutive evaluations; and never within ten minutes of the previous switch. The current server is
+  measured whether or not `candidates` contains it, so a host dropped from the caller's list keeps its
+  chance to win instead of being abandoned unmeasured. The consecutive-failure count and the cooldown live
+  in memory for the lifetime of the process, so they survive the Synchronizer rebuild a switch causes.
+  `Synchronizer` gains this abstract member, so any implementer or test fake must now provide it
+  (MOB-1832).
 
 ### Fixed
 - `Synchronizer.getFastestServers` now actually streams the latest blocks in its second validation stage.
@@ -20,6 +25,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measured nothing and every server that passed RPC validation also passed the fetch stage. Servers that
   fail or time out while streaming the latest 100 blocks are now ruled out, and the call can take
   correspondingly longer (MOB-1832).
+- The server benchmark scores every candidate on one common block range - the requested number of blocks
+  ending at the lowest chain tip any survivor reported - instead of anchoring the range on each server's
+  own tip. Servers a block apart used to be timed on different blocks, whose compact sizes differ by
+  orders of magnitude, so the scores compared payloads rather than servers (MOB-1832).
+- The server benchmark no longer leaks gRPC connections. The client of the candidate being streamed, and
+  every client created during RPC validation, are now disposed from a `NonCancellable` `finally`, so a
+  cancelled evaluation - which the app triggers on every foreground edge - or a throw mid-validation
+  closes the channel instead of abandoning it (MOB-1832).
+- The server benchmark's RPC validation stage runs its candidates in parallel again, and caps
+  `getLatestBlockHeight` with the same five-second timeout `getServerInfo` already had, so a server that
+  accepts a connection and then never answers can no longer stall the whole evaluation (MOB-1832).
+- The server benchmark's block-fetch stage honours the Tor flag instead of always opening a direct
+  connection, so benchmarking no longer exposes the user's address to every bundled host while Tor is on
+  (MOB-1832).
 
 ## [3.1.1] - 2026-08-25
 

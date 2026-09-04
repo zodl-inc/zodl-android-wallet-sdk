@@ -9,11 +9,11 @@ import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
+import co.electriccoin.lightwallet.client.model.CompactBlockUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.LightWalletEndpointInfoUnsafe
 import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.util.Disposable
-import co.electriccoin.lightwallet.client.util.use
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
@@ -37,7 +37,8 @@ internal class FastestServerFetcher(
     private val backend: TypesafeBackend,
     private val network: ZcashNetwork,
     private val walletClientFactory: WalletClientFactory,
-    private val sdkFlags: SdkFlags
+    private val sdkFlags: SdkFlags,
+    private val switchEvaluator: ServerSwitchEvaluator = ServerSwitchEvaluator.PROCESS_WIDE
 ) {
     operator fun invoke(servers: List<LightWalletEndpoint>): Flow<FastestServersResult> =
         flow {
@@ -67,7 +68,7 @@ internal class FastestServerFetcher(
                     survivors = serversByRpcMeanLatency,
                     blocksToFetch = N,
                     fetchThreshold = FETCH_THRESHOLD,
-                    logPrefix = "Fastest Server",
+                    logPrefix = FASTEST_SERVER_LOG_PREFIX,
                     limit = K
                 ).map { it.endpoint }
 
@@ -77,12 +78,17 @@ internal class FastestServerFetcher(
         }.flowOn(Dispatchers.Default)
 
     /**
-     * Benchmarks every endpoint in [candidates] and decides whether the wallet should move away from [current].
+     * Benchmarks [current] together with every endpoint in [candidates] and decides whether the wallet
+     * should move away from [current].
+     *
+     * [current] is measured whether or not the caller offered it: a host dropped from the caller's list by
+     * an app update must be given the chance to keep the wallet, rather than losing it to a decision made
+     * without a single measurement of it.
      *
      * @param current the endpoint the wallet is connected to right now
-     * @param candidates the endpoints to benchmark; callers are expected to include [current] among them
+     * @param candidates the endpoints to benchmark alongside [current]
      * @param fetchThreshold per-candidate cap for the block-fetch stage
-     * @param blocksToFetch how many blocks ending at the candidate's tip to stream while timing it
+     * @param blocksToFetch how many blocks ending at the lowest tip the survivors report to stream
      *
      * @return the endpoint to switch to, or null when the wallet should stay on [current]
      */
@@ -91,26 +97,34 @@ internal class FastestServerFetcher(
         candidates: List<LightWalletEndpoint>,
         fetchThreshold: Duration,
         blocksToFetch: Int
-    ): LightWalletEndpoint? =
-        withContext(Dispatchers.Default) {
-            require(blocksToFetch >= 1) { "blocksToFetch must be at least 1, was $blocksToFetch" }
-            require(fetchThreshold.isPositive()) { "fetchThreshold must be positive, was $fetchThreshold" }
+    ): LightWalletEndpoint? {
+        require(blocksToFetch >= 1) { "blocksToFetch must be at least 1, was $blocksToFetch" }
+        require(fetchThreshold.isPositive()) { "fetchThreshold must be positive, was $fetchThreshold" }
 
+        val isCurrentOffered = candidates.any { it.isSameServer(current) }
+
+        return withContext(Dispatchers.Default) {
             val ranked =
                 measureBlockFetches(
-                    survivors = measureRpcLatency(candidates),
+                    survivors = measureRpcLatency(if (isCurrentOffered) candidates else candidates + current),
                     blocksToFetch = blocksToFetch,
                     fetchThreshold = fetchThreshold,
-                    logPrefix = "Server Switch",
+                    logPrefix = SERVER_SWITCH_LOG_PREFIX,
                     limit = Int.MAX_VALUE
                 ).sortedBy { it.score }
 
-            val outcome = ServerSwitchPolicy.decide(current = current, ranked = ranked)
+            val outcome =
+                switchEvaluator.evaluate(
+                    current = current,
+                    ranked = ranked,
+                    isCurrentOffered = isCurrentOffered
+                )
 
             Twig.info { ServerSwitchPolicy.describe(current = current, ranked = ranked, outcome = outcome) }
 
             outcome.endpointToSwitchTo
         }
+    }
 
     private suspend fun measureRpcLatency(servers: List<LightWalletEndpoint>): List<ValidateServerResult> =
         servers
@@ -122,8 +136,13 @@ internal class FastestServerFetcher(
 
     /**
      * Runs the block-fetch stage sequentially over [survivors] in their given order, keeping at most [limit]
-     * measured endpoints. Survivors that are never reached, because [limit] was hit or the caller was cancelled,
-     * are disposed before returning.
+     * measured endpoints. Survivors that are never reached, because [limit] was hit or the caller was
+     * cancelled, are disposed before returning.
+     *
+     * Every survivor is timed on one common range: [blocksToFetch] blocks ending at the lowest tip any of
+     * them reported. Anchoring the range on each server's own tip instead would time downloads of different
+     * blocks, and compact block sizes differ by orders of magnitude, so the scores would say more about the
+     * payload each server happened to serve than about the server itself.
      */
     private suspend fun measureBlockFetches(
         survivors: List<ValidateServerResult>,
@@ -132,6 +151,9 @@ internal class FastestServerFetcher(
         logPrefix: String,
         limit: Int
     ): List<MeasuredEndpoint> {
+        val commonTip = survivors.minOfOrNull { it.remoteInfo.blockHeightUnsafe.value } ?: return emptyList()
+        val heightRange =
+            BlockHeightUnsafe((commonTip - (blocksToFetch - 1)).coerceAtLeast(0))..BlockHeightUnsafe(commonTip)
         val pending = ArrayDeque(survivors)
         val measured = mutableListOf<MeasuredEndpoint>()
         try {
@@ -139,79 +161,125 @@ internal class FastestServerFetcher(
                 val result = pending.removeFirst()
                 measureBlockFetch(
                     result = result,
-                    blocksToFetch = blocksToFetch,
+                    heightRange = heightRange,
                     fetchThreshold = fetchThreshold,
                     logPrefix = logPrefix
                 )?.let { measured += MeasuredEndpoint(endpoint = result.endpoint, score = it) }
             }
         } finally {
-            withContext(NonCancellable) {
-                pending.forEach { it.disposeQuietly() }
-            }
+            pending.forEach { it.disposeQuietly() }
         }
         return measured
     }
 
-    private suspend fun ValidateServerResult.disposeQuietly() = use { }
-
     /**
-     * Streams [blocksToFetch] blocks ending at the server's tip and times the stream. Fetched the same way as in
-     * `downloadBatchOfBlocks()`. Always disposes [result].
+     * Streams the blocks of [heightRange] and times the stream. Always disposes [result].
      *
      * @return the stream duration, or null when the stream failed or exceeded [fetchThreshold]
      */
     private suspend fun measureBlockFetch(
         result: ValidateServerResult,
-        blocksToFetch: Int,
+        heightRange: ClosedRange<BlockHeightUnsafe>,
         fetchThreshold: Duration,
         logPrefix: String
-    ): Duration? =
-        result.use {
-            val to = result.remoteInfo.blockHeightUnsafe
-            val from = BlockHeightUnsafe((to.value - (blocksToFetch - 1)).coerceAtLeast(0))
-
-            val timed =
+    ): Duration? {
+        val outcome =
+            try {
                 withTimeoutOrNull(fetchThreshold) {
-                    runCatching {
-                        measureTimedValue {
-                            result.lightWalletClient
-                                .getBlockRange(
-                                    heightRange = from..to,
-                                    serviceMode = ServiceMode.Direct
-                                ).firstOrNull { it is Response.Failure }
-                        }
-                    }.getOrElse {
-                        if (it is CancellationException) throw it
-                        Twig.debug(it) { "$logPrefix: '${result.endpoint}' RULED OUT by getBlockRange exception" }
-                        null
-                    }
+                    streamBlocks(result = result, heightRange = heightRange)
+                } ?: BlockFetchOutcome.TimedOut
+            } finally {
+                result.disposeQuietly()
+            }
+
+        return when (outcome) {
+            BlockFetchOutcome.TimedOut -> {
+                Twig.debug { "$logPrefix: '${result.endpoint}' RULED OUT by getBlockRange timeout" }
+                null
+            }
+
+            is BlockFetchOutcome.Threw -> {
+                Twig.debug(outcome.throwable) {
+                    "$logPrefix: '${result.endpoint}' RULED OUT by getBlockRange exception"
                 }
+                null
+            }
 
-            val failure = timed?.value as? Response.Failure
-
-            when {
-                timed == null -> {
-                    Twig.debug { "$logPrefix: '${result.endpoint}' RULED OUT by getBlockRange timeout" }
-                    null
-                }
-
-                failure != null -> {
+            is BlockFetchOutcome.Streamed -> {
+                val failure = outcome.failure
+                if (failure != null) {
                     Twig.debug {
                         "$logPrefix: '${result.endpoint}' RULED OUT by getBlockRange failure " +
                             "${failure.code}: ${failure.description}"
                     }
                     null
-                }
-
-                else -> {
-                    Twig.debug { "$logPrefix: '${result.endpoint}' VALIDATED by getBlockRange in ${timed.duration}" }
-                    timed.duration
+                } else {
+                    Twig.debug {
+                        "$logPrefix: '${result.endpoint}' VALIDATED by getBlockRange in ${outcome.duration}"
+                    }
+                    outcome.duration
                 }
             }
         }
+    }
+
+    /**
+     * Streams the blocks of [heightRange] the same way `downloadBatchOfBlocks()` does, except that the
+     * stream honours the Tor flag: benchmarking every bundled host over a direct connection would expose
+     * the user's address to operators they are not a customer of, while Tor is on.
+     */
+    private suspend fun streamBlocks(
+        result: ValidateServerResult,
+        heightRange: ClosedRange<BlockHeightUnsafe>
+    ): BlockFetchOutcome =
+        runCatching {
+            measureTimedValue {
+                result.lightWalletClient
+                    .getBlockRange(
+                        heightRange = heightRange,
+                        serviceMode =
+                            sdkFlags ifTor
+                                ServiceMode.Group(
+                                    "measureBlockFetch(${result.endpoint.host}:${result.endpoint.port})"
+                                )
+                    ).firstOrNull { it is Response.Failure }
+            }
+        }.fold(
+            onSuccess = {
+                BlockFetchOutcome.Streamed(
+                    duration = it.duration,
+                    failure = it.value as? Response.Failure<CompactBlockUnsafe>
+                )
+            },
+            onFailure = {
+                if (it is CancellationException) throw it
+                BlockFetchOutcome.Threw(it)
+            }
+        )
+
+    /**
+     * Creates a wallet client for [endpoint] and measures it. The client is disposed unless it is handed
+     * over to the returned result, so neither a cancellation nor a throw mid-validation can leak its gRPC
+     * channel.
+     */
+    private suspend fun validateServerEndpointAndMeasure(endpoint: LightWalletEndpoint): ValidateServerResult? {
+        val lightWalletClient = runCatching { walletClientFactory.create(endpoint) }.getOrNull() ?: return null
+        var validated: ValidateServerResult? = null
+        try {
+            validated = measureValidatedServer(endpoint = endpoint, lightWalletClient = lightWalletClient)
+            return validated
+        } finally {
+            if (validated == null) {
+                lightWalletClient.disposeQuietly()
+            }
+        }
+    }
 
     @Suppress("LongMethod", "ReturnCount", "CyclomaticComplexMethod")
-    private suspend fun validateServerEndpointAndMeasure(endpoint: LightWalletEndpoint): ValidateServerResult? {
+    private suspend fun measureValidatedServer(
+        endpoint: LightWalletEndpoint,
+        lightWalletClient: CombinedWalletClient
+    ): ValidateServerResult? {
         fun logRuledOut(
             reason: String,
             throwable: Throwable? = null
@@ -227,23 +295,15 @@ internal class FastestServerFetcher(
             }
         }
 
-        val lightWalletClient = kotlin.runCatching { walletClientFactory.create(endpoint) }.getOrNull() ?: return null
+        val serviceMode =
+            sdkFlags ifTor ServiceMode.Group("validateServerEndpointAndMeasure(${endpoint.host}:${endpoint.port})")
 
         val remoteInfo: LightWalletEndpointInfoUnsafe?
         val getServerInfoDuration =
             measureTime {
-                // 5 seconds timeout in case server is very unresponsive
                 remoteInfo =
-                    withTimeoutOrNull(5.seconds) {
-                        when (
-                            val response =
-                                lightWalletClient.getServerInfo(
-                                    sdkFlags ifTor
-                                        ServiceMode.Group(
-                                            "validateServerEndpointAndMeasure(${endpoint.host}:${endpoint.port})"
-                                        )
-                                )
-                        ) {
+                    withTimeoutOrNull(RPC_TIMEOUT) {
+                        when (val response = lightWalletClient.getServerInfo(serviceMode)) {
                             is Response.Success -> {
                                 response.result
                             }
@@ -257,14 +317,12 @@ internal class FastestServerFetcher(
             }
 
         if (remoteInfo == null) {
-            lightWalletClient.dispose()
             return null
         }
 
         // Check network type
         if (!remoteInfo.matchingNetwork(network.networkName)) {
             logRuledOut("matchingNetwork failed")
-            lightWalletClient.dispose()
             return null
         }
 
@@ -273,44 +331,37 @@ internal class FastestServerFetcher(
             val remoteSaplingActivationHeight = remoteInfo.saplingActivationHeightUnsafe.toBlockHeight()
             if (network.saplingActivationHeight != remoteSaplingActivationHeight) {
                 logRuledOut("invalid saplingActivationHeight")
-                lightWalletClient.dispose()
                 return null
             }
         }.getOrElse {
             logRuledOut("saplingActivationHeight failed", it)
-            lightWalletClient.dispose()
             return null
         }
 
-        val currentChainTip: BlockHeight
+        val currentChainTip: BlockHeight?
         val getLatestBlockHeightDuration =
             measureTime {
                 currentChainTip =
-                    when (
-                        val response =
-                            lightWalletClient.getLatestBlockHeight(
-                                serviceMode =
-                                    sdkFlags ifTor
-                                        ServiceMode.Group(
-                                            "validateServerEndpointAndMeasure(${endpoint.host}:${endpoint.port})"
-                                        )
-                            )
-                    ) {
-                        is Response.Success -> {
-                            runCatching { response.result.toBlockHeight() }.getOrElse {
-                                logRuledOut("toBlockHeight failed", it)
-                                lightWalletClient.dispose()
-                                return null
+                    withTimeoutOrNull(RPC_TIMEOUT) {
+                        when (val response = lightWalletClient.getLatestBlockHeight(serviceMode = serviceMode)) {
+                            is Response.Success -> {
+                                runCatching { response.result.toBlockHeight() }.getOrElse {
+                                    logRuledOut("toBlockHeight failed", it)
+                                    null
+                                }
                             }
-                        }
 
-                        is Response.Failure -> {
-                            logRuledOut("getLatestBlockHeight failed", response.toThrowable())
-                            lightWalletClient.dispose()
-                            return null
+                            is Response.Failure -> {
+                                logRuledOut("getLatestBlockHeight failed", response.toThrowable())
+                                null
+                            }
                         }
                     }
             }
+
+        if (currentChainTip == null) {
+            return null
+        }
 
         val sdkBranchId =
             runCatching {
@@ -320,19 +371,16 @@ internal class FastestServerFetcher(
                 )
             }.getOrElse {
                 logRuledOut("getBranchIdForHeight failed", it)
-                lightWalletClient.dispose()
                 return null
             }
 
         if (!remoteInfo.consensusBranchId.equals(sdkBranchId, true)) {
             logRuledOut("consensusBranchId does not match")
-            lightWalletClient.dispose()
             return null
         }
 
         if (remoteInfo.estimatedHeight >= remoteInfo.blockHeightUnsafe.value + SYNCED_THRESHOLD_BLOCKS) {
             logRuledOut("estimatedHeight does not match")
-            lightWalletClient.dispose()
             return null
         }
 
@@ -347,10 +395,24 @@ internal class FastestServerFetcher(
         )
     }
 
-    private suspend inline fun <T, R> Iterable<T>.parallelMapNotNull(crossinline block: suspend (T) -> R?): List<R> =
-        map { coroutineScope { async { block(it) } } }
-            .awaitAll()
-            .filterNotNull()
+    /**
+     * Disposes the receiver outside cancellation and swallows any failure. The real wallet clients suspend
+     * while shutting their gRPC channel down, so disposing from an already cancelled coroutine would
+     * abandon the channel at the first suspension point instead of closing it.
+     */
+    private suspend fun Disposable.disposeQuietly() {
+        withContext(NonCancellable) {
+            runCatching { dispose() }
+                .onFailure { Twig.debug(it) { "Fastest Server: failed to dispose a benchmarked wallet client" } }
+        }
+    }
+
+    private suspend fun <T, R> Iterable<T>.parallelMapNotNull(block: suspend (T) -> R?): List<R> =
+        coroutineScope {
+            map { async { block(it) } }
+                .awaitAll()
+                .filterNotNull()
+        }
 }
 
 private data class ValidateServerResult(
@@ -365,6 +427,23 @@ private data class ValidateServerResult(
     override suspend fun dispose() {
         lightWalletClient.dispose()
     }
+}
+
+/**
+ * Why one candidate's block-fetch stage ended, kept apart so a stream that threw and a stream that ran out
+ * of time are not both reported as a timeout.
+ */
+private sealed interface BlockFetchOutcome {
+    data class Streamed(
+        val duration: Duration,
+        val failure: Response.Failure<CompactBlockUnsafe>?
+    ) : BlockFetchOutcome
+
+    data class Threw(
+        val throwable: Throwable
+    ) : BlockFetchOutcome
+
+    data object TimedOut : BlockFetchOutcome
 }
 
 /**
@@ -387,4 +466,13 @@ private val LATENCY_THRESHOLD = 300.milliseconds
  */
 private val FETCH_THRESHOLD = 60.seconds
 
+/**
+ * Cap for a single benchmarking RPC call, in case a server accepts the connection and then never answers.
+ */
+private val RPC_TIMEOUT = 5.seconds
+
 private const val SYNCED_THRESHOLD_BLOCKS = 288
+
+private const val FASTEST_SERVER_LOG_PREFIX = "Fastest Server"
+
+private const val SERVER_SWITCH_LOG_PREFIX = "Server Switch"
