@@ -13,8 +13,9 @@ import kotlin.time.Duration.Companion.minutes
  * The vectors behind the shared iOS/Android server switch hysteresis policy (MOB-1832), including the
  * failure-path gates: a current server has to fail benchmarking in
  * [ServerSwitchThresholds.UNHEALTHY_EVALUATIONS_BEFORE_SWITCH] consecutive evaluations before the wallet
- * leaves it, and no switch is recommended inside [ServerSwitchThresholds.SWITCH_COOLDOWN] of the previous
- * one. [ServerSwitchEvaluatorTest] covers the state those two gates read.
+ * leaves it, and no improvement-driven switch is recommended inside
+ * [ServerSwitchThresholds.SWITCH_COOLDOWN] of the previous one. [ServerSwitchEvaluatorTest] covers the
+ * state those two gates read.
  */
 class ServerSwitchPolicyTest {
     private val current = endpoint("current.example")
@@ -95,6 +96,37 @@ class ServerSwitchPolicyTest {
 
         assertEquals(ServerSwitchOutcome.CurrentUnhealthy(switchTo = best, consecutiveEvaluations = 5), outcome)
         assertTrue(outcome.reason.contains("5 consecutive times"), "Unexpected reason ${outcome.reason}")
+    }
+
+    @Test
+    fun `a failover inside the cooldown window proceeds`() {
+        val best = endpoint("best.example")
+        assertEquals(
+            ServerSwitchOutcome.CurrentUnhealthy(
+                switchTo = best,
+                consecutiveEvaluations = ServerSwitchThresholds.UNHEALTHY_EVALUATIONS_BEFORE_SWITCH
+            ),
+            decide(
+                ranked = listOf(measured(best, 500.milliseconds)),
+                sinceLastSwitch = Duration.ZERO
+            )
+        )
+    }
+
+    @Test
+    fun `leaving a server no longer offered inside the cooldown window proceeds`() {
+        val best = endpoint("best.example")
+        assertEquals(
+            ServerSwitchOutcome.CurrentNotOffered(
+                switchTo = best,
+                consecutiveEvaluations = ServerSwitchThresholds.UNHEALTHY_EVALUATIONS_BEFORE_SWITCH
+            ),
+            decide(
+                ranked = listOf(measured(best, 500.milliseconds)),
+                isCurrentOffered = false,
+                sinceLastSwitch = Duration.ZERO
+            )
+        )
     }
 
     @Test

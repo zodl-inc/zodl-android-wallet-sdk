@@ -276,9 +276,13 @@ interface Synchronizer {
      *
      * A switch is only recommended when the best candidate beats [current] by at least 200 milliseconds and
      * by at least 25 percent of the current server's score, or when [current] fails benchmarking in two
-     * consecutive evaluations. No switch is recommended within thirty minutes of the previous one. This
-     * hysteresis keeps the wallet from flip-flopping between two near-equal or intermittently slow servers;
-     * the consecutive-failure count and the cooldown are held in memory for the lifetime of the process.
+     * consecutive evaluations. A switch of the first kind is additionally held off for thirty minutes after
+     * the previous one; a switch away from a server that could not be measured is not, because the two
+     * consecutive failures are already its gate and waiting out the cooldown on an unreachable server costs
+     * more than the rebuild does. This hysteresis keeps the wallet from flip-flopping between two
+     * near-equal or intermittently slow servers; the consecutive-failure count and the cooldown are held in
+     * memory for the lifetime of the process. The failure count belongs to the server it was accrued
+     * against, so changing [current] between evaluations starts it over.
      *
      * This call only counts a failed measurement of [current]; it never clears that count and never starts
      * the cooldown, because the caller is free to decline the recommendation. Call [confirmServerSwitch]
@@ -301,7 +305,8 @@ interface Synchronizer {
 
     /**
      * Tells the SDK that the wallet has actually been moved to [endpoint], which [evaluateServerSwitch]
-     * recommended. The consecutive-failure count starts over and the switch cooldown starts now.
+     * recommended. The consecutive-failure count starts over against [endpoint] and the switch cooldown
+     * starts now.
      *
      * Call this only after the switch was applied, and always when it was; see [evaluateServerSwitch].
      *

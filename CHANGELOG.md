@@ -12,16 +12,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capped at `fetchThreshold`) and applies a hysteresis policy, returning the endpoint to switch to or
   `null` to stay. A switch is only recommended when the best candidate beats the current server by at
   least 200 ms and by at least 25 % of the current score, or when the current server fails benchmarking in
-  two consecutive evaluations; and never within thirty minutes of the previous switch. The current server
-  is measured whether or not `candidates` contains it, so a host dropped from the caller's list keeps its
-  chance to win instead of being abandoned unmeasured. The consecutive-failure count and the cooldown live
-  in memory for the lifetime of the process, so they survive the Synchronizer rebuild a switch causes
-  (MOB-1832).
+  two consecutive evaluations. Only the former is held off for thirty minutes after the previous switch:
+  leaving a server that could not be measured twice in a row is a failover rather than churn, and the two
+  consecutive failures are already its gate. The current server is measured whether or not `candidates`
+  contains it, so a host dropped from the caller's list keeps its chance to win instead of being abandoned
+  unmeasured. The consecutive-failure count belongs to the server it was accrued against, so a current
+  endpoint that changes between evaluations - a manual server pick, say - starts it over. Both the count
+  and the cooldown live in memory for the lifetime of the process, so they survive the Synchronizer rebuild
+  a switch causes, and the cooldown is measured on `SystemClock.elapsedRealtime()` so that it keeps running
+  while the device sleeps (MOB-1832).
 - `Synchronizer.confirmServerSwitch(endpoint)` tells the SDK that a recommended switch was actually
-  applied: it clears the consecutive-failure count and starts the switch cooldown. `evaluateServerSwitch`
-  itself only counts failures, so a recommendation the caller declines - a transaction in flight, a failed
-  write - leaves the wallet able to be offered the same way off a broken server on the next evaluation
-  (MOB-1832).
+  applied: it starts the consecutive-failure count over against `endpoint` and starts the switch cooldown.
+  `evaluateServerSwitch` itself only counts failures, so a recommendation the caller declines - a
+  transaction in flight, a failed write - leaves the wallet able to be offered the same way off a broken
+  server on the next evaluation (MOB-1832).
 - `Synchronizer` gains both members as abstract, so any implementer or test fake must now provide them
   (MOB-1832).
 

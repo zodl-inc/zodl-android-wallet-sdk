@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.internal
 
+import android.os.SystemClock
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -26,17 +27,24 @@ internal object ServerSwitchThresholds {
      * How many consecutive evaluations have to fail to measure the current server before the wallet gives
      * up on it. A single failed measurement is a congestion spike far more often than a broken server, and
      * acting on one is what makes A to B to A flapping reachable.
+     *
+     * This is the whole gate on the failure path: a server the wallet has failed to reach twice in a row is
+     * not churn, so [SWITCH_COOLDOWN] deliberately does not hold the wallet on it.
      */
     const val UNHEALTHY_EVALUATIONS_BEFORE_SWITCH: Int = 2
 
     /**
-     * No switch is recommended within this window of the previous one the caller confirmed, whatever the
-     * benchmark says. A switch tears the Synchronizer down and rebuilds it, so the cost of an unnecessary
-     * one is high and the benefit of reacting fast to a second one is low.
+     * No improvement-driven switch is recommended within this window of the previous one the caller
+     * confirmed, whatever the benchmark says. A switch tears the Synchronizer down and rebuilds it, so the
+     * cost of an unnecessary one is high and the benefit of reacting fast to a marginally faster server is
+     * low.
      *
      * The window has to be comfortably longer than the interval at which the caller evaluates - the app
      * evaluates at most every ten minutes - or every evaluation already finds it elapsed and the cooldown
      * defers nothing.
+     *
+     * Leaving a server that could not be measured is not gated by it; see
+     * [UNHEALTHY_EVALUATIONS_BEFORE_SWITCH].
      */
     val SWITCH_COOLDOWN: Duration = 30.minutes
 }
@@ -133,7 +141,8 @@ internal object ServerSwitchPolicy {
      * @param consecutiveUnhealthyEvaluations how many evaluations in a row, this one included, have failed
      * to measure [current]; zero whenever it was measured
      * @param sinceLastSwitch how long ago the caller last confirmed a switch through
-     * [ServerSwitchEvaluator.onSwitchApplied], or null when it never did
+     * [ServerSwitchEvaluator.onSwitchApplied], or null when it never did; it gates improvement-driven
+     * switches only
      *
      * @return the outcome of the decision; it can never name [current] as the endpoint to switch to
      */
@@ -220,14 +229,22 @@ internal object ServerSwitchPolicy {
         }
     }
 
+    /**
+     * The cooldown exists to stop churn between two servers that are both alive, so it gates
+     * [ServerSwitchOutcome.ImprovementSufficient] only. A failover - [ServerSwitchOutcome.CurrentUnhealthy]
+     * or [ServerSwitchOutcome.CurrentNotOffered] - already had to earn
+     * [ServerSwitchThresholds.UNHEALTHY_EVALUATIONS_BEFORE_SWITCH] consecutive failed measurements, which
+     * is its own hysteresis; holding the wallet on a server it cannot reach for another half hour on top of
+     * that costs the user more than the extra rebuild does.
+     */
     private fun applyCooldown(
         outcome: ServerSwitchOutcome,
         sinceLastSwitch: Duration?
     ): ServerSwitchOutcome {
-        val switchTo = outcome.endpointToSwitchTo ?: return outcome
+        if (outcome !is ServerSwitchOutcome.ImprovementSufficient) return outcome
         return if (sinceLastSwitch != null && sinceLastSwitch < ServerSwitchThresholds.SWITCH_COOLDOWN) {
             ServerSwitchOutcome.SwitchOnCooldown(
-                deferred = switchTo,
+                deferred = outcome.switchTo,
                 remaining = ServerSwitchThresholds.SWITCH_COOLDOWN - sinceLastSwitch
             )
         } else {
@@ -249,13 +266,18 @@ internal object ServerSwitchPolicy {
  * down and rebuilds it - state held by the instance that made the call would be gone before the cooldown
  * it established could ever apply. Hence [PROCESS_WIDE]. It is in-memory only; a process restart begins
  * with a clean slate, which is acceptable because a restart is not something the benchmark can cause.
+ *
+ * @param timeSource the clock the cooldown is measured on; injectable for tests, and
+ * [ElapsedRealtimeTimeSource] in production
  */
 internal class ServerSwitchEvaluator(
-    private val timeSource: TimeSource = TimeSource.Monotonic
+    private val timeSource: TimeSource = ElapsedRealtimeTimeSource
 ) {
     private val mutex = Mutex()
 
     private var consecutiveUnhealthyEvaluations = 0
+
+    private var countedAgainst: LightWalletEndpoint? = null
 
     private var lastSwitchAt: TimeMark? = null
 
@@ -263,6 +285,10 @@ internal class ServerSwitchEvaluator(
      * Folds the state of the earlier evaluations into [ServerSwitchPolicy.decide] and records how this one
      * measured the current server. An evaluation in which nothing at all survived says nothing about the
      * current server either, so it neither counts against it nor clears its count.
+     *
+     * The count belongs to the server it was accrued against, not to the wallet. The current endpoint can
+     * change without any switch this evaluator was told about - the user picking a server by hand, say - and
+     * a count of two carried over would evict the newly chosen server on its first failed measurement.
      *
      * @param ranked healthy survivors of the benchmark, sorted ascending by score
      * @param isCurrentOffered whether the caller offered [current] among its candidates
@@ -273,13 +299,20 @@ internal class ServerSwitchEvaluator(
         isCurrentOffered: Boolean
     ): ServerSwitchOutcome =
         mutex.withLock {
+            val accrued =
+                if (countedAgainst?.isSameServer(current) == true) {
+                    consecutiveUnhealthyEvaluations
+                } else {
+                    0
+                }
             val consecutive =
                 when {
                     ranked.any { it.endpoint.isSameServer(current) } -> 0
-                    ranked.isEmpty() -> consecutiveUnhealthyEvaluations
-                    else -> consecutiveUnhealthyEvaluations + 1
+                    ranked.isEmpty() -> accrued
+                    else -> accrued + 1
                 }
             consecutiveUnhealthyEvaluations = consecutive
+            countedAgainst = current
             ServerSwitchPolicy.decide(
                 current = current,
                 ranked = ranked,
@@ -291,18 +324,36 @@ internal class ServerSwitchEvaluator(
 
     /**
      * Records that the wallet was actually moved to [endpoint]: the consecutive-failure count starts over
-     * and the cooldown starts now.
+     * against the new server and the cooldown starts now.
      */
     suspend fun onSwitchApplied(endpoint: LightWalletEndpoint) =
         mutex.withLock {
             Twig.info { "Server Switch: switch to ${endpoint.describe()} applied, cooldown starts now" }
             consecutiveUnhealthyEvaluations = 0
+            countedAgainst = endpoint
             lastSwitchAt = timeSource.markNow()
         }
 
     companion object {
         val PROCESS_WIDE = ServerSwitchEvaluator()
     }
+}
+
+/**
+ * `TimeSource.Monotonic` is `System.nanoTime()`, which does not advance while the device is in deep sleep.
+ * A wallet that switched at 23:00 and then woke a couple of minutes an hour accrues almost none of the
+ * cooldown overnight, so the morning evaluation would still find itself inside it and defer the failover
+ * off a server that died in the meantime - for hours on a lightly used phone.
+ * `SystemClock.elapsedRealtime()` counts sleep, which is what a wall-clock cooldown needs.
+ */
+internal object ElapsedRealtimeTimeSource : TimeSource {
+    override fun markNow(): TimeMark = ElapsedRealtimeMark(SystemClock.elapsedRealtime())
+}
+
+private class ElapsedRealtimeMark(
+    private val startedAt: Long
+) : TimeMark {
+    override fun elapsedNow(): Duration = (SystemClock.elapsedRealtime() - startedAt).milliseconds
 }
 
 private fun LightWalletEndpoint.describe(): String = "$host:$port"

@@ -105,8 +105,13 @@ class ServerSwitchEvaluatorTest {
             )
         }
 
+    /**
+     * The cooldown gates churn between two live servers, not a failover: a server the wallet has failed to
+     * measure twice in a row has already earned its own gate, and the round trip still costs those two
+     * evaluations.
+     */
     @Test
-    fun `an unhealthy current server cannot make the return trip either`() =
+    fun `an unhealthy current server is left even inside the cooldown`() =
         runBlocking {
             val timeSource = TestTimeSource()
             val evaluator = ServerSwitchEvaluator(timeSource)
@@ -119,8 +124,21 @@ class ServerSwitchEvaluatorTest {
 
             timeSource += 30.seconds
 
-            evaluator.switchTarget(current = b, ranked = bIsUnhealthy)
             assertNull(evaluator.switchTarget(current = b, ranked = bIsUnhealthy))
+            assertEquals(a, evaluator.switchTarget(current = b, ranked = bIsUnhealthy))
+        }
+
+    @Test
+    fun `failures accrued against one server do not carry over to another`() =
+        runBlocking {
+            val evaluator = ServerSwitchEvaluator(TestTimeSource())
+            val c = endpoint("c.example")
+            val ranked = listOf(measured(b, 100.milliseconds))
+
+            evaluator.switchTarget(current = a, ranked = ranked)
+
+            assertNull(evaluator.switchTarget(current = c, ranked = ranked))
+            assertEquals(b, evaluator.switchTarget(current = c, ranked = ranked))
         }
 
     @Test

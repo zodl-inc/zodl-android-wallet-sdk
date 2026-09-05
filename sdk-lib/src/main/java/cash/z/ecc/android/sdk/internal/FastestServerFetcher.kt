@@ -131,7 +131,8 @@ internal class FastestServerFetcher(
     }
 
     /**
-     * Records that the wallet was actually moved to [endpoint] after [evaluateServerSwitch] recommended it.
+     * Records that the wallet was actually moved to [endpoint] after [evaluateServerSwitch] recommended it:
+     * the consecutive-failure count starts over against [endpoint] and the switch cooldown starts now.
      */
     suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint) = switchEvaluator.onSwitchApplied(endpoint)
 
