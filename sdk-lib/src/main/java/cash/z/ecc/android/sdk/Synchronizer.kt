@@ -265,6 +265,56 @@ interface Synchronizer {
     suspend fun getFastestServers(servers: List<LightWalletEndpoint>): Flow<FastestServersResult>
 
     /**
+     * This function decides whether automatic server selection should move the wallet away from [current].
+     *
+     * [current] and every endpoint in [candidates] are benchmarked in full: server info and latest block
+     * height are fetched and timed, and an endpoint is ruled out unless its chain name, consensus branch
+     * and sync state match this SDK. Each survivor then streams the same [blocksToFetch] blocks, ending at
+     * the lowest tip any survivor reported; the stream time is its score and a candidate that needs longer
+     * than [fetchThreshold] is ruled out. [current] is measured whether or not [candidates] contains it,
+     * so a host dropped from the caller's list is never abandoned without being measured.
+     *
+     * A switch is only recommended when the best candidate beats [current] by at least 200 milliseconds and
+     * by at least 25 percent of the current server's score, or when [current] fails benchmarking in two
+     * consecutive evaluations. A switch of the first kind is additionally held off for thirty minutes after
+     * the previous one; a switch away from a server that could not be measured is not, because the two
+     * consecutive failures are already its gate and waiting out the cooldown on an unreachable server costs
+     * more than the rebuild does. This hysteresis keeps the wallet from flip-flopping between two
+     * near-equal or intermittently slow servers; the consecutive-failure count and the cooldown are held in
+     * memory for the lifetime of the process. The failure count belongs to the server it was accrued
+     * against, so changing [current] between evaluations starts it over.
+     *
+     * This call only counts a failed measurement of [current]; it never clears that count and never starts
+     * the cooldown, because the caller is free to decline the recommendation. Call [confirmServerSwitch]
+     * once the returned endpoint has actually been applied - without it the cooldown never starts, and with
+     * it on a switch that never happened a genuinely broken server would be given another thirty minutes.
+     *
+     * @param current the endpoint the wallet is connected to right now
+     * @param candidates the endpoints to benchmark alongside [current]
+     * @param fetchThreshold per-candidate cap for the block-fetch stage
+     * @param blocksToFetch how many blocks to stream from every candidate while timing it
+     *
+     * @return the endpoint to switch to, or null when the wallet should stay on [current]
+     */
+    suspend fun evaluateServerSwitch(
+        current: LightWalletEndpoint,
+        candidates: List<LightWalletEndpoint>,
+        fetchThreshold: Duration = 5.seconds,
+        blocksToFetch: Int = 1
+    ): LightWalletEndpoint?
+
+    /**
+     * Tells the SDK that the wallet has actually been moved to [endpoint], which [evaluateServerSwitch]
+     * recommended. The consecutive-failure count starts over against [endpoint] and the switch cooldown
+     * starts now.
+     *
+     * Call this only after the switch was applied, and always when it was; see [evaluateServerSwitch].
+     *
+     * @param endpoint the endpoint the wallet was moved to
+     */
+    suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint)
+
+    /**
      * Gets the current unified address for the given account.
      *
      * @param account the account whose address is of interest.

@@ -132,6 +132,7 @@ import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.CoroutineContext
+import kotlin.time.Duration
 import kotlin.time.Instant
 
 /**
@@ -474,6 +475,22 @@ class SdkSynchronizer private constructor(
         get() = processor.birthdayHeight
 
     override suspend fun getFastestServers(servers: List<LightWalletEndpoint>) = fetchFastestServers(servers)
+
+    override suspend fun evaluateServerSwitch(
+        current: LightWalletEndpoint,
+        candidates: List<LightWalletEndpoint>,
+        fetchThreshold: Duration,
+        blocksToFetch: Int
+    ): LightWalletEndpoint? =
+        fetchFastestServers.evaluateServerSwitch(
+            current = current,
+            candidates = candidates,
+            fetchThreshold = fetchThreshold,
+            blocksToFetch = blocksToFetch
+        )
+
+    override suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint) =
+        fetchFastestServers.confirmServerSwitch(endpoint)
 
     internal fun start() {
         coroutineScope.onReady()

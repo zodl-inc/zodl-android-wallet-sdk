@@ -930,6 +930,22 @@ class SlipstreamSynchronizer internal constructor(
     override suspend fun getFastestServers(servers: List<LightWalletEndpoint>) =
         fastestServerFetcher(servers)
 
+    override suspend fun evaluateServerSwitch(
+        current: LightWalletEndpoint,
+        candidates: List<LightWalletEndpoint>,
+        fetchThreshold: Duration,
+        blocksToFetch: Int
+    ): LightWalletEndpoint? =
+        fastestServerFetcher.evaluateServerSwitch(
+            current = current,
+            candidates = candidates,
+            fetchThreshold = fetchThreshold,
+            blocksToFetch = blocksToFetch
+        )
+
+    override suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint) =
+        fastestServerFetcher.confirmServerSwitch(endpoint)
+
     override suspend fun getUnifiedAddress(account: Account): String =
         wrapGetAddress { backend.getCurrentAddress(account.accountUuid.value) }
 

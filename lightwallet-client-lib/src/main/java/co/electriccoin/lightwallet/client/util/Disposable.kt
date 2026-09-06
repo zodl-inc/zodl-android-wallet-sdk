@@ -26,6 +26,13 @@ interface Disposable {
  * Executes the given [block] function on this object and then closes it down correctly whether an exception
  * is thrown or not.
  *
+ * Beware of cancellation: the disposal runs in the caller's coroutine context and is not shielded by
+ * [kotlinx.coroutines.NonCancellable], so if [block] was cancelled, an implementation of [dispose] that
+ * suspends - as the wallet clients do, taking a semaphore or hopping dispatchers - throws at its first
+ * suspension point and abandons the resource instead of releasing it, and this function swallows that
+ * throw. Where cancellation is expected, dispose explicitly inside a [kotlinx.coroutines.NonCancellable]
+ * block instead of relying on this function.
+ *
  * @param block a function to process this [Disposable] object.
  * @return the result of [block] function invoked on this object.
  */
