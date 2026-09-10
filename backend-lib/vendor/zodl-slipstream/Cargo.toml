@@ -31,6 +31,10 @@ categories = ["cryptography::cryptocurrencies"]
 license = "AGPL-3.0-only"
 repository = "https://github.com/zodl-inc/slipstream"
 
+# Own workspace root: this crate is vendored inside backend-lib (a single-package workspace)
+# and consumed through [patch.crates-io]; it must not be treated as a stray member.
+[workspace]
+
 [features]
 darkside = ["zcash_client_sqlite"]
 default = ["zcash_client_sqlite"]
