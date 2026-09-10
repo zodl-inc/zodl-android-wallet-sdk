@@ -223,6 +223,11 @@ crate-type = ["staticlib", "cdylib"]
 [workspace]
 
 [patch.crates-io]
+# OHTTP (RFC 9458) transport for the sync engine: the published zodl-slipstream 0.1.1 source,
+# vendored with `src/ohttp.rs` + the `grpc::connect` dispatch for `ohttp-gateway*` hosts, so
+# that 100% of lightwalletd traffic (including bulk GetBlockRange) is HPKE-encapsulated and
+# relayed. Upstream into zodl-inc/slipstream and drop this patch once a release carries it.
+zodl-slipstream = { path = "vendor/zodl-slipstream" }
 # `slipstream-core` is deliberately absent here: since the engine's history rewrite to the
 # published `zodl-slipstream` 0.1.x line, the dependency above resolves from crates.io like
 # the rest of the released family — the old git pin was not dropped by accident.
