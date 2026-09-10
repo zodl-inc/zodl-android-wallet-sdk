@@ -55,6 +55,23 @@ pub(crate) const UNARY_TIMEOUT: Duration = Duration::from_secs(30);
 /// stream means the connection is dead.
 pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Response-headers deadline for `GetBlockRange` against an OHTTP gateway. An OHTTP response is
+/// whole-body-buffered (gateway → relay → client as ONE message), so "headers arrived" means
+/// "the entire chunk has been transferred": [`UNARY_TIMEOUT`] would then bound the full download
+/// of a 10k-block chunk, which a ~34 MB spam-era chunk over Tor (~0.4 MB/s) cannot meet (field
+/// evidence 2026-09-10: the tip range looped `timed out after 30s` forever). Sized just above the
+/// connector's own round-trip cap (100 s) so the pipe's UNAVAILABLE wins when the gateway stalls.
+pub(crate) const OHTTP_RANGE_OPEN_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Deadline for opening a `GetBlockRange` stream to `endpoint` (see [`OHTTP_RANGE_OPEN_TIMEOUT`]).
+pub(crate) fn range_open_timeout(endpoint: &Endpoint) -> Duration {
+    if crate::ohttp::relay_for(&endpoint.host).is_some() {
+        OHTTP_RANGE_OPEN_TIMEOUT
+    } else {
+        UNARY_TIMEOUT
+    }
+}
+
 fn transport_err(context: &str, e: impl std::fmt::Display) -> SlipstreamError {
     SlipstreamError::Transport(format!("{context}: {e}"))
 }

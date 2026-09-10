@@ -358,7 +358,11 @@ pub async fn run_to_completion(
                 })
             }));
         }
-        let mut plan = FetchPlan::new(start, end, config.chunk_blocks, config.fetch_streams);
+        // Smaller plan chunks when bulk rides OHTTP-over-Tor (whole-chunk buffered responses at
+        // Tor throughput) — connector::bulk_chunk_blocks; unchanged otherwise.
+        let chunk_blocks =
+            crate::connector::bulk_chunk_blocks(config.chunk_blocks, &config.endpoint, tor);
+        let mut plan = FetchPlan::new(start, end, chunk_blocks, config.fetch_streams);
         // T6.8-S: byte-budgeted sub-chunk splitting (sandblasting-era survival).
         plan.split_bytes = config.chunk_split_bytes;
         // [v0.7 P2] Arm the wire-collapse detector only when the engine has

@@ -487,6 +487,7 @@ async fn open_and_pump(
     plan: &FetchPlan,
     gate: &AheadGate,
     out: &mpsc::Sender<SubChunk>,
+    open_timeout: Duration,
 ) -> Result<PumpOutcome, SlipstreamError> {
     let req = BlockRange {
         start: Some(BlockId {
@@ -501,14 +502,16 @@ async fn open_and_pump(
     };
     // B2 (#1755): response-headers deadline. A server that accepts the request
     // but never answers must fail fast into the worker's retry+reconnect loop.
-    let mut stream = tokio::time::timeout(grpc::UNARY_TIMEOUT, client.get_block_range(req))
+    // (Longer for OHTTP gateways, whose buffered response = the whole chunk —
+    // grpc::range_open_timeout.)
+    let mut stream = tokio::time::timeout(open_timeout, client.get_block_range(req))
         .await
         .map_err(|_| {
             SlipstreamError::Transport(format!(
                 "get_block_range {}..{}: timed out after {}s",
                 cursor.resume_from,
                 cursor.end,
-                grpc::UNARY_TIMEOUT.as_secs()
+                open_timeout.as_secs()
             ))
         })?
         .map_err(|e| {
@@ -541,6 +544,7 @@ async fn worker(
     // Bulk is direct (with bounded retry) for plain hosts even with Tor on; for an OHTTP gateway
     // with Tor on, `connect_via` routes it OHTTP-over-Tor so nothing bypasses the relay/Tor.
     let mut client = connect_via(&endpoint, tor.as_ref(), ConnPurpose::BulkFetch).await?;
+    let open_timeout = grpc::range_open_timeout(&endpoint);
     loop {
         let index = next.fetch_add(1, Ordering::Relaxed);
         if index >= plan.chunk_count() {
@@ -562,7 +566,7 @@ async fn worker(
         loop {
             attempt += 1;
             cursor.emitted_this_attempt = false;
-            match open_and_pump(&mut client, &mut cursor, &plan, &gate, &out).await {
+            match open_and_pump(&mut client, &mut cursor, &plan, &gate, &out, open_timeout).await {
                 Ok(PumpOutcome::Completed) => break,
                 Ok(PumpOutcome::ConsumerGone) => return Ok(()), // reorder stage gone (abort)
                 Err(err) => {

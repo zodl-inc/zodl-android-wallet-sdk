@@ -354,6 +354,22 @@ impl Service<Uri> for TorTcpConnector {
     }
 }
 
+/// Plan-chunk cap (blocks per `GetBlockRange`) when bulk goes OHTTP-over-Tor. An OHTTP response
+/// is one buffered message, so a chunk is downloaded whole before any block can be scanned; at
+/// Tor throughput (~0.4 MB/s observed) a 10k-block spam-era chunk (~34 MB) takes minutes and
+/// stalls the pipeline, while 2k blocks (~7 MB) keep every round trip well inside the OHTTP
+/// deadlines and let progress advance. Plain (non-Tor) OHTTP keeps the configured size.
+pub const TOR_OHTTP_MAX_CHUNK_BLOCKS: u32 = 2_000;
+
+/// Effective `chunk_blocks` for a bulk fetch of `endpoint` with the given Tor handle.
+pub fn bulk_chunk_blocks(configured: u32, endpoint: &Endpoint, tor: Option<&TorConn>) -> u32 {
+    if tor.is_some() && crate::ohttp::relay_for(&endpoint.host).is_some() {
+        configured.min(TOR_OHTTP_MAX_CHUNK_BLOCKS)
+    } else {
+        configured
+    }
+}
+
 /// Builds lightwalletd clients honoring the per-call Tor policy.
 #[derive(Clone)]
 pub struct Connector {
@@ -481,6 +497,26 @@ mod tests {
         assert_eq!(route(ConnPurpose::MetadataUnique, true), Some(TorMode::Isolated));
         assert_eq!(route(ConnPurpose::MetadataDefault, true), Some(TorMode::Default));
         assert!(crate::ohttp::relay_for("ohttp-gateway-testnet.example").is_some());
+    }
+
+    #[test]
+    fn bulk_chunk_cap_applies_only_to_ohttp_over_tor() {
+        let gw = Endpoint {
+            host: "ohttp-gateway-testnet.example".into(),
+            port: 443,
+            tls: true,
+        };
+        let plain = Endpoint {
+            host: "zec.rocks".into(),
+            port: 443,
+            tls: true,
+        };
+        // No Tor handle: configured size everywhere (a live TorConn needs a bootstrap, so the
+        // Tor-on branch is covered by the constant + the ignored live test).
+        assert_eq!(bulk_chunk_blocks(10_000, &gw, None), 10_000);
+        assert_eq!(bulk_chunk_blocks(10_000, &plain, None), 10_000);
+        assert!(TOR_OHTTP_MAX_CHUNK_BLOCKS >= 100, "must satisfy EngineConfig's chunk_blocks >= 100");
+        assert!(TOR_OHTTP_MAX_CHUNK_BLOCKS < crate::config::EngineConfig::DEFAULT_CHUNK_BLOCKS);
     }
 
     #[test]
