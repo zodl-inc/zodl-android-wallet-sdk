@@ -131,6 +131,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
 
+    // OHTTP (RFC 9458): HPKE (RFC 9180) via BouncyCastle lightweight API
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+
     // Tests
     testImplementation(libs.kotlin.reflect)
     testImplementation(libs.kotlin.test)
