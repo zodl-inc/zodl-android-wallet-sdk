@@ -23,6 +23,7 @@
 //! module moves them back into HTTP/2 trailers.
 
 use std::{
+    collections::HashMap,
     convert::Infallible,
     future::Future,
     io::Cursor,
@@ -46,6 +47,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Status
 use http_body::Frame;
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
 use hyper::body::Incoming;
+use hyper::client::conn::http2;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rand_core::{OsRng, TryRngCore};
 use sha2::Sha256;
@@ -286,6 +288,10 @@ struct OhttpClient {
     keys: HttpsTarget,
     key_config: Mutex<Option<KeyConfig>>,
     tls: Arc<rustls::ClientConfig>,
+    /// One multiplexed HTTP/2 connection per `host:port`, shared by all concurrent RPCs. Opening a
+    /// TCP+TLS connection per call is both slow and, on the Android emulator's user-mode network
+    /// stack, a reliable way to crash qemu under connection churn.
+    h2_pool: Mutex<HashMap<String, http2::SendRequest<Full<Bytes>>>>,
 }
 
 fn forward_header(name: &HeaderName) -> bool {
@@ -296,24 +302,102 @@ fn forward_header(name: &HeaderName) -> bool {
 impl OhttpClient {
     fn new(gateway_host: &str, relay_url: &str) -> Result<Self, String> {
         let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
         .with_safe_default_protocol_versions()
         .map_err(|e| format!("tls versions: {e}"))?
         .with_root_certificates(roots)
         .with_no_client_auth();
+        tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Ok(Self {
             gateway_host: gateway_host.to_string(),
             relay: parse_https(relay_url)?,
             keys: parse_https(&format!("https://{gateway_host}/ohttp-configs"))?,
             key_config: Mutex::new(None),
             tls: Arc::new(tls),
+            h2_pool: Mutex::new(HashMap::new()),
         })
     }
 
-    /// One HTTPS/1.1 exchange on a fresh connection (relays/CDNs are fine with that; the volume
-    /// is one request per gRPC call).
+    /// TCP + TLS (ALPN h2 preferred) to `target`.
+    async fn tls_connect(
+        &self,
+        target: &HttpsTarget,
+    ) -> Result<(tokio_rustls::client::TlsStream<tokio::net::TcpStream>, bool), String> {
+        let tcp = tokio::net::TcpStream::connect((target.host.as_str(), target.port))
+            .await
+            .map_err(|e| format!("connect {}: {e}", target.host))?;
+        let _ = tcp.set_nodelay(true);
+        let server_name = rustls::pki_types::ServerName::try_from(target.host.clone())
+            .map_err(|e| format!("server name: {e}"))?;
+        let tls = tokio_rustls::TlsConnector::from(Arc::clone(&self.tls))
+            .connect(server_name, tcp)
+            .await
+            .map_err(|e| format!("tls {}: {e}", target.host))?;
+        let is_h2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
+        Ok((tls, is_h2))
+    }
+
+    /// Pooled HTTP/2 sender for `target`, (re)connecting when there is none or it has closed.
+    /// Returns `None` if the server does not negotiate h2 (caller falls back to HTTP/1.1).
+    async fn h2_sender(
+        &self,
+        target: &HttpsTarget,
+    ) -> Result<Option<http2::SendRequest<Full<Bytes>>>, String> {
+        let key = format!("{}:{}", target.host, target.port);
+        {
+            let pool = self.h2_pool.lock().await;
+            if let Some(s) = pool.get(&key) {
+                if !s.is_closed() {
+                    return Ok(Some(s.clone()));
+                }
+            }
+        }
+        let (tls, is_h2) = self.tls_connect(target).await?;
+        if !is_h2 {
+            return Ok(None);
+        }
+        let (sender, conn) = http2::handshake::<_, _, Full<Bytes>>(TokioExecutor::new(), TokioIo::new(tls))
+            .await
+            .map_err(|e| format!("h2 handshake {}: {e}", target.host))?;
+        let host = target.host.clone();
+        tokio::spawn(async move {
+            if let Err(e) = conn.await {
+                tracing::debug!(host = %host, err = %e, "ohttp: h2 connection ended");
+            }
+        });
+        tracing::info!(host = %target.host, "ohttp: opened pooled h2 connection");
+        let mut pool = self.h2_pool.lock().await;
+        pool.insert(key, sender.clone());
+        Ok(Some(sender))
+    }
+
+    fn build_request(
+        &self,
+        target: &HttpsTarget,
+        method: Method,
+        content_type: Option<&str>,
+        accept: &str,
+        body: Vec<u8>,
+    ) -> Result<Request<Full<Bytes>>, String> {
+        let uri = format!("https://{}:{}{}", target.host, target.port, target.path);
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::HOST, &target.host)
+            .header(header::USER_AGENT, USER_AGENT)
+            .header(header::ACCEPT, accept)
+            .header(header::ACCEPT_ENCODING, "identity");
+        if let Some(ct) = content_type {
+            req = req.header(header::CONTENT_TYPE, ct);
+        }
+        req.body(Full::new(Bytes::from(body)))
+            .map_err(|e| format!("build request: {e}"))
+    }
+
+    /// One HTTPS exchange: multiplexed over the pooled h2 connection when available, otherwise a
+    /// fresh HTTP/1.1 connection. A stale pooled connection is dropped and retried once.
     async fn https(
         &self,
         target: &HttpsTarget,
@@ -322,47 +406,55 @@ impl OhttpClient {
         accept: &str,
         body: Vec<u8>,
     ) -> Result<(StatusCode, Bytes), String> {
-        let tcp = tokio::net::TcpStream::connect((target.host.as_str(), target.port))
-            .await
-            .map_err(|e| format!("connect {}: {e}", target.host))?;
-        let server_name = rustls::pki_types::ServerName::try_from(target.host.clone())
-            .map_err(|e| format!("server name: {e}"))?;
-        let tls = tokio_rustls::TlsConnector::from(Arc::clone(&self.tls))
-            .connect(server_name, tcp)
-            .await
-            .map_err(|e| format!("tls {}: {e}", target.host))?;
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
-            .await
-            .map_err(|e| format!("http1 handshake: {e}"))?;
-        tokio::spawn(async move {
-            let _ = conn.await;
-        });
-
-        let mut req = Request::builder()
-            .method(method)
-            .uri(&target.path)
-            .header(header::HOST, &target.host)
-            .header(header::USER_AGENT, USER_AGENT)
-            .header(header::ACCEPT, accept)
-            .header(header::ACCEPT_ENCODING, "identity");
-        if let Some(ct) = content_type {
-            req = req.header(header::CONTENT_TYPE, ct);
+        for attempt in 0..2 {
+            let req = self.build_request(target, method.clone(), content_type, accept, body.clone())?;
+            let resp = match self.h2_sender(target).await? {
+                Some(mut sender) => {
+                    if let Err(e) = sender.ready().await {
+                        self.h2_pool.lock().await.remove(&format!("{}:{}", target.host, target.port));
+                        if attempt == 0 {
+                            tracing::debug!(err = %e, "ohttp: pooled h2 not ready; reconnecting");
+                            continue;
+                        }
+                        return Err(format!("h2 ready {}: {e}", target.host));
+                    }
+                    match sender.send_request(req).await {
+                        Ok(r) => r.map(|b| b.boxed()),
+                        Err(e) => {
+                            self.h2_pool.lock().await.remove(&format!("{}:{}", target.host, target.port));
+                            if attempt == 0 {
+                                tracing::debug!(err = %e, "ohttp: h2 send failed; reconnecting");
+                                continue;
+                            }
+                            return Err(format!("h2 send {}: {e}", target.host));
+                        }
+                    }
+                }
+                None => {
+                    let (tls, _) = self.tls_connect(target).await?;
+                    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+                        .await
+                        .map_err(|e| format!("http1 handshake: {e}"))?;
+                    tokio::spawn(async move {
+                        let _ = conn.await;
+                    });
+                    sender
+                        .send_request(req)
+                        .await
+                        .map_err(|e| format!("send {}: {e}", target.host))?
+                        .map(|b| b.boxed())
+                }
+            };
+            let status = resp.status();
+            let bytes = resp
+                .into_body()
+                .collect()
+                .await
+                .map_err(|e| format!("read {}: {e}", target.host))?
+                .to_bytes();
+            return Ok((status, bytes));
         }
-        let req = req
-            .body(Full::new(Bytes::from(body)))
-            .map_err(|e| format!("build request: {e}"))?;
-        let resp = sender
-            .send_request(req)
-            .await
-            .map_err(|e| format!("send {}: {e}", target.host))?;
-        let status = resp.status();
-        let bytes = resp
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| format!("read {}: {e}", target.host))?
-            .to_bytes();
-        Ok((status, bytes))
+        Err(format!("https {}: retries exhausted", target.host))
     }
 
     async fn key_config(&self, refresh: bool) -> Result<KeyConfig, String> {
@@ -601,5 +693,19 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 5, "expected 5 compact blocks over OHTTP");
+
+        // Burst: 8 concurrent unary calls on cloned clients must all succeed over the shared
+        // h2 connection to the relay (this is the sync engine's real access pattern).
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let mut cc = c.clone();
+            tasks.push(tokio::spawn(async move {
+                crate::grpc::get_latest_block_height(&mut cc).await
+            }));
+        }
+        for t in tasks {
+            let h = t.await.expect("join").expect("burst call");
+            assert!(h > 4_000_000);
+        }
     }
 }
