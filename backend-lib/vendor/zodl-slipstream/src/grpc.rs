@@ -169,12 +169,21 @@ pub async fn connect(endpoint: &Endpoint) -> Result<LwdClient, SlipstreamError> 
         tracing::info!(gateway = %endpoint.host, relay, "lightwalletd via OHTTP (RFC 9458)");
         let connector = crate::ohttp::OhttpConnector::new(&endpoint.host, relay)
             .map_err(|e| transport_err("ohttp connector", e))?;
-        let channel = TonicEndpoint::from_shared(endpoint.uri())
+        // Plain `http://` on purpose: the transport tonic sees is an in-memory pipe to the
+        // in-process h2 server; TLS happens inside the connector, towards the relay. (tonic
+        // refuses an `https://` URI without a tls_config.)
+        let pipe_uri = format!("http://{}:{}", endpoint.host, endpoint.port);
+        let channel = TonicEndpoint::from_shared(pipe_uri)
             .map_err(|e| transport_err("endpoint uri", e))?
             .connect_timeout(std::time::Duration::from_secs(10))
             .connect_with_connector(connector)
             .await
-            .map_err(|e| transport_err(&format!("ohttp connect {}", endpoint.host), e))?;
+            .map_err(|e| {
+                let source = std::error::Error::source(&e)
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                transport_err(&format!("ohttp connect {}", endpoint.host), format!("{e}{source}"))
+            })?;
         return Ok(CompactTxStreamerClient::new(channel));
     }
     let mut ep = TonicEndpoint::from_shared(endpoint.uri())
