@@ -45,7 +45,7 @@ use zcash_client_backend::proto::{
 use crate::{
     chunk::{Chunk, ChunkQueueSender},
     config::{Endpoint, EngineConfig},
-    connector::connect_direct_with_retry,
+    connector::{ConnPurpose, TorConn, connect_via},
     error::SlipstreamError,
     grpc::{self, LwdClient},
     verify::Continuity,
@@ -532,12 +532,15 @@ async fn open_and_pump(
 async fn worker(
     worker_id: usize,
     endpoint: Endpoint,
+    tor: Option<TorConn>,
     plan: FetchPlan,
     next: Arc<AtomicU64>,
     gate: AheadGate,
     out: mpsc::Sender<SubChunk>,
 ) -> Result<(), SlipstreamError> {
-    let mut client = connect_direct_with_retry(&endpoint).await?;
+    // Bulk is direct (with bounded retry) for plain hosts even with Tor on; for an OHTTP gateway
+    // with Tor on, `connect_via` routes it OHTTP-over-Tor so nothing bypasses the relay/Tor.
+    let mut client = connect_via(&endpoint, tor.as_ref(), ConnPurpose::BulkFetch).await?;
     loop {
         let index = next.fetch_add(1, Ordering::Relaxed);
         if index >= plan.chunk_count() {
@@ -589,7 +592,7 @@ async fn worker(
                     // Reconnect: the channel may be poisoned after a stream error. Resilient to a
                     // brief server outage (bounded retry-with-backoff) so a transient connect blip
                     // resumes this chunk in place instead of failing it → restarting the whole pass.
-                    client = connect_direct_with_retry(&endpoint).await?;
+                    client = connect_via(&endpoint, tor.as_ref(), ConnPurpose::BulkFetch).await?;
                 }
             }
         }
@@ -826,8 +829,12 @@ async fn release_ordered(
 ///
 /// `progress` — if `Some`, bumps `fetched_blocks` by the block count of each
 /// ordered sub-chunk as it is released (Relaxed atomic; no cross-counter guarantees).
+///
+/// `tor` — the session's Tor handle when Tor is on. Bulk stays direct for plain hosts; for an
+/// OHTTP gateway it makes the workers dial the relay through Tor (see `connector::route`).
 pub async fn run_fetch(
     endpoint: &Endpoint,
+    tor: Option<TorConn>,
     plan: FetchPlan,
     queue: ChunkQueueSender,
     progress: Option<Arc<Progress>>,
@@ -857,6 +864,7 @@ pub async fn run_fetch(
         handles.push(tokio::spawn(worker(
             worker_id,
             endpoint.clone(),
+            tor.clone(),
             plan.clone(),
             Arc::clone(&next),
             gate.clone(),

@@ -283,9 +283,23 @@ version = "0.3"
 [dependencies.webpki-roots]
 version = "1"
 
+# OHTTP-over-Tor: the connector dials the relay / gateway through an arti stream. Same versions
+# and features zcash_client_backend's `tor` feature already enables, so the graph is unchanged.
+[dependencies.arti-client]
+version = "0.35"
+default-features = false
+features = ["compression", "rustls", "tokio", "onion-service-client"]
+
+[dependencies.tor-rtcompat]
+version = "0.35"
+
 
 [dev-dependencies.bls12_381]
 version = "0.8"
+
+[dev-dependencies.tracing-subscriber]
+version = "0.3"
+features = ["env-filter"]
 
 [dev-dependencies.jubjub]
 version = "0.10"

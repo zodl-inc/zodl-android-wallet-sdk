@@ -21,6 +21,11 @@
 //! Wire format is RFC 9458 §4.3/§4.4 with the suite DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 /
 //! AES-128-GCM; the gateway folds the gRPC trailers into the Binary HTTP header section and this
 //! module moves them back into HTTP/2 trailers.
+//!
+//! **Tor.** The TCP leg to the relay (and the one-off `/ohttp-configs` key fetch from the gateway)
+//! is opened through a [`Dialer`]: [`Dialer::Direct`] uses the device's own connection,
+//! [`Dialer::Tor`] opens an arti stream so the relay only ever sees a Tor exit IP. Everything
+//! above TCP (TLS to the relay, HPKE to the gateway) is identical in both cases.
 
 use std::{
     collections::HashMap,
@@ -32,6 +37,8 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
+
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use aes_gcm::{
     Aes128Gcm, KeyInit, Nonce,
@@ -90,6 +97,75 @@ pub fn relay_for(gateway_host: &str) -> Option<&'static str> {
     }
 }
 
+/// Object-safe alias for the byte stream underneath TLS (a plain TCP socket or an arti Tor
+/// stream); Rust allows only one non-auto trait per `dyn`, hence the blanket supertrait.
+trait AsyncIo: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> AsyncIo for T {}
+type BoxedIo = Box<dyn AsyncIo>;
+
+/// Per-attempt bound on opening one Tor stream to the relay/gateway. A healthy circuit connects
+/// in a few seconds; a stuck one is cut here and retried on a FRESH isolated circuit.
+const TOR_DIAL_TIMEOUT: Duration = Duration::from_secs(20);
+/// Fresh-circuit attempts per Tor dial before the error surfaces to the caller.
+const TOR_DIAL_ATTEMPTS: u32 = 3;
+
+/// How the TCP leg towards the relay / gateway is opened.
+#[derive(Clone)]
+pub enum Dialer {
+    /// The device's own network path (the relay sees the device IP, but only ciphertext).
+    Direct,
+    /// Through Tor: the relay sees a Tor exit IP. Streams opened from this handle share its
+    /// isolation group; callers hand in an `isolated_client()` when they want a fresh one.
+    Tor(arti_client::TorClient<tor_rtcompat::PreferredRuntime>),
+}
+
+impl Dialer {
+    pub fn is_tor(&self) -> bool {
+        matches!(self, Dialer::Tor(_))
+    }
+
+    async fn dial(&self, host: &str, port: u16) -> Result<BoxedIo, String> {
+        match self {
+            Dialer::Direct => {
+                let tcp = tokio::net::TcpStream::connect((host, port))
+                    .await
+                    .map_err(|e| format!("connect {host}: {e}"))?;
+                let _ = tcp.set_nodelay(true);
+                Ok(Box::new(tcp))
+            }
+            Dialer::Tor(client) => {
+                // arti resolves `host` at the exit relay, so no DNS leaves the device either.
+                let mut last_err = String::new();
+                for attempt in 1..=TOR_DIAL_ATTEMPTS {
+                    let c = if attempt == 1 { client.clone() } else { client.isolated_client() };
+                    let started = std::time::Instant::now();
+                    match tokio::time::timeout(TOR_DIAL_TIMEOUT, c.connect((host, port))).await {
+                        Ok(Ok(stream)) => {
+                            tracing::info!(
+                                host,
+                                port,
+                                attempt,
+                                ms = started.elapsed().as_millis() as u64,
+                                "ohttp: dialled through Tor"
+                            );
+                            return Ok(Box::new(stream));
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(host, attempt, err = %e, "ohttp: tor dial failed — retrying on a fresh circuit");
+                            last_err = format!("tor connect {host}: {e}");
+                        }
+                        Err(_) => {
+                            tracing::warn!(host, attempt, timeout_secs = TOR_DIAL_TIMEOUT.as_secs(), "ohttp: tor dial timed out — retrying on a fresh circuit");
+                            last_err = format!("tor connect {host}: exceeded {}s", TOR_DIAL_TIMEOUT.as_secs());
+                        }
+                    }
+                }
+                Err(last_err)
+            }
+        }
+    }
+}
+
 /// `tower::Service<Uri>` connector for `Endpoint::connect_with_connector`.
 #[derive(Clone)]
 pub struct OhttpConnector {
@@ -97,10 +173,27 @@ pub struct OhttpConnector {
 }
 
 impl OhttpConnector {
+    /// Direct dialer: the relay sees the device IP.
     pub fn new(gateway_host: &str, relay_url: &str) -> Result<Self, String> {
+        Self::with_dialer(gateway_host, relay_url, Dialer::Direct)
+    }
+
+    /// Connector whose TCP legs (relay POSTs and the gateway key fetch) go through `dialer`.
+    pub fn with_dialer(gateway_host: &str, relay_url: &str, dialer: Dialer) -> Result<Self, String> {
         Ok(Self {
-            client: Arc::new(OhttpClient::new(gateway_host, relay_url)?),
+            client: Arc::new(OhttpClient::new(gateway_host, relay_url, dialer)?),
         })
+    }
+
+    /// Eagerly fetch the gateway key configuration and open the pooled h2 connection to the
+    /// relay, so that the caller can bound (and retry on a fresh circuit) the slow part of a Tor
+    /// connect instead of paying it inside the first RPC's deadline. Idempotent.
+    pub async fn warm_up(&self) -> Result<(), String> {
+        self.client.key_config(false).await?;
+        if self.client.h2_sender(&self.client.relay).await?.is_none() {
+            tracing::debug!("ohttp: relay did not negotiate h2; will use HTTP/1.1 per request");
+        }
+        Ok(())
     }
 }
 
@@ -288,9 +381,11 @@ struct OhttpClient {
     keys: HttpsTarget,
     key_config: Mutex<Option<KeyConfig>>,
     tls: Arc<rustls::ClientConfig>,
+    dialer: Dialer,
     /// One multiplexed HTTP/2 connection per `host:port`, shared by all concurrent RPCs. Opening a
     /// TCP+TLS connection per call is both slow and, on the Android emulator's user-mode network
-    /// stack, a reliable way to crash qemu under connection churn.
+    /// stack, a reliable way to crash qemu under connection churn. Over Tor this matters even
+    /// more: every new connection would be a new circuit build.
     h2_pool: Mutex<HashMap<String, http2::SendRequest<Full<Bytes>>>>,
 }
 
@@ -300,7 +395,7 @@ fn forward_header(name: &HeaderName) -> bool {
 }
 
 impl OhttpClient {
-    fn new(gateway_host: &str, relay_url: &str) -> Result<Self, String> {
+    fn new(gateway_host: &str, relay_url: &str, dialer: Dialer) -> Result<Self, String> {
         let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
@@ -316,23 +411,21 @@ impl OhttpClient {
             keys: parse_https(&format!("https://{gateway_host}/ohttp-configs"))?,
             key_config: Mutex::new(None),
             tls: Arc::new(tls),
+            dialer,
             h2_pool: Mutex::new(HashMap::new()),
         })
     }
 
-    /// TCP + TLS (ALPN h2 preferred) to `target`.
+    /// TCP (direct or via Tor, per the dialer) + TLS (ALPN h2 preferred) to `target`.
     async fn tls_connect(
         &self,
         target: &HttpsTarget,
-    ) -> Result<(tokio_rustls::client::TlsStream<tokio::net::TcpStream>, bool), String> {
-        let tcp = tokio::net::TcpStream::connect((target.host.as_str(), target.port))
-            .await
-            .map_err(|e| format!("connect {}: {e}", target.host))?;
-        let _ = tcp.set_nodelay(true);
+    ) -> Result<(tokio_rustls::client::TlsStream<BoxedIo>, bool), String> {
+        let io = self.dialer.dial(&target.host, target.port).await?;
         let server_name = rustls::pki_types::ServerName::try_from(target.host.clone())
             .map_err(|e| format!("server name: {e}"))?;
         let tls = tokio_rustls::TlsConnector::from(Arc::clone(&self.tls))
-            .connect(server_name, tcp)
+            .connect(server_name, io)
             .await
             .map_err(|e| format!("tls {}: {e}", target.host))?;
         let is_h2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
@@ -367,7 +460,7 @@ impl OhttpClient {
                 tracing::debug!(host = %host, err = %e, "ohttp: h2 connection ended");
             }
         });
-        tracing::info!(host = %target.host, "ohttp: opened pooled h2 connection");
+        tracing::info!(host = %target.host, via_tor = self.dialer.is_tor(), "ohttp: opened pooled h2 connection");
         let mut pool = self.h2_pool.lock().await;
         pool.insert(key, sender.clone());
         Ok(Some(sender))
@@ -470,7 +563,7 @@ impl OhttpClient {
             return Err(format!("key config fetch: HTTP {status}"));
         }
         let cfg = KeyConfig::parse_supported(&doc)?;
-        tracing::info!(gateway = %self.gateway_host, key_id = cfg.key_id, "ohttp: key config loaded");
+        tracing::info!(gateway = %self.gateway_host, key_id = cfg.key_id, via_tor = self.dialer.is_tor(), "ohttp: key config loaded");
         *self.key_config.lock().await = Some(cfg.clone());
         Ok(cfg)
     }
@@ -707,5 +800,90 @@ mod tests {
             let h = t.await.expect("join").expect("burst call");
             assert!(h > 4_000_000);
         }
+    }
+
+    /// Live OHTTP **over Tor**: bootstraps arti into a temp dir, then runs the same RPC mix as
+    /// [`live_testnet_via_ohttp`] through `Dialer::Tor` for every `ConnPurpose` (incl. BulkFetch,
+    /// which is direct without Tor but must ride the Tor circuit when Tor is on). Tor bootstrap
+    /// takes 30–90 s on a cold cache. Run manually:
+    /// `RUST_LOG=info cargo test --lib ohttp -- --include-ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "network + Tor bootstrap"]
+    async fn live_testnet_via_ohttp_over_tor() {
+        use crate::connector::{ConnPurpose, TorConn, connect_via};
+        use zcash_client_backend::proto::service::{BlockId, BlockRange};
+
+        let _ = tracing_subscriber_init();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let started = std::time::Instant::now();
+        let tor = tokio::time::timeout(Duration::from_secs(240), TorConn::bootstrap(dir.path(), true))
+            .await
+            .expect("tor bootstrap within 240s")
+            .expect("tor bootstrap");
+        eprintln!("tor bootstrapped in {:.1}s", started.elapsed().as_secs_f64());
+
+        let ep = crate::config::Endpoint {
+            host: "ohttp-gateway-testnet.example".into(),
+            port: 443,
+            tls: true,
+        };
+
+        // Metadata purposes: isolated / default circuit.
+        for purpose in [ConnPurpose::MetadataDefault, ConnPurpose::MetadataUnique] {
+            let t = std::time::Instant::now();
+            let mut c = tokio::time::timeout(Duration::from_secs(120), connect_via(&ep, Some(&tor), purpose))
+                .await
+                .expect("connect within 120s")
+                .unwrap_or_else(|e| panic!("connect {purpose:?} via ohttp-over-tor: {e}"));
+            eprintln!("{purpose:?}: connected (warm) in {:.1}s", t.elapsed().as_secs_f64());
+            let info = crate::grpc::get_lightd_info(&mut c).await.expect("lightd info");
+            assert_eq!(info.chain_name, "test");
+            let h = crate::grpc::get_latest_block_height(&mut c).await.expect("height");
+            assert!(h > 4_000_000, "height {h}");
+        }
+
+        // BulkFetch: direct without Tor, but over Tor for an OHTTP gateway when Tor is on.
+        let mut c = tokio::time::timeout(
+            Duration::from_secs(120),
+            connect_via(&ep, Some(&tor), ConnPurpose::BulkFetch),
+        )
+        .await
+        .expect("bulk connect within 120s")
+        .expect("bulk connect via ohttp-over-tor");
+        let range = BlockRange {
+            start: Some(BlockId { height: 4_123_503, hash: vec![] }),
+            end: Some(BlockId { height: 4_123_507, hash: vec![] }),
+            ..Default::default()
+        };
+        let mut stream = c.get_block_range(range).await.expect("block range").into_inner();
+        let mut n = 0;
+        while let Some(block) = stream.message().await.expect("stream item") {
+            assert!(block.height >= 4_123_503 && block.height <= 4_123_507);
+            n += 1;
+        }
+        assert_eq!(n, 5, "expected 5 compact blocks over OHTTP-over-Tor");
+
+        // Burst on the shared Tor-backed h2 connection.
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let mut cc = c.clone();
+            tasks.push(tokio::spawn(async move {
+                crate::grpc::get_latest_block_height(&mut cc).await
+            }));
+        }
+        for t in tasks {
+            let h = t.await.expect("join").expect("burst call");
+            assert!(h > 4_000_000);
+        }
+        eprintln!("ohttp-over-tor: all RPCs ok in {:.1}s total", started.elapsed().as_secs_f64());
+    }
+
+    /// `RUST_LOG`-driven logging for the live tests, so the engine's own `tracing::info!` lines
+    /// (Tor dial, key config, pooled h2) show up under `--nocapture`.
+    fn tracing_subscriber_init() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .try_init()
     }
 }
