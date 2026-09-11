@@ -69,6 +69,29 @@ pub(super) struct RoundSessionHandle {
     vote_tree_node_urls: Vec<String>,
     ceremony_start_seconds: Option<u64>,
     vote_end_time_seconds: Option<u64>,
+    // Task 6 additions, both captured once at session open rather than
+    // re-derived per `runRoundNative` call:
+    //
+    // - `round_id`: `build_delegation_step_inputs` needs the round's
+    //   persisted `VotingRoundParams`, which `runRoundNative`'s glue loads by
+    //   round id; the session already binds one round for its lifetime (see
+    //   `openRoundSessionNative`'s `RoundBinding`), so this mirrors that
+    //   binding rather than asking the JNI caller to repeat it.
+    // - `transport`: the same `Arc<HyperTransport<ZodlVotingRoute>>` already
+    //   wired into `executor`/`helper_client`, reused unmodified as the PIR
+    //   fleet's `Arc<dyn voting::Transport>` so delegation PIR traffic rides
+    //   the same Tor-backed transport as everything else this session does,
+    //   rather than opening a second one.
+    round_id: String,
+    transport: SessionTransport,
+    // Cached so `getKeystoneSigningRequestsNative` (in `delegation.rs`) can
+    // call `DelegationPipeline::keystone_request` on the *same* pipeline
+    // instance a delegation-enabled `runRoundNative` pass already built,
+    // instead of constructing (and re-validating against the wallet DB) a
+    // redundant second one. Populated the first time `runRoundNative` is
+    // called with non-null `delegation_inputs`; `None` until then.
+    delegation_pipeline:
+        Mutex<Option<Arc<voting::DelegationPipeline<voting::SqliteWalletDbOpener>>>>,
 }
 
 static NEXT_SESSION_HANDLE: AtomicI64 = AtomicI64::new(1);
@@ -84,7 +107,23 @@ fn next_session_handle() -> anyhow::Result<jlong> {
         .map_err(|_| anyhow!("round session handle space exhausted"))
 }
 
-fn session_from_handle(handle: jlong) -> anyhow::Result<Arc<RoundSessionHandle>> {
+impl RoundSessionHandle {
+    /// The [`voting::DelegationPipeline`] a prior delegation-enabled
+    /// `runRoundNative` call cached, if any. Read by `delegation.rs`'s
+    /// `getKeystoneSigningRequestsNative` -- see the field's own doc comment
+    /// on why the same instance is reused rather than rebuilt.
+    pub(super) fn cached_delegation_pipeline(
+        &self,
+    ) -> anyhow::Result<Option<Arc<voting::DelegationPipeline<voting::SqliteWalletDbOpener>>>> {
+        Ok(self
+            .delegation_pipeline
+            .lock()
+            .map_err(|_| anyhow!("round session delegation pipeline mutex poisoned"))?
+            .clone())
+    }
+}
+
+pub(super) fn session_from_handle(handle: jlong) -> anyhow::Result<Arc<RoundSessionHandle>> {
     if handle <= 0 {
         return Err(anyhow!(
             "Round session handle must be positive, got {handle}"
@@ -250,7 +289,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
 
         let chain_config = ChainSubmissionClientConfig::for_network(network, chain_endpoints);
         let binding = RoundBinding {
-            round_id,
+            round_id: round_id.clone(),
             network,
             proposals,
             hotkey_secret,
@@ -272,6 +311,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
             vote_tree_node_urls,
             ceremony_start_seconds,
             vote_end_time_seconds,
+            round_id,
+            transport,
+            delegation_pipeline: Mutex::new(None),
         });
 
         let handle = next_session_handle()?;
@@ -435,11 +477,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
 /// mirroring iOS's `max_active_heavy_jobs`; see the task report for why that
 /// is flagged as a concern rather than fixed here.
 ///
-/// `delegation_inputs` is accepted (per the brief's signature) but ignored:
-/// Task 6 builds `DelegationStepInputs` from it and plugs it into the
-/// `RoundHostContext` template below. Building that conversion here would be
-/// the scope creep the task brief explicitly warns against ("Task 6 fills in
-/// the `delegation: None` placeholder later, don't build that yourself").
+/// `delegation_inputs` is `null` for a signer-less precompute-only pass or a
+/// share-tracking-only pass (every step other than `Delegate`/
+/// `AdvanceDelegation` tolerates `None` per `RoundHostContext::delegation`'s
+/// own doc comment); otherwise it decodes to a real `DelegationStepInputs`
+/// via `delegation_driver::delegation_step_inputs_from_jni`, which also
+/// returns the concrete `DelegationPipeline` this call caches on the session
+/// for `getKeystoneSigningRequestsNative` to reuse later (see
+/// `RoundSessionHandle::delegation_pipeline`'s doc comment).
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_runRoundNative<
     'local,
@@ -450,9 +495,27 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
     tor_runtime: jlong,
     delegation_inputs: JObject<'local>,
 ) -> jobject {
-    let _ = &delegation_inputs;
     let res = catch_unwind(&mut env, |env| {
         let session = session_from_handle(session_handle)?;
+
+        let delegation = if delegation_inputs.is_null() {
+            None
+        } else {
+            let transport = Arc::clone(&session.transport) as Arc<dyn voting::Transport>;
+            let (step_inputs, pipeline) =
+                super::delegation_driver::delegation_step_inputs_from_jni(
+                    env,
+                    &delegation_inputs,
+                    &session.round_id,
+                    transport,
+                )?;
+            *session
+                .delegation_pipeline
+                .lock()
+                .map_err(|_| anyhow!("round session delegation pipeline mutex poisoned"))? =
+                Some(pipeline);
+            Some(step_inputs)
+        };
 
         // SAFETY: see `resolve_tor_runtime`'s doc comment. This is a separate
         // resolution from `openRoundSessionNative`'s: the session's own Tor
@@ -469,10 +532,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
             ceremony_start_seconds: session.ceremony_start_seconds,
             vote_end_time_seconds: session.vote_end_time_seconds,
             vote_tree_node_urls: session.vote_tree_node_urls.clone(),
-            // Task 6 fills this in from `delegation_inputs`; every step other
-            // than `Delegate`/`AdvanceDelegation` tolerates `None` per
-            // `RoundHostContext::delegation`'s own doc comment.
-            delegation: None,
+            delegation,
             chain_policy: ChainAdvancePolicy::default(),
             max_proof_concurrency: 1,
         };

@@ -38,6 +38,7 @@ use crate::utils::{
 
 mod db;
 mod delegation;
+mod delegation_driver;
 mod helpers;
 mod notes;
 mod progress;

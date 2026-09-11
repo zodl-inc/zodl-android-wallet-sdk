@@ -99,6 +99,32 @@ const JNI_DELEGATION_PROOF_RESULT_CTOR_SIG: &str = "([B[[B[B[B[[B[B[B)V";
 // place of sighash on delegate-vote submission (vote-chain 400:
 // "invalid message field: tx1 effects must be 821 bytes, got 0").
 const JNI_DELEGATION_SUBMISSION_RESULT_CTOR_SIG: &str = "([B[B[B[B[B[B[B[B[[BLjava/lang/String;)V";
+// Task 6 (voting-4.0.0-sdk-port): batch Keystone signing surface replacing the
+// old buildGovernancePczt*/getDelegationSubmissionWithKeystoneSig*/
+// storeKeystoneSignatureNative pair. No Kotlin-side classes exist yet for
+// these three -- same situation as JNI_ROUND_PLAN/JNI_ROUND_RUN_REPORT above
+// (Rust/JNI-export-only task; the app-side class is a later task).
+const JNI_KEYSTONE_SIGNING_REQUEST: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniKeystoneSigningRequest";
+const JNI_KEYSTONE_SIGNATURE_BATCH_RESULT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniKeystoneSignatureBatchResult";
+const JNI_KEYSTONE_SIGNATURE_RECORD: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniKeystoneSignatureRecord";
+// Proposed JniKeystoneSigningRequest(ByteArray, ByteArray, ByteArray,
+// ByteArray, Int, String, Long, Long, Int, Int) constructor, one parameter
+// per zcash_voting::delegate::KeystoneSigningRequest field in declaration
+// order (pczt_bytes, redacted_pczt_bytes, pczt_sighash, rk, action_index,
+// display_memo, eligible_weight_zatoshi, delegated_weight_zatoshi,
+// bundle_count, bundle_index).
+const JNI_KEYSTONE_SIGNING_REQUEST_CTOR_SIG: &str = "([B[B[B[BILjava/lang/String;JJII)V";
+// Proposed JniKeystoneSignatureBatchResult(Int, Int) constructor, matching
+// zcash_voting::storage::KeystoneSignatureBatchResult { inserted,
+// already_present }.
+const JNI_KEYSTONE_SIGNATURE_BATCH_RESULT_CTOR_SIG: &str = "(II)V";
+// Proposed JniKeystoneSignatureRecord(Int, ByteArray, ByteArray, ByteArray)
+// constructor, matching zcash_voting::storage::KeystoneSignatureRecord
+// { bundle_index, sig, sighash, rk }.
+const JNI_KEYSTONE_SIGNATURE_RECORD_CTOR_SIG: &str = "(I[B[B[B)V";
 // Must match JniVoteCommitResult(Int, Int, Int, String, ByteArray, ByteArray,
 // ByteArray, ByteArray, Array<JniWireEncryptedShare>, Long, ByteArray,
 // Array<ByteArray>, ByteArray, ByteArray, Array<JniSharePayload>) in
@@ -358,7 +384,7 @@ pub(super) fn java_bytes32(
     require_32(java_bytes(env, array, field)?, field)
 }
 
-fn java_byte_array_field(
+pub(super) fn java_byte_array_field(
     env: &mut JNIEnv<'_>,
     obj: &JObject<'_>,
     name: &str,
@@ -367,13 +393,37 @@ fn java_byte_array_field(
     java_bytes(env, &field, name)
 }
 
-fn java_string_field(
+/// Like [`java_byte_array_field`], but for a nullable `ByteArray?` field:
+/// `None` when the field itself is Java `null`.
+pub(super) fn java_nullable_byte_array_field(
+    env: &mut JNIEnv<'_>,
+    obj: &JObject<'_>,
+    name: &str,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let field = env.get_field(obj, name, "[B")?.l()?;
+    if field.is_null() {
+        Ok(None)
+    } else {
+        java_bytes(env, &JByteArray::from(field), name).map(Some)
+    }
+}
+
+pub(super) fn java_string_field(
     env: &mut JNIEnv<'_>,
     obj: &JObject<'_>,
     name: &str,
 ) -> anyhow::Result<String> {
     let field = JString::from(env.get_field(obj, name, "Ljava/lang/String;")?.l()?);
     java_string_to_rust(env, &field)
+}
+
+pub(super) fn java_string_array_field(
+    env: &mut JNIEnv<'_>,
+    obj: &JObject<'_>,
+    name: &str,
+) -> anyhow::Result<Vec<String>> {
+    let field = JObjectArray::from(env.get_field(obj, name, "[Ljava/lang/String;")?.l()?);
+    java_string_array(env, &field, name)
 }
 
 fn java_byte_array_list_field(
@@ -1694,6 +1744,156 @@ pub(super) fn make_jni_delegation_submission_result<'local>(
         ],
     )?;
     Ok(obj.into_raw())
+}
+
+pub(super) fn java_keystone_signature_input_array(
+    env: &mut JNIEnv<'_>,
+    signatures: &JObjectArray<'_>,
+    field: &str,
+) -> anyhow::Result<Vec<voting::storage::KeystoneSignatureInput>> {
+    let count = env.get_array_length(signatures)?;
+    (0..count)
+        .map(|index| {
+            let signature = env.get_object_array_element(signatures, index)?;
+            java_keystone_signature_input(env, &signature)
+                .map_err(|e| anyhow!("{field}[{index}]: {e}"))
+        })
+        .collect()
+}
+
+fn java_keystone_signature_input(
+    env: &mut JNIEnv<'_>,
+    obj: &JObject<'_>,
+) -> anyhow::Result<voting::storage::KeystoneSignatureInput> {
+    Ok(voting::storage::KeystoneSignatureInput {
+        bundle_index: jint_to_u32(env.get_field(obj, "bundleIndex", "I")?.i()?, "bundleIndex")?,
+        sig: java_byte_array_field(env, obj, "sig")?,
+        sighash: java_byte_array_field(env, obj, "sighash")?,
+        rk: java_byte_array_field(env, obj, "rk")?,
+    })
+}
+
+pub(super) fn make_jni_keystone_signature_batch_result<'local>(
+    env: &mut JNIEnv<'local>,
+    result: voting::storage::KeystoneSignatureBatchResult,
+) -> anyhow::Result<jobject> {
+    let class = env.find_class(JNI_KEYSTONE_SIGNATURE_BATCH_RESULT)?;
+    let obj = env.new_object(
+        &class,
+        JNI_KEYSTONE_SIGNATURE_BATCH_RESULT_CTOR_SIG,
+        &[
+            JValue::Int(u32_to_jint(result.inserted, "inserted")?),
+            JValue::Int(u32_to_jint(result.already_present, "already_present")?),
+        ],
+    )?;
+    Ok(obj.into_raw())
+}
+
+pub(super) fn make_jni_keystone_signature_record_array<'local>(
+    env: &mut JNIEnv<'local>,
+    records: Vec<voting::storage::KeystoneSignatureRecord>,
+) -> anyhow::Result<jobjectArray> {
+    let len = usize_to_jint(records.len(), "records length")?;
+    let class = env.find_class(JNI_KEYSTONE_SIGNATURE_RECORD)?;
+    let mut records = records.into_iter().enumerate();
+    if let Some((_, first)) = records.next() {
+        let first = make_jni_keystone_signature_record(env, first)?;
+        let array = env.new_object_array(len, &class, &first)?;
+        env.delete_local_ref(first)?;
+        for (index, record) in records {
+            let record = make_jni_keystone_signature_record(env, record)?;
+            env.set_object_array_element(&array, usize_to_jint(index, "records index")?, &record)?;
+            env.delete_local_ref(record)?;
+        }
+        Ok(array.into_raw())
+    } else {
+        Ok(env.new_object_array(0, &class, JObject::null())?.into_raw())
+    }
+}
+
+fn make_jni_keystone_signature_record<'local>(
+    env: &mut JNIEnv<'local>,
+    record: voting::storage::KeystoneSignatureRecord,
+) -> anyhow::Result<JObject<'local>> {
+    env.with_local_frame_returning_local(16, |env| {
+        let class = env.find_class(JNI_KEYSTONE_SIGNATURE_RECORD)?;
+        let sig = make_jni_bytes(env, &record.sig)?;
+        let sighash = make_jni_bytes(env, &record.sighash)?;
+        let rk = make_jni_bytes(env, &record.rk)?;
+        Ok(env.new_object(
+            &class,
+            JNI_KEYSTONE_SIGNATURE_RECORD_CTOR_SIG,
+            &[
+                JValue::Int(u32_to_jint(record.bundle_index, "bundle_index")?),
+                JValue::Object(&sig),
+                JValue::Object(&sighash),
+                JValue::Object(&rk),
+            ],
+        )?)
+    })
+}
+
+pub(super) fn make_jni_keystone_signing_request_array<'local>(
+    env: &mut JNIEnv<'local>,
+    requests: Vec<voting::delegate::KeystoneSigningRequest>,
+) -> anyhow::Result<jobjectArray> {
+    let len = usize_to_jint(requests.len(), "requests length")?;
+    let class = env.find_class(JNI_KEYSTONE_SIGNING_REQUEST)?;
+    let mut requests = requests.into_iter().enumerate();
+    if let Some((_, first)) = requests.next() {
+        let first = make_jni_keystone_signing_request(env, first)?;
+        let array = env.new_object_array(len, &class, &first)?;
+        env.delete_local_ref(first)?;
+        for (index, request) in requests {
+            let request = make_jni_keystone_signing_request(env, request)?;
+            env.set_object_array_element(
+                &array,
+                usize_to_jint(index, "requests index")?,
+                &request,
+            )?;
+            env.delete_local_ref(request)?;
+        }
+        Ok(array.into_raw())
+    } else {
+        Ok(env.new_object_array(0, &class, JObject::null())?.into_raw())
+    }
+}
+
+fn make_jni_keystone_signing_request<'local>(
+    env: &mut JNIEnv<'local>,
+    request: voting::delegate::KeystoneSigningRequest,
+) -> anyhow::Result<JObject<'local>> {
+    env.with_local_frame_returning_local(32, |env| {
+        let class = env.find_class(JNI_KEYSTONE_SIGNING_REQUEST)?;
+        let pczt_bytes = make_jni_bytes(env, &request.pczt_bytes)?;
+        let redacted_pczt_bytes = make_jni_bytes(env, &request.redacted_pczt_bytes)?;
+        let pczt_sighash = make_jni_bytes(env, &request.pczt_sighash)?;
+        let rk = make_jni_bytes(env, &request.rk)?;
+        let display_memo: JObject<'_> = env.new_string(&request.display_memo)?.into();
+
+        Ok(env.new_object(
+            &class,
+            JNI_KEYSTONE_SIGNING_REQUEST_CTOR_SIG,
+            &[
+                JValue::Object(&pczt_bytes),
+                JValue::Object(&redacted_pczt_bytes),
+                JValue::Object(&pczt_sighash),
+                JValue::Object(&rk),
+                JValue::Int(u32_to_jint(request.action_index, "action_index")?),
+                JValue::Object(&display_memo),
+                JValue::Long(u64_to_jlong(
+                    request.eligible_weight_zatoshi,
+                    "eligible_weight_zatoshi",
+                )?),
+                JValue::Long(u64_to_jlong(
+                    request.delegated_weight_zatoshi,
+                    "delegated_weight_zatoshi",
+                )?),
+                JValue::Int(u32_to_jint(request.bundle_count, "bundle_count")?),
+                JValue::Int(u32_to_jint(request.bundle_index, "bundle_index")?),
+            ],
+        )?)
+    })
 }
 
 fn make_jni_bytes<'local>(
