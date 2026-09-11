@@ -151,12 +151,14 @@ pub(super) fn session_from_handle(handle: jlong) -> anyhow::Result<Arc<RoundSess
 /// `tor_runtime` must be a live pointer previously returned by
 /// `TorClient_createTorRuntime` and not yet freed by `TorClient_freeTorRuntime`
 /// for the whole duration the caller uses the returned reference.
-unsafe fn resolve_tor_runtime<'a>(tor_runtime: jlong) -> anyhow::Result<&'a mut TorRuntime> {
+pub(super) unsafe fn resolve_tor_runtime<'a>(
+    tor_runtime: jlong,
+) -> anyhow::Result<&'a mut TorRuntime> {
     let ptr = std::ptr::with_exposed_provenance_mut::<TorRuntime>(tor_runtime as usize);
     unsafe { ptr.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))
 }
 
-fn unix_now_seconds() -> u64 {
+pub(super) fn unix_now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -170,7 +172,7 @@ fn unix_now_seconds() -> u64 {
 /// negative, matching the lightweight-sentinel style already used elsewhere
 /// in this module (`NETWORK_ID_TESTNET`/`NETWORK_ID_MAINNET`) rather than
 /// adding a `java.lang.Long` round trip for this input direction.
-fn optional_seconds(seconds: jlong) -> anyhow::Result<Option<u64>> {
+pub(super) fn optional_seconds(seconds: jlong) -> anyhow::Result<Option<u64>> {
     if seconds < 0 {
         Ok(None)
     } else {

@@ -328,151 +328,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_rec
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_recordShareDelegationNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_handle: jlong,
-    round_id: JString<'local>,
-    bundle_index: jint,
-    proposal_id: jint,
-    share_index: jint,
-    sent_to_urls: JObjectArray<'local>,
-    nullifier: JByteArray<'local>,
-    submit_at: jlong,
-) -> jboolean {
-    let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        let round_id = java_string_to_rust(env, &round_id)?;
-        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let proposal_id = jint_to_u32(proposal_id, "proposal_id")?;
-        let share_index =
-            require_share_index(jint_to_u32(share_index, "share_index")?, "share_index")?;
-        let sent_to_urls = java_string_array(env, &sent_to_urls, "sentToUrls")?;
-        let submit_at = jlong_to_u64(submit_at, "submit_at")?;
-
-        // share::record derives and persists the authoritative nullifier from the
-        // vote's own recovery state; the caller-supplied nullifier here is only
-        // shape-validated (when present) and is never itself stored.
-        let nullifier = java_bytes(env, &nullifier, "nullifier")?;
-        if !nullifier.is_empty() {
-            require_len(nullifier, "nullifier", SHARE_NULLIFIER_BYTES)?;
-        }
-
-        voting::share::record(
-            &db,
-            &round_id,
-            bundle_index,
-            proposal_id,
-            share_index,
-            &sent_to_urls,
-            submit_at,
-        )
-        .map_err(|e| anyhow!("share::record: {e}"))?;
-        Ok(JNI_TRUE)
-    });
-    unwrap_exc_or(&mut env, res, JNI_FALSE)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getShareDelegationsNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_handle: jlong,
-    round_id: JString<'local>,
-) -> jobjectArray {
-    let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        let records = db
-            .get_share_delegations(&java_string_to_rust(env, &round_id)?)
-            .map_err(|e| anyhow!("get_share_delegations: {e}"))?;
-        make_jni_share_delegation_record_array(env, records)
-    });
-    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getUnconfirmedDelegationsNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_handle: jlong,
-    round_id: JString<'local>,
-) -> jobjectArray {
-    let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        let records = db
-            .get_unconfirmed_delegations(&java_string_to_rust(env, &round_id)?)
-            .map_err(|e| anyhow!("get_unconfirmed_delegations: {e}"))?;
-        make_jni_share_delegation_record_array(env, records)
-    });
-    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_markShareConfirmedNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_handle: jlong,
-    round_id: JString<'local>,
-    bundle_index: jint,
-    proposal_id: jint,
-    share_index: jint,
-) -> jboolean {
-    let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        db.mark_share_confirmed(
-            &java_string_to_rust(env, &round_id)?,
-            jint_to_u32(bundle_index, "bundle_index")?,
-            jint_to_u32(proposal_id, "proposal_id")?,
-            require_share_index(jint_to_u32(share_index, "share_index")?, "share_index")?,
-        )
-        .map_err(|e| anyhow!("mark_share_confirmed: {e}"))?;
-        Ok(JNI_TRUE)
-    });
-    unwrap_exc_or(&mut env, res, JNI_FALSE)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_addSentServersNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_handle: jlong,
-    round_id: JString<'local>,
-    bundle_index: jint,
-    proposal_id: jint,
-    share_index: jint,
-    new_urls: JObjectArray<'local>,
-) -> jboolean {
-    let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        let new_urls = java_string_array(env, &new_urls, "newUrls")?;
-        db.add_sent_servers(
-            &java_string_to_rust(env, &round_id)?,
-            jint_to_u32(bundle_index, "bundle_index")?,
-            jint_to_u32(proposal_id, "proposal_id")?,
-            require_share_index(jint_to_u32(share_index, "share_index")?, "share_index")?,
-            &new_urls,
-        )
-        .map_err(|e| anyhow!("add_sent_servers: {e}"))?;
-        Ok(JNI_TRUE)
-    });
-    unwrap_exc_or(&mut env, res, JNI_FALSE)
-}
+// recordShareDelegationNative/getShareDelegationsNative/
+// getUnconfirmedDelegationsNative/markShareConfirmedNative/
+// addSentServersNative were deleted here (voting-4.0.0-sdk-port Task 7):
+// zcash_voting 4.0.0 made `voting::share::record` test/fixture-only
+// (E0425 "cannot find function" once VotingRustBackend called it in
+// production) and `VotingDb::mark_share_confirmed`/`add_sent_servers`
+// `pub(crate)` (E0599 "no method named"), confirming the crate moved this
+// whole cluster's production path to its own `ShareTrackingDriver`
+// (`share_tracking_driver.rs`'s `trackSharesNative`), not to some other
+// still-public per-operation function. See voting-4.0.0-sdk-port's
+// symbol-map.md for the full disposition table.
 
 #[cfg(feature = "android-test-fixtures")]
 #[unsafe(no_mangle)]
@@ -565,21 +431,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
         Ok(())
     });
     unwrap_exc_or(&mut env, res, ())
-}
-
-fn java_string_array(
-    env: &mut JNIEnv<'_>,
-    array: &JObjectArray<'_>,
-    field: &str,
-) -> anyhow::Result<Vec<String>> {
-    let count = env.get_array_length(array)?;
-    (0..count)
-        .map(|index| {
-            let value = env.get_object_array_element(array, index)?;
-            let value = JString::from(value);
-            java_string_to_rust(env, &value).map_err(|e| anyhow!("{field}[{index}]: {e}"))
-        })
-        .collect()
 }
 
 #[cfg(test)]

@@ -19,8 +19,6 @@ const JNI_VOTE_COMMITMENT_RESULT: &str =
 const JNI_SHARE_PAYLOAD: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniSharePayload";
 const JNI_COMMITMENT_BUNDLE_RECORD: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniCommitmentBundleRecord";
-const JNI_SHARE_DELEGATION_RECORD: &str =
-    "cash/z/ecc/android/sdk/internal/model/voting/JniShareDelegationRecord";
 const JNI_VOTING_HOTKEY: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniVotingHotkey";
 const JNI_BUNDLE_SETUP_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniBundleSetupResult";
@@ -46,6 +44,12 @@ const JNI_DELEGATION_PHASE: &str =
 // `Serialize` for -- see encode_round_plan's doc comment.
 const JNI_ROUND_PLAN: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniRoundPlan";
 const JNI_ROUND_RUN_REPORT: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniRoundRunReport";
+// Task 7 (voting-4.0.0-sdk-port): `trackSharesNative`'s report, replacing the
+// old record/mark-confirmed/add-sent-servers cluster's `JniShareDelegationRecord`
+// readback. No Kotlin-side class exists yet -- same "Rust/JNI-export-only task"
+// situation as JNI_ROUND_PLAN/JNI_ROUND_RUN_REPORT above.
+const JNI_SHARE_TRACKING_RUN_REPORT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniShareTrackingRunReport";
 
 // Must match JniNoteInfo(ByteArray, ByteArray, Long, Long, ByteArray,
 // ByteArray, ByteArray, Int, String) in JniVotingModels.kt.
@@ -73,11 +77,6 @@ const JNI_COMMITMENT_BUNDLE_RECORD_CTOR_SIG: &str =
 // Long, Array<JniWireEncryptedShare>, Array<ByteArray>, ByteArray, String) in
 // JniVotingModels.kt. Guarded by JniVotingModelsTest.
 const JNI_SHARE_PAYLOAD_CTOR_SIG: &str = "([BIILcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;J[Lcash/z/ecc/android/sdk/internal/model/voting/JniWireEncryptedShare;[[B[BLjava/lang/String;)V";
-// Must match JniShareDelegationRecord(String, Int, Int, Int, Array<String>,
-// ByteArray, Boolean, Long, Long) in JniVotingModels.kt. Guarded by
-// JniVotingModelsTest.
-const JNI_SHARE_DELEGATION_RECORD_CTOR_SIG: &str =
-    "(Ljava/lang/String;III[Ljava/lang/String;[BZJJ)V";
 // Must match JniVotingHotkey(ByteArray, ByteArray, String) in JniVotingModels.kt.
 const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([B[BLjava/lang/String;)V";
 // Must match JniBundleSetupResult(Int, Long, LongArray) in JniVotingModels.kt.
@@ -145,6 +144,16 @@ const JNI_ROUND_PLAN_CTOR_SIG: &str = "(Ljava/lang/String;ZLjava/lang/String;[I[
 // String, IntArray, String, String, Int) constructor. No Kotlin class exists yet
 // -- see the JNI_ROUND_RUN_REPORT doc comment above.
 const JNI_ROUND_RUN_REPORT_CTOR_SIG: &str = "(Ljava/lang/String;Ljava/lang/String;Lcash/z/ecc/android/sdk/internal/model/voting/JniRoundPlan;IIILjava/lang/String;[ILjava/lang/String;Ljava/lang/String;I)V";
+// Proposed JniShareTrackingRunReport(String, String?, Int, String, String,
+// String, String, String) constructor: quiescenceKind, quiescenceDetailJson,
+// passes, confirmedJson, resubmittedJson, ambiguousJson, unrecoverableJson,
+// failuresJson -- one parameter per ShareTrackingRunReport field in
+// declaration order, complex fields (Vec<ShareKey>/Vec<ResubmittedShare>/
+// Vec<String>) JSON-encoded since ShareKey/ResubmittedShare are not
+// `Serialize` in the crate. No Kotlin class exists yet -- see the
+// JNI_SHARE_TRACKING_RUN_REPORT doc comment above.
+const JNI_SHARE_TRACKING_RUN_REPORT_CTOR_SIG: &str =
+    "(Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V";
 
 pub(super) const ORCHARD_RAW_ADDRESS_BYTES: usize = 43;
 pub(super) const ORCHARD_FVK_BYTES: usize = 96;
@@ -1445,78 +1454,6 @@ fn make_jni_share_payload<'local>(
     })
 }
 
-pub(super) fn make_jni_share_delegation_record_array<'local>(
-    env: &mut JNIEnv<'local>,
-    records: Vec<voting::ShareDelegationRecord>,
-) -> anyhow::Result<jobjectArray> {
-    let len = usize_to_jint(records.len(), "share delegation record length")?;
-    let class = env.find_class(JNI_SHARE_DELEGATION_RECORD)?;
-    let mut records = records.into_iter().enumerate();
-    if let Some((_, first)) = records.next() {
-        let first = make_jni_share_delegation_record(env, first)?;
-        let array = env.new_object_array(len, &class, &first)?;
-        env.delete_local_ref(first)?;
-        for (index, record) in records {
-            let record = make_jni_share_delegation_record(env, record)?;
-            env.set_object_array_element(
-                &array,
-                usize_to_jint(index, "share delegation record index")?,
-                &record,
-            )?;
-            env.delete_local_ref(record)?;
-        }
-        Ok(array.into_raw())
-    } else {
-        Ok(env.new_object_array(0, &class, JObject::null())?.into_raw())
-    }
-}
-
-fn make_jni_share_delegation_record<'local>(
-    env: &mut JNIEnv<'local>,
-    record: voting::ShareDelegationRecord,
-) -> anyhow::Result<JObject<'local>> {
-    env.with_local_frame_returning_local(24, |env| {
-        let class = env.find_class(JNI_SHARE_DELEGATION_RECORD)?;
-        let round_id: JObject<'_> = env.new_string(record.round_id)?.into();
-        let sent_to_urls = make_jni_string_array(env, record.sent_to_urls)?;
-        let sent_to_urls = JObject::from(sent_to_urls);
-        let nullifier = make_jni_fixed_bytes(
-            env,
-            record.nullifier,
-            "share_delegation.nullifier",
-            SHARE_NULLIFIER_BYTES,
-        )?;
-
-        Ok(env.new_object(
-            &class,
-            JNI_SHARE_DELEGATION_RECORD_CTOR_SIG,
-            &[
-                JValue::Object(&round_id),
-                JValue::Int(u32_to_jint(record.bundle_index, "bundle_index")?),
-                JValue::Int(u32_to_jint(record.proposal_id, "proposal_id")?),
-                JValue::Int(u32_to_jint(record.share_index, "share_index")?),
-                JValue::Object(&sent_to_urls),
-                JValue::Object(&nullifier),
-                JValue::Bool(record.confirmed as jboolean),
-                JValue::Long(u64_to_jlong(record.submit_at, "submit_at")?),
-                JValue::Long(u64_to_jlong(record.created_at, "created_at")?),
-            ],
-        )?)
-    })
-}
-
-fn make_jni_string_array<'local>(
-    env: &mut JNIEnv<'local>,
-    values: Vec<String>,
-) -> anyhow::Result<JObjectArray<'local>> {
-    Ok(rust_vec_to_java(
-        env,
-        values,
-        "java/lang/String",
-        |env, value| Ok(JObject::from(env.new_string(value)?)),
-    )?)
-}
-
 /// Builds the Kotlin hotkey JNI model, including the opaque stored secret.
 ///
 /// Unlike the pre-1.0 wallet-seed-derived hotkey, `generateHotkeyNative` can
@@ -2441,6 +2378,137 @@ pub(super) fn encode_round_run_report<'local>(
             JValue::Object(&chain_outcomes_json),
             JValue::Object(&share_deliveries_json),
             JValue::Int(delegations_signed_count),
+        ],
+    )?)
+}
+
+fn share_key_json(key: &voting::share_tracking::ShareKey) -> serde_json::Value {
+    serde_json::json!({
+        "bundleIndex": key.bundle_index,
+        "proposalId": key.proposal_id,
+        "shareIndex": key.share_index,
+    })
+}
+
+fn resubmitted_share_json(
+    resubmitted: &voting::share_tracking::ResubmittedShare,
+) -> serde_json::Value {
+    serde_json::json!({
+        "share": share_key_json(&resubmitted.share),
+        "serverUrl": resubmitted.server_url,
+    })
+}
+
+fn share_tracking_quiescence_kind(quiescence: &voting::ShareTrackingQuiescence) -> &'static str {
+    use voting::ShareTrackingQuiescence::*;
+    match quiescence {
+        NothingToTrack => "nothing_to_track",
+        AllConfirmed => "all_confirmed",
+        VoteEndReached => "vote_end_reached",
+        Cancelled => "cancelled",
+        AlreadyDriving => "already_driving",
+        Failing { .. } => "failing",
+        PassBudgetExhausted { .. } => "pass_budget_exhausted",
+        // ShareTrackingQuiescence is #[non_exhaustive].
+        _ => "unknown",
+    }
+}
+
+/// Variant-specific payload for [`voting::ShareTrackingQuiescence`], mirroring
+/// `round_quiescence_detail_json`'s "thin encoding" approach: stable
+/// discriminator from `share_tracking_quiescence_kind` above, plus this JSON
+/// blob only for the two variants that carry extra fields.
+fn share_tracking_quiescence_detail_json(
+    quiescence: &voting::ShareTrackingQuiescence,
+) -> Option<String> {
+    use voting::ShareTrackingQuiescence::*;
+    let value = match quiescence {
+        NothingToTrack | AllConfirmed | VoteEndReached | Cancelled | AlreadyDriving => {
+            return None;
+        }
+        Failing { messages } => serde_json::json!({ "messages": messages }),
+        PassBudgetExhausted { unrecoverable } => serde_json::json!({
+            "unrecoverable": unrecoverable.iter().map(share_key_json).collect::<Vec<_>>(),
+        }),
+        // ShareTrackingQuiescence is #[non_exhaustive].
+        other => serde_json::json!({ "debug": format!("{other:?}") }),
+    };
+    Some(value.to_string())
+}
+
+/// Encodes a [`voting::ShareTrackingRunReport`], the terminal output of
+/// `trackSharesNative`'s `ShareTrackingDriver::run`.
+///
+/// `ShareKey`/`ResubmittedShare` do not derive `Serialize` in the crate (a
+/// foreign-type orphan-rule violation for this crate to add), so `confirmed`/
+/// `resubmitted`/`ambiguous`/`unrecoverable` are hand-built into
+/// `serde_json::Value` via `share_key_json`/`resubmitted_share_json` above and
+/// serialized to JSON string fields -- the same approach
+/// `encode_round_run_report` already uses for its own non-`Serialize` fields.
+pub(super) fn encode_share_tracking_report<'local>(
+    env: &mut JNIEnv<'local>,
+    report: &voting::ShareTrackingRunReport,
+) -> anyhow::Result<JObject<'local>> {
+    let class = env.find_class(JNI_SHARE_TRACKING_RUN_REPORT)?;
+    let quiescence_kind: JObject<'local> = env
+        .new_string(share_tracking_quiescence_kind(&report.quiescence))?
+        .into();
+    let quiescence_detail_json = optional_jni_string(
+        env,
+        share_tracking_quiescence_detail_json(&report.quiescence),
+    )?;
+    let confirmed_json: JObject<'local> = env
+        .new_string(serde_json::to_string(
+            &report
+                .confirmed
+                .iter()
+                .map(share_key_json)
+                .collect::<Vec<_>>(),
+        )?)?
+        .into();
+    let resubmitted_json: JObject<'local> = env
+        .new_string(serde_json::to_string(
+            &report
+                .resubmitted
+                .iter()
+                .map(resubmitted_share_json)
+                .collect::<Vec<_>>(),
+        )?)?
+        .into();
+    let ambiguous_json: JObject<'local> = env
+        .new_string(serde_json::to_string(
+            &report
+                .ambiguous
+                .iter()
+                .map(resubmitted_share_json)
+                .collect::<Vec<_>>(),
+        )?)?
+        .into();
+    let unrecoverable_json: JObject<'local> = env
+        .new_string(serde_json::to_string(
+            &report
+                .unrecoverable
+                .iter()
+                .map(share_key_json)
+                .collect::<Vec<_>>(),
+        )?)?
+        .into();
+    let failures_json: JObject<'local> = env
+        .new_string(serde_json::to_string(&report.failures)?)?
+        .into();
+
+    Ok(env.new_object(
+        &class,
+        JNI_SHARE_TRACKING_RUN_REPORT_CTOR_SIG,
+        &[
+            JValue::Object(&quiescence_kind),
+            JValue::Object(&quiescence_detail_json),
+            JValue::Int(u32_to_jint(report.passes, "passes")?),
+            JValue::Object(&confirmed_json),
+            JValue::Object(&resubmitted_json),
+            JValue::Object(&ambiguous_json),
+            JValue::Object(&unrecoverable_json),
+            JValue::Object(&failures_json),
         ],
     )?)
 }
