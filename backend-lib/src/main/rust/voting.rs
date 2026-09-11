@@ -39,6 +39,7 @@ mod helpers;
 mod notes;
 mod progress;
 mod recovery;
+mod route;
 mod rounds;
 mod share_tracking;
 mod tree;

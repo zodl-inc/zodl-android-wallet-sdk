@@ -140,12 +140,28 @@ xz2 = { version = "0.1", features = ["static"] }
 # got 0". Earlier rc.4 only had this fix via an unpublished git pin (see the removed
 # `[patch.crates-io]` entry below); rc.5 ships it on crates.io directly.
 #
-# 3.0.0-rc.3 (adopted for MOB-1678, see #2406) tracks Valargroup's v1.3.0 vote-chain
-# generation: the PIR dataset moves to poly_len 4096 and round attestations become
-# auth-v2-signed. It stays pinned exactly (not a `^`/default caret range) to match the
-# same rev iOS (swift-sdk PR #1972) and Vizor build against; it still resolves against
-# this crate's Ironwood family, so no `[patch.crates-io]` entry is needed here either.
-zcash_voting = { version = "=3.0.0-rc.3" }
+# 4.0.0 (unreleased — git rev pin, not yet on crates.io) adopts the breaking circuit +
+# verification-key change from `voting-circuits` that expands the supported proposal-ID
+# and atomic-vote-batch range from 1-15 to 1-50, and adds `cast-vote-batch` atomic
+# multi-proposal submission. Stage's vote-chain server upgraded to this verifying key on
+# ~2026-09-10 (confirmed by Valar/Adam, #ext-zodl-valargroup); any older client's proof
+# is rejected with "ConstraintSystemFailure" against stage now. `zcash_voting`'s own
+# default feature is `zakura` (Valar's alternate crypto backend, ~4.2MB of duplicate
+# orchard/halo2/pasta_curves/bls12_381/client-backend/client-sqlite code with zero
+# sharing with our existing librustzcash deps) — `lrz` selects the librustzcash-backed
+# implementation instead, which resolves to the EXACT versions already in this Cargo.lock.
+#
+# Pin history: originally copied from Vizor's WIP branch on 2026-09-11, pointing at
+# `98785d2b544b3f39e9b525e3a87421dcfa67d172` (2026-09-08). By 2026-09-11 upstream had
+# REBASED main past that point -- 98785d2 became unreachable from valargroup/zcash_voting's
+# main (confirmed via `git merge-base --is-ancestor`, not just "behind"). Re-pinned
+# 2026-09-11 to `0eccfe692068e394991c143a0bac5ecbff753bf1`, confirmed live via
+# `git ls-remote https://github.com/valargroup/zcash_voting.git HEAD` to be the actual
+# current main tip at re-pin time (matches the iOS team's independently-chosen pin for
+# the same 4.0 port on zodl-swift-wallet-sdk). The diff between the old and new pin is
+# substantial (141 files, +13321/-1423 lines) -- re-verify any crate-API assumption made
+# before this comment against the new rev, do not assume anything carried over unchanged.
+zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "0eccfe692068e394991c143a0bac5ecbff753bf1", default-features = false, features = ["lrz"] }
 
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
