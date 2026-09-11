@@ -1138,7 +1138,11 @@ pub(super) fn make_jni_vote_commit_result<'local>(
         "vote_auth_sig",
         SPEND_AUTH_SIG_BYTES,
     )?;
-    let share_payloads = make_jni_share_payload_array(env, commit.share_payloads)?;
+    let recovery_bundle = voting::vote::parse_recovery(&commit.commitment_bundle_json)
+        .map_err(|e| anyhow!("parse_recovery: {}", e))?;
+    let share_payloads = voting::share::recover_payloads(&recovery_bundle)
+        .map_err(|e| anyhow!("recover_payloads: {}", e))?;
+    let share_payloads = make_jni_share_payload_array(env, share_payloads)?;
     let share_payloads = unsafe { JObject::from_raw(share_payloads) };
 
     Ok(env
@@ -1819,4 +1823,59 @@ pub(super) fn received_note_to_note_info(
         network,
     )
     .map_err(|e| anyhow!("NoteInfo::from_orchard_note: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recover_payloads_reconstructs_share_payloads_from_commitment_bundle_json() {
+        // SignedVoteCommitment no longer carries a `share_payloads` field
+        // directly (removed in zcash_voting 4.0.0) -- this locks in that the
+        // replacement path (parse commitment_bundle_json back into a
+        // VoteRecoveryBundle, then voting::share::recover_payloads) produces
+        // a non-empty result for a fixture with encrypted_shares, so the
+        // real JNI path's silent-empty-array failure mode would be caught
+        // here first.
+        let recovery = voting::vote::VoteRecoveryBundle {
+            vote_round_id: "round-1".to_string(),
+            bundle_index: 0,
+            proposal_id: 1,
+            vote_decision: 0,
+            anchor_height: 100,
+            vc_tree_position: 456,
+            single_share: false,
+            num_options: 3,
+            van_nullifier: [0x31; PROTOCOL_FIELD_BYTES],
+            vote_authority_note_new: [0x32; PROTOCOL_FIELD_BYTES],
+            vote_commitment: [0x01; PROTOCOL_FIELD_BYTES],
+            proof: vec![0x34; 8],
+            shares_hash: [0x35; PROTOCOL_FIELD_BYTES],
+            r_vpk: [0x36; PROTOCOL_FIELD_BYTES],
+            alpha_v: [0x37; PROTOCOL_FIELD_BYTES],
+            vote_auth_sig: [0x38; SPEND_AUTH_SIG_BYTES],
+            encrypted_shares: (0..VOTE_SHARE_COUNT)
+                .map(|share_index| voting::types::EncryptedShare {
+                    c1: vec![0x21; PROTOCOL_FIELD_BYTES],
+                    c2: vec![0x22; PROTOCOL_FIELD_BYTES],
+                    share_index: share_index as u32,
+                    plaintext_value: 5,
+                    randomness: vec![0x23; PROTOCOL_FIELD_BYTES],
+                })
+                .collect(),
+            share_blinds: vec![[0x02; PROTOCOL_FIELD_BYTES]; VOTE_SHARE_COUNT],
+            share_comms: vec![[0x51; PROTOCOL_FIELD_BYTES]; VOTE_SHARE_COUNT],
+            // `batch` is new in this crate revision (`vote.rs:2445`) — the pre-port
+            // `storeVoteFixtureNative` literal this fixture is otherwise copied from
+            // (`recovery.rs:511-539`) predates it and will fail to compile with E0063
+            // (missing field) at this crate revision. `None` matches a singleton
+            // (non-batch) vote, which is what this fixture and `storeVoteFixtureNative`
+            // both represent.
+            batch: None,
+        };
+
+        let payloads = voting::share::recover_payloads(&recovery).expect("recover payloads");
+        assert_eq!(payloads.len(), VOTE_SHARE_COUNT);
+    }
 }
