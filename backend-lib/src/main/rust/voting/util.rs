@@ -1,6 +1,8 @@
 use super::helpers::*;
 use super::*;
 
+use std::num::NonZeroUsize;
+
 #[cfg(feature = "android-test-fixtures")]
 const TEST_TREE_STATE_HASH: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
@@ -45,6 +47,57 @@ fn non_empty_ironwood_tree_hex() -> anyhow::Result<String> {
     Ok(hex::encode(tree_bytes))
 }
 
+/// Fixes the crate's process-wide proving-pool policy to `max_active_heavy_jobs: 1`
+/// (worker count still `available_parallelism()`, unchanged from the crate's own
+/// default), the Android equivalent of iOS's D6 configuration
+/// (`ProvingPolicy { cpu_worker_count: available parallelism, max_active_heavy_jobs: 1 }`).
+///
+/// Task 5's `runRoundNative` Ruling (`round_session.rs`) already bounds proof
+/// concurrency *within* one bundle's batch (`RoundHostContext::max_proof_concurrency:
+/// 1`) and paces *bundle* dispatch (`RoundDrivePolicy::max_bundle_concurrency: 2`),
+/// but neither of those touches `zcash_voting`'s own process-wide proving pool
+/// (`proving_runtime::configure_proving_runtime`) -- left at its default
+/// (`max_active_heavy_jobs = available_parallelism()`, 4-8 on a typical Android
+/// device) two bundles' proofs could still run concurrently across the process pool
+/// regardless of the driver-level knobs, which is exactly the "two concurrent Halo2
+/// proofs resident in memory at once" risk those knobs exist to prevent.
+///
+/// `configure_proving_runtime` "fixes the process policy before first proving or
+/// warm-up use; identical repeats succeed" (its own doc) -- so an
+/// `AlreadyConfigured` conflict here is not escalated to a JNI exception: the pool
+/// already exists and keeps running under whichever policy won the race, so a
+/// caller (this function's own second invocation, or any other caller that
+/// triggered proving before this ran) observes a working SDK rather than a startup
+/// crash. Any other error (queue-capacity overflow, OS thread-pool init failure) is
+/// a real, worth-surfacing failure and is propagated.
+fn configure_default_voting_proving_policy() -> anyhow::Result<()> {
+    let cpu_worker_count = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
+    let policy = voting::ProvingPolicy {
+        cpu_worker_count,
+        max_active_heavy_jobs: NonZeroUsize::new(1).expect("1 is not zero"),
+    };
+    match voting::configure_proving_runtime(policy) {
+        Ok(()) => Ok(()),
+        Err(voting::ProvingConfigurationError::AlreadyConfigured) => Ok(()),
+        Err(e) => Err(anyhow!("configure_proving_runtime: {}", e)),
+    }
+}
+
+/// Explicit, app-callable configuration entry point for the process-wide proving
+/// policy (see `configure_default_voting_proving_policy`'s doc comment). Intended
+/// to be called once at startup, before any voting round work -- mirroring iOS's
+/// "configure the crate's process-wide proving pool once from Swift/Kotlin" design.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_configureVotingNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+) {
+    let res = catch_unwind(&mut env, |_env| configure_default_voting_proving_policy());
+    unwrap_exc_or(&mut env, res, ())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_warmProvingCachesNative<
     'local,
@@ -53,6 +106,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_war
     _: JClass<'local>,
 ) {
     let res = catch_unwind(&mut env, |_env| {
+        // Defensive ordering: `warm_proving_caches` triggers the crate's lazy
+        // `proving_runtime::runtime()` init on first use, which permanently fixes
+        // the process policy to whatever was current at that moment
+        // (`ProvingPolicy::default()` if `configureVotingNative` was never called
+        // first). Configuring here too means a caller that only ever calls
+        // `warmProvingCachesNative` (skipping the new `configureVotingNative`
+        // entry point, whether by not having been wired up yet on the app side or
+        // by omission) still gets the intended `max_active_heavy_jobs: 1` policy
+        // rather than silently defaulting to full-parallelism proving.
+        configure_default_voting_proving_policy()?;
         voting::warm_proving_caches();
         Ok(())
     });
