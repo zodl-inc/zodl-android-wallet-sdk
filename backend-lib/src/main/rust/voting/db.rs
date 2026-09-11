@@ -16,7 +16,7 @@ struct DbKey {
 }
 
 pub(super) struct VotingDbHandle {
-    db: VotingDb,
+    db: Arc<VotingDb>,
     // VoteTreeSync owns only its synchronous tree-client cache and protects
     // that cache internally. JNI vote-tree entrypoints still hold access_mutex
     // before calling it so DB writes and tree-client state changes are
@@ -30,8 +30,8 @@ pub(super) struct VotingDbHandle {
 
 impl VotingDbHandle {
     fn open(path: &str, wallet_id: &str, network: voting::types::Network) -> anyhow::Result<Self> {
-        let db = VotingDb::open(path).map_err(|e| anyhow!("VotingDb::open failed: {}", e))?;
-        db.set_wallet_id(wallet_id);
+        let db = VotingDb::open_wallet_sidecar(std::path::Path::new(path), wallet_id)
+            .map_err(|e| anyhow!("VotingDb::open_wallet_sidecar failed: {}", e))?;
 
         Ok(Self {
             db,
@@ -52,7 +52,7 @@ impl Deref for VotingDbHandle {
     type Target = VotingDb;
 
     fn deref(&self) -> &Self::Target {
-        &self.db
+        self.db.deref()
     }
 }
 
@@ -190,6 +190,25 @@ mod tests {
         drop(first);
         drop(second);
         let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn open_wallet_sidecar_creates_schema_without_manual_migration() {
+        let db_path = unique_db_path();
+        let db_path_str = db_path.to_str().expect("test db path is valid UTF-8");
+
+        // Before this task's rewrite, VotingDbHandle::open called the lower-
+        // level VotingDb::open(path) + a separate set_wallet_id(wallet_id)
+        // call. After the rewrite it calls open_wallet_sidecar, which owns
+        // schema creation and migrations internally and takes wallet_id as a
+        // constructor argument. Opening a brand-new path with zero manual
+        // setup on our side must succeed.
+        let handle = open_managed_db(db_path_str, "wallet-1", voting::types::Network::Testnet)
+            .expect("opening a fresh sidecar path must succeed with no manual schema step");
+
+        drop(handle);
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_file(format!("{db_path_str}.voting"));
     }
 
     fn unique_db_path() -> std::path::PathBuf {
