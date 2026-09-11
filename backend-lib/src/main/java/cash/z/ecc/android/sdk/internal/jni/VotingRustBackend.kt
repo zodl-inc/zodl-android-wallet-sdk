@@ -4,22 +4,18 @@ import androidx.annotation.Keep
 import androidx.annotation.VisibleForTesting
 import cash.z.ecc.android.sdk.internal.SdkDispatchers
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
-import cash.z.ecc.android.sdk.internal.model.voting.JniCommitmentBundleRecord
-import cash.z.ecc.android.sdk.internal.model.voting.JniCommittedVoteRecord
-import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationInputs
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
-import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationProofResult
-import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationSubmissionResult
-import cash.z.ecc.android.sdk.internal.model.voting.JniGovernancePczt
+import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureBatchResult
+import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureInput
+import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSigningRequest
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
+import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPlan
+import cash.z.ecc.android.sdk.internal.model.voting.JniRoundRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
-import cash.z.ecc.android.sdk.internal.model.voting.JniShareDelegationRecord
-import cash.z.ecc.android.sdk.internal.model.voting.JniSharePayload
-import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
-import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitResult
-import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
-import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
+import cash.z.ecc.android.sdk.internal.model.voting.JniShareTrackingRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.Dispatchers
@@ -27,29 +23,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.security.SecureRandom
-import java.util.concurrent.atomic.AtomicInteger
-
-/**
- * Synchronous native proof progress callback.
- *
- * Native proof generation currently reports coarse progress from the proof call
- * thread before and after the spawned Halo2 proving worker. The JNI bridge
- * attaches whichever native thread invokes this callback, so callers must not
- * assume Android main-thread or coroutine-dispatcher affinity.
- *
- * This callback runs while the owning voting DB handle is locked by the in-flight
- * proof operation. Implementations must not call back into this VotingDb's methods.
- * Native code treats callback failures as best-effort progress reporting and
- * continues proof generation after logging the failure.
- */
-@Keep
-fun interface VotingProofProgressCallback {
-    @Keep
-    fun onProgress(progress: Double)
-}
-
-private const val PROOF_PROGRESS_REENTRY_ERROR =
-    "This VotingDb's methods must not be called from its proof progress callback"
 
 /**
  * Minimum entropy, in bytes, [VotingRustBackend.scheduledShareSubmitAt] sources from
@@ -80,6 +53,16 @@ private const val SCHEDULED_SHARE_SUBMIT_AT_ENTROPY_BYTES = 32
  * [UnsatisfiedLinkError] rather than failing gracefully; `VotingSdk` callers should use its
  * `isAvailable()` probe rather than assuming this class is safe to call just because the
  * `@Suppress` compiles.
+ *
+ * This class's `external fun` surface mirrors the round-driver session model the Rust `voting`
+ * module (`backend-lib/src/main/rust/voting.rs` and its `voting/` submodules) exports as of
+ * the voting-4.0.0 SDK port:
+ * a `VotingDb` handle scopes wallet-level state (rounds, bundles, hotkeys, Keystone signatures,
+ * vote-tree sync), and a [VotingDb.RoundSession] handle scopes one round's `RoundExecutor`/
+ * `RoundDriver` session (plan, ballot intents, drive-to-quiescence, Keystone signing requests).
+ * The old per-operation JNI surface (hand-rolled PCZT construction, per-share recovery
+ * bookkeeping, ...) is gone — that responsibility now lives inside `zcash_voting` itself,
+ * reached only via [VotingDb.RoundSession.runRound].
  */
 @Keep
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -113,22 +96,16 @@ class VotingRustBackend private constructor() {
             warmProvingCachesNative()
         }
 
+    /**
+     * Fixes the process-wide proving-pool policy (`max_active_heavy_jobs: 1`) once at startup,
+     * before any voting round work. See `configureVotingNative`'s doc comment in
+     * `backend-lib/src/main/rust/voting/util.rs` for why this matters independently of
+     * [VotingDb.RoundSession.runRound]'s own per-dispatch `max_proof_concurrency` bound.
+     */
     @Throws(RuntimeException::class)
-    suspend fun buildSharePayloads(
-        commitment: JniVoteCommitmentResult,
-        voteDecision: Int,
-        numOptions: Int,
-        vcTreePosition: Long,
-        singleShareMode: Boolean
-    ): Array<JniSharePayload> =
+    suspend fun configureVoting() =
         withContext(Dispatchers.IO) {
-            buildSharePayloadsNative(
-                commitment,
-                voteDecision,
-                numOptions,
-                vcTreePosition,
-                singleShareMode
-            ) ?: error("buildSharePayloads returned null")
+            configureVotingNative()
         }
 
     /**
@@ -192,16 +169,6 @@ class VotingRustBackend private constructor() {
                 ?: error("deriveHotkeyRawAddressForAccountFixture returned null")
         }
 
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    internal suspend fun extractPcztOutputRecipientFixture(
-        pcztBytes: ByteArray,
-        actionIndex: Int
-    ): ByteArray =
-        withContext(Dispatchers.IO) {
-            extractPcztOutputRecipientFixtureNative(pcztBytes, actionIndex)
-                ?: error("extractPcztOutputRecipientFixture returned null")
-        }
-
     @Throws(RuntimeException::class)
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
         withContext(Dispatchers.IO) {
@@ -213,46 +180,6 @@ class VotingRustBackend private constructor() {
     suspend fun verifyWitness(witness: JniWitnessData): Boolean =
         withContext(Dispatchers.IO) {
             verifyWitnessNative(witness)
-        }
-
-    @Throws(RuntimeException::class)
-    suspend fun getWalletNotes(
-        walletDbPath: String,
-        snapshotHeight: Long,
-        networkId: Int,
-        accountUuidBytes: ByteArray
-    ): Array<JniNoteInfo> =
-        withContext(SdkDispatchers.DATABASE_IO) {
-            getWalletNotesNative(
-                walletDbPath,
-                snapshotHeight,
-                networkId,
-                accountUuidBytes
-            ) ?: error("getWalletNotes returned null")
-        }
-
-    @Throws(RuntimeException::class)
-    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
-        withContext(Dispatchers.IO) {
-            extractPcztSighashNative(pcztBytes)
-                ?: error("extractPcztSighash returned null")
-        }
-
-    @Throws(RuntimeException::class)
-    suspend fun extractSpendAuthSig(
-        signedPcztBytes: ByteArray,
-        actionIndex: Int
-    ): ByteArray =
-        withContext(Dispatchers.IO) {
-            extractSpendAuthSigNative(signedPcztBytes, actionIndex)
-                ?: error("extractSpendAuthSig returned null")
-        }
-
-    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-    internal suspend fun delegationProofResultFixtureForTesting(): JniDelegationProofResult =
-        withContext(Dispatchers.IO) {
-            delegationProofResultFixtureNative()
-                ?: error("delegationProofResultFixture returned null")
         }
 
     @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
@@ -298,11 +225,8 @@ class VotingRustBackend private constructor() {
         private var dbHandle: Long?
     ) {
         private val accessMutex = Mutex()
-        private val proofProgressCallbackDepth = AtomicInteger(0)
 
         suspend fun close() {
-            checkNotInProofProgressCallback()
-
             accessMutex.withLock {
                 dbHandle?.let { handle ->
                     withContext(SdkDispatchers.DATABASE_IO) {
@@ -313,41 +237,17 @@ class VotingRustBackend private constructor() {
             }
         }
 
-        /**
-         * Creates a round in this voting db, which is already bound to the network passed to
-         * [openVotingDb].
-         *
-         * [roundId] must be 64 lowercase hex characters encoding a canonical Pallas field
-         * element; the native side rejects anything else.
-         */
-        @Throws(RuntimeException::class)
-        suspend fun initRound(
-            roundId: String,
-            snapshotHeight: Long,
-            eaPK: ByteArray,
-            ncRoot: ByteArray,
-            nullifierIMTRoot: ByteArray,
-            sessionJson: String?
-        ) = withHandle { handle ->
-            initRoundNative(
-                handle,
-                roundId,
-                snapshotHeight,
-                eaPK,
-                ncRoot,
-                nullifierIMTRoot,
-                sessionJson
-            )
-        }
-
         @Throws(RuntimeException::class)
         suspend fun getRoundState(roundId: String): JniRoundState? =
             withHandle { handle -> getRoundStateNative(handle, roundId) }
 
-        @Throws(RuntimeException::class)
-        suspend fun delegationPhases(roundId: String): Array<JniDelegationPhase> =
-            withHandle { handle -> delegationPhasesNative(handle, roundId) }
-
+        /**
+         * Clears unsigned/unproved delegation setup fields for one round (preserving submitted
+         * bundles and bundles with persisted Keystone signatures) so an interrupted or corrupted
+         * per-bundle setup can be safely rebuilt from scratch. See
+         * `resetVotingSessionStateNative`'s doc comment in
+         * `backend-lib/src/main/rust/voting/rounds.rs`.
+         */
         @Throws(RuntimeException::class)
         suspend fun resetVotingSessionState(roundId: String) =
             withHandle { handle -> resetVotingSessionStateNative(handle, roundId) }
@@ -359,10 +259,6 @@ class VotingRustBackend private constructor() {
         @Throws(RuntimeException::class)
         suspend fun getBundleCount(roundId: String): Int =
             withHandle { handle -> getBundleCountNative(handle, roundId) }
-
-        @Throws(RuntimeException::class)
-        suspend fun getVotes(roundId: String): Array<JniVoteRecord> =
-            withHandle { handle -> getVotesNative(handle, roundId) }
 
         @Throws(RuntimeException::class)
         suspend fun clearRound(roundId: String) =
@@ -400,90 +296,6 @@ class VotingRustBackend private constructor() {
                     ?: error("generateHotkey returned null")
             }
 
-        /**
-         * Builds a governance PCZT for hardware-wallet flows.
-         *
-         * This explicit form trusts [fvkBytes] and [hotkeySecret] as caller-derived Keystone
-         * input. It does not validate a wallet seed against [fvkBytes]. Software-wallet callers that
-         * have the wallet seed should use [buildGovernancePcztFromSeed] to retain that invariant.
-         */
-        @Throws(RuntimeException::class)
-        suspend fun buildGovernancePczt(
-            roundId: String,
-            bundleIndex: Int,
-            fvkBytes: ByteArray,
-            hotkeySecret: ByteArray,
-            accountIndex: Int,
-            notes: List<JniNoteInfo>,
-            seedFingerprint: ByteArray,
-            roundName: String
-        ): JniGovernancePczt =
-            withHandle { handle ->
-                buildGovernancePcztNative(
-                    handle,
-                    roundId,
-                    bundleIndex,
-                    fvkBytes,
-                    hotkeySecret,
-                    accountIndex,
-                    notes.toTypedArray(),
-                    seedFingerprint,
-                    roundName
-                ) ?: error("buildGovernancePczt returned null")
-            }
-
-        /**
-         * Builds a governance PCZT for software-wallet flows.
-         *
-         * This path derives the Orchard FVK from [walletSeed] and rejects calls where it does not
-         * match [ufvk]. It also reconstructs the hotkey from [hotkeySecret] using the fixed
-         * hotkey account index expected by the vote-signing path.
-         */
-        @Throws(RuntimeException::class)
-        suspend fun buildGovernancePcztFromSeed(
-            roundId: String,
-            bundleIndex: Int,
-            ufvk: String,
-            networkId: Int,
-            accountIndex: Int,
-            notes: List<JniNoteInfo>,
-            walletSeed: ByteArray,
-            hotkeySecret: ByteArray,
-            seedFingerprint: ByteArray,
-            roundName: String
-        ): JniGovernancePczt =
-            withHandle { handle ->
-                buildGovernancePcztFromSeedNative(
-                    handle,
-                    roundId,
-                    bundleIndex,
-                    ufvk,
-                    networkId,
-                    accountIndex,
-                    notes.toTypedArray(),
-                    walletSeed,
-                    hotkeySecret,
-                    seedFingerprint,
-                    roundName
-                ) ?: error("buildGovernancePcztFromSeed returned null")
-            }
-
-        @Throws(RuntimeException::class)
-        suspend fun storeWitnesses(
-            roundId: String,
-            bundleIndex: Int,
-            notes: List<JniNoteInfo>,
-            witnesses: List<JniWitnessData>
-        ) = withHandle { handle ->
-            storeWitnessesNative(
-                handle,
-                roundId,
-                bundleIndex,
-                notes.toTypedArray(),
-                witnesses.toTypedArray()
-            )
-        }
-
         @Throws(RuntimeException::class)
         suspend fun precomputeDelegationPir(
             roundId: String,
@@ -510,147 +322,6 @@ class VotingRustBackend private constructor() {
             }
 
         @Throws(RuntimeException::class)
-        suspend fun buildAndProveDelegation(
-            roundId: String,
-            bundleIndex: Int,
-            pirServerUrl: String,
-            pirDepth: Int,
-            pirTier0Layers: Int,
-            pirTier1Layers: Int,
-            pirPolyLen: Int,
-            notes: List<JniNoteInfo>,
-            fvkBytes: ByteArray,
-            hotkeySecret: ByteArray,
-            seedFingerprint: ByteArray,
-            accountIndex: Int,
-            roundName: String,
-            proofProgress: VotingProofProgressCallback?
-        ): JniDelegationProofResult =
-            withHandle { handle ->
-                buildAndProveDelegationNative(
-                    handle,
-                    roundId,
-                    bundleIndex,
-                    pirServerUrl,
-                    pirDepth,
-                    pirTier0Layers,
-                    pirTier1Layers,
-                    pirPolyLen,
-                    notes.toTypedArray(),
-                    fvkBytes,
-                    hotkeySecret,
-                    seedFingerprint,
-                    accountIndex,
-                    roundName,
-                    proofProgress?.withVotingDbReentryGuard()
-                ) ?: error("buildAndProveDelegation returned null")
-            }
-
-        /**
-         * Reconstructs the delegation signing keys from wallet state at [walletDbPath] and returns
-         * a spend-authorization-signed delegation submission.
-         *
-         * This mirrors the same `DelegationKeys` construction [buildGovernancePczt] used at PCZT
-         * setup time, so [hotkeySecret] and [roundName] must match those originally used to build
-         * this bundle's governance PCZT.
-         */
-        @Throws(RuntimeException::class)
-        suspend fun getDelegationSubmission(
-            roundId: String,
-            bundleIndex: Int,
-            walletDbPath: String,
-            accountUuid: String,
-            hotkeySecret: ByteArray,
-            roundName: String,
-            senderSeed: ByteArray
-        ): JniDelegationSubmissionResult =
-            withHandle { handle ->
-                getDelegationSubmissionNative(
-                    handle,
-                    roundId,
-                    bundleIndex,
-                    walletDbPath,
-                    accountUuid,
-                    hotkeySecret,
-                    roundName,
-                    senderSeed
-                ) ?: error("getDelegationSubmission returned null")
-            }
-
-        @Throws(RuntimeException::class)
-        suspend fun getDelegationSubmissionWithKeystoneSig(
-            roundId: String,
-            bundleIndex: Int,
-            keystoneSig: ByteArray,
-            keystoneSighash: ByteArray
-        ): JniDelegationSubmissionResult =
-            withHandle { handle ->
-                getDelegationSubmissionWithKeystoneSigNative(
-                    handle,
-                    roundId,
-                    bundleIndex,
-                    keystoneSig,
-                    keystoneSighash
-                ) ?: error("getDelegationSubmissionWithKeystoneSig returned null")
-            }
-
-        /**
-         * Persists a Keystone-signed delegation bundle's signature so a later round-wide
-         * [resetVotingSessionState] preserves this bundle instead of wiping its unsigned setup
-         * fields for a rebuild. Pass the `rk`/`sighash` already verified by a prior
-         * [getDelegationSubmissionWithKeystoneSig] call (its returned result's `rk`), not
-         * arbitrary caller-supplied values — this call does not itself re-verify the signature.
-         */
-        @Throws(RuntimeException::class)
-        suspend fun storeKeystoneSignature(
-            roundId: String,
-            bundleIndex: Int,
-            keystoneSig: ByteArray,
-            keystoneSighash: ByteArray,
-            rk: ByteArray
-        ) = withHandle { handle ->
-            check(
-                storeKeystoneSignatureNative(
-                    handle,
-                    roundId,
-                    bundleIndex,
-                    keystoneSig,
-                    keystoneSighash,
-                    rk
-                )
-            ) {
-                "storeKeystoneSignature failed for roundId=$roundId bundleIndex=$bundleIndex"
-            }
-        }
-
-        @Throws(RuntimeException::class)
-        suspend fun storeTreeState(
-            roundId: String,
-            treeStateBytes: ByteArray
-        ) = withHandle { handle ->
-            storeTreeStateNative(handle, roundId, treeStateBytes)
-        }
-
-        @Throws(RuntimeException::class)
-        suspend fun generateNoteWitnesses(
-            roundId: String,
-            bundleIndex: Int,
-            walletDbPath: String,
-            networkId: Int,
-            notes: List<JniNoteInfo>
-        ): Array<JniWitnessData> =
-            withHandle { handle ->
-                generateNoteWitnessesNative(
-                    handle,
-                    roundId,
-                    bundleIndex,
-                    walletDbPath,
-                    networkId,
-                    notes.toTypedArray()
-                ) ?: error("generateNoteWitnesses returned null")
-            }
-
-        @Throws(RuntimeException::class)
         suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long =
             withHandle { handle ->
                 syncVoteTreeNative(handle, roundId, nodeUrl).also { height ->
@@ -668,316 +339,192 @@ class VotingRustBackend private constructor() {
                 }
             }
 
+        /**
+         * Atomically stores a batch of Keystone delegation signatures, replacing the old
+         * per-bundle store/reconstruct pair. See `storeKeystoneSignaturesNative`'s doc comment
+         * in `backend-lib/src/main/rust/voting/delegation.rs` for idempotent-replay and
+         * signing-context-conflict semantics.
+         */
         @Throws(RuntimeException::class)
-        suspend fun storeVanPosition(
+        suspend fun storeKeystoneSignatures(
             roundId: String,
-            bundleIndex: Int,
-            position: Long
-        ) = withHandle { handle ->
-            check(storeVanPositionNative(handle, roundId, bundleIndex, position)) {
-                "storeVanPosition failed for roundId=$roundId bundleIndex=$bundleIndex"
-            }
-        }
-
-        @Throws(RuntimeException::class)
-        suspend fun generateVanWitness(
-            roundId: String,
-            bundleIndex: Int,
-            anchorHeight: Long
-        ): JniVanWitness =
+            signatures: List<JniKeystoneSignatureInput>
+        ): JniKeystoneSignatureBatchResult =
             withHandle { handle ->
-                generateVanWitnessNative(handle, roundId, bundleIndex, anchorHeight)
-                    ?: error("generateVanWitness returned null")
+                storeKeystoneSignaturesNative(handle, roundId, signatures.toTypedArray())
+                    ?: error("storeKeystoneSignatures returned null for roundId=$roundId")
             }
 
         @Throws(RuntimeException::class)
-        suspend fun buildVoteCommitment(
-            roundId: String,
-            bundleIndex: Int,
-            hotkeySecret: ByteArray,
-            proposalId: Int,
-            choice: Int,
-            numOptions: Int,
-            witness: JniVanWitness,
-            singleShare: Boolean,
-            proofProgress: VotingProofProgressCallback?
-        ): JniVoteCommitResult =
+        suspend fun getKeystoneSignatures(roundId: String): Array<JniKeystoneSignatureRecord> =
             withHandle { handle ->
-                buildVoteCommitmentNative(
+                getKeystoneSignaturesNative(handle, roundId)
+                    ?: error("getKeystoneSignatures returned null for roundId=$roundId")
+            }
+
+        /**
+         * Drives `roundId`'s unconfirmed helper shares to confirmation with a
+         * `ShareTrackingDriver`, repeating passes on the cadence each pass itself computes until
+         * the round's shares are quiescent. Standalone and session-less: unlike
+         * [RoundSession.runRound], a separate call cannot cancel an in-flight
+         * [trackShares] run mid-pass — see `trackSharesNative`'s doc comment in
+         * `backend-lib/src/main/rust/voting/share_tracking_driver.rs`.
+         *
+         * [voteEndTimeSeconds] `< 0` decodes to "no vote-end boundary known yet".
+         */
+        @Throws(RuntimeException::class)
+        suspend fun trackShares(
+            roundId: String,
+            torRuntime: Long,
+            helperUrls: List<String>,
+            voteEndTimeSeconds: Long
+        ): JniShareTrackingRunReport =
+            withHandle { handle ->
+                trackSharesNative(handle, roundId, torRuntime, helperUrls.toTypedArray(), voteEndTimeSeconds)
+                    ?: error("trackShares returned null for roundId=$roundId")
+            }
+
+        /**
+         * Opens a round session: binds a `RoundExecutor` to [roundId]'s roster and hotkey, wires
+         * its chain-submission and helper transports through [torRuntime], and registers it.
+         * See `openRoundSessionNative`'s doc comment in
+         * `backend-lib/src/main/rust/voting/round_session.rs`.
+         *
+         * [hotkeySecret] may be `null` before a hotkey is bound. [ceremonyStartSeconds]/
+         * [voteEndTimeSeconds] `< 0` decode to "not yet known".
+         */
+        @Suppress("LongParameterList")
+        @Throws(RuntimeException::class)
+        suspend fun openRoundSession(
+            torRuntime: Long,
+            roundId: String,
+            proposalIds: IntArray,
+            proposalOptionCounts: IntArray,
+            hotkeySecret: ByteArray?,
+            chainEndpoints: List<String>,
+            operationEpoch: Long,
+            configuredHelperUrls: List<String>,
+            voteTreeNodeUrls: List<String>,
+            ceremonyStartSeconds: Long,
+            voteEndTimeSeconds: Long
+        ): RoundSession =
+            withHandle { handle ->
+                openRoundSessionNative(
                     handle,
+                    torRuntime,
                     roundId,
-                    bundleIndex,
+                    proposalIds,
+                    proposalOptionCounts,
                     hotkeySecret,
-                    proposalId,
-                    choice,
-                    numOptions,
-                    witness,
-                    singleShare,
-                    proofProgress?.withVotingDbReentryGuard()
-                ) ?: error("buildVoteCommitment returned null")
-            }
-
-        @Throws(RuntimeException::class)
-        suspend fun storeDelegationTxHash(
-            roundId: String,
-            bundleIndex: Int,
-            txHash: String
-        ) = withHandle { handle ->
-            check(storeDelegationTxHashNative(handle, roundId, bundleIndex, txHash)) {
-                "storeDelegationTxHash failed for roundId=$roundId bundleIndex=$bundleIndex"
-            }
-        }
-
-        @Throws(RuntimeException::class)
-        suspend fun getDelegationTxHash(
-            roundId: String,
-            bundleIndex: Int
-        ): String? =
-            withHandle { handle ->
-                getDelegationTxHashNative(handle, roundId, bundleIndex)
-            }
-
-        /**
-         * Records [txHash] and marks this vote as submitted in one atomic step.
-         */
-        @Throws(RuntimeException::class)
-        suspend fun storeVoteTxHash(
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            txHash: String
-        ) = withHandle { handle ->
-            check(storeVoteTxHashNative(handle, roundId, bundleIndex, proposalId, txHash)) {
-                "storeVoteTxHash failed for roundId=$roundId bundleIndex=$bundleIndex proposalId=$proposalId"
-            }
-        }
-
-        /**
-         * Idempotently re-marks this vote as submitted using the tx hash [storeVoteTxHash] already
-         * recorded. Fails if no tx hash has been recorded yet for this vote.
-         */
-        @Throws(RuntimeException::class)
-        suspend fun markVoteSubmitted(
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int
-        ) = withHandle { handle ->
-            check(markVoteSubmittedNative(handle, roundId, bundleIndex, proposalId)) {
-                "markVoteSubmitted failed for roundId=$roundId bundleIndex=$bundleIndex proposalId=$proposalId"
-            }
-        }
-
-        @Throws(RuntimeException::class)
-        suspend fun getVoteTxHash(
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int
-        ): String? =
-            withHandle { handle ->
-                getVoteTxHashNative(handle, roundId, bundleIndex, proposalId)
-            }
-
-        @Throws(RuntimeException::class)
-        suspend fun getCommitmentBundle(
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int
-        ): JniCommitmentBundleRecord? =
-            withHandle { handle ->
-                getCommitmentBundleNative(handle, roundId, bundleIndex, proposalId)
-            }
-
-        /**
-         * Records the confirmed vote-commitment-tree position for an already-committed vote, once
-         * its cast-vote transaction has been mined.
-         */
-        @Throws(RuntimeException::class)
-        suspend fun recordVcPosition(
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            vcTreePosition: Long
-        ) = withHandle { handle ->
-            check(
-                recordVcPositionNative(
-                    handle,
-                    roundId,
-                    bundleIndex,
-                    proposalId,
-                    vcTreePosition
-                )
-            ) {
-                "recordVcPosition failed for roundId=$roundId bundleIndex=$bundleIndex proposalId=$proposalId"
-            }
-        }
-
-        /**
-         * Recovers the signed `vote::commit` result for an already-committed vote, together with
-         * its confirmed vote-commitment-tree position recorded by [recordVcPosition].
-         */
-        @Throws(RuntimeException::class)
-        suspend fun recoverCommittedVote(
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int
-        ): JniCommittedVoteRecord =
-            withHandle { handle ->
-                recoverCommittedVoteNative(handle, roundId, bundleIndex, proposalId)
-                    ?: error("recoverCommittedVote returned null")
-            }
-
-        @Throws(RuntimeException::class)
-        suspend fun clearRecoveryState(roundId: String) =
-            withHandle { handle ->
-                check(clearRecoveryStateNative(handle, roundId)) {
-                    "clearRecoveryState failed for roundId=$roundId"
+                    chainEndpoints.toTypedArray(),
+                    operationEpoch,
+                    configuredHelperUrls.toTypedArray(),
+                    voteTreeNodeUrls.toTypedArray(),
+                    ceremonyStartSeconds,
+                    voteEndTimeSeconds
+                ).let { sessionHandle ->
+                    check(sessionHandle != 0L) {
+                        "openRoundSession failed for roundId=$roundId"
+                    }
+                    RoundSession(sessionHandle)
                 }
             }
-
-        /**
-         * Records that share [shareIndex] was sent to [sentToUrls].
-         *
-         * The native side derives and persists the authoritative nullifier from the vote's own
-         * recovery state; [nullifier] is only shape-validated when non-empty and is never itself
-         * stored. An empty [nullifier] is the normal case for callers that do not have it yet.
-         */
-        @Throws(RuntimeException::class)
-        suspend fun recordShareDelegation(
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            shareIndex: Int,
-            sentToUrls: List<String>,
-            nullifier: ByteArray,
-            submitAt: Long
-        ) = withHandle { handle ->
-            check(
-                recordShareDelegationNative(
-                    handle,
-                    roundId,
-                    bundleIndex,
-                    proposalId,
-                    shareIndex,
-                    sentToUrls.toTypedArray(),
-                    nullifier,
-                    submitAt
-                )
-            ) {
-                "recordShareDelegation failed for roundId=$roundId " +
-                    "bundleIndex=$bundleIndex proposalId=$proposalId shareIndex=$shareIndex"
-            }
-        }
-
-        @Throws(RuntimeException::class)
-        suspend fun getShareDelegations(roundId: String): Array<JniShareDelegationRecord> =
-            withHandle { handle ->
-                getShareDelegationsNative(handle, roundId)
-                    ?: error("getShareDelegations returned null")
-            }
-
-        @Throws(RuntimeException::class)
-        suspend fun getUnconfirmedDelegations(roundId: String): Array<JniShareDelegationRecord> =
-            withHandle { handle ->
-                getUnconfirmedDelegationsNative(handle, roundId)
-                    ?: error("getUnconfirmedDelegations returned null")
-            }
-
-        @Throws(RuntimeException::class)
-        suspend fun markShareConfirmed(
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            shareIndex: Int
-        ) = withHandle { handle ->
-            check(markShareConfirmedNative(handle, roundId, bundleIndex, proposalId, shareIndex)) {
-                "markShareConfirmed failed for roundId=$roundId " +
-                    "bundleIndex=$bundleIndex proposalId=$proposalId shareIndex=$shareIndex"
-            }
-        }
-
-        /**
-         * Appends [newUrls] to the stored sent-server list for this share, ignoring duplicates.
-         */
-        @Throws(RuntimeException::class)
-        suspend fun addSentServers(
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            shareIndex: Int,
-            newUrls: List<String>
-        ) = withHandle { handle ->
-            check(
-                addSentServersNative(
-                    handle,
-                    roundId,
-                    bundleIndex,
-                    proposalId,
-                    shareIndex,
-                    newUrls.toTypedArray()
-                )
-            ) {
-                "addSentServers failed for roundId=$roundId " +
-                    "bundleIndex=$bundleIndex proposalId=$proposalId shareIndex=$shareIndex"
-            }
-        }
-
-        @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-        internal suspend fun storeDelegationProofFixtureForTesting(
-            roundId: String,
-            bundleIndex: Int,
-            proof: ByteArray
-        ) = withHandle { handle ->
-            storeDelegationProofFixtureNative(handle, roundId, bundleIndex, proof)
-        }
-
-        /**
-         * Persists a synthetic vote with recovery state for instrumentation tests.
-         *
-         * [recordVcPosition] controls whether the fixture also records a vote-commitment-tree
-         * position, which zcash_voting 3.0 treats as an on-chain confirmation:
-         * `clearRecoveryState` preserves confirmed votes and only wipes votes without a
-         * recorded position, so pass `false` to build a retryable vote the clear drops.
-         */
-        @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
-        internal suspend fun storeVoteFixtureForTesting(
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            choice: Int,
-            recordVcPosition: Boolean = true
-        ) = withHandle { handle ->
-            storeVoteFixtureNative(handle, roundId, bundleIndex, proposalId, choice, recordVcPosition)
-        }
 
         private suspend fun <T> withHandle(block: (Long) -> T): T {
-            checkNotInProofProgressCallback()
+            val handle =
+                checkNotNull(dbHandle) {
+                    "Voting DB handle is closed"
+                }
+            return withContext(SdkDispatchers.DATABASE_IO) {
+                block(handle)
+            }
+        }
+    }
 
-            return accessMutex.withLock {
-                val handle =
-                    checkNotNull(dbHandle) {
-                        "Voting DB handle is closed"
+    /**
+     * One open round session: a bound `RoundExecutor` plus the per-round host inputs
+     * `runRound` needs to drive the round to quiescence. See [VotingDb.openRoundSession]'s doc
+     * comment.
+     */
+    @Suppress("TooManyFunctions")
+    class RoundSession internal constructor(
+        private var sessionHandle: Long?
+    ) {
+        private val accessMutex = Mutex()
+
+        /**
+         * Removes this round session from the registry. No implicit chain cancellation: a
+         * caller with a [runRound] call in flight must [cancel] first if it wants that run to
+         * stop early.
+         */
+        suspend fun close() {
+            accessMutex.withLock {
+                sessionHandle?.let { handle ->
+                    withContext(Dispatchers.IO) {
+                        closeRoundSessionNative(handle)
                     }
-                withContext(SdkDispatchers.DATABASE_IO) {
-                    block(handle)
+                    sessionHandle = null
                 }
             }
         }
 
-        private fun checkNotInProofProgressCallback() {
-            check(proofProgressCallbackDepth.get() == 0) {
-                PROOF_PROGRESS_REENTRY_ERROR
+        @Throws(RuntimeException::class)
+        suspend fun cancel() =
+            withHandle { handle -> cancelRoundSessionNative(handle) }
+
+        @Throws(RuntimeException::class)
+        suspend fun setOperationEpoch(operationEpoch: Long) =
+            withHandle { handle -> setOperationEpochNative(handle, operationEpoch) }
+
+        @Throws(RuntimeException::class)
+        suspend fun getRoundPlan(): JniRoundPlan? =
+            withHandle { handle -> getRoundPlanNative(handle) }
+
+        /**
+         * Records ballot decisions and returns the refreshed plan. `choices[i] < 0` decodes to
+         * a skipped decision for `proposalIds[i]`.
+         */
+        @Throws(RuntimeException::class)
+        suspend fun setBallotIntents(
+            proposalIds: IntArray,
+            choices: IntArray
+        ): JniRoundPlan? =
+            withHandle { handle -> setBallotIntentsNative(handle, proposalIds, choices) }
+
+        /**
+         * Drives this session's round to quiescence with a `RoundDriver`.
+         *
+         * [delegationInputs] must be non-null for a pass that needs to advance delegation
+         * signing; every other step tolerates `null`. See [JniDelegationInputs]'s doc comment.
+         */
+        @Throws(RuntimeException::class)
+        suspend fun runRound(
+            torRuntime: Long,
+            delegationInputs: JniDelegationInputs?
+        ): JniRoundRunReport? =
+            withHandle { handle -> runRoundNative(handle, torRuntime, delegationInputs) }
+
+        /**
+         * Loops `DelegationPipeline::keystone_request` over [bundleIndices] against the
+         * pipeline a prior delegation-enabled [runRound] call built and cached on this session.
+         * Fails if no delegation pipeline is cached yet.
+         */
+        @Throws(RuntimeException::class)
+        suspend fun getKeystoneSigningRequests(bundleIndices: IntArray): Array<JniKeystoneSigningRequest> =
+            withHandle { handle ->
+                getKeystoneSigningRequestsNative(handle, bundleIndices)
+                    ?: error("getKeystoneSigningRequests returned null")
+            }
+
+        private suspend fun <T> withHandle(block: (Long) -> T): T {
+            val handle =
+                checkNotNull(sessionHandle) {
+                    "Round session handle is closed"
+                }
+            return withContext(Dispatchers.IO) {
+                block(handle)
             }
         }
-
-        private fun VotingProofProgressCallback.withVotingDbReentryGuard() =
-            VotingProofProgressCallback { progress ->
-                proofProgressCallbackDepth.incrementAndGet()
-                try {
-                    onProgress(progress)
-                } finally {
-                    proofProgressCallbackDepth.decrementAndGet()
-                }
-            }
     }
 
     companion object {
@@ -1004,6 +551,10 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
+        private external fun configureVotingNative()
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
         private external fun scheduledShareSubmitAtNative(
             nowSeconds: Long,
             ceremonyStartSeconds: Long,
@@ -1011,16 +562,6 @@ class VotingRustBackend private constructor() {
             singleShare: Boolean,
             entropy: ByteArray
         ): Long
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun buildSharePayloadsNative(
-            commitment: JniVoteCommitmentResult,
-            voteDecision: Int,
-            numOptions: Int,
-            vcTreePosition: Long,
-            singleShareMode: Boolean
-        ): Array<JniSharePayload>?
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -1046,27 +587,11 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun extractPcztOutputRecipientFixtureNative(
-            pcztBytes: ByteArray,
-            actionIndex: Int
-        ): ByteArray?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
         private external fun extractNcRootNative(treeStateBytes: ByteArray): ByteArray?
 
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun verifyWitnessNative(witness: JniWitnessData): Boolean
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun getWalletNotesNative(
-            walletDbPath: String,
-            snapshotHeight: Long,
-            networkId: Int,
-            accountUuidBytes: ByteArray
-        ): Array<JniNoteInfo>?
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -1078,23 +603,7 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun initRoundNative(
-            dbHandle: Long,
-            roundId: String,
-            snapshotHeight: Long,
-            eaPK: ByteArray,
-            ncRoot: ByteArray,
-            nullifierIMTRoot: ByteArray,
-            sessionJson: String?
-        )
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
         private external fun getRoundStateNative(dbHandle: Long, roundId: String): JniRoundState?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun delegationPhasesNative(dbHandle: Long, roundId: String): Array<JniDelegationPhase>
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -1107,10 +616,6 @@ class VotingRustBackend private constructor() {
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun getBundleCountNative(dbHandle: Long, roundId: String): Int
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun getVotesNative(dbHandle: Long, roundId: String): Array<JniVoteRecord>
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -1145,51 +650,6 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun buildGovernancePcztNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            fvkBytes: ByteArray,
-            hotkeySecret: ByteArray,
-            accountIndex: Int,
-            notes: Array<JniNoteInfo>,
-            seedFingerprint: ByteArray,
-            roundName: String
-        ): JniGovernancePczt?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun buildGovernancePcztFromSeedNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            ufvk: String,
-            networkId: Int,
-            accountIndex: Int,
-            notes: Array<JniNoteInfo>,
-            walletSeed: ByteArray,
-            hotkeySecret: ByteArray,
-            seedFingerprint: ByteArray,
-            roundName: String
-        ): JniGovernancePczt?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun extractPcztSighashNative(pcztBytes: ByteArray): ByteArray?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun extractSpendAuthSigNative(
-            signedPcztBytes: ByteArray,
-            actionIndex: Int
-        ): ByteArray?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun delegationProofResultFixtureNative(): JniDelegationProofResult?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
         private external fun noteInfoArrayFixtureNative(): Array<JniNoteInfo>?
 
         @JvmStatic
@@ -1206,16 +666,6 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun storeWitnessesNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            notes: Array<JniNoteInfo>,
-            witnesses: Array<JniWitnessData>
-        )
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
         private external fun precomputeDelegationPirNative(
             dbHandle: Long,
             roundId: String,
@@ -1227,79 +677,6 @@ class VotingRustBackend private constructor() {
             pirPolyLen: Int,
             notes: Array<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun buildAndProveDelegationNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            pirServerUrl: String,
-            pirDepth: Int,
-            pirTier0Layers: Int,
-            pirTier1Layers: Int,
-            pirPolyLen: Int,
-            notes: Array<JniNoteInfo>,
-            fvkBytes: ByteArray,
-            hotkeySecret: ByteArray,
-            seedFingerprint: ByteArray,
-            accountIndex: Int,
-            roundName: String,
-            proofProgress: VotingProofProgressCallback?
-        ): JniDelegationProofResult?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun getDelegationSubmissionNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            walletDbPath: String,
-            accountUuid: String,
-            hotkeySecret: ByteArray,
-            roundName: String,
-            senderSeed: ByteArray
-        ): JniDelegationSubmissionResult?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun getDelegationSubmissionWithKeystoneSigNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            keystoneSig: ByteArray,
-            keystoneSighash: ByteArray
-        ): JniDelegationSubmissionResult?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun storeKeystoneSignatureNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            keystoneSig: ByteArray,
-            keystoneSighash: ByteArray,
-            rk: ByteArray
-        ): Boolean
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun storeTreeStateNative(
-            dbHandle: Long,
-            roundId: String,
-            treeStateBytes: ByteArray
-        )
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun generateNoteWitnessesNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            walletDbPath: String,
-            networkId: Int,
-            notes: Array<JniNoteInfo>
-        ): Array<JniWitnessData>?
 
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -1318,180 +695,84 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun storeVanPositionNative(
+        private external fun storeKeystoneSignaturesNative(
             dbHandle: Long,
             roundId: String,
-            bundleIndex: Int,
-            position: Long
-        ): Boolean
+            signatures: Array<JniKeystoneSignatureInput>
+        ): JniKeystoneSignatureBatchResult?
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun generateVanWitnessNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            anchorHeight: Long
-        ): JniVanWitness?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun buildVoteCommitmentNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            hotkeySecret: ByteArray,
-            proposalId: Int,
-            choice: Int,
-            numOptions: Int,
-            witness: JniVanWitness,
-            singleShare: Boolean,
-            proofProgress: VotingProofProgressCallback?
-        ): JniVoteCommitResult?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun storeDelegationTxHashNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            txHash: String
-        ): Boolean
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun getDelegationTxHashNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int
-        ): String?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun storeVoteTxHashNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            txHash: String
-        ): Boolean
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun markVoteSubmittedNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int
-        ): Boolean
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun getVoteTxHashNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int
-        ): String?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun getCommitmentBundleNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int
-        ): JniCommitmentBundleRecord?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun recordVcPositionNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            vcTreePosition: Long
-        ): Boolean
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun recoverCommittedVoteNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int
-        ): JniCommittedVoteRecord?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun clearRecoveryStateNative(dbHandle: Long, roundId: String): Boolean
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun recordShareDelegationNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            shareIndex: Int,
-            sentToUrls: Array<String>,
-            nullifier: ByteArray,
-            submitAt: Long
-        ): Boolean
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun getShareDelegationsNative(
+        private external fun getKeystoneSignaturesNative(
             dbHandle: Long,
             roundId: String
-        ): Array<JniShareDelegationRecord>?
+        ): Array<JniKeystoneSignatureRecord>?
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun getUnconfirmedDelegationsNative(
-            dbHandle: Long,
-            roundId: String
-        ): Array<JniShareDelegationRecord>?
-
-        @JvmStatic
-        @Throws(RuntimeException::class)
-        private external fun markShareConfirmedNative(
+        private external fun trackSharesNative(
             dbHandle: Long,
             roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            shareIndex: Int
-        ): Boolean
+            torRuntime: Long,
+            helperUrls: Array<String>,
+            voteEndTimeSeconds: Long
+        ): JniShareTrackingRunReport?
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun addSentServersNative(
+        @Suppress("LongParameterList")
+        private external fun openRoundSessionNative(
             dbHandle: Long,
+            torRuntime: Long,
             roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            shareIndex: Int,
-            newUrls: Array<String>
-        ): Boolean
+            proposalIds: IntArray,
+            proposalOptionCounts: IntArray,
+            hotkeySecret: ByteArray?,
+            chainEndpoints: Array<String>,
+            operationEpoch: Long,
+            configuredHelperUrls: Array<String>,
+            voteTreeNodeUrls: Array<String>,
+            ceremonyStartSeconds: Long,
+            voteEndTimeSeconds: Long
+        ): Long
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun storeDelegationProofFixtureNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            proof: ByteArray
-        )
+        private external fun closeRoundSessionNative(sessionHandle: Long)
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun storeVoteFixtureNative(
-            dbHandle: Long,
-            roundId: String,
-            bundleIndex: Int,
-            proposalId: Int,
-            choice: Int,
-            recordVcPosition: Boolean
-        )
+        private external fun cancelRoundSessionNative(sessionHandle: Long)
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun setOperationEpochNative(sessionHandle: Long, operationEpoch: Long)
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun getRoundPlanNative(sessionHandle: Long): JniRoundPlan?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun setBallotIntentsNative(
+            sessionHandle: Long,
+            proposalIds: IntArray,
+            choices: IntArray
+        ): JniRoundPlan?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun runRoundNative(
+            sessionHandle: Long,
+            torRuntime: Long,
+            delegationInputs: JniDelegationInputs?
+        ): JniRoundRunReport?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun getKeystoneSigningRequestsNative(
+            sessionHandle: Long,
+            bundleIndices: IntArray
+        ): Array<JniKeystoneSigningRequest>?
     }
 }
