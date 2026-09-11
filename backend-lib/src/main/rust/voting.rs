@@ -4,10 +4,7 @@ use anyhow::anyhow;
 use jni::{
     JNIEnv, JavaVM,
     objects::{GlobalRef, JByteArray, JClass, JIntArray, JObject, JObjectArray, JString, JValue},
-    sys::{
-        JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jsize,
-        jstring,
-    },
+    sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jsize},
 };
 use orchard::keys::Scope;
 use secrecy::{ExposeSecret, SecretVec};
@@ -31,10 +28,7 @@ use voting::types::{
     WireEncryptedShare, WitnessData,
 };
 
-use crate::utils::{
-    catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
-    rust_vec_to_java,
-};
+use crate::utils::{catch_unwind, exception::unwrap_exc_or, java_string_to_rust, rust_vec_to_java};
 
 mod db;
 mod delegation;
@@ -42,7 +36,6 @@ mod delegation_driver;
 mod helpers;
 mod notes;
 mod progress;
-mod recovery;
 mod round_session;
 mod rounds;
 mod route;
@@ -50,4 +43,3 @@ mod share_tracking;
 mod share_tracking_driver;
 mod tree;
 mod util;
-mod vote;

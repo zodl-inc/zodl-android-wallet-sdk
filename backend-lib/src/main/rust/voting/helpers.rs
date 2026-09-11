@@ -2527,7 +2527,11 @@ mod tests {
         // real JNI path's silent-empty-array failure mode would be caught
         // here first.
         let recovery = voting::vote::VoteRecoveryBundle {
-            vote_round_id: "round-1".to_string(),
+            // vote_round_id must be 64 lowercase hex characters (VotingRoundParams's
+            // own format, enforced by voting::share::recover_payloads) — matches the
+            // literal delegation.rs's round_params() test fixture already uses.
+            vote_round_id: "0101010101010101010101010101010101010101010101010101010101010101"
+                .to_string(),
             bundle_index: 0,
             proposal_id: 1,
             vote_decision: 0,
