@@ -78,3 +78,28 @@ internal class OhttpKeyConfig(
         }
     }
 }
+
+// =============================================================================
+// External API proxy mappings
+// =============================================================================
+// Non-LWD calls (NEAR intents, voting config, Sapling params) can also be routed
+// through the OHTTP gateway. The gateway routes by `authority` header and proxies
+// to the real backend; external services only ever see the gateway's IP.
+//
+// Privacy routing matrix:
+//   Tor OFF: use OHTTP for all external calls (gateway hides client IP)
+//   Tor ON:  LWD → Tor→OHTTP; other external calls → Tor direct (no double-wrap)
+
+/** Maps a real external-service hostname to the zodl OHTTP proxy hostname. */
+internal fun proxyGatewayHostFor(originalHost: String): String? = when (originalHost) {
+    "1click.chaindefuser.com" -> "near.zodl.com"
+    "voting.valargroup.dev"   -> "vote.zodl.com"
+    "download.z.cash"         -> "params.zodl.com"
+    else                      -> null
+}
+
+/** Relay URL for proxy gateway hosts — all share the mainnet relay. */
+internal val PROXY_RELAY_URL = "https://relay-simulator.example/relay"
+
+/** Key config URL for proxy gateway hosts — all share the mainnet gateway's HPKE key. */
+internal val PROXY_KEY_CONFIG_URL = "https://ohttp-gateway.example/ohttp-configs"
