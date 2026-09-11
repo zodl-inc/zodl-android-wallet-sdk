@@ -2,25 +2,22 @@ package cash.z.ecc.android.sdk
 
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.voting.VotingBallotIntent
 import cash.z.ecc.android.sdk.model.voting.VotingBundleSetupResult
-import cash.z.ecc.android.sdk.model.voting.VotingCommitResult
-import cash.z.ecc.android.sdk.model.voting.VotingCommitmentBundleRecord
-import cash.z.ecc.android.sdk.model.voting.VotingCommitmentResult
-import cash.z.ecc.android.sdk.model.voting.VotingCommittedVoteRecord
-import cash.z.ecc.android.sdk.model.voting.VotingDelegationPhase
+import cash.z.ecc.android.sdk.model.voting.VotingDelegationInputs
 import cash.z.ecc.android.sdk.model.voting.VotingDelegationPirPrecomputeResult
-import cash.z.ecc.android.sdk.model.voting.VotingDelegationProofResult
-import cash.z.ecc.android.sdk.model.voting.VotingDelegationSubmissionResult
-import cash.z.ecc.android.sdk.model.voting.VotingGovernancePczt
 import cash.z.ecc.android.sdk.model.voting.VotingHotkey
+import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSignatureBatchResult
+import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSignatureInput
+import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSignatureRecord
+import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSigningRequest
 import cash.z.ecc.android.sdk.model.voting.VotingNoteInfo
+import cash.z.ecc.android.sdk.model.voting.VotingProposalRosterEntry
+import cash.z.ecc.android.sdk.model.voting.VotingRoundPlan
+import cash.z.ecc.android.sdk.model.voting.VotingRoundRunReport
 import cash.z.ecc.android.sdk.model.voting.VotingRoundState
 import cash.z.ecc.android.sdk.model.voting.VotingRoundSummary
-import cash.z.ecc.android.sdk.model.voting.VotingShareDelegationRecord
-import cash.z.ecc.android.sdk.model.voting.VotingSharePayload
-import cash.z.ecc.android.sdk.model.voting.VotingTxHashLookup
-import cash.z.ecc.android.sdk.model.voting.VotingVanWitness
-import cash.z.ecc.android.sdk.model.voting.VotingVoteRecord
+import cash.z.ecc.android.sdk.model.voting.VotingShareTrackingReport
 import cash.z.ecc.android.sdk.model.voting.VotingWitness
 
 /**
@@ -28,9 +25,17 @@ import cash.z.ecc.android.sdk.model.voting.VotingWitness
  * into the voting Rust backend — see `VotingRustBackend`'s doc comment for the enforcement story.
  *
  * DB-independent crypto operations live directly here; anything scoped to one round's on-disk
- * state is behind [openDb]'s [VotingDbSession].
+ * state is behind [openDb]'s [VotingDbSession]; anything scoped to one round's `RoundExecutor`/
+ * `RoundDriver` session (plan, ballot intents, drive-to-quiescence) is behind
+ * [VotingDbSession.openRoundSession]'s [VotingRoundSession].
+ *
+ * This is the voting-4.0.0 SDK port's session/plan/run surface, replacing the pre-4.0
+ * caller-drives-every-step interface (hand-rolled PCZT construction, per-share recovery
+ * bookkeeping, ...) with one backed end-to-end by `zcash_voting`'s own `RoundExecutor`/
+ * `RoundDriver`/`DelegationPipeline`/`ShareTrackingDriver` — see `VotingRoundSession.run`'s doc
+ * comment for the one open architectural gap this port left (round bootstrap).
  */
-@Suppress("TooManyFunctions", "LongParameterList")
+@Suppress("TooManyFunctions")
 interface VotingSdk {
     /**
      * True if this build's native library actually exports the voting JNI symbols. Callers must
@@ -55,6 +60,14 @@ interface VotingSdk {
     suspend fun warmProvingCaches()
 
     /**
+     * Fixes the process-wide proving-pool policy (`max_active_heavy_jobs: 1`) once at startup,
+     * before any voting round work. Independent of [VotingRoundSession.run]'s own per-dispatch
+     * `max_proof_concurrency` bound — see `VotingRustBackend.configureVoting`'s doc comment in
+     * `backend-lib/src/main/rust/voting/util.rs` for why both matter.
+     */
+    suspend fun configureVoting()
+
+    /**
      * Computes when a delegated helper share should submit, honoring the ceremony's last-moment
      * buffer window. Returns unix seconds; `0` means "submit immediately".
      */
@@ -64,14 +77,6 @@ interface VotingSdk {
         voteEndTimeSeconds: Long,
         singleShare: Boolean
     ): Long
-
-    suspend fun buildSharePayloads(
-        commitment: VotingCommitmentResult,
-        voteDecision: Int,
-        numOptions: Int,
-        vcTreePosition: Long,
-        singleShareMode: Boolean = false
-    ): List<VotingSharePayload>
 
     suspend fun extractOrchardFvkFromUfvk(ufvk: String, networkId: Int): ByteArray
 
@@ -86,17 +91,6 @@ interface VotingSdk {
 
     suspend fun verifyWitness(witness: VotingWitness): Boolean
 
-    suspend fun getWalletNotes(
-        walletDbPath: String,
-        snapshotHeight: BlockHeight,
-        networkId: Int,
-        accountUuid: AccountUuid
-    ): List<VotingNoteInfo>
-
-    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray
-
-    suspend fun extractSpendAuthSig(signedPcztBytes: ByteArray, actionIndex: Int): ByteArray
-
     companion object {
         /**
          * Constructs the real, Rust-backed [VotingSdk]. No Android [android.content.Context] is needed at
@@ -108,27 +102,16 @@ interface VotingSdk {
     }
 }
 
-/** One open round database. Callers must [close] it when done — mirrors [TypesafeVotingDb]'s lifecycle. */
+/** One open round database. Callers must [close] it when done. */
 @Suppress("TooManyFunctions", "LongParameterList")
 interface VotingDbSession {
     suspend fun close()
-
-    suspend fun initRound(
-        roundId: String,
-        snapshotHeight: Long,
-        eaPK: ByteArray,
-        ncRoot: ByteArray,
-        nullifierIMTRoot: ByteArray,
-        sessionJson: String?
-    )
 
     suspend fun getRoundState(roundId: String): VotingRoundState?
 
     suspend fun listRounds(): List<VotingRoundSummary>
 
     suspend fun getBundleCount(roundId: String): Int
-
-    suspend fun getVotes(roundId: String): List<VotingVoteRecord>
 
     suspend fun clearRound(roundId: String)
 
@@ -143,46 +126,6 @@ interface VotingDbSession {
      */
     suspend fun generateHotkey(storedSecret: ByteArray): VotingHotkey
 
-    /**
-     * Builds a governance PCZT for hardware-wallet flows. Trusts [fvkBytes]/[hotkeySecret] as
-     * caller-derived Keystone input — does not validate a wallet seed against them. Software
-     * callers holding the wallet seed should use [buildGovernancePcztFromSeed] instead.
-     */
-    suspend fun buildGovernancePczt(
-        roundId: String,
-        bundleIndex: Int,
-        fvkBytes: ByteArray,
-        hotkeySecret: ByteArray,
-        accountIndex: Int,
-        notes: List<VotingNoteInfo>,
-        seedFingerprint: ByteArray,
-        roundName: String
-    ): VotingGovernancePczt
-
-    /**
-     * Builds a governance PCZT for software-wallet flows: derives the Orchard FVK from
-     * [walletSeed] and rejects calls where it doesn't match [ufvk].
-     */
-    suspend fun buildGovernancePcztFromSeed(
-        roundId: String,
-        bundleIndex: Int,
-        ufvk: String,
-        networkId: Int,
-        accountIndex: Int,
-        notes: List<VotingNoteInfo>,
-        walletSeed: ByteArray,
-        hotkeySecret: ByteArray,
-        seedFingerprint: ByteArray,
-        roundName: String
-    ): VotingGovernancePczt
-
-    suspend fun storeWitnesses(
-        roundId: String,
-        bundleIndex: Int,
-        notes: List<VotingNoteInfo>,
-        witnesses: List<VotingWitness>
-    )
-
     suspend fun precomputeDelegationPir(
         roundId: String,
         bundleIndex: Int,
@@ -194,163 +137,132 @@ interface VotingDbSession {
         notes: List<VotingNoteInfo>
     ): VotingDelegationPirPrecomputeResult
 
-    suspend fun buildAndProveDelegation(
-        roundId: String,
-        bundleIndex: Int,
-        pirServerUrl: String,
-        pirDepth: Int,
-        pirTier0Layers: Int,
-        pirTier1Layers: Int,
-        pirPolyLen: Int,
-        notes: List<VotingNoteInfo>,
-        fvkBytes: ByteArray,
-        hotkeySecret: ByteArray,
-        seedFingerprint: ByteArray,
-        accountIndex: Int,
-        roundName: String,
-        proofProgress: ((Double) -> Unit)? = null
-    ): VotingDelegationProofResult
-
-    suspend fun getDelegationSubmission(
-        roundId: String,
-        bundleIndex: Int,
-        walletDbPath: String,
-        accountUuid: String,
-        hotkeySecret: ByteArray,
-        roundName: String,
-        senderSeed: ByteArray
-    ): VotingDelegationSubmissionResult
-
-    suspend fun getDelegationSubmissionWithKeystoneSig(
-        roundId: String,
-        bundleIndex: Int,
-        keystoneSig: ByteArray,
-        keystoneSighash: ByteArray
-    ): VotingDelegationSubmissionResult
-
-    /** The canonical per-bundle delegation phase for every bundle with recorded progress. */
-    suspend fun delegationPhases(roundId: String): List<VotingDelegationPhase>
-
-    /**
-     * Clears unsigned delegation setup fields for every bundle in [roundId] that has neither a
-     * submitted delegation tx nor a persisted [storeKeystoneSignature] entry, so a subsequent
-     * construct call starts clean.
-     *
-     * Known gap: this does **not** clear a reset bundle's stale `proofs` row — the underlying
-     * crate has no public API for that. Callers must not treat proof-row presence alone as
-     * proof-freshness for a bundle that has gone through a reset; only a fresh
-     * `buildAndProveDelegation` call actually overwrites it.
-     */
-    suspend fun resetVotingSessionState(roundId: String)
-
-    /**
-     * Persists a Keystone-signed delegation bundle's signature so a later round-wide
-     * [resetVotingSessionState] preserves this bundle instead of wiping its unsigned setup
-     * fields for a rebuild. Pass the `rk`/`sighash` already verified by a prior
-     * [getDelegationSubmissionWithKeystoneSig] call (its returned result's `rk`), not arbitrary
-     * caller-supplied values — this call does not itself re-verify the signature.
-     */
-    suspend fun storeKeystoneSignature(
-        roundId: String,
-        bundleIndex: Int,
-        keystoneSig: ByteArray,
-        keystoneSighash: ByteArray,
-        rk: ByteArray
-    )
-
-    suspend fun storeTreeState(roundId: String, treeStateBytes: ByteArray)
-
-    suspend fun generateNoteWitnesses(
-        roundId: String,
-        bundleIndex: Int,
-        walletDbPath: String,
-        networkId: Int,
-        notes: List<VotingNoteInfo>
-    ): List<VotingWitness>
-
     suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
 
     suspend fun resetTreeClient(roundId: String)
 
     suspend fun resetAllTreeClients()
 
-    suspend fun storeVanPosition(roundId: String, bundleIndex: Int, position: Long)
-
-    suspend fun generateVanWitness(roundId: String, bundleIndex: Int, anchorHeight: Long): VotingVanWitness
-
-    suspend fun buildVoteCommitment(
-        roundId: String,
-        bundleIndex: Int,
-        hotkeySecret: ByteArray,
-        proposalId: Int,
-        choice: Int,
-        numOptions: Int,
-        witness: VotingVanWitness,
-        singleShare: Boolean = false,
-        proofProgress: ((Double) -> Unit)? = null
-    ): VotingCommitResult
-
-    suspend fun storeDelegationTxHash(roundId: String, bundleIndex: Int, txHash: String)
-
-    suspend fun getDelegationTxHash(roundId: String, bundleIndex: Int): VotingTxHashLookup
-
-    suspend fun storeVoteTxHash(roundId: String, bundleIndex: Int, proposalId: Int, txHash: String)
-
     /**
-     * Vestigial: [storeVoteTxHash] is now the sole atomic recorder for "this vote's tx hash is
-     * known and it is submitted" — that single call already does everything this method used
-     * to. Calling this after [storeVoteTxHash] is always a harmless no-op (it re-asserts the
-     * same already-recorded hash); calling it before [storeVoteTxHash] for the same vote throws.
-     * Kept only for existing callers — do not add new call sites, rely on [storeVoteTxHash]
-     * alone instead.
+     * Clears unsigned delegation setup fields for every bundle in [roundId] that has neither a
+     * submitted delegation tx nor a persisted Keystone signature, so a subsequent construct
+     * call starts clean. Does not delete round-level state.
      */
-    @Deprecated(
-        message = "Redundant; storeVoteTxHash already records the hash and marks submitted",
-        level = DeprecationLevel.WARNING
-    )
-    suspend fun markVoteSubmitted(roundId: String, bundleIndex: Int, proposalId: Int)
-
-    suspend fun getVoteTxHash(roundId: String, bundleIndex: Int, proposalId: Int): VotingTxHashLookup
-
-    suspend fun getCommitmentBundle(roundId: String, bundleIndex: Int, proposalId: Int): VotingCommitmentBundleRecord?
-
-    /** Records the confirmed vote-commitment-tree position once a committed vote's tx is mined. */
-    suspend fun recordVcPosition(roundId: String, bundleIndex: Int, proposalId: Int, vcTreePosition: Long)
-
-    /** Recovers a signed committed vote together with its confirmed tree position from [recordVcPosition]. */
-    suspend fun recoverCommittedVote(roundId: String, bundleIndex: Int, proposalId: Int): VotingCommittedVoteRecord
-
-    suspend fun clearRecoveryState(roundId: String)
+    suspend fun resetVotingSessionState(roundId: String)
 
     /**
-     * Records that share [shareIndex] was sent to [sentToUrls].
+     * Atomically stores a batch of Keystone-signed delegation bundle signatures so a later
+     * round-wide [resetVotingSessionState] preserves those bundles instead of wiping their
+     * unsigned setup fields for a rebuild. Pass `rk`/`sighash` already verified by a prior
+     * [VotingRoundSession.getKeystoneSigningRequests]-driven signing flow, not arbitrary
+     * caller-supplied values — this call does not itself re-verify the signature.
+     */
+    suspend fun storeKeystoneSignatures(
+        roundId: String,
+        signatures: List<VotingKeystoneSignatureInput>
+    ): VotingKeystoneSignatureBatchResult
+
+    suspend fun getKeystoneSignatures(roundId: String): List<VotingKeystoneSignatureRecord>
+
+    /**
+     * Drives [roundId]'s unconfirmed helper shares to confirmation with a `ShareTrackingDriver`,
+     * repeating passes until the round's shares are quiescent. Standalone and session-less:
+     * unlike [VotingRoundSession.run], a separate call cannot cancel an in-flight [trackShares]
+     * run mid-pass.
      *
-     * The native side derives and persists the authoritative nullifier from the vote's own
-     * recovery state; [nullifier] is only shape-validated when non-empty and is never itself
-     * stored. An empty [nullifier] is the normal case for callers that do not have it yet.
+     * [torRuntime] is the caller's raw native Tor-runtime handle (the same one an app's
+     * [cash.z.ecc.android.sdk.internal.model.TorClient] instance uses for its own HTTP
+     * dispatch) — this SDK exposes no public accessor for it today; resolving that for a real
+     * caller is the app-side companion plan's job, not this port's.
+     *
+     * [voteEndTimeSeconds] `< 0` decodes to "no vote-end boundary known yet".
      */
-    suspend fun recordShareDelegation(
+    suspend fun trackShares(
         roundId: String,
-        bundleIndex: Int,
-        proposalId: Int,
-        shareIndex: Int,
-        sentToUrls: List<String>,
-        nullifier: ByteArray,
-        submitAt: Long
-    )
+        torRuntime: Long,
+        helperUrls: List<String>,
+        voteEndTimeSeconds: Long
+    ): VotingShareTrackingReport
 
-    suspend fun getShareDelegations(roundId: String): List<VotingShareDelegationRecord>
-
-    suspend fun getUnconfirmedDelegations(roundId: String): List<VotingShareDelegationRecord>
-
-    suspend fun markShareConfirmed(roundId: String, bundleIndex: Int, proposalId: Int, shareIndex: Int)
-
-    /** Appends [newUrls] to the sent-server list for this share, ignoring duplicates. */
-    suspend fun addSentServers(
+    /**
+     * Opens a round session: binds a `RoundExecutor` to [roundId]'s roster and hotkey, wires its
+     * chain-submission and helper transports through [torRuntime], and registers it. Callers
+     * must [VotingRoundSession.close] it when done.
+     *
+     * [hotkeySecret] may be `null` before a hotkey is bound. [ceremonyStartSeconds]/
+     * [voteEndTimeSeconds] `null` decode to "not yet known". See [trackShares]'s doc comment for
+     * [torRuntime]'s caveat.
+     */
+    @Suppress("LongParameterList")
+    suspend fun openRoundSession(
+        torRuntime: Long,
         roundId: String,
-        bundleIndex: Int,
-        proposalId: Int,
-        shareIndex: Int,
-        newUrls: List<String>
-    )
+        proposals: List<VotingProposalRosterEntry>,
+        hotkeySecret: ByteArray?,
+        chainEndpoints: List<String>,
+        operationEpoch: Long,
+        configuredHelperUrls: List<String>,
+        voteTreeNodeUrls: List<String>,
+        ceremonyStartSeconds: Long?,
+        voteEndTimeSeconds: Long?
+    ): VotingRoundSession
+}
+
+/**
+ * A round's `RoundExecutor`/`RoundDriver` session — plan, ballot intents, drive-to-quiescence,
+ * and the Keystone signing requests a delegation-enabled drive produces. Callers must [close]
+ * it when done.
+ */
+interface VotingRoundSession {
+    suspend fun close()
+
+    /**
+     * Cancels an in-flight [run]. Has no implicit effect on its own — a caller with a [run] call
+     * in flight must call this first if it wants that run to stop early; [close] alone does not
+     * cancel one.
+     */
+    suspend fun cancel()
+
+    suspend fun setOperationEpoch(operationEpoch: Long)
+
+    suspend fun plan(): VotingRoundPlan?
+
+    /**
+     * Records ballot decisions and returns the refreshed plan.
+     */
+    suspend fun setBallotIntents(intents: List<VotingBallotIntent>): VotingRoundPlan?
+
+    /**
+     * Drives this session's round to quiescence with a `RoundDriver`.
+     *
+     * [delegationInputs] must be non-null for a pass that needs to advance delegation signing;
+     * every other step tolerates `null`.
+     *
+     * **Known gap, confirmed empirically (Task 10 of the voting-4.0.0 SDK port):** a
+     * delegation-enabled call (real, non-null [delegationInputs]) does **not** bootstrap a
+     * virgin round, even though `getKeystoneSigningRequestsNative`'s own doc comment describes
+     * this as the intended main-line first step for a round. `zcash_voting`'s own bootstrap
+     * mechanism (`DelegationPipeline`'s `prepare_delegation_bundle_inner` calling
+     * `observe_ensure_round_context`, which calls `VotingDb::ensure_round_state`) genuinely
+     * exists in the crate, but the current JNI wiring
+     * (`backend-lib/src/main/rust/voting/delegation_driver.rs`'s
+     * `delegation_step_inputs_from_jni`) calls `load_round_params` — a hard `SELECT` against the
+     * `rounds` table — immediately after decoding `delegation_inputs` and unconditionally before
+     * ever constructing the `DelegationPipeline`, so an unknown `round_id` is rejected with
+     * "round not found" before `RoundDriver::run` is even entered. There is currently no
+     * JNI-exposed way to create a round's row for a brand-new `round_id` — the pre-4.0
+     * `initRoundNative` that used to do this was removed, and neither this call nor
+     * [VotingDbSession.openRoundSession]'s `RoundBinding` supplies the round's
+     * `snapshot_height`/`ea_pk`/`nc_root`/`nullifier_imt_root` fields the crate's bootstrap path
+     * needs. Callers must ensure a round row already exists through some other means before
+     * calling this with non-null [delegationInputs]; this SDK does not yet expose one.
+     */
+    suspend fun run(delegationInputs: VotingDelegationInputs? = null): VotingRoundRunReport?
+
+    /**
+     * The Keystone signing requests for [bundleIndices], from the delegation pipeline a prior
+     * delegation-enabled [run] call built and cached on this session. Fails if no delegation
+     * pipeline is cached yet.
+     */
+    suspend fun getKeystoneSigningRequests(bundleIndices: List<Int>): List<VotingKeystoneSigningRequest>
 }

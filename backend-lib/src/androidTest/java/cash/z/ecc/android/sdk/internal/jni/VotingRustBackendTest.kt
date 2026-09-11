@@ -3,6 +3,7 @@
 package cash.z.ecc.android.sdk.internal.jni
 
 import cash.z.ecc.android.sdk.internal.model.TorClient
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationInputs
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureInput
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
@@ -582,6 +583,107 @@ class VotingRustBackendTest {
             }
         }
 
+    /**
+     * Task 10's central, load-bearing finding: a delegation-enabled `runRoundNative` call
+     * (real, non-null [JniDelegationInputs]) does **not** bootstrap a virgin round either.
+     *
+     * The task-9-report's Concern #2 and this file's
+     * `round_session_run_round_and_plan_work_without_a_persisted_round_row` above already
+     * showed the *signer-less* (`delegationInputs = null`) path never persists a `rounds` row.
+     * Task 10's brief asked specifically whether the *delegation-enabled* path -- reachable via
+     * `delegation_driver.rs`'s `delegation_step_inputs_from_jni`, which the crate's own
+     * `KeystoneSigningRequest` doc comment (`delegation.rs:75-78`) describes as the intended
+     * main-line first step for a round -- fares any better, since deep inside it
+     * (`DelegationPipeline`'s `prepare_delegation_bundle_inner`) the crate calls
+     * `observe_ensure_round_context`, which itself calls `VotingDb::ensure_round_state` and
+     * *would* create the round row if missing.
+     *
+     * It does not, for a more specific reason than "the pipeline never runs": reading
+     * `delegation_step_inputs_from_jni` end to end shows it calls
+     * `voting::storage::queries::load_round_params` -- a hard `SELECT ... FROM rounds` --
+     * immediately after decoding `delegation_inputs`, and unconditionally before constructing
+     * the `DelegationPipeline` that would eventually reach `observe_ensure_round_context`. For
+     * an unknown `round_id` this returns `VotingError::InvalidInput("round not found: ...")`,
+     * wrapped by `anyhow!("load_round_params: {}", e)`, well before `RoundDriver::run` is even
+     * entered. So the crate-side bootstrap mechanism genuinely exists, but the current Task
+     * 1-9 JNI wiring's own precondition check in `delegation_driver.rs` short-circuits before
+     * ever reaching it -- this is a real gap in the exposed JNI surface, not a Kotlin-layer
+     * problem Task 10 can route around: nothing in the final 38-export list (see the task-9
+     * report) can write the `rounds` row's `snapshot_height`/`ea_pk`/`nc_root`/
+     * `nullifier_imt_root` fields for a round that has never been through the deleted
+     * `initRoundNative`, and `openRoundSessionNative`'s `RoundBinding` does not carry them
+     * either (only `round_id`/`network`/`proposals`/`hotkey_secret`).
+     *
+     * This test proves that precisely: the same virgin `ROUND_ID` this file's other tests use,
+     * a syntactically well-formed but semantically inert [JniDelegationInputs] (garbage wallet
+     * path/anchor bytes are never reached -- the `load_round_params` guard fires first), and an
+     * assertion on the exact rejection message plus confirmation that no `rounds` row exists
+     * before or after the call.
+     */
+    @Test
+    fun runRound_with_delegation_inputs_cannot_bootstrap_a_virgin_round() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
+            val torClient = newTorClientForTesting()
+            try {
+                assertNull(db.getRoundState(ROUND_ID))
+                assertTrue(db.listRounds().isEmpty())
+
+                val session =
+                    db.openRoundSession(
+                        torRuntime = torClient.torRuntimeHandleForTesting(),
+                        roundId = ROUND_ID,
+                        proposalIds = intArrayOf(1),
+                        proposalOptionCounts = intArrayOf(2),
+                        hotkeySecret = null,
+                        chainEndpoints = listOf("https://chain.example"),
+                        operationEpoch = 0,
+                        configuredHelperUrls = emptyList(),
+                        voteTreeNodeUrls = emptyList(),
+                        ceremonyStartSeconds = -1,
+                        voteEndTimeSeconds = -1
+                    )
+                try {
+                    val delegationInputs =
+                        JniDelegationInputs(
+                            dbHandle = db.dbHandleForTesting(),
+                            walletDbPath = "unused-wallet.db",
+                            accountUuid = "unused-account-uuid",
+                            anchorTreeStateBytes = ByteArray(0),
+                            hotkeySecret = null,
+                            pirEndpoints = arrayOf("https://pir.example"),
+                            pirDepth = 1,
+                            pirTier0Layers = 1,
+                            pirTier1Layers = 1,
+                            pirPolyLen = 1,
+                            keystone = false,
+                            softwareSeed = ByteArray(FIELD_BYTES) { 0x5A },
+                            keystoneSig = null,
+                            keystoneSighash = null
+                        )
+
+                    val error =
+                        assertFailsWith<RuntimeException> {
+                            session.runRound(torClient.torRuntimeHandleForTesting(), delegationInputs)
+                        }
+                    assertTrue(
+                        error.message.orEmpty().contains("round not found"),
+                        "expected a round-not-found rejection from load_round_params, got: ${error.message}"
+                    )
+
+                    // The failed attempt genuinely never created a rounds row -- the gap is
+                    // real, not merely an exception thrown after a partial write.
+                    assertNull(db.getRoundState(ROUND_ID))
+                    assertTrue(db.listRounds().isEmpty())
+                } finally {
+                    session.close()
+                }
+            } finally {
+                db.close()
+                torClient.dispose()
+            }
+        }
+
     private suspend fun newTorClientForTesting() =
         TorClient.new(
             createTempDirectory("tor-client-").toFile(),
@@ -590,6 +692,12 @@ class VotingRustBackendTest {
 
     private fun TorClient.torRuntimeHandleForTesting(): Long {
         val field = TorClient::class.java.getDeclaredField("nativeHandle")
+        field.isAccessible = true
+        return field.get(this) as Long
+    }
+
+    private fun VotingRustBackend.VotingDb.dbHandleForTesting(): Long {
+        val field = VotingRustBackend.VotingDb::class.java.getDeclaredField("dbHandle")
         field.isAccessible = true
         return field.get(this) as Long
     }

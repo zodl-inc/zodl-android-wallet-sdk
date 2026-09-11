@@ -426,7 +426,7 @@ class VotingRustBackend private constructor() {
                     check(sessionHandle != 0L) {
                         "openRoundSession failed for roundId=$roundId"
                     }
-                    RoundSession(sessionHandle)
+                    RoundSession(sessionHandle, dbHandle = handle)
                 }
             }
 
@@ -445,10 +445,18 @@ class VotingRustBackend private constructor() {
      * One open round session: a bound `RoundExecutor` plus the per-round host inputs
      * `runRound` needs to drive the round to quiescence. See [VotingDb.openRoundSession]'s doc
      * comment.
+     *
+     * [dbHandle] is the raw JNI database handle of the [VotingDb] this session was opened
+     * against, retained (Task 10) so a delegation-enabled [runRound] call's caller can fill in
+     * [cash.z.ecc.android.sdk.internal.model.voting.JniDelegationInputs.dbHandle] without
+     * needing a second, independently-tracked reference to the same database -- see that
+     * class's doc comment for why `RoundSessionHandle` on the Rust side does not already carry
+     * one itself.
      */
     @Suppress("TooManyFunctions")
     class RoundSession internal constructor(
-        private var sessionHandle: Long?
+        private var sessionHandle: Long?,
+        val dbHandle: Long
     ) {
         private val accessMutex = Mutex()
 

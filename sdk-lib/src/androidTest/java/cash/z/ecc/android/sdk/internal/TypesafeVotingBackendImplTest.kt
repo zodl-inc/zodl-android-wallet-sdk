@@ -596,6 +596,8 @@ class TypesafeVotingBackendImplTest {
         private val roundRunReport: JniRoundRunReport? = null,
         private val keystoneSigningRequests: Array<JniKeystoneSigningRequest> = emptyArray()
     ) : RoundSessionBackend {
+        override val dbHandle: Long = 42L
+
         var closeCalls = 0
         var cancelCalls = 0
         var setOperationEpochValue: Long? = null

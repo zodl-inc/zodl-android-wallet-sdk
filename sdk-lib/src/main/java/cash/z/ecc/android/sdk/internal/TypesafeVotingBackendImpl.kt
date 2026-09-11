@@ -358,6 +358,9 @@ private class RustVotingDbBackend(
 }
 
 internal interface RoundSessionBackend {
+    /** See [TypesafeRoundSession.dbHandle]'s doc comment. */
+    val dbHandle: Long
+
     suspend fun close()
 
     suspend fun cancel()
@@ -382,6 +385,8 @@ internal interface RoundSessionBackend {
 private class RustRoundSessionBackend(
     private val roundSession: VotingRustBackend.RoundSession
 ) : RoundSessionBackend {
+    override val dbHandle: Long = roundSession.dbHandle
+
     override suspend fun close() = roundSession.close()
 
     override suspend fun cancel() = roundSession.cancel()
@@ -523,6 +528,8 @@ internal class TypesafeVotingDbImpl(
 internal class TypesafeRoundSessionImpl(
     private val roundSession: RoundSessionBackend
 ) : TypesafeRoundSession {
+    override val dbHandle: Long = roundSession.dbHandle
+
     override suspend fun close() = roundSession.close()
 
     override suspend fun cancel() = roundSession.cancel()
