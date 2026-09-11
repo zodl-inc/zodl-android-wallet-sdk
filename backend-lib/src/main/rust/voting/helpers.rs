@@ -37,6 +37,15 @@ const JNI_COMMITTED_VOTE_RECORD: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniCommittedVoteRecord";
 const JNI_DELEGATION_PHASE: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationPhase";
+// `JniRoundPlan`/`JniRoundRunReport` have no Kotlin-side class yet (Task 5 of the
+// voting-4.0.0-sdk-port plan is Rust/JNI-export only; Task 9 designs the exact
+// Kotlin-facing shape and adds the matching class to JniVotingModels.kt). The
+// constructor signatures below are this task's best-effort proposal for that
+// shape, encoding every RoundPlan field either directly (primitives, int arrays)
+// or as a JSON string for nested/complex types the crate doesn't derive
+// `Serialize` for -- see encode_round_plan's doc comment.
+const JNI_ROUND_PLAN: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniRoundPlan";
+const JNI_ROUND_RUN_REPORT: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniRoundRunReport";
 
 // Must match JniNoteInfo(ByteArray, ByteArray, Long, Long, ByteArray,
 // ByteArray, ByteArray, Int, String) in JniVotingModels.kt.
@@ -99,6 +108,17 @@ const JNI_VOTE_COMMIT_RESULT_CTOR_SIG: &str = "(IIILjava/lang/String;[B[B[B[B[Lc
 // Must match JniCommittedVoteRecord(JniVoteCommitResult, Long) in JniVotingModels.kt.
 const JNI_COMMITTED_VOTE_RECORD_CTOR_SIG: &str =
     "(Lcash/z/ecc/android/sdk/internal/model/voting/JniVoteCommitResult;J)V";
+// Proposed JniRoundPlan(String, Boolean, String, IntArray, IntArray, String?,
+// Boolean, Boolean, String, Boolean, Boolean, Boolean, Boolean, Boolean, Boolean,
+// String?, Boolean, Boolean, Int, Boolean, Boolean, IntArray, IntArray, Boolean,
+// Boolean, Boolean, String, String) constructor, one parameter per RoundPlan
+// field in declaration order. No Kotlin class exists yet -- see the JNI_ROUND_PLAN
+// doc comment above.
+const JNI_ROUND_PLAN_CTOR_SIG: &str = "(Ljava/lang/String;ZLjava/lang/String;[I[ILjava/lang/String;ZZLjava/lang/String;ZZZZZZLjava/lang/String;ZZIZZ[I[IZZZLjava/lang/String;Ljava/lang/String;)V";
+// Proposed JniRoundRunReport(String, String?, JniRoundPlan?, Int, Int, Int,
+// String, IntArray, String, String, Int) constructor. No Kotlin class exists yet
+// -- see the JNI_ROUND_RUN_REPORT doc comment above.
+const JNI_ROUND_RUN_REPORT_CTOR_SIG: &str = "(Ljava/lang/String;Ljava/lang/String;Lcash/z/ecc/android/sdk/internal/model/voting/JniRoundPlan;IIILjava/lang/String;[ILjava/lang/String;Ljava/lang/String;I)V";
 
 pub(super) const ORCHARD_RAW_ADDRESS_BYTES: usize = 43;
 pub(super) const ORCHARD_FVK_BYTES: usize = 96;
@@ -1823,6 +1843,406 @@ pub(super) fn received_note_to_note_info(
         network,
     )
     .map_err(|e| anyhow!("NoteInfo::from_orchard_note: {}", e))
+}
+
+pub(super) fn java_int_array(
+    env: &mut JNIEnv<'_>,
+    array: &JIntArray<'_>,
+    field: &str,
+) -> anyhow::Result<Vec<jint>> {
+    let len = env.get_array_length(array)?;
+    let mut buf = vec![0i32; jint_to_usize(len, field)?];
+    env.get_int_array_region(array, 0, &mut buf)
+        .map_err(|e| anyhow!("{field}: failed to read int array: {e}"))?;
+    Ok(buf)
+}
+
+pub(super) fn java_string_array(
+    env: &mut JNIEnv<'_>,
+    array: &JObjectArray<'_>,
+    field: &str,
+) -> anyhow::Result<Vec<String>> {
+    let count = env.get_array_length(array)?;
+    (0..count)
+        .map(|index| {
+            let element = env.get_object_array_element(array, index)?;
+            let element = JString::from(element);
+            java_string_to_rust(env, &element).map_err(|e| anyhow!("{field}[{index}]: {e}"))
+        })
+        .collect()
+}
+
+pub(super) fn make_jni_int_array<'local>(
+    env: &mut JNIEnv<'local>,
+    values: &[u32],
+) -> anyhow::Result<JIntArray<'local>> {
+    let jints = values
+        .iter()
+        .map(|v| u32_to_jint(*v, "value"))
+        .collect::<anyhow::Result<Vec<jint>>>()?;
+    let array = env.new_int_array(jints.len() as jsize)?;
+    env.set_int_array_region(&array, 0, &jints)?;
+    Ok(array)
+}
+
+fn optional_jni_string<'local>(
+    env: &mut JNIEnv<'local>,
+    value: Option<String>,
+) -> anyhow::Result<JObject<'local>> {
+    Ok(match value {
+        Some(value) => JObject::from(env.new_string(value)?),
+        None => JObject::null(),
+    })
+}
+
+fn delegation_status_json(status: &voting::session::DelegationStatus) -> serde_json::Value {
+    serde_json::json!({
+        "bundleIndex": status.bundle_index,
+        "phase": status.phase.as_str(),
+        "txHash": status.tx_hash,
+        "submissionDiagnostic": status.submission_diagnostic.as_ref().map(|diagnostic| {
+            serde_json::json!({
+                "kind": diagnostic.kind().as_str(),
+                "message": diagnostic.message(),
+            })
+        }),
+        "terminal": status.terminal,
+    })
+}
+
+fn delegation_recovery_work_json(
+    work: &voting::session::DelegationRecoveryWork,
+) -> serde_json::Value {
+    let kind = match work.kind {
+        voting::session::DelegationRecoveryWorkKind::Delegate => "delegate",
+        voting::session::DelegationRecoveryWorkKind::AdvanceDelegation => "advance_delegation",
+        voting::session::DelegationRecoveryWorkKind::AdvanceImportedDelegation => {
+            "advance_imported_delegation"
+        }
+        // DelegationRecoveryWorkKind is #[non_exhaustive].
+        _ => "unknown",
+    };
+    serde_json::json!({
+        "kind": kind,
+        "bundleIndex": work.bundle_index,
+        "phase": work.phase.as_str(),
+        "txHash": work.tx_hash,
+    })
+}
+
+fn vote_recovery_work_json(work: &voting::session::VoteRecoveryWork) -> serde_json::Value {
+    let kind = match work.kind {
+        voting::session::VoteRecoveryWorkKind::AdvanceVote => "advance_vote",
+        voting::session::VoteRecoveryWorkKind::AdvanceVoteBatch => "advance_vote_batch",
+        voting::session::VoteRecoveryWorkKind::SubmitShares => "submit_shares",
+        // VoteRecoveryWorkKind is #[non_exhaustive].
+        _ => "unknown",
+    };
+    serde_json::json!({
+        "kind": kind,
+        "bundleIndex": work.bundle_index,
+        "proposalId": work.proposal_id,
+        "txHash": work.tx_hash,
+        "vcTreePosition": work.vc_tree_position,
+        "shareIndexes": work.share_indexes,
+    })
+}
+
+fn completed_vote_display_json(
+    display: &voting::session::CompletedVoteDisplay,
+) -> serde_json::Value {
+    serde_json::json!({
+        "choices": display.choices.iter().map(|choice| serde_json::json!({
+            "proposalId": choice.proposal_id,
+            "choice": choice.choice,
+        })).collect::<Vec<_>>(),
+        "votedAt": display.voted_at,
+    })
+}
+
+fn round_plan_action_to_jint(action: voting::session::RoundPlanAction) -> jint {
+    match action {
+        voting::session::RoundPlanAction::Idle => 0,
+        voting::session::RoundPlanAction::Delegate => 1,
+        voting::session::RoundPlanAction::Vote => 2,
+        voting::session::RoundPlanAction::SubmitShares => 3,
+        voting::session::RoundPlanAction::Done => 4,
+        // RoundPlanAction is #[non_exhaustive].
+        _ => -1,
+    }
+}
+
+/// Encodes a [`voting::session::RoundPlan`] for `getRoundPlanNative`/
+/// `setBallotIntentsNative`/the embedded field of `encode_round_run_report`.
+///
+/// `RoundPlan` carries ~28 fields (per a prior investigation, re-confirmed here
+/// against the pinned crate revision); every one is encoded below rather than a
+/// hand-picked subset, per the Task 5 brief's Step 5 note that "a partial
+/// encoder that silently drops fields is a worse failure mode than a compile
+/// error." Simple fields (strings, booleans, `u32` collections) become direct
+/// JNI values. `NextStep` has a real `Serialize` impl in the crate, so
+/// `next_steps` is encoded with `serde_json::to_string` directly. The other
+/// nested record types (`DelegationStatus`, `DelegationRecoveryWork`,
+/// `VoteRecoveryWork`, `CompletedVoteDisplay`) do not derive `Serialize` (it
+/// would be a foreign-type orphan-rule violation for this crate to add it), so
+/// their vectors are hand-built into `serde_json::Value` above and also
+/// serialized to a JSON string field. This keeps the encoder bounded while
+/// still surfacing every field; Task 9 owns turning these JSON string fields
+/// into first-class typed Kotlin models if that turns out to be worth it.
+pub(super) fn encode_round_plan<'local>(
+    env: &mut JNIEnv<'local>,
+    plan: &voting::session::RoundPlan,
+) -> anyhow::Result<JObject<'local>> {
+    let class = env.find_class(JNI_ROUND_PLAN)?;
+    let round_id: JObject<'local> = env.new_string(&plan.round_id)?.into();
+    let next_steps_json: JObject<'local> = env
+        .new_string(serde_json::to_string(&plan.next_steps)?)?
+        .into();
+    let open_proposals = JObject::from(make_jni_int_array(env, &plan.open_proposals)?);
+    let unrostered_intents = JObject::from(make_jni_int_array(env, &plan.unrostered_intents)?);
+    let immediate_share_key_json = optional_jni_string(
+        env,
+        plan.immediate_share_key
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
+    )?;
+    let delegation_statuses_json: JObject<'local> = env
+        .new_string(serde_json::to_string(
+            &plan
+                .delegation_statuses
+                .iter()
+                .map(delegation_status_json)
+                .collect::<Vec<_>>(),
+        )?)?
+        .into();
+    let completed_vote_display_json = optional_jni_string(
+        env,
+        plan.completed_vote_display
+            .as_ref()
+            .map(|display| completed_vote_display_json(display).to_string()),
+    )?;
+    let delegation_bundles_needing_work = JObject::from(make_jni_int_array(
+        env,
+        &plan.delegation_bundles_needing_work,
+    )?);
+    let delegation_bundles_needing_signing = JObject::from(make_jni_int_array(
+        env,
+        &plan.delegation_bundles_needing_signing,
+    )?);
+    let recovered_delegation_work_json: JObject<'local> = env
+        .new_string(serde_json::to_string(
+            &plan
+                .recovered_delegation_work
+                .iter()
+                .map(delegation_recovery_work_json)
+                .collect::<Vec<_>>(),
+        )?)?
+        .into();
+    let recovered_vote_work_json: JObject<'local> = env
+        .new_string(serde_json::to_string(
+            &plan
+                .recovered_vote_work
+                .iter()
+                .map(vote_recovery_work_json)
+                .collect::<Vec<_>>(),
+        )?)?
+        .into();
+
+    Ok(env.new_object(
+        &class,
+        JNI_ROUND_PLAN_CTOR_SIG,
+        &[
+            JValue::Object(&round_id),
+            JValue::Bool(plan.pending_recovery as jboolean),
+            JValue::Object(&next_steps_json),
+            JValue::Object(&open_proposals),
+            JValue::Object(&unrostered_intents),
+            JValue::Object(&immediate_share_key_json),
+            JValue::Bool(plan.immediate_share_confirmed as jboolean),
+            JValue::Bool(plan.all_decided as jboolean),
+            JValue::Object(&delegation_statuses_json),
+            JValue::Bool(plan.blocking_recovery as jboolean),
+            JValue::Bool(plan.blocking_share_work as jboolean),
+            JValue::Bool(plan.has_unconfirmed_shares as jboolean),
+            JValue::Bool(plan.hotkey_bound as jboolean),
+            JValue::Bool(plan.completed_vote_artifact as jboolean),
+            JValue::Bool(plan.completed_for_display as jboolean),
+            JValue::Object(&completed_vote_display_json),
+            JValue::Bool(plan.needs_draft_setup as jboolean),
+            JValue::Bool(plan.needs_bundle_setup as jboolean),
+            JValue::Int(round_plan_action_to_jint(plan.primary_action)),
+            JValue::Bool(plan.needs_delegation_signing as jboolean),
+            JValue::Bool(plan.has_in_flight_delegation as jboolean),
+            JValue::Object(&delegation_bundles_needing_work),
+            JValue::Object(&delegation_bundles_needing_signing),
+            JValue::Bool(plan.needs_vote_polling as jboolean),
+            JValue::Bool(plan.has_remaining_vote_or_share_work as jboolean),
+            JValue::Bool(plan.has_recoverable_vote_or_share_work as jboolean),
+            JValue::Object(&recovered_delegation_work_json),
+            JValue::Object(&recovered_vote_work_json),
+        ],
+    )?)
+}
+
+fn round_quiescence_kind(quiescence: &voting::RoundQuiescence) -> &'static str {
+    use voting::RoundQuiescence::*;
+    match quiescence {
+        NoWorkLeft => "no_work_left",
+        NeedsBundleSetup => "needs_bundle_setup",
+        PersistedChainTerminal => "persisted_chain_terminal",
+        NeedsBallot { .. } => "needs_ballot",
+        NeedsDelegationSignatures { .. } => "needs_delegation_signatures",
+        BackgroundShareWorkOnly { .. } => "background_share_work_only",
+        Cancelled => "cancelled",
+        ChainTerminal { .. } => "chain_terminal",
+        ChainRecoveryStalled { .. } => "chain_recovery_stalled",
+        Failures => "failures",
+        PassBudgetExhausted { .. } => "pass_budget_exhausted",
+        // RoundQuiescence is #[non_exhaustive].
+        _ => "unknown",
+    }
+}
+
+/// Variant-specific payload for [`RoundQuiescence`], where present. This is a
+/// deliberately lighter-touch encoding than `encode_round_plan`'s: the Task 5
+/// brief only requires `RoundRunReport`'s embedded `Option<RoundPlan>` to reuse
+/// `encode_round_plan`, not that every `RoundRunReport` field reach the same
+/// fidelity. `ChainSubmissionResult` and `ShareKey` are Debug-formatted rather
+/// than field-by-field encoded for the same reason `encode_round_run_report`'s
+/// other complex fields are.
+fn round_quiescence_detail_json(
+    quiescence: &voting::RoundQuiescence,
+) -> anyhow::Result<Option<String>> {
+    use voting::RoundQuiescence::*;
+    let value = match quiescence {
+        NoWorkLeft | NeedsBundleSetup | PersistedChainTerminal | Cancelled | Failures => {
+            return Ok(None);
+        }
+        NeedsBallot {
+            open_proposals,
+            unrostered_intents,
+        } => serde_json::json!({
+            "openProposals": open_proposals,
+            "unrosteredIntents": unrostered_intents,
+        }),
+        NeedsDelegationSignatures { bundles } => serde_json::json!({ "bundles": bundles }),
+        BackgroundShareWorkOnly { shares } => serde_json::json!({
+            "shares": shares.iter().map(|share| format!("{share:?}")).collect::<Vec<_>>(),
+        }),
+        ChainTerminal { step, outcome } | ChainRecoveryStalled { step, outcome } => {
+            serde_json::json!({
+                "step": serde_json::to_value(step).ok(),
+                "outcome": format!("{outcome:?}"),
+            })
+        }
+        PassBudgetExhausted { remaining } => serde_json::json!({
+            "remaining": serde_json::to_value(remaining).ok(),
+        }),
+        // RoundQuiescence is #[non_exhaustive].
+        other => serde_json::json!({ "debug": format!("{other:?}") }),
+    };
+    Ok(Some(value.to_string()))
+}
+
+fn round_step_failure_record_json(record: &voting::RoundStepFailureRecord) -> serde_json::Value {
+    serde_json::json!({
+        "step": record.step.as_ref().and_then(|step| serde_json::to_value(step).ok()),
+        "bundleIndex": record.bundle_index,
+        "kind": format!("{:?}", record.failure.kind),
+        "message": record.failure.message,
+    })
+}
+
+/// Encodes a [`voting::RoundRunReport`], the terminal output of
+/// `runRoundNative`'s `RoundDriver::run`.
+///
+/// The embedded `plan: Option<RoundPlan>` reuses [`encode_round_plan`] per the
+/// brief. The rest of the report -- quiescence detail, failures, chain
+/// outcomes, share deliveries -- is encoded more thinly (stable discriminator
+/// strings plus Debug-derived JSON) than `RoundPlan`'s fields: the brief does
+/// not ask for the same field-by-field fidelity here, and several of these
+/// types (`ChainSubmissionResult`, `RoundStepFailureKind`) are large,
+/// non-exhaustive enums without a `Serialize` impl this crate can add. Signed
+/// delegation bundles (`report.delegations`) are intentionally reduced to a
+/// count rather than serialized: they carry proving/signing material a Kotlin
+/// JSON field is the wrong place to route, and Task 6/7 (delegation wiring,
+/// share tracking) are better positioned to design their real encoding.
+pub(super) fn encode_round_run_report<'local>(
+    env: &mut JNIEnv<'local>,
+    report: &voting::RoundRunReport,
+) -> anyhow::Result<JObject<'local>> {
+    let class = env.find_class(JNI_ROUND_RUN_REPORT)?;
+    let quiescence_kind: JObject<'local> = env
+        .new_string(round_quiescence_kind(&report.quiescence))?
+        .into();
+    let quiescence_detail_json =
+        optional_jni_string(env, round_quiescence_detail_json(&report.quiescence)?)?;
+    let plan = match &report.plan {
+        Some(plan) => encode_round_plan(env, plan)?,
+        None => JObject::null(),
+    };
+    let failures_json: JObject<'local> = env
+        .new_string(serde_json::to_string(
+            &report
+                .failures
+                .iter()
+                .map(round_step_failure_record_json)
+                .collect::<Vec<_>>(),
+        )?)?
+        .into();
+    let skipped_bundles = JObject::from(make_jni_int_array(env, &report.skipped_bundles)?);
+    let chain_outcomes_json: JObject<'local> = env
+        .new_string(serde_json::to_string(
+            &report
+                .chain_outcomes
+                .iter()
+                .map(|(step, outcome)| {
+                    serde_json::json!({
+                        "step": serde_json::to_value(step).ok(),
+                        "outcome": format!("{outcome:?}"),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?)?
+        .into();
+    let share_deliveries_json: JObject<'local> = env
+        .new_string(serde_json::to_string(
+            &report
+                .share_deliveries
+                .iter()
+                .map(|delivery| format!("{delivery:?}"))
+                .collect::<Vec<_>>(),
+        )?)?
+        .into();
+    let delegations_signed_count = usize_to_jint(report.delegations.len(), "delegations")?;
+
+    Ok(env.new_object(
+        &class,
+        JNI_ROUND_RUN_REPORT_CTOR_SIG,
+        &[
+            JValue::Object(&quiescence_kind),
+            JValue::Object(&quiescence_detail_json),
+            JValue::Object(&plan),
+            JValue::Int(u32_to_jint(
+                report.tally.completed_proposals,
+                "completed_proposals",
+            )?),
+            JValue::Int(u32_to_jint(
+                report.tally.total_proposals,
+                "total_proposals",
+            )?),
+            JValue::Int(u32_to_jint(
+                report.tally.remaining_obligations,
+                "remaining_obligations",
+            )?),
+            JValue::Object(&failures_json),
+            JValue::Object(&skipped_bundles),
+            JValue::Object(&chain_outcomes_json),
+            JValue::Object(&share_deliveries_json),
+            JValue::Int(delegations_signed_count),
+        ],
+    )?)
 }
 
 #[cfg(test)]

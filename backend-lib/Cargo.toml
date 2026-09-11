@@ -70,6 +70,11 @@ incrementalmerkletree = { version = "0.8", default-features = false }
 prost = "0.14"
 rusqlite = "0.37"
 secrecy = "0.8"
+# `zcash_voting::RoundBinding::hotkey_secret` is `Option<zeroize::Zeroizing<Vec<u8>>>`; this
+# crate is already in the dependency graph transitively (via zcash_voting), but must be a
+# direct dependency to name `zeroize::Zeroizing` here. Version pinned to match Cargo.lock's
+# existing resolution (1.9.0) rather than introducing a second copy.
+zeroize = { version = "1", default-features = false }
 rand = "0.8"
 nonempty = "0.11"
 

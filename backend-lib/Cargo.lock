@@ -7752,6 +7752,7 @@ dependencies = [
  "zcash_script",
  "zcash_transparent",
  "zcash_voting",
+ "zeroize",
  "zip32",
  "zodl-slipstream",
 ]

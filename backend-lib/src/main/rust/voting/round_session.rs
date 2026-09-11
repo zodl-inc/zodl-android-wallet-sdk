@@ -1,0 +1,537 @@
+//! Session lifecycle for `zcash_voting`'s `RoundExecutor`/`RoundDriver`.
+//!
+//! A "round session" binds one open [`VotingDbHandle`](super::db::VotingDbHandle)'s
+//! wallet scope to one voting round: its proposal roster, hotkey, chain
+//! endpoints, helper fleet, and vote-tree node fleet. `openRoundSessionNative`
+//! constructs a [`voting::RoundExecutor`] wired to Task 1's [`ZodlVotingRoute`]
+//! (via [`voting::HyperTransport`]) and registers it here under a `jlong`
+//! handle, following `db.rs`'s `DB_REGISTRY`/`next_handle`/`db_from_handle`
+//! pattern exactly. `runRoundNative` then drives that executor with a
+//! [`voting::RoundDriver`] until the round is quiescent.
+//!
+//! Deliberately absent: an `access_mutex` like `VotingDbHandle`'s. The
+//! executor and driver own their own per-bundle/per-round locking internally
+//! (`RoundExecutor`'s doc comment: "Delegation steps lock per bundle so
+//! bundles prove concurrently; chain and share steps lock per round."), so
+//! wrapping every session JNI export in the legacy DB access lock would only
+//! add contention, not correctness. See the `round_session_handles_are_send_and_sync`
+//! test below.
+
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+use super::db::db_from_handle;
+use super::helpers::*;
+use super::route::ZodlVotingRoute;
+use super::*;
+
+use tor_rtcompat::ToplevelBlockOn;
+use zeroize::Zeroizing;
+
+use voting::{
+    BallotIntent, ChainAdvancePolicy, ChainSubmissionClientConfig, ChainSubmissionControl,
+    HelperClient, HelperHealth, HelperTransport, HyperTransport, NoopRoundDriveReporter,
+    ProposalRosterEntry, RoundBinding, RoundDrivePolicy, RoundDriver, RoundExecutor,
+    RoundHostContext, RoundHostSourceBridge,
+};
+
+use crate::tor::TorRuntime;
+
+/// Wired transport type every round session uses: Task 1's Tor-backed
+/// [`ZodlVotingRoute`] under the crate's shared [`HyperTransport`] adapter,
+/// wrapped in an `Arc` so the same transport instance backs both the chain
+/// submission client (inside [`RoundExecutor`]) and the [`HelperClient`] built
+/// alongside it. `HyperTransport<R>` implements `ChainTransport` and
+/// `HelperTransport` directly (not `Arc<HyperTransport<R>>>`), but
+/// `zcash_voting`'s `ChainTransport` has a blanket `impl<T: ChainTransport>
+/// ChainTransport for Arc<T>`, so `RoundExecutor::with_transport` accepts the
+/// shared `Arc` too -- that blanket impl is what makes sharing one transport
+/// between the chain client and the helper client possible at all. This is
+/// the task brief's one open question resolved by reading the crate: the
+/// brief's code sketch types the field as `RoundExecutor<HyperTransport<
+/// ZodlVotingRoute>>` (unwrapped), which cannot be shared with a
+/// `HelperClient::new(transport: Arc<dyn HelperTransport>, ..)` at the same
+/// time without either constructing two independent transports (defeating the
+/// brief's "shared between the executor's chain transport and a HelperClient"
+/// requirement) or this `Arc` wrapping.
+type SessionTransport = Arc<HyperTransport<ZodlVotingRoute>>;
+
+/// One open round session: a bound [`RoundExecutor`] plus its cancellation/
+/// operation-epoch control, plus the per-round host inputs
+/// `runRoundNative` needs to build a fresh [`RoundHostContext`] on every call
+/// (helper fleet, vote-tree node fleet, and ceremony/vote-end timing -- see
+/// the doc comment on `openRoundSessionNative` for why these are captured
+/// here rather than passed again on every `runRoundNative` call).
+pub(super) struct RoundSessionHandle {
+    executor: RoundExecutor<SessionTransport>,
+    control: ChainSubmissionControl,
+    configured_helper_urls: Vec<String>,
+    vote_tree_node_urls: Vec<String>,
+    ceremony_start_seconds: Option<u64>,
+    vote_end_time_seconds: Option<u64>,
+}
+
+static NEXT_SESSION_HANDLE: AtomicI64 = AtomicI64::new(1);
+static SESSION_REGISTRY: OnceLock<Mutex<HashMap<jlong, Arc<RoundSessionHandle>>>> = OnceLock::new();
+
+fn registry() -> &'static Mutex<HashMap<jlong, Arc<RoundSessionHandle>>> {
+    SESSION_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn next_session_handle() -> anyhow::Result<jlong> {
+    NEXT_SESSION_HANDLE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .map_err(|_| anyhow!("round session handle space exhausted"))
+}
+
+fn session_from_handle(handle: jlong) -> anyhow::Result<Arc<RoundSessionHandle>> {
+    if handle <= 0 {
+        return Err(anyhow!(
+            "Round session handle must be positive, got {handle}"
+        ));
+    }
+
+    registry()
+        .lock()
+        .map_err(|_| anyhow!("round session registry mutex poisoned"))?
+        .get(&handle)
+        .cloned()
+        .ok_or_else(|| anyhow!("Round session handle is closed or unknown: {handle}"))
+}
+
+/// Resolves a `tor_runtime: jlong` JNI parameter to the live [`TorRuntime`] it
+/// points at.
+///
+/// Same pointer-resolution pattern `lib.rs`'s `TorClient_httpGet` and friends
+/// use (`std::ptr::with_exposed_provenance_mut` + `as_mut`), factored out here
+/// since this module needs it twice (`openRoundSessionNative` to build the
+/// session's route, `runRoundNative` to drive the async round-driver run).
+///
+/// # Safety
+///
+/// `tor_runtime` must be a live pointer previously returned by
+/// `TorClient_createTorRuntime` and not yet freed by `TorClient_freeTorRuntime`
+/// for the whole duration the caller uses the returned reference.
+unsafe fn resolve_tor_runtime<'a>(tor_runtime: jlong) -> anyhow::Result<&'a mut TorRuntime> {
+    let ptr = std::ptr::with_exposed_provenance_mut::<TorRuntime>(tor_runtime as usize);
+    unsafe { ptr.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))
+}
+
+fn unix_now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+/// `seconds < 0` decodes to `None`; otherwise `Some(seconds as u64)`. Used for
+/// `openRoundSessionNative`'s nullable `ceremony_start_seconds`/
+/// `vote_end_time_seconds` parameters: a `jlong` sentinel rather than a boxed
+/// `Long` JNI object, since these are Unix timestamps that are never
+/// negative, matching the lightweight-sentinel style already used elsewhere
+/// in this module (`NETWORK_ID_TESTNET`/`NETWORK_ID_MAINNET`) rather than
+/// adding a `java.lang.Long` round trip for this input direction.
+fn optional_seconds(seconds: jlong) -> anyhow::Result<Option<u64>> {
+    if seconds < 0 {
+        Ok(None)
+    } else {
+        Ok(Some(jlong_to_u64(seconds, "seconds")?))
+    }
+}
+
+fn proposal_roster(
+    env: &mut JNIEnv<'_>,
+    proposal_ids: &JIntArray<'_>,
+    proposal_option_counts: &JIntArray<'_>,
+) -> anyhow::Result<Vec<ProposalRosterEntry>> {
+    let ids = java_int_array(env, proposal_ids, "proposal_ids")?;
+    let counts = java_int_array(env, proposal_option_counts, "proposal_option_counts")?;
+    if ids.len() != counts.len() {
+        return Err(anyhow!(
+            "proposal_ids and proposal_option_counts must have the same length, got {} and {}",
+            ids.len(),
+            counts.len()
+        ));
+    }
+    ids.into_iter()
+        .zip(counts)
+        .map(|(proposal_id, num_options)| {
+            Ok(ProposalRosterEntry {
+                proposal_id: jint_to_u32(proposal_id, "proposal_ids[]")?,
+                num_options: jint_to_u32(num_options, "proposal_option_counts[]")?,
+            })
+        })
+        .collect()
+}
+
+/// Opens a round session: binds a [`RoundExecutor`] to `round_id`'s roster and
+/// hotkey, wires its chain-submission and helper transports through the given
+/// Tor runtime (Task 1's [`ZodlVotingRoute`]), and registers it.
+///
+/// Deviates from the brief's `openRoundSessionNative` parameter list in two
+/// ways, both explained in the brief's own text even though its "Produces"
+/// signature line did not list them:
+///
+/// 1. `tor_runtime: jlong` -- required per the brief's Step 3 ("resolved from
+///    a `tor_runtime: jlong` parameter this export must take"), just omitted
+///    from the signature shown in "Produces".
+/// 2. `configured_helper_urls`, `vote_tree_node_urls`, `ceremony_start_seconds`,
+///    `vote_end_time_seconds` -- the brief's `runRoundNative` sketch builds a
+///    `RoundHostContext` template from these ("helper/tree-node URLs,
+///    ceremony_start_seconds/vote_end_time_seconds from round config already
+///    authenticated app-side") but `runRoundNative`'s own listed signature
+///    (`session_handle`, `tor_runtime`, `delegation_inputs`) has nowhere to
+///    receive them. Since this "round config already authenticated app-side"
+///    is round-scoped and known at the same time as `round_id`/the proposal
+///    roster/`chain_endpoints`, capturing it here -- once, at session open --
+///    is the natural reading: it matches `RoundHostContext`'s own doc
+///    ("recomputed... per dispatch, not a value captured once") by treating
+///    only `now_seconds` as truly per-dispatch, with everything else fixed for
+///    the session's lifetime.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_openRoundSessionNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    tor_runtime: jlong,
+    round_id: JString<'local>,
+    proposal_ids: JIntArray<'local>,
+    proposal_option_counts: JIntArray<'local>,
+    hotkey_secret: JByteArray<'local>,
+    chain_endpoints: JObjectArray<'local>,
+    operation_epoch: jlong,
+    configured_helper_urls: JObjectArray<'local>,
+    vote_tree_node_urls: JObjectArray<'local>,
+    ceremony_start_seconds: jlong,
+    vote_end_time_seconds: jlong,
+) -> jlong {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let network = db.network;
+
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let proposals = proposal_roster(env, &proposal_ids, &proposal_option_counts)?;
+        let hotkey_secret =
+            crate::utils::java_nullable_bytes_to_rust(env, &hotkey_secret)?.map(Zeroizing::new);
+        let chain_endpoints = java_string_array(env, &chain_endpoints, "chain_endpoints")?;
+        let configured_helper_urls =
+            java_string_array(env, &configured_helper_urls, "configured_helper_urls")?;
+        let vote_tree_node_urls =
+            java_string_array(env, &vote_tree_node_urls, "vote_tree_node_urls")?;
+        let ceremony_start_seconds = optional_seconds(ceremony_start_seconds)?;
+        let vote_end_time_seconds = optional_seconds(vote_end_time_seconds)?;
+        let operation_epoch = jlong_to_u64(operation_epoch, "operation_epoch")?;
+
+        // `db.scoped(&db.wallet_id())` -- rather than a nonexistent public
+        // accessor for `VotingDbHandle`'s private `Arc<VotingDb>` field --
+        // is the same technique `RoundExecutor::with_transport`'s own
+        // `freeze_wallet_scope` uses internally, so the handle it produces is
+        // re-scoped again there regardless; this call just needs to produce
+        // *some* valid, currently-selected-wallet-scoped `Arc<VotingDb>` to
+        // hand in.
+        let voting_db = Arc::new(
+            db.scoped(&db.wallet_id())
+                .map_err(|e| anyhow!("VotingDb::scoped: {}", e))?,
+        );
+
+        // SAFETY: `tor_runtime` is caller-supplied and must be a live handle
+        // for the duration of this call, per TorClient's existing JNI
+        // contract (see `resolve_tor_runtime`'s doc comment).
+        let tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) }?;
+        let transport: SessionTransport = Arc::new(HyperTransport::with_route(
+            ZodlVotingRoute::new(tor_runtime),
+        ));
+        let helper_client = HelperClient::new(
+            Arc::clone(&transport) as Arc<dyn HelperTransport>,
+            HelperHealth::default(),
+        );
+
+        let chain_config = ChainSubmissionClientConfig::for_network(network, chain_endpoints);
+        let binding = RoundBinding {
+            round_id,
+            network,
+            proposals,
+            hotkey_secret,
+        };
+        let executor = RoundExecutor::with_transport(
+            voting_db,
+            Arc::clone(&transport),
+            chain_config,
+            helper_client,
+        )
+        .map_err(|e| anyhow!("RoundExecutor::with_transport: {}", e))?
+        .with_binding(binding)
+        .map_err(|e| anyhow!("RoundExecutor::with_binding: {}", e))?;
+
+        let session = Arc::new(RoundSessionHandle {
+            executor,
+            control: ChainSubmissionControl::new(operation_epoch),
+            configured_helper_urls,
+            vote_tree_node_urls,
+            ceremony_start_seconds,
+            vote_end_time_seconds,
+        });
+
+        let handle = next_session_handle()?;
+        registry()
+            .lock()
+            .map_err(|_| anyhow!("round session registry mutex poisoned"))?
+            .insert(handle, session);
+
+        Ok(handle)
+    });
+    unwrap_exc_or(&mut env, res, 0)
+}
+
+/// Removes a round session from the registry. No implicit chain cancellation:
+/// a caller with a `runRoundNative` call in flight must `cancelRoundSessionNative`
+/// first if it wants that run to stop early.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_closeRoundSessionNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    session_handle: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        if session_handle > 0 {
+            registry()
+                .lock()
+                .map_err(|_| anyhow!("round session registry mutex poisoned"))?
+                .remove(&session_handle);
+        }
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_cancelRoundSessionNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    session_handle: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        let session = session_from_handle(session_handle)?;
+        session.control.cancel();
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_setOperationEpochNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    session_handle: jlong,
+    operation_epoch: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        let session = session_from_handle(session_handle)?;
+        let operation_epoch = jlong_to_u64(operation_epoch, "operation_epoch")?;
+        session.control.set_operation_epoch(operation_epoch);
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getRoundPlanNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    session_handle: jlong,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let session = session_from_handle(session_handle)?;
+        let plan = session
+            .executor
+            .plan()
+            .map_err(|e| anyhow!("RoundExecutor::plan: {}", e))?;
+        Ok(encode_round_plan(env, &plan)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}
+
+/// Records ballot decisions and returns the refreshed plan.
+///
+/// The brief left this export's non-handle parameter shape as
+/// "`intents_json_or_array: ...`" for this task to resolve. Two parallel
+/// arrays (`proposal_ids`, `choices`) mirror `openRoundSessionNative`'s
+/// existing zipped-array convention for `ProposalRosterEntry` rather than
+/// introducing a JSON parsing path for a shape this simple: `choices[i] < 0`
+/// decodes to `Decision::Skipped` for `proposal_ids[i]`, matching
+/// `optional_seconds`'s sentinel convention above (a real vote choice is
+/// never negative).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_setBallotIntentsNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    session_handle: jlong,
+    proposal_ids: JIntArray<'local>,
+    choices: JIntArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let session = session_from_handle(session_handle)?;
+        let proposal_ids = java_int_array(env, &proposal_ids, "proposal_ids")?;
+        let choices = java_int_array(env, &choices, "choices")?;
+        if proposal_ids.len() != choices.len() {
+            return Err(anyhow!(
+                "proposal_ids and choices must have the same length, got {} and {}",
+                proposal_ids.len(),
+                choices.len()
+            ));
+        }
+        let intents = proposal_ids
+            .into_iter()
+            .zip(choices)
+            .map(|(proposal_id, choice)| {
+                let proposal_id = jint_to_u32(proposal_id, "proposal_ids[]")?;
+                let decision = if choice < 0 {
+                    voting::session::Decision::Skipped
+                } else {
+                    voting::session::Decision::Choice(jint_to_u32(choice, "choices[]")?)
+                };
+                Ok(BallotIntent {
+                    proposal_id,
+                    decision,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        let plan = session
+            .executor
+            .set_ballot_intents(&intents)
+            .map_err(|e| anyhow!("RoundExecutor::set_ballot_intents: {}", e))?;
+        Ok(encode_round_plan(env, &plan)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}
+
+/// Drives the bound round to quiescence with a [`RoundDriver`], per the
+/// brief's Ruling: `max_bundle_concurrency: 2` on [`RoundDrivePolicy`] (so one
+/// bundle's chain/helper I/O can overlap another bundle's proof) paired with
+/// `max_proof_concurrency: 1` on the per-dispatch [`RoundHostContext`] (so at
+/// most one Halo2 proof is resident at a time) -- matching iOS's D6 for the
+/// same device-memory-pressure reason. Both field names had to be confirmed
+/// against the crate rather than assumed: `max_proof_concurrency` turned out
+/// to live on `RoundHostContext` (already correctly referenced that way in the
+/// brief's own code sketch), not on `RoundDrivePolicy` as the Ruling's prose
+/// suggested when read in isolation -- `RoundDrivePolicy` has no
+/// `max_proof_concurrency` field at all, only `max_bundle_concurrency:
+/// NonZeroUsize`, `pending_repoll`, `failure_isolation`, `max_dispatches`, and
+/// `progress_baseline` (`round_drive/policy.rs`). This task did not find or
+/// wire a process-wide proving-pool `configureVotingNative`-style entry point
+/// mirroring iOS's `max_active_heavy_jobs`; see the task report for why that
+/// is flagged as a concern rather than fixed here.
+///
+/// `delegation_inputs` is accepted (per the brief's signature) but ignored:
+/// Task 6 builds `DelegationStepInputs` from it and plugs it into the
+/// `RoundHostContext` template below. Building that conversion here would be
+/// the scope creep the task brief explicitly warns against ("Task 6 fills in
+/// the `delegation: None` placeholder later, don't build that yourself").
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_runRoundNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    session_handle: jlong,
+    tor_runtime: jlong,
+    delegation_inputs: JObject<'local>,
+) -> jobject {
+    let _ = &delegation_inputs;
+    let res = catch_unwind(&mut env, |env| {
+        let session = session_from_handle(session_handle)?;
+
+        // SAFETY: see `resolve_tor_runtime`'s doc comment. This is a separate
+        // resolution from `openRoundSessionNative`'s: the session's own Tor
+        // client (held inside its `ZodlVotingRoute`) already does the actual
+        // HTTP dispatch; this handle is used only to drive the async
+        // `RoundDriver::run` future synchronously from this JNI call, the
+        // same way `lib.rs`'s other `tor_runtime.runtime().block_on(..)`
+        // call sites do.
+        let tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) }?;
+
+        let template = RoundHostContext {
+            configured_helper_urls: session.configured_helper_urls.clone(),
+            now_seconds: unix_now_seconds(),
+            ceremony_start_seconds: session.ceremony_start_seconds,
+            vote_end_time_seconds: session.vote_end_time_seconds,
+            vote_tree_node_urls: session.vote_tree_node_urls.clone(),
+            // Task 6 fills this in from `delegation_inputs`; every step other
+            // than `Delegate`/`AdvanceDelegation` tolerates `None` per
+            // `RoundHostContext::delegation`'s own doc comment.
+            delegation: None,
+            chain_policy: ChainAdvancePolicy::default(),
+            max_proof_concurrency: 1,
+        };
+        let host = RoundHostSourceBridge::new(move || {
+            let mut ctx = template.clone();
+            ctx.now_seconds = unix_now_seconds();
+            ctx
+        });
+        let policy = RoundDrivePolicy {
+            max_bundle_concurrency: NonZeroUsize::new(2).expect("2 is not zero"),
+            ..RoundDrivePolicy::default()
+        };
+
+        let report = tor_runtime.runtime().block_on(async {
+            RoundDriver::new(&session.executor)
+                .with_policy(policy)
+                .run(&host, &session.control, &NoopRoundDriveReporter {})
+                .await
+        });
+
+        Ok(encode_round_run_report(env, &report)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_session_handles_are_send_and_sync() {
+        // A RoundSessionHandle must not embed a borrowed lock guard or
+        // anything else that would make it non-Send/Sync -- verified at the
+        // type level, matching this task's Global Constraints note that no
+        // access_mutex wraps this session type.
+        fn _assert_send_sync<T: Send + Sync>() {}
+        _assert_send_sync::<RoundSessionHandle>();
+    }
+
+    #[test]
+    fn optional_seconds_decodes_negative_as_none() {
+        assert_eq!(optional_seconds(-1).expect("decodes"), None);
+        assert_eq!(optional_seconds(0).expect("decodes"), Some(0));
+        assert_eq!(
+            optional_seconds(1_700_000_000).expect("decodes"),
+            Some(1_700_000_000)
+        );
+    }
+
+    #[test]
+    fn session_from_handle_rejects_nonpositive_handles() {
+        assert!(session_from_handle(0).is_err());
+        assert!(session_from_handle(-1).is_err());
+    }
+
+    #[test]
+    fn session_from_handle_rejects_unknown_handle() {
+        // A handle that was never issued by next_session_handle() (which
+        // starts at 1 and only increments) must not resolve.
+        assert!(session_from_handle(jlong::MAX).is_err());
+    }
+}

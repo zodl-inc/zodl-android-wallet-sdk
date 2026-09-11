@@ -3,8 +3,11 @@
 use anyhow::anyhow;
 use jni::{
     JNIEnv, JavaVM,
-    objects::{GlobalRef, JByteArray, JClass, JObject, JObjectArray, JString, JValue},
-    sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jstring},
+    objects::{GlobalRef, JByteArray, JClass, JIntArray, JObject, JObjectArray, JString, JValue},
+    sys::{
+        JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jsize,
+        jstring,
+    },
 };
 use orchard::keys::Scope;
 use secrecy::{ExposeSecret, SecretVec};
@@ -39,8 +42,9 @@ mod helpers;
 mod notes;
 mod progress;
 mod recovery;
-mod route;
+mod round_session;
 mod rounds;
+mod route;
 mod share_tracking;
 mod tree;
 mod util;
