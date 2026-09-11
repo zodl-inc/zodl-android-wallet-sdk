@@ -188,6 +188,15 @@ mod tests {
             voting::BundlePolicy::default(),
         )
         .expect("bundle setup");
+        // ensure_bundles_with_skipped_suffix_with_policy only writes
+        // note_positions_blob/note_identity_hashes_blob; bundles.pczt_sighash
+        // and bundles.rk stay NULL until a real setup/proving pass runs.
+        // store_keystone_signature's matches_bundle guard compares against
+        // those columns, so without seeding them first this call fails with
+        // KeystoneSignatureConflict before ever reaching the assertions
+        // below. Mirrors the crate's own round_drive/tests/signatures.rs
+        // store_signature helper.
+        seed_bundle_signing_context(&db, &round_id, 0, &[0xAA; 32], &[0x22; 32]);
 
         db.store_keystone_signature(&round_id, 0, &[0x11; 64], &[0xAA; 32], &[0x22; 32])
             .expect("store keystone signature");
@@ -212,6 +221,10 @@ mod tests {
             voting::BundlePolicy::default(),
         )
         .expect("bundle setup");
+        // See store_keystone_signature_persists_and_is_retrievable's comment:
+        // bundle 0's pczt_sighash/rk are NULL until seeded, and
+        // matches_bundle would reject the seed call below without this.
+        seed_bundle_signing_context(&db, &round_id, 0, &[0xAA; 32], &[0x22; 32]);
 
         db.store_keystone_signature(&round_id, 0, &[0x11; 64], &[0xAA; 32], &[0x22; 32])
             .expect("seed one signature directly");
@@ -236,6 +249,29 @@ mod tests {
             .expect("batch store replays idempotently");
         assert_eq!(result.inserted, 0);
         assert_eq!(result.already_present, 1);
+    }
+
+    /// Directly sets a bundle row's `pczt_sighash`/`rk` columns, the way a
+    /// real setup/proving pass would, so `store_keystone_signature`'s
+    /// `matches_bundle` guard has something to compare against. Mirrors
+    /// `zcash_voting::round_drive::tests::signatures::store_signature`
+    /// (confirmed by reading that file at the pinned commit) rather than
+    /// guessing at the schema.
+    fn seed_bundle_signing_context(
+        db: &VotingDb,
+        round_id: &str,
+        bundle_index: u32,
+        sighash: &[u8],
+        rk: &[u8],
+    ) {
+        let conn = db.conn();
+        let wallet_id = db.wallet_id();
+        conn.execute(
+            "UPDATE bundles SET pczt_sighash = ?1, rk = ?2 \
+             WHERE round_id = ?3 AND wallet_id = ?4 AND bundle_index = ?5",
+            rusqlite::params![sighash, rk, round_id, wallet_id, bundle_index],
+        )
+        .expect("seed bundle signing context");
     }
 
     fn test_db_with_round() -> (VotingDb, String) {
