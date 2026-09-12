@@ -166,9 +166,22 @@ fn wallet_db<P: Parameters>(
     db_data: JString,
 ) -> anyhow::Result<WalletDb<rusqlite::Connection, P, SystemClock, OsRng>> {
     let retention_interval = anchor_retention_interval(params.network_type());
-    WalletDb::for_path(path_from_jni(env, db_data)?, params, SystemClock, OsRng)
-        .map(|db| db.with_anchor_retention_interval(retention_interval))
-        .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))
+    let db_path = path_from_jni(env, db_data)?;
+    // busy_timeout: this connection races the synchronizer engine's block-write bursts on the
+    // same SQLite file from every ordinary send (createProposedTransactions and friends), and
+    // rusqlite's default (0) turns a transient write lock into an instant "database is locked"
+    // crash instead of a short wait — see MOB-1743. `WalletDb::for_path` opens its own
+    // connection with no way to reach it afterwards, so this replicates its internals (open +
+    // load the array vtab module) by hand instead, matching the established pattern in
+    // `migration.rs`'s `open_at`.
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
+    rusqlite::vtab::array::load_module(&conn)
+        .map_err(|e| anyhow!("Error loading SQLite array module: {}", e))?;
+    conn.busy_timeout(std::time::Duration::from_secs(15))
+        .map_err(|e| anyhow!("Error setting wallet busy_timeout: {}", e))?;
+    Ok(WalletDb::from_connection(conn, params, SystemClock, OsRng)
+        .with_anchor_retention_interval(retention_interval))
 }
 
 fn block_db(env: &mut JNIEnv, fsblockdb_root: JString) -> anyhow::Result<FsBlockDb> {
