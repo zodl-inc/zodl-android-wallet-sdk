@@ -46,7 +46,9 @@ internal class OhttpKeyConfig(
         /**
          * Parses an `application/ohttp-keys` body and returns the first key config that uses the
          * suite this client implements (X25519 / HKDF-SHA256 / AES-128-GCM).
+         * Binary format parsing per RFC 9458 §3.1 — bit shifts are mandated by the spec.
          */
+        @Suppress("MagicNumber")
         fun parseSupported(bytes: ByteArray): OhttpKeyConfig {
             var pos = 0
 
@@ -124,7 +126,7 @@ internal fun isOhttpProxyAllowedHost(host: String): Boolean {
 }
 
 /** Relay URL for proxy gateway hosts — all share the mainnet relay. */
-internal val PROXY_RELAY_URL = "https://relay-simulator.example/relay"
+internal const val PROXY_RELAY_URL = "https://relay-simulator.example/relay"
 
 /** Key config URL for proxy gateway hosts — all share the mainnet gateway's HPKE key. */
-internal val PROXY_KEY_CONFIG_URL = "https://ohttp-gateway.example/ohttp-configs"
+internal const val PROXY_KEY_CONFIG_URL = "https://ohttp-gateway.example/ohttp-configs"

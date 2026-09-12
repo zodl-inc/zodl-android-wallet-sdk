@@ -23,6 +23,10 @@ class OhttpHttpClient {
         val body: ByteArray
     )
 
+    companion object {
+        private const val DEFAULT_TIMEOUT_MS = 30_000
+    }
+
     /**
      * Returns true if [url] can be routed through the OHTTP gateway: either the host has a static
      * proxy mapping (near.zodl.com, vote.zodl.com, params.zodl.com) or it matches an allowlisted
@@ -61,7 +65,7 @@ class OhttpHttpClient {
                 headers = request.headers,
                 body = request.body
             )
-        val bRes = withContext(Dispatchers.IO) { transport.roundTrip(bReq, 30_000) }
+        val bRes = withContext(Dispatchers.IO) { transport.roundTrip(bReq, DEFAULT_TIMEOUT_MS) }
         return Response(status = bRes.status, body = bRes.body)
     }
 }

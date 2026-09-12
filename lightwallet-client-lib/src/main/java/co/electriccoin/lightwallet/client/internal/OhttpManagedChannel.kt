@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * streaming RPCs therefore work unchanged from the stub's point of view: all messages arrive at once
  * and are delivered respecting the listener's flow-control requests.
  */
+@Suppress("TooManyFunctions") // gRPC ManagedChannel interface requires 11 methods
 internal class OhttpManagedChannel(
     private val authority: String,
     private val transport: OhttpTransport,
@@ -125,6 +126,7 @@ internal class SerializingExecutor(
                         return
                     }
                 }
+            @Suppress("TooGenericExceptionCaught") // Must catch all to protect executor thread
             try {
                 next.run()
             } catch (t: Throwable) {
@@ -135,6 +137,7 @@ internal class SerializingExecutor(
     }
 }
 
+@Suppress("TooManyFunctions") // gRPC ClientCall interface requires 15 methods
 internal class OhttpClientCall<RequestT, ResponseT>(
     private val method: MethodDescriptor<RequestT, ResponseT>,
     private val callOptions: CallOptions,
@@ -192,13 +195,14 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     override fun sendMessage(message: RequestT) {
         // gRPC length-prefixed message framing: 1 byte compressed flag + 4 byte big-endian length.
         val bytes = method.requestMarshaller.stream(message).use { it.readBytes() }
-        requestBody.write(0)
-        requestBody.write(Hpke.i2osp(bytes.size, 4))
+        requestBody.write(GRPC_UNCOMPRESSED_FLAG)
+        requestBody.write(Hpke.i2osp(bytes.size, GRPC_LENGTH_FIELD_SIZE))
         requestBody.write(bytes)
     }
 
     override fun isReady(): Boolean = true
 
+    @Suppress("TooGenericExceptionCaught") // RuntimeException catch bridges all errors to gRPC Status.INTERNAL
     private fun performRoundTrip() {
         try {
             val timeoutMs = remainingTimeoutMs()
@@ -236,22 +240,11 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         }
     }
 
+    @Suppress("ReturnCount") // Early returns for validation errors make control flow clearer
     private fun onResponse(response: BinaryHttp.Response) {
-        if (response.status != HTTP_OK) {
-            finish(
-                httpStatusToGrpc(response.status).withDescription("gateway/lightwalletd returned HTTP ${response.status}"),
-                Metadata()
-            )
-            return
-        }
-        val contentType = response.field("content-type") ?: ""
-        if (!contentType.startsWith(GRPC_CONTENT_TYPE)) {
-            finish(Status.INTERNAL.withDescription("unexpected content-type '$contentType'"), Metadata())
-            return
-        }
-        val encoding = response.field("grpc-encoding")
-        if (encoding != null && encoding != "identity") {
-            finish(Status.INTERNAL.withDescription("unsupported grpc-encoding '$encoding'"), Metadata())
+        val validationResult = validateResponse(response)
+        if (validationResult != null) {
+            finish(validationResult.first, validationResult.second)
             return
         }
 
@@ -261,7 +254,10 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             return
         }
         val grpcMessage = response.field("grpc-message")?.let { percentDecode(it) }
-        val status = Status.fromCodeValue(grpcStatusCode).let { if (grpcMessage != null) it.withDescription(grpcMessage) else it }
+        val status =
+            Status.fromCodeValue(grpcStatusCode).let {
+                if (grpcMessage != null) it.withDescription(grpcMessage) else it
+            }
 
         val messages =
             try {
@@ -284,27 +280,53 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         deliver()
     }
 
+    private fun validateResponse(response: BinaryHttp.Response): Pair<Status, Metadata>? =
+        when {
+            response.status != HTTP_OK -> {
+                val statusMessage = "gateway/lightwalletd returned HTTP ${response.status}"
+                httpStatusToGrpc(response.status).withDescription(statusMessage) to Metadata()
+            }
+
+            !(response.field("content-type") ?: "").startsWith(GRPC_CONTENT_TYPE) -> {
+                val contentType = response.field("content-type") ?: ""
+                Status.INTERNAL.withDescription("unexpected content-type '$contentType'") to Metadata()
+            }
+
+            response.field("grpc-encoding").let { it != null && it != "identity" } -> {
+                val encoding = response.field("grpc-encoding")
+                Status.INTERNAL.withDescription("unsupported grpc-encoding '$encoding'") to Metadata()
+            }
+
+            else -> {
+                null
+            }
+        }
+
     private fun parseFrames(body: ByteArray): List<ResponseT> {
         val messages = ArrayList<ResponseT>()
         var pos = 0
         while (pos < body.size) {
-            if (body.size - pos < FRAME_HEADER_SIZE) throw IllegalArgumentException("truncated frame header")
-            val compressed = body[pos].toInt() and 0xFF
+            require(body.size - pos >= GRPC_FRAME_HEADER_SIZE) { "truncated frame header" }
+            val compressed = body[pos].toInt() and BYTE_MASK
             val length =
-                ((body[pos + 1].toInt() and 0xFF) shl 24) or
-                    ((body[pos + 2].toInt() and 0xFF) shl 16) or
-                    ((body[pos + 3].toInt() and 0xFF) shl 8) or
-                    (body[pos + 4].toInt() and 0xFF)
-            pos += FRAME_HEADER_SIZE
-            if (compressed != 0) throw IllegalArgumentException("compressed frames are not supported")
-            if (length < 0 || length > body.size - pos) throw IllegalArgumentException("truncated frame body")
+                ((body[pos + GRPC_LENGTH_BYTE_1].toInt() and BYTE_MASK) shl SHIFT_24) or
+                    ((body[pos + GRPC_LENGTH_BYTE_2].toInt() and BYTE_MASK) shl SHIFT_16) or
+                    ((body[pos + GRPC_LENGTH_BYTE_3].toInt() and BYTE_MASK) shl SHIFT_8) or
+                    ((body[pos + GRPC_LENGTH_BYTE_4].toInt() and BYTE_MASK))
+            pos += GRPC_FRAME_HEADER_SIZE
+            require(compressed == 0) { "compressed frames are not supported" }
+            require(length >= 0 && length <= body.size - pos) { "truncated frame body" }
             messages.add(method.responseMarshaller.parse(ByteArrayInputStream(body, pos, length)))
             pos += length
         }
         return messages
     }
 
-    /** Delivers queued messages up to the listener's outstanding request count, then closes. */
+    /**
+     * Delivers queued messages up to the listener's outstanding request count, then closes.
+     * Early returns needed for flow control state checks.
+     */
+    @Suppress("ReturnCount")
     private fun deliver() {
         while (true) {
             val currentListener: Listener<ResponseT>
@@ -365,12 +387,16 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     private fun toMetadata(fields: List<Pair<String, String>>): Metadata {
         val metadata = Metadata()
         for ((name, value) in fields) {
-            if (name.startsWith(":") || name.endsWith(Metadata.BINARY_HEADER_SUFFIX)) continue
-            if (!name.all { it.isLetterOrDigit() || it == '-' || it == '_' || it == '.' }) continue
+            if (!isAcceptableMetadataName(name)) continue
             metadata.put(Metadata.Key.of(name, Metadata.ASCII_STRING_MARSHALLER), value)
         }
         return metadata
     }
+
+    private fun isAcceptableMetadataName(name: String): Boolean =
+        !name.startsWith(":") &&
+            !name.endsWith(Metadata.BINARY_HEADER_SUFFIX) &&
+            name.all { it.isLetterOrDigit() || it == '-' || it == '_' || it == '.' }
 
     private fun httpStatusToGrpc(httpStatus: Int): Status =
         when (httpStatus) {
@@ -406,11 +432,11 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         var i = 0
         while (i < value.length) {
             val c = value[i]
-            if (c == '%' && i + 2 < value.length) {
-                val hex = value.substring(i + 1, i + 3).toIntOrNull(16)
+            if (c == '%' && i + PERCENT_ESCAPE_LENGTH < value.length) {
+                val hex = value.substring(i + 1, i + PERCENT_ESCAPE_LENGTH).toIntOrNull(HEX_RADIX)
                 if (hex != null) {
                     out.write(hex)
-                    i += 3
+                    i += PERCENT_ESCAPE_LENGTH
                     continue
                 }
             }
@@ -423,10 +449,22 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     companion object {
         private const val GRPC_CONTENT_TYPE = "application/grpc"
         private const val USER_AGENT = "zodl-ohttp-grpc/1.0"
-        private const val FRAME_HEADER_SIZE = 5
+        private const val GRPC_FRAME_HEADER_SIZE = 5
+        private const val GRPC_UNCOMPRESSED_FLAG = 0
+        private const val GRPC_LENGTH_FIELD_SIZE = 4
+        private const val GRPC_LENGTH_BYTE_1 = 1
+        private const val GRPC_LENGTH_BYTE_2 = 2
+        private const val GRPC_LENGTH_BYTE_3 = 3
+        private const val GRPC_LENGTH_BYTE_4 = 4
         private const val DEFAULT_TIMEOUT_MS = 90_000
         private const val MIN_TIMEOUT_MS = 1_000
         private const val TIMEOUT_SLACK_MS = 5_000
+        private const val BYTE_MASK = 0xFF
+        private const val SHIFT_8 = 8
+        private const val SHIFT_16 = 16
+        private const val SHIFT_24 = 24
+        private const val PERCENT_ESCAPE_LENGTH = 3
+        private const val HEX_RADIX = 16
 
         private const val HTTP_OK = 200
         private const val HTTP_BAD_REQUEST = 400

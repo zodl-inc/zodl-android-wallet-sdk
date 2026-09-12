@@ -35,6 +35,7 @@ internal object Hpke {
     const val N_K: Int = 16 // AES-128-GCM key size
     const val N_N: Int = 12 // AES-GCM nonce size
     const val N_T: Int = 16 // AES-GCM tag size
+    private const val N_T_BITS: Int = 128 // AES-GCM tag size in bits
 
     private const val MODE_BASE: Byte = 0x00
     private val VERSION_LABEL = "HPKE-v1".toByteArray(Charsets.US_ASCII)
@@ -140,7 +141,7 @@ internal object Hpke {
 
     fun aesGcmSeal(key: ByteArray, nonce: ByteArray, aad: ByteArray, plaintext: ByteArray): ByteArray {
         val cipher = GCMBlockCipher.newInstance(AESEngine.newInstance())
-        cipher.init(true, AEADParameters(KeyParameter(key), N_T * 8, nonce, aad))
+        cipher.init(true, AEADParameters(KeyParameter(key), N_T_BITS, nonce, aad))
         val out = ByteArray(cipher.getOutputSize(plaintext.size))
         val n = cipher.processBytes(plaintext, 0, plaintext.size, out, 0)
         cipher.doFinal(out, n)
@@ -149,7 +150,7 @@ internal object Hpke {
 
     fun aesGcmOpen(key: ByteArray, nonce: ByteArray, aad: ByteArray, ciphertext: ByteArray): ByteArray {
         val cipher = GCMBlockCipher.newInstance(AESEngine.newInstance())
-        cipher.init(false, AEADParameters(KeyParameter(key), N_T * 8, nonce, aad))
+        cipher.init(false, AEADParameters(KeyParameter(key), N_T_BITS, nonce, aad))
         val out = ByteArray(cipher.getOutputSize(ciphertext.size))
         val n = cipher.processBytes(ciphertext, 0, ciphertext.size, out, 0)
         cipher.doFinal(out, n)
@@ -167,6 +168,8 @@ internal object Hpke {
 
     fun i2osp(value: Int, length: Int): ByteArray = i2osp(value.toLong(), length)
 
+    /** Integer-to-octet-string primitive (RFC 9180 §4). */
+    @Suppress("MagicNumber") // Bit shifts are part of the byte-packing algorithm
     fun i2osp(value: Long, length: Int): ByteArray {
         val out = ByteArrayOutputStream(length)
         for (shift in (length - 1) downTo 0) {

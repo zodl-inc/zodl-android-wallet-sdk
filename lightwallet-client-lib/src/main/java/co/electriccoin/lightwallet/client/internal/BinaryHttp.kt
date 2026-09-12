@@ -13,6 +13,10 @@ internal object BinaryHttp {
     private const val FRAMING_KNOWN_LENGTH_REQUEST = 0L
     private const val FRAMING_KNOWN_LENGTH_RESPONSE = 1L
     private const val FRAMING_INDETERMINATE_RESPONSE = 3L
+    private const val INITIAL_BUFFER_SIZE = 256
+    private const val INFORMATIONAL_STATUS_MIN = 100
+    private const val INFORMATIONAL_STATUS_MAX = 199
+    private const val BYTE_MASK = 0xFF
 
     class Request(
         val method: String,
@@ -37,7 +41,7 @@ internal object BinaryHttp {
     }
 
     fun encodeRequest(request: Request): ByteArray {
-        val out = ByteArrayOutputStream(request.body.size + 256)
+        val out = ByteArrayOutputStream(request.body.size + INITIAL_BUFFER_SIZE)
         writeVarint(out, FRAMING_KNOWN_LENGTH_REQUEST)
         writeLengthPrefixed(out, request.method.toByteArray(Charsets.US_ASCII))
         writeLengthPrefixed(out, request.scheme.toByteArray(Charsets.US_ASCII))
@@ -65,7 +69,7 @@ internal object BinaryHttp {
         do {
             status = reader.readVarint().toInt()
             headers = if (reader.hasRemaining()) readKnownLengthFieldSection(reader) else emptyList()
-        } while (status in 100..199 && reader.hasRemaining())
+        } while (status in INFORMATIONAL_STATUS_MIN..INFORMATIONAL_STATUS_MAX && reader.hasRemaining())
 
         val body = if (reader.hasRemaining()) reader.readLengthPrefixed() else ByteArray(0)
         val trailers = if (reader.hasRemaining()) readKnownLengthFieldSection(reader) else emptyList()
@@ -78,7 +82,7 @@ internal object BinaryHttp {
         do {
             status = reader.readVarint().toInt()
             headers = if (reader.hasRemaining()) readIndeterminateFieldSection(reader) else emptyList()
-        } while (status in 100..199 && reader.hasRemaining())
+        } while (status in INFORMATIONAL_STATUS_MIN..INFORMATIONAL_STATUS_MAX && reader.hasRemaining())
 
         val body = ByteArrayOutputStream()
         while (reader.hasRemaining()) {
@@ -127,7 +131,11 @@ internal object BinaryHttp {
         out.write(bytes)
     }
 
-    /** QUIC variable-length integer (RFC 9000 §16). */
+    /**
+     * QUIC variable-length integer (RFC 9000 §16).
+     * Bit patterns and shifts are mandated by the RFC; naming each one hurts readability.
+     */
+    @Suppress("MagicNumber")
     fun writeVarint(out: ByteArrayOutputStream, value: Long) {
         require(value >= 0) { "varint must be non-negative" }
         when {
@@ -160,6 +168,11 @@ internal object BinaryHttp {
         }
     }
 
+    /**
+     * Binary HTTP reader with QUIC varint decoding (RFC 9000 §16).
+     * Bit patterns are mandated by the RFC.
+     */
+    @Suppress("MagicNumber")
     class Reader(
         private val bytes: ByteArray
     ) {
@@ -168,15 +181,15 @@ internal object BinaryHttp {
         fun hasRemaining(): Boolean = pos < bytes.size
 
         private fun readByte(): Int {
-            if (pos >= bytes.size) throw IllegalArgumentException("Truncated Binary HTTP message")
-            return bytes[pos++].toInt() and 0xFF
+            require(pos < bytes.size) { "Truncated Binary HTTP message" }
+            return bytes[pos++].toInt() and BYTE_MASK
         }
 
         fun readVarint(): Long {
             val first = readByte()
             val length = 1 shl (first ushr 6)
             var value = (first and 0x3F).toLong()
-            for (i in 1 until length) {
+            repeat(length - 1) {
                 value = (value shl 8) or readByte().toLong()
             }
             return value
@@ -184,7 +197,7 @@ internal object BinaryHttp {
 
         fun readLengthPrefixed(): ByteArray {
             val length = readVarint()
-            if (length > (bytes.size - pos)) throw IllegalArgumentException("Truncated Binary HTTP field")
+            require(length <= (bytes.size - pos)) { "Truncated Binary HTTP field" }
             val out = bytes.copyOfRange(pos, pos + length.toInt())
             pos += length.toInt()
             return out

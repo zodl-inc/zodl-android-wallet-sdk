@@ -130,7 +130,7 @@ internal class OhttpTransport(
                     connection.errorStream
                         ?.use { it.readFully() }
                         ?.toString(Charsets.UTF_8)
-                        ?.take(200)
+                        ?.take(ERROR_MESSAGE_MAX_LENGTH)
                 throw OhttpException("Relay/gateway returned HTTP $status${detail?.let { ": $it" } ?: ""}", status)
             }
             return connection.inputStream.use { it.readFully() }
@@ -150,7 +150,7 @@ internal class OhttpTransport(
 
     private fun InputStream.readFully(): ByteArray {
         val out = ByteArrayOutputStream()
-        val buffer = ByteArray(16 * 1024)
+        val buffer = ByteArray(READ_BUFFER_SIZE)
         while (true) {
             val n = read(buffer)
             if (n < 0) break
@@ -169,5 +169,7 @@ internal class OhttpTransport(
 
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val KEY_FETCH_TIMEOUT_MS = 15_000
+        private const val ERROR_MESSAGE_MAX_LENGTH = 200
+        private const val READ_BUFFER_SIZE = 16 * 1024
     }
 }
