@@ -1,7 +1,8 @@
 package co.electriccoin.lightwallet.client
 
 import co.electriccoin.lightwallet.client.internal.BinaryHttp
-import co.electriccoin.lightwallet.client.internal.OhttpEndpoints
+import co.electriccoin.lightwallet.client.internal.PROXY_KEY_CONFIG_URL
+import co.electriccoin.lightwallet.client.internal.PROXY_RELAY_URL
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.proxyGatewayHostFor
 import kotlinx.coroutines.Dispatchers
@@ -27,10 +28,11 @@ class OhttpHttpClient {
         val originalHost = uri.host ?: throw IllegalArgumentException("No host in URL: ${request.url}")
         val proxyHost = proxyGatewayHostFor(originalHost)
             ?: throw IllegalArgumentException("No OHTTP proxy for: $originalHost")
-        val transport = OhttpTransport(
-            OhttpEndpoints.relayUrlFor(proxyHost),
-            OhttpEndpoints.keyConfigUrlFor(proxyHost)
-        )
+        // The proxied authority (near.zodl.com, vote.zodl.com, ...) is NOT a gateway host: the
+        // encapsulated request still travels relay -> ohttp-gateway.example, which routes by the
+        // inner `:authority`. Using relayUrlFor(proxyHost) here threw IllegalArgumentException
+        // before any network I/O, so every Tor-OFF NEAR/voting call failed.
+        val transport = OhttpTransport(PROXY_RELAY_URL, PROXY_KEY_CONFIG_URL)
         val pathQ = uri.rawPath.let { p ->
             uri.rawQuery?.let { q -> "$p?$q" } ?: p
         }.ifEmpty { "/" }
