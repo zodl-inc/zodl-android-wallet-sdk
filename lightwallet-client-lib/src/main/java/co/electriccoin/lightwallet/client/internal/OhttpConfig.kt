@@ -90,12 +90,34 @@ internal class OhttpKeyConfig(
 //   Tor OFF: use OHTTP for all external calls (gateway hides client IP)
 //   Tor ON:  LWD → Tor→OHTTP; other external calls → Tor direct (no double-wrap)
 
+/**
+ * Allowlisted host suffixes for direct OHTTP proxying (gateway v1.4.5+).
+ * Hosts matching these suffixes are sent to the gateway with their real `:authority`
+ * (no hostname rewrite), and the gateway proxies them to `https://<authority>` directly.
+ */
+internal val OHTTP_PROXY_ALLOWED_SUFFIXES = listOf(".valargroup.org", ".valargroup.dev", "chaindefuser.com")
+
 /** Maps a real external-service hostname to the zodl OHTTP proxy hostname. */
 internal fun proxyGatewayHostFor(originalHost: String): String? = when (originalHost) {
     "1click.chaindefuser.com" -> "near.zodl.com"
     "voting.valargroup.dev"   -> "vote.zodl.com"
     "download.z.cash"         -> "params.zodl.com"
     else                      -> null
+}
+
+/**
+ * Returns true if [host] matches one of [OHTTP_PROXY_ALLOWED_SUFFIXES].
+ * Match rule: a suffix starting with `.` matches `x.suffix`; a bare domain matches itself or `*.domain`.
+ */
+internal fun isOhttpProxyAllowedHost(host: String): Boolean {
+    val lowerHost = host.lowercase()
+    return OHTTP_PROXY_ALLOWED_SUFFIXES.any { suffix ->
+        val lowerSuffix = suffix.lowercase()
+        when {
+            lowerSuffix.startsWith(".") -> lowerHost.endsWith(lowerSuffix) || lowerHost == lowerSuffix.drop(1)
+            else -> lowerHost == lowerSuffix || lowerHost.endsWith(".$lowerSuffix")
+        }
+    }
 }
 
 /** Relay URL for proxy gateway hosts — all share the mainnet relay. */
