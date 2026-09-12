@@ -131,28 +131,38 @@ internal object BinaryHttp {
     fun writeVarint(out: ByteArrayOutputStream, value: Long) {
         require(value >= 0) { "varint must be non-negative" }
         when {
-            value < (1L shl 6) -> out.write(value.toInt())
+            value < (1L shl 6) -> {
+                out.write(value.toInt())
+            }
+
             value < (1L shl 14) -> {
                 out.write(((value ushr 8) or 0x40).toInt())
                 out.write((value and 0xFF).toInt())
             }
+
             value < (1L shl 30) -> {
                 out.write(((value ushr 24) or 0x80).toInt())
                 out.write(((value ushr 16) and 0xFF).toInt())
                 out.write(((value ushr 8) and 0xFF).toInt())
                 out.write((value and 0xFF).toInt())
             }
+
             value < (1L shl 62) -> {
                 out.write(((value ushr 56) or 0xC0).toInt())
                 for (shift in 48 downTo 0 step 8) {
                     out.write(((value ushr shift) and 0xFF).toInt())
                 }
             }
-            else -> throw IllegalArgumentException("varint too large: $value")
+
+            else -> {
+                throw IllegalArgumentException("varint too large: $value")
+            }
         }
     }
 
-    class Reader(private val bytes: ByteArray) {
+    class Reader(
+        private val bytes: ByteArray
+    ) {
         private var pos = 0
 
         fun hasRemaining(): Boolean = pos < bytes.size

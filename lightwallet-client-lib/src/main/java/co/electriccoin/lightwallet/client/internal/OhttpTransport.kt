@@ -21,8 +21,11 @@ internal class OhttpTransport(
     private val lock = Any()
     private var cachedKeyConfig: OhttpKeyConfig? = null
 
-    class OhttpException(message: String, val httpStatus: Int? = null, cause: Throwable? = null) :
-        IOException(message, cause)
+    class OhttpException(
+        message: String,
+        val httpStatus: Int? = null,
+        cause: Throwable? = null
+    ) : IOException(message, cause)
 
     /** Fetches (or returns the cached) gateway key configuration. */
     fun keyConfig(forceRefresh: Boolean = false): OhttpKeyConfig {
@@ -123,7 +126,11 @@ internal class OhttpTransport(
 
             val status = connection.responseCode
             if (status != HttpURLConnection.HTTP_OK) {
-                val detail = connection.errorStream?.use { it.readFully() }?.toString(Charsets.UTF_8)?.take(200)
+                val detail =
+                    connection.errorStream
+                        ?.use { it.readFully() }
+                        ?.toString(Charsets.UTF_8)
+                        ?.take(200)
                 throw OhttpException("Relay/gateway returned HTTP $status${detail?.let { ": $it" } ?: ""}", status)
             }
             return connection.inputStream.use { it.readFully() }

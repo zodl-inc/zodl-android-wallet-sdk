@@ -101,7 +101,9 @@ internal class OhttpManagedChannel(
  * Runs submitted tasks one at a time, in order, on a delegate executor. gRPC requires listener
  * callbacks to be serialised.
  */
-internal class SerializingExecutor(private val delegate: Executor) : Executor {
+internal class SerializingExecutor(
+    private val delegate: Executor
+) : Executor {
     private val queue = ArrayDeque<Runnable>()
     private var running = false
 
@@ -372,13 +374,29 @@ internal class OhttpClientCall<RequestT, ResponseT>(
 
     private fun httpStatusToGrpc(httpStatus: Int): Status =
         when (httpStatus) {
-            HTTP_BAD_REQUEST -> Status.INTERNAL
-            HTTP_UNAUTHORIZED -> Status.UNAUTHENTICATED
-            HTTP_FORBIDDEN -> Status.PERMISSION_DENIED
-            HTTP_NOT_FOUND -> Status.UNIMPLEMENTED
-            HTTP_TOO_MANY_REQUESTS, HTTP_BAD_GATEWAY, HTTP_SERVICE_UNAVAILABLE, HTTP_GATEWAY_TIMEOUT ->
+            HTTP_BAD_REQUEST -> {
+                Status.INTERNAL
+            }
+
+            HTTP_UNAUTHORIZED -> {
+                Status.UNAUTHENTICATED
+            }
+
+            HTTP_FORBIDDEN -> {
+                Status.PERMISSION_DENIED
+            }
+
+            HTTP_NOT_FOUND -> {
+                Status.UNIMPLEMENTED
+            }
+
+            HTTP_TOO_MANY_REQUESTS, HTTP_BAD_GATEWAY, HTTP_SERVICE_UNAVAILABLE, HTTP_GATEWAY_TIMEOUT -> {
                 Status.UNAVAILABLE
-            else -> Status.UNKNOWN
+            }
+
+            else -> {
+                Status.UNKNOWN
+            }
         }
 
     /** gRPC `grpc-message` uses percent-encoding for non-printable bytes (gRPC HTTP/2 spec). */

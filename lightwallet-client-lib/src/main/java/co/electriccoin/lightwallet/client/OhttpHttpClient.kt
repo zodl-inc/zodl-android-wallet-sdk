@@ -1,9 +1,9 @@
 package co.electriccoin.lightwallet.client
 
 import co.electriccoin.lightwallet.client.internal.BinaryHttp
+import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.PROXY_KEY_CONFIG_URL
 import co.electriccoin.lightwallet.client.internal.PROXY_RELAY_URL
-import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import co.electriccoin.lightwallet.client.internal.proxyGatewayHostFor
 import kotlinx.coroutines.Dispatchers
@@ -17,7 +17,11 @@ class OhttpHttpClient {
         val headers: List<Pair<String, String>> = emptyList(),
         val body: ByteArray = ByteArray(0)
     )
-    data class Response(val status: Int, val body: ByteArray)
+
+    data class Response(
+        val status: Int,
+        val body: ByteArray
+    )
 
     /**
      * Returns true if [url] can be routed through the OHTTP gateway: either the host has a static
@@ -36,23 +40,27 @@ class OhttpHttpClient {
         // :authority is NOT rewritten). Static proxy mappings (near.zodl.com, vote.zodl.com,
         // params.zodl.com) still get rewritten for backward compatibility.
         val proxyHost = proxyGatewayHostFor(originalHost)
-        val innerAuthority = when {
-            proxyHost != null -> proxyHost
-            isOhttpProxyAllowedHost(originalHost) -> originalHost
-            else -> error("No OHTTP proxy for: $originalHost")
-        }
+        val innerAuthority =
+            when {
+                proxyHost != null -> proxyHost
+                isOhttpProxyAllowedHost(originalHost) -> originalHost
+                else -> error("No OHTTP proxy for: $originalHost")
+            }
         val transport = OhttpTransport(PROXY_RELAY_URL, PROXY_KEY_CONFIG_URL)
-        val pathQ = uri.rawPath.let { p ->
-            uri.rawQuery?.let { q -> "$p?$q" } ?: p
-        }.ifEmpty { "/" }
-        val bReq = BinaryHttp.Request(
-            method = request.method,
-            scheme = uri.scheme ?: "https",
-            authority = innerAuthority,
-            path = pathQ,
-            headers = request.headers,
-            body = request.body
-        )
+        val pathQ =
+            uri.rawPath
+                .let { p ->
+                    uri.rawQuery?.let { q -> "$p?$q" } ?: p
+                }.ifEmpty { "/" }
+        val bReq =
+            BinaryHttp.Request(
+                method = request.method,
+                scheme = uri.scheme ?: "https",
+                authority = innerAuthority,
+                path = pathQ,
+                headers = request.headers,
+                body = request.body
+            )
         val bRes = withContext(Dispatchers.IO) { transport.roundTrip(bReq, 30_000) }
         return Response(status = bRes.status, body = bRes.body)
     }

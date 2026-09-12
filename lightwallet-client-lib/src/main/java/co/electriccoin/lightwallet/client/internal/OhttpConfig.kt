@@ -49,7 +49,9 @@ internal class OhttpKeyConfig(
          */
         fun parseSupported(bytes: ByteArray): OhttpKeyConfig {
             var pos = 0
+
             fun u8(): Int = bytes[pos++].toInt() and 0xFF
+
             fun u16(): Int = (u8() shl 8) or u8()
 
             while (pos + 2 <= bytes.size) {
@@ -98,12 +100,13 @@ internal class OhttpKeyConfig(
 internal val OHTTP_PROXY_ALLOWED_SUFFIXES = listOf(".valargroup.org", ".valargroup.dev", "chaindefuser.com")
 
 /** Maps a real external-service hostname to the zodl OHTTP proxy hostname. */
-internal fun proxyGatewayHostFor(originalHost: String): String? = when (originalHost) {
-    "1click.chaindefuser.com" -> "near.zodl.com"
-    "voting.valargroup.dev"   -> "vote.zodl.com"
-    "download.z.cash"         -> "params.zodl.com"
-    else                      -> null
-}
+internal fun proxyGatewayHostFor(originalHost: String): String? =
+    when (originalHost) {
+        "1click.chaindefuser.com" -> "near.zodl.com"
+        "voting.valargroup.dev" -> "vote.zodl.com"
+        "download.z.cash" -> "params.zodl.com"
+        else -> null
+    }
 
 /**
  * Returns true if [host] matches one of [OHTTP_PROXY_ALLOWED_SUFFIXES].
