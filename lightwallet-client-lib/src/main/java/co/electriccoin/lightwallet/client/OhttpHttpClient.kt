@@ -1,6 +1,8 @@
 package co.electriccoin.lightwallet.client
 
+import android.util.Log
 import co.electriccoin.lightwallet.client.internal.BinaryHttp
+import co.electriccoin.lightwallet.client.internal.Constants
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.PROXY_KEY_CONFIG_URL
 import co.electriccoin.lightwallet.client.internal.PROXY_RELAY_URL
@@ -65,7 +67,16 @@ class OhttpHttpClient {
                 headers = request.headers,
                 body = request.body
             )
+        val mode = if (proxyHost != null) "mapped" else "allowlist"
+        Log.i(
+            Constants.LOG_TAG,
+            "OHTTP proxy ${request.method} host=$originalHost authority=$innerAuthority mode=$mode"
+        )
         val bRes = withContext(Dispatchers.IO) { transport.roundTrip(bReq, DEFAULT_TIMEOUT_MS) }
+        Log.i(
+            Constants.LOG_TAG,
+            "OHTTP proxy ${request.method} host=$originalHost -> http=${bRes.status} (${bRes.body.size} bytes)"
+        )
         return Response(status = bRes.status, body = bRes.body)
     }
 }
