@@ -3,6 +3,7 @@ package co.electriccoin.lightwallet.client
 import android.util.Log
 import co.electriccoin.lightwallet.client.internal.BinaryHttp
 import co.electriccoin.lightwallet.client.internal.Constants
+import co.electriccoin.lightwallet.client.internal.OHTTP_PROXY_ALLOWED_SUFFIXES
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.PROXY_KEY_CONFIG_URL
 import co.electriccoin.lightwallet.client.internal.PROXY_RELAY_URL
@@ -35,8 +36,18 @@ class OhttpHttpClient {
      * suffix (.valargroup.org, .valargroup.dev, chaindefuser.com).
      */
     fun canHandle(url: String): Boolean {
-        val host = runCatching { URI.create(url).host }.getOrNull() ?: return false
-        return proxyGatewayHostFor(host) != null || isOhttpProxyAllowedHost(host)
+        val host = runCatching { URI.create(url).host }.getOrNull()
+        if (host == null) {
+            Log.w(Constants.LOG_TAG, "OHTTP canHandle: no host in $url")
+            return false
+        }
+        val mapped = proxyGatewayHostFor(host) != null
+        val allowlisted = isOhttpProxyAllowedHost(host)
+        Log.i(
+            Constants.LOG_TAG,
+            "OHTTP canHandle host=$host mapped=$mapped allowlisted=$allowlisted suffixes=$OHTTP_PROXY_ALLOWED_SUFFIXES"
+        )
+        return mapped || allowlisted
     }
 
     suspend fun execute(request: Request): Response {
