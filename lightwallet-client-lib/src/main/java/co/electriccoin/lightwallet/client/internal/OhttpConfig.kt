@@ -105,6 +105,7 @@ internal val OHTTP_PROXY_ALLOWED_SUFFIXES = listOf(".valargroup.org", ".valargro
 internal fun proxyGatewayHostFor(originalHost: String): String? =
     when (originalHost) {
         "1click.chaindefuser.com" -> "near.zodl.com"
+        "pro-api.coinmarketcap.com" -> "cmc.zodl.com"
         "voting.valargroup.dev" -> "vote.zodl.com"
         "download.z.cash" -> "params.zodl.com"
         else -> null
