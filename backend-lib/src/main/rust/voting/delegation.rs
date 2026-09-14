@@ -331,6 +331,36 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
     unwrap_exc_or(&mut env, res, ())
 }
 
+/// Reports whether the witnesses cached for a bundle already cover exactly its
+/// notes, so callers can skip regenerating them. Read-only: unlike
+/// `storeWitnessesNative` it does not require the bundle notes to match the
+/// persisted setup, it just answers `false` when they do not.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_hasCompleteWitnessesNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    bundle_index: jint,
+    notes: JObjectArray<'local>,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let notes = java_note_info_array(env, &notes, "notes")?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
+        let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
+        let complete = db
+            .has_complete_witnesses(&round_id, bundle_index, &bundle_notes)
+            .map_err(|e| anyhow!("has_complete_witnesses: {}", e))?;
+        Ok(if complete { JNI_TRUE } else { JNI_FALSE })
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_precomputeDelegationPirNative<
     'local,
