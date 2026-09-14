@@ -281,14 +281,6 @@ fn extract_indexed_spend_auth_sig(
     ))
 }
 
-fn connect_pir_client(
-    pir_url: &str,
-    pir_layout: voting::config::PirLayout,
-) -> anyhow::Result<voting::PirClientBlocking> {
-    voting::connect_pir_blocking(pir_layout, pir_url, Arc::new(voting::HyperTransport::new()))
-        .map_err(|e| anyhow!("connect to PIR server failed: {}", e))
-}
-
 fn pir_layout_from_jni(
     pir_depth: jint,
     tier0_layers: jint,
@@ -388,13 +380,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_layout =
             pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
-        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
+        let pir_client = db.pir_client_for(&pir_url, pir_layout)?;
         let result = db
             .precompute_delegation_pir(
                 &round_id,
                 bundle_index,
                 &bundle_notes,
-                &pir_client,
+                pir_client.as_ref(),
                 db.network,
             )
             .map_err(|e| anyhow!("precompute_delegation_pir: {}", e))?;
@@ -464,7 +456,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_layout =
             pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
-        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
+        let pir_client = db.pir_client_for(&pir_url, pir_layout)?;
         let reporter = progress_reporter_from_callback(env, &progress_callback)?;
         let stages = DelegationProgressReporterBridge(reporter.as_ref());
         let result = db
@@ -473,7 +465,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
                 bundle_index,
                 &bundle_notes,
                 &keys,
-                &pir_client,
+                pir_client.as_ref(),
                 &stages,
             )
             .map_err(|e| anyhow!("build_and_prove_delegation: {}", e))?;

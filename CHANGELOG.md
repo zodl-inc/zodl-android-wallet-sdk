@@ -12,6 +12,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   precompute pass can use it to skip regenerating them instead of paying for the work twice.
 
 ### Changed
+- Shielded voting's PIR client is now connected once per open voting DB and reused by delegation
+  precompute and proof generation for every bundle of a round, instead of being rebuilt - tokio
+  runtime, TLS client, tier parameters and a full Tier-0 dataset download - on each of those calls.
 - Shielded voting now builds against `zcash_voting` 4.0.0-rc.1 (`voting-circuits` 0.12.0). The vote
   chain's circuit and verification key change with it: proposal ids may now range from 1 to 50 instead
   of 1 to 15, as required for the 37-question Retroactive Grants round, and a client on the previous
