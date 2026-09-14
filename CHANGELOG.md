@@ -12,6 +12,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   precompute pass can use it to skip regenerating them instead of paying for the work twice.
 
 ### Changed
+- Shielded voting's delegation and vote proofs no longer hold the voting DB lock, so two bundles of a
+  round can prove at once.
 - Shielded voting's PIR client is now connected once per open voting DB and reused by delegation
   precompute and proof generation for every bundle of a round, instead of being rebuilt - tokio
   runtime, TLS client, tier parameters and a full Tier-0 dataset download - on each of those calls.
