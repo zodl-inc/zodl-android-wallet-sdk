@@ -484,6 +484,25 @@ class VotingRustBackend private constructor() {
             )
         }
 
+        /**
+         * True when the cached witnesses for this bundle exactly cover its notes, so witness
+         * generation can be skipped.
+         */
+        @Throws(RuntimeException::class)
+        suspend fun hasCompleteWitnesses(
+            roundId: String,
+            bundleIndex: Int,
+            notes: List<JniNoteInfo>
+        ): Boolean =
+            withHandle { handle ->
+                hasCompleteWitnessesNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    notes.toTypedArray()
+                )
+            }
+
         @Throws(RuntimeException::class)
         suspend fun precomputeDelegationPir(
             roundId: String,
@@ -1213,6 +1232,15 @@ class VotingRustBackend private constructor() {
             notes: Array<JniNoteInfo>,
             witnesses: Array<JniWitnessData>
         )
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun hasCompleteWitnessesNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            notes: Array<JniNoteInfo>
+        ): Boolean
 
         @JvmStatic
         @Throws(RuntimeException::class)

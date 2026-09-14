@@ -6,6 +6,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `VotingDbSession.hasCompleteWitnesses(roundId, bundleIndex, notes)` reports whether the witnesses
+  already cached for a bundle exactly cover its notes. Callers that persisted witnesses in an earlier
+  precompute pass can use it to skip regenerating them instead of paying for the work twice.
+
 ### Changed
 - Shielded voting now builds against `zcash_voting` 4.0.0-rc.1 (`voting-circuits` 0.12.0). The vote
   chain's circuit and verification key change with it: proposal ids may now range from 1 to 50 instead

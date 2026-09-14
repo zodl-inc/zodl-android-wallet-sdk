@@ -1291,6 +1291,9 @@ class TypesafeVotingBackendImplTest {
         var storeWitnessesBundleIndex: Int? = null
         var storeWitnessesNotes: List<JniNoteInfo>? = null
         var storeWitnessesWitnesses: List<JniWitnessData>? = null
+        var hasCompleteWitnessesRoundId: String? = null
+        var hasCompleteWitnessesBundleIndex: Int? = null
+        var hasCompleteWitnessesNotes: List<JniNoteInfo>? = null
         var precomputeRoundId: String? = null
         var precomputeBundleIndex: Int? = null
         var precomputePirServerUrl: String? = null
@@ -1506,6 +1509,17 @@ class TypesafeVotingBackendImplTest {
             storeWitnessesBundleIndex = bundleIndex
             storeWitnessesNotes = notes
             storeWitnessesWitnesses = witnesses
+        }
+
+        override suspend fun hasCompleteWitnesses(
+            roundId: String,
+            bundleIndex: Int,
+            notes: List<JniNoteInfo>
+        ): Boolean {
+            hasCompleteWitnessesRoundId = roundId
+            hasCompleteWitnessesBundleIndex = bundleIndex
+            hasCompleteWitnessesNotes = notes
+            return true
         }
 
         override suspend fun precomputeDelegationPir(
