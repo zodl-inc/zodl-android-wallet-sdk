@@ -450,6 +450,13 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun verifyWitness(witness: JniWitnessData): Boolean = unused()
 
+        override suspend fun getWalletNotes(
+            walletDbPath: String,
+            snapshotHeight: Long,
+            networkId: Int,
+            accountUuid: ByteArray
+        ): List<JniNoteInfo> = unused()
+
         private fun unused(): Nothing = error("unused")
     }
 

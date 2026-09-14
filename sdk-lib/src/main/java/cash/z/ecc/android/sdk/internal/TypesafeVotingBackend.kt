@@ -63,6 +63,20 @@ internal interface TypesafeVotingBackend {
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
 
     suspend fun verifyWitness(witness: JniWitnessData): Boolean
+
+    /**
+     * Reads [accountUuid]'s voting-eligible note plaintexts from the MAIN wallet database at
+     * [walletDbPath], as of the historical [snapshotHeight]. See
+     * `VotingRustBackend.getWalletNotes`'s doc comment for why this is a narrower re-addition
+     * of the deleted pre-4.0 `getWalletNotesNative`, scoped to [computeBundleSetup]/
+     * [TypesafeVotingDb.setupBundles]'s bundle-setup-time need only.
+     */
+    suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: Long,
+        networkId: Int,
+        accountUuid: ByteArray
+    ): List<VotingNoteInfo>
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")

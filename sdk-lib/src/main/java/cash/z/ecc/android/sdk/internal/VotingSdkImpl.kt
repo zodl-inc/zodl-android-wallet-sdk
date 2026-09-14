@@ -3,6 +3,8 @@ package cash.z.ecc.android.sdk.internal
 import cash.z.ecc.android.sdk.VotingDbSession
 import cash.z.ecc.android.sdk.VotingRoundSession
 import cash.z.ecc.android.sdk.VotingSdk
+import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.voting.VotingBallotIntent
 import cash.z.ecc.android.sdk.model.voting.VotingBundleSetupResult
 import cash.z.ecc.android.sdk.model.voting.VotingDelegationInputs
@@ -72,6 +74,16 @@ internal class VotingSdkImpl(
 
     override suspend fun computeBundleSetup(notes: List<VotingNoteInfo>): VotingBundleSetupResult =
         backend.computeBundleSetup(notes.map { it.toInternal() }).toPublic()
+
+    override suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: BlockHeight,
+        networkId: Int,
+        accountUuid: AccountUuid
+    ): List<VotingNoteInfo> =
+        backend
+            .getWalletNotes(walletDbPath, snapshotHeight.value, networkId, accountUuid.value)
+            .map { it.toPublic() }
 
     override suspend fun warmProvingCaches() = backend.warmProvingCaches()
 

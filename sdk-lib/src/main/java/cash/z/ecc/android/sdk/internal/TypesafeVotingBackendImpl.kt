@@ -85,6 +85,16 @@ internal class TypesafeVotingBackendImpl(
     override suspend fun verifyWitness(witness: JniWitnessData): Boolean =
         rustBackend().verifyWitness(witness)
 
+    override suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: Long,
+        networkId: Int,
+        accountUuid: ByteArray
+    ): List<VotingNoteInfo> =
+        rustBackend()
+            .getWalletNotes(walletDbPath, snapshotHeight, networkId, accountUuid)
+            .map { it.toVotingNoteInfo() }
+
     private suspend fun rustBackend() = rustBackendLazy.getInstance(Unit)
 }
 
@@ -120,6 +130,13 @@ internal interface VotingBackendBridge {
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
 
     suspend fun verifyWitness(witness: JniWitnessData): Boolean
+
+    suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: Long,
+        networkId: Int,
+        accountUuid: ByteArray
+    ): List<JniNoteInfo>
 }
 
 private class RustVotingBackendBridge(
@@ -171,6 +188,14 @@ private class RustVotingBackendBridge(
 
     override suspend fun verifyWitness(witness: JniWitnessData): Boolean =
         rustBackend.verifyWitness(witness)
+
+    override suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: Long,
+        networkId: Int,
+        accountUuid: ByteArray
+    ): List<JniNoteInfo> =
+        rustBackend.getWalletNotes(walletDbPath, snapshotHeight, networkId, accountUuid).toList()
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")

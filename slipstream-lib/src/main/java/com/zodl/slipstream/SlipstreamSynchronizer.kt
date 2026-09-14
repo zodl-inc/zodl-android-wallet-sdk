@@ -1600,6 +1600,21 @@ class SlipstreamSynchronizer internal constructor(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught")
+    override suspend fun getVotingTorRuntimeHandle(): Long {
+        if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
+        val client =
+            lazyTorClient
+                ?: throw TorInitializationErrorException(NullPointerException("Tor has not been initialized during synchronizer setup"))
+        return try {
+            client.getOrCreate().rawRuntimeHandle()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw TorInitializationErrorException(e)
+        }
+    }
+
     override suspend fun debugQuery(query: String): String {
         awaitDbReady()
         return transactionReader.debugQuery(query)

@@ -68,6 +68,25 @@ class TorClient private constructor(
             }
         }
 
+    /**
+     * Returns the raw native Tor-runtime handle backing this client.
+     *
+     * Deliberately narrow: this exists only for handing this runtime off across a JNI boundary
+     * to a *different* native subsystem that already accepts a raw runtime handle -- today,
+     * `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`/`trackShares`'s `torRuntime`
+     * parameter (see `Synchronizer.getVotingTorRuntimeHandle`, the sanctioned way for a caller
+     * outside this module to reach this value). Do not use it to bypass this client's own
+     * request dispatch ([httpGet]/[httpPost]/[createWalletClient]/...) -- those remain the only
+     * sanctioned way to actually use this Tor runtime for HTTP.
+     *
+     * The returned handle is only valid until this client is [dispose]d; it is the caller's
+     * responsibility not to hand it to another native subsystem after that.
+     */
+    suspend fun rawRuntimeHandle(): Long =
+        accessMutex.withLock {
+            checkNotNull(nativeHandle) { "TorClient is disposed" }
+        }
+
     suspend fun httpGet(url: String, headers: List<JniHttpHeader>, retryLimit: Int): JniHttpResponseBytes =
         accessMutex.withLock {
             withContext(Dispatchers.IO) {

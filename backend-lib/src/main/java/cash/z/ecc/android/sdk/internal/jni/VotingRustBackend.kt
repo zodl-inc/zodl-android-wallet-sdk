@@ -143,6 +143,26 @@ class VotingRustBackend private constructor() {
         }
 
     /**
+     * Reads [accountUuidBytes]'s voting-eligible note plaintexts from the MAIN wallet database
+     * at [walletDbPath], as of the historical [snapshotHeight]. See `getWalletNotesNative`'s
+     * doc comment in `backend-lib/src/main/rust/voting/notes.rs` for why this is a narrower
+     * re-addition of the pre-4.0 SDK port's deleted `getWalletNotesNative`, scoped to
+     * [computeBundleSetup]/[VotingDb.setupBundles]'s bundle-setup-time need only -- this does
+     * not touch the voting sidecar database [openVotingDb] opens.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: Long,
+        networkId: Int,
+        accountUuidBytes: ByteArray
+    ): Array<JniNoteInfo> =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            getWalletNotesNative(walletDbPath, snapshotHeight, networkId, accountUuidBytes)
+                ?: error("getWalletNotes returned null")
+        }
+
+    /**
      * Derives the raw Orchard address for the voting hotkey.
      *
      * The hotkey account index is intentionally fixed by the Rust voting backend to match the
@@ -609,6 +629,15 @@ class VotingRustBackend private constructor() {
             ufvk: String,
             networkId: Int
         ): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun getWalletNotesNative(
+            walletDbPath: String,
+            snapshotHeight: Long,
+            networkId: Int,
+            accountUuidBytes: ByteArray
+        ): Array<JniNoteInfo>?
 
         @JvmStatic
         @Throws(RuntimeException::class)

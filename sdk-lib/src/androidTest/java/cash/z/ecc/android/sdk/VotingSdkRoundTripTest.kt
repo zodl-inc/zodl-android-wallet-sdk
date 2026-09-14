@@ -60,7 +60,7 @@ class VotingSdkRoundTripTest {
 
                 val roundSession =
                     dbSession.openRoundSession(
-                        torRuntime = torClient.torRuntimeHandleForTesting(),
+                        torRuntime = torClient.rawRuntimeHandle(),
                         roundId = ROUND_ID,
                         proposals = listOf(VotingProposalRosterEntry(proposalId = 1, numOptions = 2)),
                         hotkeySecret = null,
@@ -177,7 +177,7 @@ class VotingSdkRoundTripTest {
 
                 val roundSession =
                     dbSession.openRoundSession(
-                        torRuntime = torClient.torRuntimeHandleForTesting(),
+                        torRuntime = torClient.rawRuntimeHandle(),
                         roundId = ROUND_ID,
                         proposals = listOf(VotingProposalRosterEntry(proposalId = 1, numOptions = 2)),
                         hotkeySecret = hotkey.storedSecret,
@@ -255,12 +255,6 @@ class VotingSdkRoundTripTest {
         val backend = mock(Backend::class.java)
         `when`(backend.networkId).thenReturn(JNI_VOTING_NETWORK_ID_TESTNET)
         return TorClient.new(createTempDirectory("tor-client-").toFile(), backend)
-    }
-
-    private fun TorClient.torRuntimeHandleForTesting(): Long {
-        val field = TorClient::class.java.getDeclaredField("nativeHandle")
-        field.isAccessible = true
-        return field.get(this) as Long
     }
 
     private fun newDbPath() = createTempDirectory("voting-db-").resolve("voting.db").toFile().absolutePath

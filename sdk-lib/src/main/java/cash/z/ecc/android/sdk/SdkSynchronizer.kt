@@ -751,6 +751,26 @@ class SdkSynchronizer private constructor(
             throw TorUnavailableException()
         }
 
+    @Suppress("TooGenericExceptionCaught")
+    override suspend fun getVotingTorRuntimeHandle(): Long =
+        if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
+            if (lazyTorClient == null) {
+                throw TorInitializationErrorException(
+                    NullPointerException("Tor has not been initialized during synchronizer setup")
+                )
+            }
+
+            try {
+                lazyTorClient.getOrCreate().rawRuntimeHandle()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw TorInitializationErrorException(e)
+            }
+        } else {
+            throw TorUnavailableException()
+        }
+
     override suspend fun debugQuery(query: String): String = storage.debugQuery(query)
 
     override suspend fun deleteAccount(accountUuid: AccountUuid) =

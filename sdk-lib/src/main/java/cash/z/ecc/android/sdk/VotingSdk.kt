@@ -58,6 +58,27 @@ interface VotingSdk {
 
     suspend fun computeBundleSetup(notes: List<VotingNoteInfo>): VotingBundleSetupResult
 
+    /**
+     * Reads [accountUuid]'s voting-eligible note plaintexts from the MAIN wallet database at
+     * [walletDbPath], as of the historical [snapshotHeight] -- the input [computeBundleSetup]/
+     * [VotingDbSession.setupBundles] need before any round's bundles can be built. Distinct
+     * from the voting-sidecar database [openDb] opens: this reads the wallet's own note
+     * history, not round state.
+     *
+     * A narrower re-addition of the pre-4.0 SDK port's deleted `getWalletNotesNative` (see
+     * this repo's `.superpowers/sdd/2026-09-11-voting-4.0.0-sdk-port/symbol-map.md` for the
+     * original deletion rationale): the *delegation* pipeline now selects its own notes
+     * internally once a round is running (`DelegationPipeline::select_notes`), but
+     * [computeBundleSetup]/[VotingDbSession.setupBundles] are an earlier, pre-round step that
+     * still takes an explicit note list -- this is how a caller sources it.
+     */
+    suspend fun getWalletNotes(
+        walletDbPath: String,
+        snapshotHeight: BlockHeight,
+        networkId: Int,
+        accountUuid: AccountUuid
+    ): List<VotingNoteInfo>
+
     suspend fun warmProvingCaches()
 
     /**

@@ -897,6 +897,23 @@ interface Synchronizer {
     @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
     suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit = {}): HttpClient
 
+    /**
+     * Returns the raw native Tor-runtime handle backing this synchronizer's shared Tor client,
+     * for callers that must hand it to a different native subsystem accepting a raw Tor runtime
+     * handle -- today, `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`/`trackShares`'s
+     * `torRuntime` parameter. Shares [getTorHttpClient]'s enable/init preconditions (same
+     * exceptions, same underlying Tor client), but does not create a new isolated Tor client the
+     * way [getTorHttpClient] does -- owning any such isolation for the voting round driver's
+     * traffic is that driver's job, not this accessor's.
+     *
+     * @return the raw native Tor-runtime handle
+     *
+     * @throws TorInitializationErrorException if an error occurred during Tor setup
+     * @throws TorUnavailableException if Tor or exchange rate is not enabled
+     */
+    @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
+    suspend fun getVotingTorRuntimeHandle(): Long
+
     suspend fun debugQuery(query: String): String
 
     suspend fun deleteAccount(accountUuid: AccountUuid): Boolean
