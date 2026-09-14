@@ -584,44 +584,41 @@ class VotingRustBackendTest {
         }
 
     /**
-     * Task 10's central, load-bearing finding: a delegation-enabled `runRoundNative` call
-     * (real, non-null [JniDelegationInputs]) does **not** bootstrap a virgin round either.
+     * Round-bootstrap fix, verified on-device with concrete evidence: [ensureRound] genuinely
+     * bootstraps a virgin round, and a delegation-enabled `runRoundNative` call against it no
+     * longer fails with "round not found".
      *
-     * The task-9-report's Concern #2 and this file's
-     * `round_session_run_round_and_plan_work_without_a_persisted_round_row` above already
-     * showed the *signer-less* (`delegationInputs = null`) path never persists a `rounds` row.
-     * Task 10's brief asked specifically whether the *delegation-enabled* path -- reachable via
-     * `delegation_driver.rs`'s `delegation_step_inputs_from_jni`, which the crate's own
-     * `KeystoneSigningRequest` doc comment (`delegation.rs:75-78`) describes as the intended
-     * main-line first step for a round -- fares any better, since deep inside it
-     * (`DelegationPipeline`'s `prepare_delegation_bundle_inner`) the crate calls
-     * `observe_ensure_round_context`, which itself calls `VotingDb::ensure_round_state` and
-     * *would* create the round row if missing.
+     * This test used to be `runRound_with_delegation_inputs_cannot_bootstrap_a_virgin_round` and
+     * documented the opposite: Task 10's finding that `delegation_driver.rs`'s
+     * `delegation_step_inputs_from_jni` called `voting::storage::queries::load_round_params` --
+     * a hard `SELECT ... FROM rounds` -- immediately after decoding `delegation_inputs` and
+     * unconditionally before constructing the `DelegationPipeline`, so an unknown `round_id` was
+     * rejected before `zcash_voting`'s own bootstrap mechanism (`DelegationPipeline`'s
+     * `execute_prepare` -> `prepare_delegation_bundle_inner` -> `observe_ensure_round_context` ->
+     * `VotingDb::ensure_round_state`) ever ran. That fix (removing the premature read;
+     * [JniDelegationInputs] now carries `snapshotHeight`/`eaPk`/`ncRoot`/`nullifierImtRoot`
+     * directly) turned out, on real-device verification, to be necessary but **not sufficient**
+     * on its own: `RoundDriver::run`'s planner (`round_planning::classify`) derives delegation
+     * obligations from a `DelegationPhase` snapshot over *persisted* `bundles` rows, so with zero
+     * bundle rows it proposes zero `Delegate` steps no matter what `delegationInputs` carries --
+     * `execute_prepare`'s own bootstrap call is never reached from `runRound` alone on a fully
+     * virgin round. Confirmed empirically: even after the `load_round_params` fix,
+     * `session.runRound(delegationInputs)` alone still left `getRoundState(ROUND_ID)` `null`.
      *
-     * It does not, for a more specific reason than "the pipeline never runs": reading
-     * `delegation_step_inputs_from_jni` end to end shows it calls
-     * `voting::storage::queries::load_round_params` -- a hard `SELECT ... FROM rounds` --
-     * immediately after decoding `delegation_inputs`, and unconditionally before constructing
-     * the `DelegationPipeline` that would eventually reach `observe_ensure_round_context`. For
-     * an unknown `round_id` this returns `VotingError::InvalidInput("round not found: ...")`,
-     * wrapped by `anyhow!("load_round_params: {}", e)`, well before `RoundDriver::run` is even
-     * entered. So the crate-side bootstrap mechanism genuinely exists, but the current Task
-     * 1-9 JNI wiring's own precondition check in `delegation_driver.rs` short-circuits before
-     * ever reaching it -- this is a real gap in the exposed JNI surface, not a Kotlin-layer
-     * problem Task 10 can route around: nothing in the final 38-export list (see the task-9
-     * report) can write the `rounds` row's `snapshot_height`/`ea_pk`/`nc_root`/
-     * `nullifier_imt_root` fields for a round that has never been through the deleted
-     * `initRoundNative`, and `openRoundSessionNative`'s `RoundBinding` does not carry them
-     * either (only `round_id`/`network`/`proposals`/`hotkey_secret`).
-     *
-     * This test proves that precisely: the same virgin `ROUND_ID` this file's other tests use,
-     * a syntactically well-formed but semantically inert [JniDelegationInputs] (garbage wallet
-     * path/anchor bytes are never reached -- the `load_round_params` guard fires first), and an
-     * assertion on the exact rejection message plus confirmation that no `rounds` row exists
-     * before or after the call.
+     * The real fix is the sequence this test now exercises: [ensureRoundNative] (new, exposes
+     * the crate's own standalone `DelegationPipeline::ensure_round` -- an inherent method that
+     * touches neither the wallet nor bundles, so it can run before either exists) creates the
+     * round row from caller-supplied metadata; [setupBundlesNative] can then create bundle rows
+     * (its insert has a foreign key on `rounds`, so it could not before); only then can
+     * `runRoundNative`'s planner have anything to propose delegation work for. Concrete evidence
+     * below: the `rounds` row does not exist before [ensureRound], does exist immediately after
+     * it (with this round's own `snapshotHeight`), `runRound` no longer rejects with "round not
+     * found", and a write that used to fail with a foreign-key error against a nonexistent round
+     * (`setBallotIntents`, per `round_session_run_round_and_plan_work_without_a_persisted_round_row`
+     * above) now succeeds.
      */
     @Test
-    fun runRound_with_delegation_inputs_cannot_bootstrap_a_virgin_round() =
+    fun ensureRound_bootstraps_a_virgin_round_and_unblocks_setup_and_run() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             val torClient = newTorClientForTesting()
@@ -629,13 +626,40 @@ class VotingRustBackendTest {
                 assertNull(db.getRoundState(ROUND_ID))
                 assertTrue(db.listRounds().isEmpty())
 
+                val eaPk = ByteArray(FIELD_BYTES) { 0xEA.toByte() }
+                val ncRoot = ByteArray(FIELD_BYTES) { 0x01 }
+                val nullifierImtRoot = ByteArray(FIELD_BYTES) { 0x02 }
+
+                // The concrete evidence this test is named for: the round genuinely bootstraps.
+                db.ensureRound(ROUND_ID, ByteArray(0), snapshotHeight = 10L, eaPk, ncRoot, nullifierImtRoot)
+                val bootstrappedState = assertNotNull(db.getRoundState(ROUND_ID))
+                assertEquals(ROUND_ID, bootstrappedState.roundId)
+                assertEquals(10L, bootstrappedState.snapshotHeight)
+                assertTrue(db.listRounds().isNotEmpty())
+
+                // Re-calling with the same params is idempotent (VotingDb::ensure_round's own
+                // contract): no error, no change.
+                db.ensureRound(ROUND_ID, ByteArray(0), snapshotHeight = 10L, eaPk, ncRoot, nullifierImtRoot)
+                assertEquals(10L, assertNotNull(db.getRoundState(ROUND_ID)).snapshotHeight)
+
+                // setupBundles's insert has a foreign key on rounds -- this only succeeds now
+                // that ensureRound has created the row (contrast with
+                // round_session_run_round_and_plan_work_without_a_persisted_round_row's
+                // setBallotIntents failing the same way on a round ensureRound was never called
+                // for).
+                val bundleSetup = db.setupBundles(ROUND_ID, notes(1))
+                assertEquals(1, bundleSetup.bundleCount)
+                assertEquals(1, db.getBundleCount(ROUND_ID))
+
+                val hotkey = db.generateHotkey(HOTKEY_SEED)
+
                 val session =
                     db.openRoundSession(
                         torRuntime = torClient.torRuntimeHandleForTesting(),
                         roundId = ROUND_ID,
                         proposalIds = intArrayOf(1),
                         proposalOptionCounts = intArrayOf(2),
-                        hotkeySecret = null,
+                        hotkeySecret = hotkey.storedSecret,
                         chainEndpoints = listOf("https://chain.example"),
                         operationEpoch = 0,
                         configuredHelperUrls = emptyList(),
@@ -644,37 +668,59 @@ class VotingRustBackendTest {
                         voteEndTimeSeconds = -1
                     )
                 try {
+                    // A real (if otherwise-unused) temp path: SqliteWalletDbOpener::open_for_read
+                    // genuinely opens (and, since the path does not exist yet, creates) this
+                    // file now that a delegation-enabled run reaches real wallet I/O.
+                    val walletDbPath =
+                        createTempDirectory("wallet-db-").resolve("wallet.db").toFile().absolutePath
                     val delegationInputs =
                         JniDelegationInputs(
                             dbHandle = db.dbHandleForTesting(),
-                            walletDbPath = "unused-wallet.db",
+                            walletDbPath = walletDbPath,
                             accountUuid = "unused-account-uuid",
                             anchorTreeStateBytes = ByteArray(0),
-                            hotkeySecret = null,
+                            hotkeySecret = hotkey.storedSecret,
                             pirEndpoints = arrayOf("https://pir.example"),
-                            pirDepth = 1,
-                            pirTier0Layers = 1,
-                            pirTier1Layers = 1,
-                            pirPolyLen = 1,
+                            // A real, valid YPIR layout (zcash_voting's own
+                            // config::tests::test_pir_layout fixture) -- confirmed empirically
+                            // that PirFleet::new rejects an inconsistent/undersized one before
+                            // the pipeline is even touched, so this cannot be arbitrary.
+                            pirDepth = 19,
+                            pirTier0Layers = 12,
+                            pirTier1Layers = 7,
+                            pirPolyLen = 4096,
                             keystone = false,
                             softwareSeed = ByteArray(FIELD_BYTES) { 0x5A },
                             keystoneSig = null,
-                            keystoneSighash = null
+                            keystoneSighash = null,
+                            // Must match ensureRound's params above exactly: VotingDb::ensure_round
+                            // rejects a round it already knows under different parameters.
+                            snapshotHeight = 10,
+                            eaPk = eaPk,
+                            ncRoot = ncRoot,
+                            nullifierImtRoot = nullifierImtRoot
                         )
 
-                    val error =
-                        assertFailsWith<RuntimeException> {
-                            session.runRound(torClient.torRuntimeHandleForTesting(), delegationInputs)
-                        }
-                    assertTrue(
-                        error.message.orEmpty().contains("round not found"),
-                        "expected a round-not-found rejection from load_round_params, got: ${error.message}"
-                    )
+                    // Whatever happens deeper in the pipeline (the wallet path has no real
+                    // notes, so a later stage may legitimately fail), the call must not be
+                    // rejected up front with "round not found" -- the original bug this test
+                    // guards against.
+                    runCatching {
+                        session.runRound(torClient.torRuntimeHandleForTesting(), delegationInputs)
+                    }.onFailure { error ->
+                        assertFalse(
+                            error.message.orEmpty().contains("round not found"),
+                            "the round-bootstrap bug regressed: ${error.message}"
+                        )
+                    }
 
-                    // The failed attempt genuinely never created a rounds row -- the gap is
-                    // real, not merely an exception thrown after a partial write.
-                    assertNull(db.getRoundState(ROUND_ID))
-                    assertTrue(db.listRounds().isEmpty())
+                    // The round is still there, unaffected by whatever runRound did or did not
+                    // dispatch.
+                    assertEquals(10L, assertNotNull(db.getRoundState(ROUND_ID)).snapshotHeight)
+
+                    // Further proof the bootstrap is real, not a half-write: a write that used
+                    // to fail with a foreign-key error against a nonexistent round now succeeds.
+                    session.setBallotIntents(intArrayOf(1), intArrayOf(0))
                 } finally {
                     session.close()
                 }

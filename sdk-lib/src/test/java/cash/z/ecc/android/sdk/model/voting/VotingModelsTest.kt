@@ -58,7 +58,11 @@ class VotingModelsTest {
                 keystone = false,
                 softwareSeed = byteArrayOf(101),
                 keystoneSig = byteArrayOf(102),
-                keystoneSighash = byteArrayOf(103)
+                keystoneSighash = byteArrayOf(103),
+                snapshotHeight = 10,
+                eaPk = byteArrayOf(4),
+                ncRoot = byteArrayOf(5),
+                nullifierImtRoot = byteArrayOf(6)
             ).toString()
 
         assertEquals("VotingDelegationInputs(redacted)", text)

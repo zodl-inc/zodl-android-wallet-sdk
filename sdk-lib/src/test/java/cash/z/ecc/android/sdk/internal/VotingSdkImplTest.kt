@@ -328,7 +328,11 @@ class VotingSdkImplTest {
                     keystone = false,
                     softwareSeed = byteArrayOf(2),
                     keystoneSig = null,
-                    keystoneSighash = null
+                    keystoneSighash = null,
+                    snapshotHeight = 10,
+                    eaPk = byteArrayOf(3),
+                    ncRoot = byteArrayOf(4),
+                    nullifierImtRoot = byteArrayOf(5)
                 )
 
             val report = session.run(delegationInputs)

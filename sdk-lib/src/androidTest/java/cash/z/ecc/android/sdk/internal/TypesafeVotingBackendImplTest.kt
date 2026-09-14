@@ -293,7 +293,11 @@ class TypesafeVotingBackendImplTest {
                     keystone = false,
                     softwareSeed = ByteArray(32),
                     keystoneSig = null,
-                    keystoneSighash = null
+                    keystoneSighash = null,
+                    snapshotHeight = 10,
+                    eaPk = ByteArray(32),
+                    ncRoot = ByteArray(32),
+                    nullifierImtRoot = ByteArray(32)
                 )
             val runResult = session.runRound(torRuntime = 9L, delegationInputs = delegationInputs)
             assertEquals(report, runResult)
@@ -508,6 +512,15 @@ class TypesafeVotingBackendImplTest {
             roundId: String,
             notes: List<JniNoteInfo>
         ): JniBundleSetupResult = unused()
+
+        override suspend fun ensureRound(
+            roundId: String,
+            anchorTreeStateBytes: ByteArray,
+            snapshotHeight: Long,
+            eaPk: ByteArray,
+            ncRoot: ByteArray,
+            nullifierImtRoot: ByteArray
+        ) = unused()
 
         override suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey {
             generateHotkeyStoredSecret = storedSecret
