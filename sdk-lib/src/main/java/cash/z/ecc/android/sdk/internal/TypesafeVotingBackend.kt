@@ -88,6 +88,24 @@ internal interface TypesafeVotingDb {
     ): JniBundleSetupResult
 
     /**
+     * Bootstraps (or validates) [roundId]'s `rounds` row from caller-supplied round metadata,
+     * via `zcash_voting::DelegationPipeline::ensure_round`. Required before [setupBundles] or a
+     * delegation-enabled [TypesafeRoundSession.runRound] call can do anything for a round that
+     * has never been through this call before — see `ensureRoundNative`'s doc comment for why
+     * neither of those alone can create this row for a virgin `roundId`. Idempotent: an
+     * already-bootstrapped round with matching params is a no-op; one with different params
+     * fails loudly.
+     */
+    suspend fun ensureRound(
+        roundId: String,
+        anchorTreeStateBytes: ByteArray,
+        snapshotHeight: Long,
+        eaPk: ByteArray,
+        ncRoot: ByteArray,
+        nullifierImtRoot: ByteArray
+    )
+
+    /**
      * Mints or reconstructs a voting hotkey.
      *
      * An empty [storedSecret] mints a fresh, app-owned random hotkey; a previously persisted

@@ -195,6 +195,15 @@ internal interface VotingDbBackend {
         notes: List<JniNoteInfo>
     ): JniBundleSetupResult
 
+    suspend fun ensureRound(
+        roundId: String,
+        anchorTreeStateBytes: ByteArray,
+        snapshotHeight: Long,
+        eaPk: ByteArray,
+        ncRoot: ByteArray,
+        nullifierImtRoot: ByteArray
+    )
+
     suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey
 
     suspend fun precomputeDelegationPir(
@@ -273,6 +282,15 @@ private class RustVotingDbBackend(
         roundId: String,
         notes: List<JniNoteInfo>
     ): JniBundleSetupResult = votingDb.setupBundles(roundId, notes)
+
+    override suspend fun ensureRound(
+        roundId: String,
+        anchorTreeStateBytes: ByteArray,
+        snapshotHeight: Long,
+        eaPk: ByteArray,
+        ncRoot: ByteArray,
+        nullifierImtRoot: ByteArray
+    ) = votingDb.ensureRound(roundId, anchorTreeStateBytes, snapshotHeight, eaPk, ncRoot, nullifierImtRoot)
 
     override suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey =
         votingDb.generateHotkey(storedSecret)
@@ -438,6 +456,15 @@ internal class TypesafeVotingDbImpl(
         notes: List<VotingNoteInfo>
     ): JniBundleSetupResult =
         votingDb.setupBundles(roundId, notes.toJniNoteInfos())
+
+    override suspend fun ensureRound(
+        roundId: String,
+        anchorTreeStateBytes: ByteArray,
+        snapshotHeight: Long,
+        eaPk: ByteArray,
+        ncRoot: ByteArray,
+        nullifierImtRoot: ByteArray
+    ) = votingDb.ensureRound(roundId, anchorTreeStateBytes, snapshotHeight, eaPk, ncRoot, nullifierImtRoot)
 
     override suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey =
         votingDb.generateHotkey(storedSecret).also { hotkey ->

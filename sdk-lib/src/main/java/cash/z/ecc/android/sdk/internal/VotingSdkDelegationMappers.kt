@@ -79,7 +79,11 @@ internal fun VotingDelegationInputs.toInternal(dbHandle: Long): JniDelegationInp
         keystone = keystone,
         softwareSeed = softwareSeed,
         keystoneSig = keystoneSig,
-        keystoneSighash = keystoneSighash
+        keystoneSighash = keystoneSighash,
+        snapshotHeight = snapshotHeight,
+        eaPk = eaPk,
+        ncRoot = ncRoot,
+        nullifierImtRoot = nullifierImtRoot
     )
 
 /** Parses `RoundPlan::delegation_statuses`'s JSON array (`delegation_status_json`'s shape). */

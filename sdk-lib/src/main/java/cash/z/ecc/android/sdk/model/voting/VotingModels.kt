@@ -183,11 +183,16 @@ data class VotingBallotIntent(
  * [softwareSeed] and [keystoneSig]/[keystoneSighash] are sensitive signing-path inputs and must
  * not be logged.
  *
- * **Known limitation (see [VotingRoundSession.run]'s doc comment):** passing this for a round
- * that has never had a round row persisted currently fails with "round not found", even though
- * this is the crate's documented main-line first step for a round -- the crate's own
- * round-bootstrap mechanism (`VotingDb::ensure_round_state`) exists but nothing in the exposed
- * JNI surface reaches it before this call's own precondition check runs.
+ * [snapshotHeight]/[eaPk]/[ncRoot]/[nullifierImtRoot] are the round's own metadata -- together
+ * with the `roundId` already passed to [cash.z.ecc.android.sdk.VotingDbSession.openRoundSession],
+ * this is the complete `VotingRoundParams` the native side needs. Callers must supply these
+ * directly from the same authenticated round config used to fetch [anchorTreeStateBytes] and to
+ * call [cash.z.ecc.android.sdk.VotingDbSession.ensureRound]; the native side never reads them
+ * back from a database row, since a brand-new round has no row there yet. This removes the
+ * premature-read bug that used to reject a virgin round outright -- but, per
+ * [VotingRoundSession.run]'s doc comment, [VotingDbSession.ensureRound] (plus
+ * [cash.z.ecc.android.sdk.VotingDbSession.setupBundles]) must still be called before [run] for a
+ * round that has never been bootstrapped; passing these fields to [run] alone is not sufficient.
  */
 data class VotingDelegationInputs(
     val walletDbPath: String,
@@ -202,7 +207,11 @@ data class VotingDelegationInputs(
     val keystone: Boolean,
     val softwareSeed: ByteArray?,
     val keystoneSig: ByteArray?,
-    val keystoneSighash: ByteArray?
+    val keystoneSighash: ByteArray?,
+    val snapshotHeight: Long,
+    val eaPk: ByteArray,
+    val ncRoot: ByteArray,
+    val nullifierImtRoot: ByteArray
 ) {
     override fun toString(): String = "VotingDelegationInputs(redacted)"
 
@@ -220,14 +229,18 @@ data class VotingDelegationInputs(
             pirTier0Layers == other.pirTier0Layers &&
             pirTier1Layers == other.pirTier1Layers &&
             pirPolyLen == other.pirPolyLen &&
-            keystone == other.keystone
+            keystone == other.keystone &&
+            snapshotHeight == other.snapshotHeight
 
     private fun byteFieldsEqual(other: VotingDelegationInputs) =
         anchorTreeStateBytes.contentEquals(other.anchorTreeStateBytes) &&
             hotkeySecret.nullableContentEquals(other.hotkeySecret) &&
             softwareSeed.nullableContentEquals(other.softwareSeed) &&
             keystoneSig.nullableContentEquals(other.keystoneSig) &&
-            keystoneSighash.nullableContentEquals(other.keystoneSighash)
+            keystoneSighash.nullableContentEquals(other.keystoneSighash) &&
+            eaPk.contentEquals(other.eaPk) &&
+            ncRoot.contentEquals(other.ncRoot) &&
+            nullifierImtRoot.contentEquals(other.nullifierImtRoot)
 
     override fun hashCode(): Int {
         var result = walletDbPath.hashCode()
@@ -235,6 +248,10 @@ data class VotingDelegationInputs(
         result = 31 * result + anchorTreeStateBytes.contentHashCode()
         result = 31 * result + pirEndpoints.hashCode()
         result = 31 * result + keystone.hashCode()
+        result = 31 * result + snapshotHeight.hashCode()
+        result = 31 * result + eaPk.contentHashCode()
+        result = 31 * result + ncRoot.contentHashCode()
+        result = 31 * result + nullifierImtRoot.contentHashCode()
         return result
     }
 }

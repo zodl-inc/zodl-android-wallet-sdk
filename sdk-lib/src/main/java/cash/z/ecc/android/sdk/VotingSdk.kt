@@ -33,7 +33,8 @@ import cash.z.ecc.android.sdk.model.voting.VotingWitness
  * caller-drives-every-step interface (hand-rolled PCZT construction, per-share recovery
  * bookkeeping, ...) with one backed end-to-end by `zcash_voting`'s own `RoundExecutor`/
  * `RoundDriver`/`DelegationPipeline`/`ShareTrackingDriver` — see `VotingRoundSession.run`'s doc
- * comment for the one open architectural gap this port left (round bootstrap).
+ * comment for how round bootstrap works (a real, previously-empirically-confirmed gap here was
+ * fixed post-Task-10; that fix's history is worth reading if you're touching this surface).
  */
 @Suppress("TooManyFunctions")
 interface VotingSdk {
@@ -118,6 +119,26 @@ interface VotingDbSession {
     suspend fun deleteSkippedBundles(roundId: String, keepCount: Int): Long
 
     suspend fun setupBundles(roundId: String, notes: List<VotingNoteInfo>): VotingBundleSetupResult
+
+    /**
+     * Bootstraps (or validates) [roundId]'s `rounds` row from caller-supplied round metadata,
+     * via `zcash_voting::DelegationPipeline::ensure_round`. Required before [setupBundles] or a
+     * delegation-enabled [VotingRoundSession.run] call can do anything for a round that has
+     * never been through this call before — see [VotingRoundSession.run]'s doc comment for why
+     * neither of those alone can create this row for a virgin [roundId]: `RoundDriver::run`
+     * never proposes delegation work until bundle rows exist, and bundle rows cannot be created
+     * until the round row itself exists. Idempotent: an already-bootstrapped round with
+     * matching params is a no-op; one with different params fails loudly, since the stored
+     * params bind every bundle/proof already built against them.
+     */
+    suspend fun ensureRound(
+        roundId: String,
+        anchorTreeStateBytes: ByteArray,
+        snapshotHeight: Long,
+        eaPk: ByteArray,
+        ncRoot: ByteArray,
+        nullifierImtRoot: ByteArray
+    )
 
     /**
      * Mints or reconstructs a voting hotkey. An empty [storedSecret] mints a fresh, app-owned
@@ -238,24 +259,35 @@ interface VotingRoundSession {
      * [delegationInputs] must be non-null for a pass that needs to advance delegation signing;
      * every other step tolerates `null`.
      *
-     * **Known gap, confirmed empirically (Task 10 of the voting-4.0.0 SDK port):** a
-     * delegation-enabled call (real, non-null [delegationInputs]) does **not** bootstrap a
-     * virgin round, even though `getKeystoneSigningRequestsNative`'s own doc comment describes
-     * this as the intended main-line first step for a round. `zcash_voting`'s own bootstrap
-     * mechanism (`DelegationPipeline`'s `prepare_delegation_bundle_inner` calling
-     * `observe_ensure_round_context`, which calls `VotingDb::ensure_round_state`) genuinely
-     * exists in the crate, but the current JNI wiring
-     * (`backend-lib/src/main/rust/voting/delegation_driver.rs`'s
-     * `delegation_step_inputs_from_jni`) calls `load_round_params` — a hard `SELECT` against the
-     * `rounds` table — immediately after decoding `delegation_inputs` and unconditionally before
-     * ever constructing the `DelegationPipeline`, so an unknown `round_id` is rejected with
-     * "round not found" before `RoundDriver::run` is even entered. There is currently no
-     * JNI-exposed way to create a round's row for a brand-new `round_id` — the pre-4.0
-     * `initRoundNative` that used to do this was removed, and neither this call nor
-     * [VotingDbSession.openRoundSession]'s `RoundBinding` supplies the round's
-     * `snapshot_height`/`ea_pk`/`nc_root`/`nullifier_imt_root` fields the crate's bootstrap path
-     * needs. Callers must ensure a round row already exists through some other means before
-     * calling this with non-null [delegationInputs]; this SDK does not yet expose one.
+     * **A virgin round needs [VotingDbSession.ensureRound] + [VotingDbSession.setupBundles]
+     * called first — [run] alone, even with real [delegationInputs], cannot bootstrap one.**
+     * This was empirically verified on-device while fixing the round-bootstrap bug below: the
+     * first fix (removing a premature `rounds`-table read from the native side) turned out to
+     * be necessary but not sufficient. Reading `zcash_voting::round_planning::classify` directly
+     * shows why: `RoundDriver::run`'s planner derives delegation obligations from a
+     * `DelegationPhase` snapshot over *persisted* `bundles` rows — with zero bundle rows (a
+     * virgin round), it proposes zero `Delegate`/`AdvanceDelegation` steps, no matter what
+     * [delegationInputs] carries, so `DelegationPipeline::execute_prepare`'s own internal
+     * bootstrap call is never reached from here. And bundle rows themselves cannot be created
+     * (`setupBundles`'s insert has a foreign key on `rounds`) until the round row exists. The
+     * correct sequence for a virgin round is: [VotingDbSession.ensureRound] (creates the round
+     * row from caller-supplied metadata, bypassing that circularity via the crate's own
+     * standalone `DelegationPipeline::ensure_round`) → [VotingDbSession.setupBundles] (creates
+     * bundle rows now that the round exists) → [run] (which can now genuinely plan and dispatch
+     * delegation work).
+     *
+     * **The `load_round_params` bug itself, fixed (voting-4.0.0 SDK port):** the native side
+     * (`backend-lib/src/main/rust/voting/delegation_driver.rs`'s `delegation_step_inputs_from_jni`)
+     * used to read the round's `VotingRoundParams` back from the `rounds` table via
+     * `load_round_params` immediately when [delegationInputs] was non-null, unconditionally
+     * before ever constructing a `DelegationPipeline` — so a virgin round was rejected with
+     * "round not found" before anything else ran. [VotingDelegationInputs] now carries the
+     * round's `snapshotHeight`/`eaPk`/`ncRoot`/`nullifierImtRoot` directly (the caller already
+     * has these from the same authenticated round config used to fetch `anchorTreeStateBytes`
+     * and to call [VotingDbSession.ensureRound]), and the native side builds `VotingRoundParams`
+     * from them instead of reading a row. `VotingDb::ensure_round` still validates a
+     * pre-existing round's stored params against these on every call, so passing them is safe
+     * whether the round is new or already bootstrapped.
      */
     suspend fun run(delegationInputs: VotingDelegationInputs? = null): VotingRoundRunReport?
 

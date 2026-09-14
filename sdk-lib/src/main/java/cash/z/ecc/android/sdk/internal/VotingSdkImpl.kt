@@ -115,6 +115,15 @@ internal class VotingDbSessionImpl(
     override suspend fun setupBundles(roundId: String, notes: List<VotingNoteInfo>): VotingBundleSetupResult =
         db.setupBundles(roundId, notes.map { it.toInternal() }).toPublic()
 
+    override suspend fun ensureRound(
+        roundId: String,
+        anchorTreeStateBytes: ByteArray,
+        snapshotHeight: Long,
+        eaPk: ByteArray,
+        ncRoot: ByteArray,
+        nullifierImtRoot: ByteArray
+    ) = db.ensureRound(roundId, anchorTreeStateBytes, snapshotHeight, eaPk, ncRoot, nullifierImtRoot)
+
     override suspend fun generateHotkey(storedSecret: ByteArray): VotingHotkey =
         db.generateHotkey(storedSecret).toPublic()
 
