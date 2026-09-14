@@ -1097,6 +1097,15 @@ data class JniKeystoneSignatureInput(
  *
  * [softwareSeed] and [keystoneSig]/[keystoneSighash] are sensitive signing-path inputs and must
  * not be logged.
+ *
+ * [snapshotHeight]/[eaPk]/[ncRoot]/[nullifierImtRoot] are the round's own metadata (together with
+ * the `round_id` the Rust side's `runRoundNative` already has from the session, this is the
+ * complete `VotingRoundParams`). The caller must supply these directly from the same authenticated
+ * round config it used to fetch [anchorTreeStateBytes] -- the Rust side must never read them back
+ * from the `rounds` table, since a brand-new round has no row there yet; that row is exactly what
+ * `DelegationPipeline`'s own bootstrap path creates from these values. See
+ * `delegation_step_inputs_from_jni`'s doc comment in `delegation_driver.rs` for the bug this fixed
+ * (a delegation-enabled `runRound` could not bootstrap a virgin round at all).
  */
 @Keep
 data class JniDelegationInputs(
@@ -1113,7 +1122,11 @@ data class JniDelegationInputs(
     val keystone: Boolean,
     val softwareSeed: ByteArray?,
     val keystoneSig: ByteArray?,
-    val keystoneSighash: ByteArray?
+    val keystoneSighash: ByteArray?,
+    val snapshotHeight: Long,
+    val eaPk: ByteArray,
+    val ncRoot: ByteArray,
+    val nullifierImtRoot: ByteArray
 ) {
     override fun toString(): String = "JniDelegationInputs(redacted)"
 
@@ -1132,14 +1145,18 @@ data class JniDelegationInputs(
             pirTier0Layers == other.pirTier0Layers &&
             pirTier1Layers == other.pirTier1Layers &&
             pirPolyLen == other.pirPolyLen &&
-            keystone == other.keystone
+            keystone == other.keystone &&
+            snapshotHeight == other.snapshotHeight
 
     private fun byteFieldsEqual(other: JniDelegationInputs) =
         anchorTreeStateBytes.contentEquals(other.anchorTreeStateBytes) &&
             hotkeySecret.nullableContentEquals(other.hotkeySecret) &&
             softwareSeed.nullableContentEquals(other.softwareSeed) &&
             keystoneSig.nullableContentEquals(other.keystoneSig) &&
-            keystoneSighash.nullableContentEquals(other.keystoneSighash)
+            keystoneSighash.nullableContentEquals(other.keystoneSighash) &&
+            eaPk.contentEquals(other.eaPk) &&
+            ncRoot.contentEquals(other.ncRoot) &&
+            nullifierImtRoot.contentEquals(other.nullifierImtRoot)
 
     override fun hashCode(): Int {
         var result = dbHandle.hashCode()
@@ -1156,6 +1173,10 @@ data class JniDelegationInputs(
         result = 31 * result + (softwareSeed?.contentHashCode() ?: 0)
         result = 31 * result + (keystoneSig?.contentHashCode() ?: 0)
         result = 31 * result + (keystoneSighash?.contentHashCode() ?: 0)
+        result = 31 * result + snapshotHeight.hashCode()
+        result = 31 * result + eaPk.contentHashCode()
+        result = 31 * result + ncRoot.contentHashCode()
+        result = 31 * result + nullifierImtRoot.contentHashCode()
         return result
     }
 }

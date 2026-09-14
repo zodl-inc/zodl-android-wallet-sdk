@@ -271,6 +271,38 @@ class VotingRustBackend private constructor() {
         ): Long =
             withHandle { handle -> deleteSkippedBundlesNative(handle, roundId, keepCount) }
 
+        /**
+         * Bootstraps (or validates) [roundId]'s `rounds` row from caller-supplied round
+         * metadata, via `zcash_voting::DelegationPipeline::ensure_round`.
+         *
+         * Required before [setupBundles] or a delegation-enabled
+         * [cash.z.ecc.android.sdk.internal.jni.VotingRustBackend.RoundSession.runRound] call can
+         * do anything for a round that has never been through this call before. See
+         * `ensure_round_from_jni`'s doc comment in `delegation_driver.rs` for why
+         * `RoundDriver::run()` alone cannot reach this bootstrap on its own for a virgin round:
+         * it never proposes a `Delegate` step until bundle rows already exist, and bundle rows
+         * cannot be created (`setupBundlesNative`'s bundle insert has a foreign key on
+         * `rounds`) until the round row itself exists -- a circularity only a standalone call
+         * to the crate's `ensure_round` (not part of the object-safe `DelegationDriver` trait
+         * `RoundHostContext::delegation` carries) can break.
+         *
+         * Idempotent and safe to call every time before [setupBundles]/[runRound]: an
+         * already-bootstrapped round with matching params is a no-op; one with different
+         * params fails loudly, since the stored params bind every bundle/proof already built
+         * against them.
+         */
+        @Throws(RuntimeException::class)
+        suspend fun ensureRound(
+            roundId: String,
+            anchorTreeStateBytes: ByteArray,
+            snapshotHeight: Long,
+            eaPk: ByteArray,
+            ncRoot: ByteArray,
+            nullifierImtRoot: ByteArray
+        ) = withHandle { handle ->
+            ensureRoundNative(handle, roundId, anchorTreeStateBytes, snapshotHeight, eaPk, ncRoot, nullifierImtRoot)
+        }
+
         @Throws(RuntimeException::class)
         suspend fun setupBundles(
             roundId: String,
@@ -648,6 +680,18 @@ class VotingRustBackend private constructor() {
             roundId: String,
             notes: Array<JniNoteInfo>
         ): JniBundleSetupResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun ensureRoundNative(
+            dbHandle: Long,
+            roundId: String,
+            anchorTreeStateBytes: ByteArray,
+            snapshotHeight: Long,
+            eaPk: ByteArray,
+            ncRoot: ByteArray,
+            nullifierImtRoot: ByteArray
+        )
 
         @JvmStatic
         @Throws(RuntimeException::class)
