@@ -1,5 +1,5 @@
 [![license](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg?style=plastic)](LICENSE)
-![Maven Central](https://img.shields.io/maven-central/v/cash.z.ecc.android/zcash-android-sdk?color=success&style=plastic)
+![Sonatype Snapshot](https://img.shields.io/maven-metadata/v?metadataUrl=https%3A%2F%2Fcentral.sonatype.com%2Frepository%2Fmaven-snapshots%2Fcom%2Fzodl%2Fandroid%2Fzcash-android-sdk%2Fmaven-metadata.xml&label=snapshot&color=success&style=plastic)
 
 This is a beta build and is currently under active development. Please be advised of the following:
 

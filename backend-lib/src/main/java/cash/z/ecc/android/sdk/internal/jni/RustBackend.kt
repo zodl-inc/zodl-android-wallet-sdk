@@ -4,6 +4,8 @@ import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.SdkDispatchers
 import cash.z.ecc.android.sdk.internal.ext.deleteRecursivelySuspend
 import cash.z.ecc.android.sdk.internal.ext.deleteSuspend
+import cash.z.ecc.android.sdk.internal.ext.requireNonNegative
+import cash.z.ecc.android.sdk.internal.ext.requireValidHeight
 import cash.z.ecc.android.sdk.internal.model.JniAccount
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
@@ -209,6 +211,7 @@ class RustBackend private constructor(
         protocol: Int,
         outputIndex: Int
     ) = withContext(SdkDispatchers.DATABASE_IO) {
+        requireNonNegative(outputIndex, "outputIndex")
         getMemoAsUtf8(
             dataDbFile.absolutePath,
             txId,
@@ -239,6 +242,7 @@ class RustBackend private constructor(
 
     override suspend fun findBlockMetadata(height: Long) =
         withContext(SdkDispatchers.DATABASE_IO) {
+            requireValidHeight(height, "height")
             findBlockMetadata(
                 fsBlockDbRoot.absolutePath,
                 height
@@ -247,6 +251,7 @@ class RustBackend private constructor(
 
     override suspend fun rewindBlockMetadataToHeight(height: Long) =
         withContext(SdkDispatchers.DATABASE_IO) {
+            requireValidHeight(height, "height")
             rewindBlockMetadataToHeight(
                 fsBlockDbRoot.absolutePath,
                 height
@@ -264,9 +269,12 @@ class RustBackend private constructor(
 
     /**
      * Rewinds the data database to at most the given height.
+     *
+     * @throws IllegalArgumentException if [height] is outside the valid UInt range.
      */
     override suspend fun rewindToHeight(height: Long): JniRewindResult =
         withContext(SdkDispatchers.DATABASE_IO) {
+            requireValidHeight(height, "height")
             rewindToHeight(
                 dataDbFile.absolutePath,
                 height,
@@ -291,6 +299,9 @@ class RustBackend private constructor(
         ironwoodStartIndex: Long,
         ironwoodRoots: List<JniSubtreeRoot>,
     ) = withContext(SdkDispatchers.DATABASE_IO) {
+        requireNonNegative(saplingStartIndex, "saplingStartIndex")
+        requireNonNegative(orchardStartIndex, "orchardStartIndex")
+        requireNonNegative(ironwoodStartIndex, "ironwoodStartIndex")
         putSubtreeRoots(
             dataDbFile.absolutePath,
             saplingStartIndex,
@@ -305,6 +316,7 @@ class RustBackend private constructor(
 
     override suspend fun updateChainTip(height: Long) =
         withContext(SdkDispatchers.DATABASE_IO) {
+            requireValidHeight(height, "height")
             updateChainTip(
                 dataDbFile.absolutePath,
                 height,
@@ -364,6 +376,8 @@ class RustBackend private constructor(
         limit: Long
     ): JniScanSummary =
         withContext(SdkDispatchers.DATABASE_IO) {
+            requireValidHeight(fromHeight, "fromHeight")
+            requireNonNegative(limit, "limit")
             scanBlocks(
                 fsBlockDbRoot.absolutePath,
                 dataDbFile.absolutePath,
@@ -530,6 +544,8 @@ class RustBackend private constructor(
         value: Long,
         height: Long
     ) = withContext(SdkDispatchers.DATABASE_IO) {
+        requireNonNegative(index, "index")
+        requireValidHeight(height, "height")
         putUtxo(
             dataDbFile.absolutePath,
             txId,
@@ -561,7 +577,10 @@ class RustBackend private constructor(
 
     override fun isValidTexAddr(addr: String) = isValidTexAddress(addr, networkId = networkId)
 
-    override fun getBranchIdForHeight(height: Long): Long = branchIdForHeight(height, networkId = networkId)
+    override fun getBranchIdForHeight(height: Long): Long {
+        requireValidHeight(height, "height")
+        return branchIdForHeight(height, networkId = networkId)
+    }
 
     /**
      * Exposes all of the librustzcash functions along with helpers for loading the static library.

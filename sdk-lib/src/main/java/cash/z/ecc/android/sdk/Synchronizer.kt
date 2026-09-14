@@ -265,6 +265,56 @@ interface Synchronizer {
     suspend fun getFastestServers(servers: List<LightWalletEndpoint>): Flow<FastestServersResult>
 
     /**
+     * This function decides whether automatic server selection should move the wallet away from [current].
+     *
+     * [current] and every endpoint in [candidates] are benchmarked in full: server info and latest block
+     * height are fetched and timed, and an endpoint is ruled out unless its chain name, consensus branch
+     * and sync state match this SDK. Each survivor then streams the same [blocksToFetch] blocks, ending at
+     * the lowest tip any survivor reported; the stream time is its score and a candidate that needs longer
+     * than [fetchThreshold] is ruled out. [current] is measured whether or not [candidates] contains it,
+     * so a host dropped from the caller's list is never abandoned without being measured.
+     *
+     * A switch is only recommended when the best candidate beats [current] by at least 200 milliseconds and
+     * by at least 25 percent of the current server's score, or when [current] fails benchmarking in two
+     * consecutive evaluations. A switch of the first kind is additionally held off for thirty minutes after
+     * the previous one; a switch away from a server that could not be measured is not, because the two
+     * consecutive failures are already its gate and waiting out the cooldown on an unreachable server costs
+     * more than the rebuild does. This hysteresis keeps the wallet from flip-flopping between two
+     * near-equal or intermittently slow servers; the consecutive-failure count and the cooldown are held in
+     * memory for the lifetime of the process. The failure count belongs to the server it was accrued
+     * against, so changing [current] between evaluations starts it over.
+     *
+     * This call only counts a failed measurement of [current]; it never clears that count and never starts
+     * the cooldown, because the caller is free to decline the recommendation. Call [confirmServerSwitch]
+     * once the returned endpoint has actually been applied - without it the cooldown never starts, and with
+     * it on a switch that never happened a genuinely broken server would be given another thirty minutes.
+     *
+     * @param current the endpoint the wallet is connected to right now
+     * @param candidates the endpoints to benchmark alongside [current]
+     * @param fetchThreshold per-candidate cap for the block-fetch stage
+     * @param blocksToFetch how many blocks to stream from every candidate while timing it
+     *
+     * @return the endpoint to switch to, or null when the wallet should stay on [current]
+     */
+    suspend fun evaluateServerSwitch(
+        current: LightWalletEndpoint,
+        candidates: List<LightWalletEndpoint>,
+        fetchThreshold: Duration = 5.seconds,
+        blocksToFetch: Int = 1
+    ): LightWalletEndpoint?
+
+    /**
+     * Tells the SDK that the wallet has actually been moved to [endpoint], which [evaluateServerSwitch]
+     * recommended. The consecutive-failure count starts over against [endpoint] and the switch cooldown
+     * starts now.
+     *
+     * Call this only after the switch was applied, and always when it was; see [evaluateServerSwitch].
+     *
+     * @param endpoint the endpoint the wallet was moved to
+     */
+    suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint)
+
+    /**
      * Gets the current unified address for the given account.
      *
      * @param account the account whose address is of interest.
@@ -328,6 +378,11 @@ interface Synchronizer {
      * @param memo the optional memo to include as part of the proposal's transactions.
      *
      * @return the proposal or an exception
+     *
+     * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
+     * requested amount together with the required fee
+     * @throws TransactionEncoderException.ProposalFromParametersException if the proposal cannot be
+     * created for any other reason
      */
     suspend fun proposeTransfer(
         account: Account,
@@ -357,6 +412,8 @@ interface Synchronizer {
      *
      * @return the proposal or an exception
      *
+     * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
+     * migration together with the required fee
      * @throws TransactionEncoderException.ProposalFromParametersException if NU6.3 is not
      * active, if any Orchard note is not yet spendable, or if the proposal cannot be created
      */
@@ -369,6 +426,11 @@ interface Synchronizer {
      * @param uri a ZIP-321 compliant payment URI String
      *
      * @return the proposal or an exception
+     *
+     * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
+     * requested payment together with the required fee
+     * @throws TransactionEncoderException.ProposalFromUriException if the proposal cannot be created
+     * for any other reason
      */
     suspend fun proposeFulfillingPaymentUri(
         account: Account,
@@ -390,8 +452,11 @@ interface Synchronizer {
      * @return the proposal, or null if the transparent balance that would be shielded is
      *         zero or below `shieldingThreshold`.
      *
-     * @throws Exception if `transparentReceiver` is null and there are transparent funds
-     *         in more than one of the account's transparent receivers.
+     * @throws TransactionEncoderException.InsufficientFundsException if the transparent funds do not
+     *         cover the required fee
+     * @throws TransactionEncoderException.ProposalShieldingException if the proposal cannot be
+     *         created for any other reason, e.g. if `transparentReceiver` is null and there are
+     *         transparent funds in more than one of the account's transparent receivers.
      */
     suspend fun proposeShielding(
         account: Account,
@@ -427,9 +492,14 @@ interface Synchronizer {
      *
      * @return The partially created transaction in [Pczt] format.
      *
+     * @throws PcztException.MultiStepProposalUnsupportedException if the proposal needs more than one
+     * transaction, which an external PCZT signer cannot fulfill
      * @throws PcztException.CreatePcztFromProposalException as a common indicator of the operation failure
      */
-    @Throws(PcztException.CreatePcztFromProposalException::class)
+    @Throws(
+        PcztException.MultiStepProposalUnsupportedException::class,
+        PcztException.CreatePcztFromProposalException::class
+    )
     suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
         proposal: Proposal
@@ -880,6 +950,21 @@ interface Synchronizer {
      * start. Otherwise, processing will not begin.
      */
     var onSetupErrorHandler: ((Throwable?) -> Boolean)?
+
+    /**
+     * The state-flow twin of [onSetupErrorHandler]'s latched failure, for consumers that want to
+     * observe it rather than own the single [onSetupErrorHandler] slot. [onSetupErrorHandler] is a
+     * `var`: whichever caller assigns it last silently replaces any handler a different caller
+     * already installed, which is a real hazard when both an SDK-internal coordinator and a host
+     * app each want to react to the same failure. A [StateFlow] has no such single-slot problem -
+     * any number of independent collectors can observe the same latched value.
+     *
+     * Always emits `null` on an engine whose setup failures are thrown synchronously out of
+     * [Synchronizer.new] instead of latched (the default engine). An engine that instead defers
+     * setup failures past construction - surfacing them only through [onSetupErrorHandler] - is
+     * expected to latch the same failure here too.
+     */
+    val setupError: StateFlow<Throwable?>
 
     /**
      * A callback to invoke whenever a chain error is encountered. These occur whenever the

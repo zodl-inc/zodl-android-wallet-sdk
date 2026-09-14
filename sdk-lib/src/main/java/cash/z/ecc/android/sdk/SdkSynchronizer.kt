@@ -31,6 +31,7 @@ import cash.z.ecc.android.sdk.internal.db.derived.DbDerivedDataRepository
 import cash.z.ecc.android.sdk.internal.db.derived.DerivedDataDb
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.ext.existsSuspend
+import cash.z.ecc.android.sdk.internal.ext.requireSingleStepForPczt
 import cash.z.ecc.android.sdk.internal.ext.tryNull
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
@@ -131,6 +132,7 @@ import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.CoroutineContext
+import kotlin.time.Duration
 import kotlin.time.Instant
 
 /**
@@ -443,6 +445,14 @@ class SdkSynchronizer private constructor(
     override var onSetupErrorHandler: ((Throwable?) -> Boolean)? = null
 
     /**
+     * Always `null`: this engine's setup failures are thrown synchronously out of [Synchronizer.new]
+     * (e.g. `InitializeException.SeedNotRelevant`) rather than latched past construction, so there is
+     * never anything for a state-flow-based consumer to observe here. See [Synchronizer.setupError]'s
+     * KDoc for the engine that actually latches one.
+     */
+    override val setupError: StateFlow<Throwable?> = MutableStateFlow(null)
+
+    /**
      * A callback to invoke whenever a chain error is encountered. These occur whenever the
      * processor detects a missing or non-chain-sequential block (i.e. a reorg).
      */
@@ -465,6 +475,22 @@ class SdkSynchronizer private constructor(
         get() = processor.birthdayHeight
 
     override suspend fun getFastestServers(servers: List<LightWalletEndpoint>) = fetchFastestServers(servers)
+
+    override suspend fun evaluateServerSwitch(
+        current: LightWalletEndpoint,
+        candidates: List<LightWalletEndpoint>,
+        fetchThreshold: Duration,
+        blocksToFetch: Int
+    ): LightWalletEndpoint? =
+        fetchFastestServers.evaluateServerSwitch(
+            current = current,
+            candidates = candidates,
+            fetchThreshold = fetchThreshold,
+            blocksToFetch = blocksToFetch
+        )
+
+    override suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint) =
+        fetchFastestServers.confirmServerSwitch(endpoint)
 
     internal fun start() {
         coroutineScope.onReady()
@@ -1156,7 +1182,10 @@ class SdkSynchronizer private constructor(
     override suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
         proposal: Proposal
-    ) = txManager.createPcztFromProposal(accountUuid, proposal)
+    ): Pczt {
+        proposal.requireSingleStepForPczt()
+        return txManager.createPcztFromProposal(accountUuid, proposal)
+    }
 
     override suspend fun redactPcztForSigner(pczt: Pczt) = txManager.redactPcztForSigner(pczt)
 

@@ -6,6 +6,127 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-09-08
+
+### Added
+- `Synchronizer.evaluateServerSwitch(current, candidates, fetchThreshold, blocksToFetch)` benchmarks the
+  current server together with every candidate endpoint (RPC validation, then a timed compact-block stream
+  capped at `fetchThreshold`) and applies a hysteresis policy, returning the endpoint to switch to or
+  `null` to stay. A switch is only recommended when the best candidate beats the current server by at
+  least 200 ms and by at least 25 % of the current score, or when the current server fails benchmarking in
+  two consecutive evaluations. Only the former is held off for thirty minutes after the previous switch:
+  leaving a server that could not be measured twice in a row is a failover rather than churn, and the two
+  consecutive failures are already its gate. The current server is measured whether or not `candidates`
+  contains it, so a host dropped from the caller's list keeps its chance to win instead of being abandoned
+  unmeasured. The consecutive-failure count belongs to the server it was accrued against, so a current
+  endpoint that changes between evaluations - a manual server pick, say - starts it over. Both the count
+  and the cooldown live in memory for the lifetime of the process, so they survive the Synchronizer rebuild
+  a switch causes, and the cooldown is measured on `SystemClock.elapsedRealtime()` so that it keeps running
+  while the device sleeps (MOB-1832).
+- `Synchronizer.confirmServerSwitch(endpoint)` tells the SDK that a recommended switch was actually
+  applied: it starts the consecutive-failure count over against `endpoint` and starts the switch cooldown.
+  `evaluateServerSwitch` itself only counts failures, so a recommendation the caller declines - a
+  transaction in flight, a failed write - leaves the wallet able to be offered the same way off a broken
+  server on the next evaluation (MOB-1832).
+- `Synchronizer` gains both members as abstract, so any implementer or test fake must now provide them
+  (MOB-1832).
+- `PaymentUriParser`, a Rust-backed API that validates Bitcoin, Ethereum, Litecoin, and Solana
+  payment URIs and returns typed payment request models without floating-point amount conversion.
+
+### Changed
+- **Breaking: the published artifacts have moved to the Maven group `com.zodl.android`, from
+  `cash.z.ecc.android`.** All five publications are affected - `zcash-android-sdk`,
+  `zcash-android-backend`, `zcash-android-sdk-incubator`, `lightwallet-client` and
+  `zcash-android-sdk-slipstream` - so `cash.z.ecc.android:zcash-android-sdk` becomes
+  `com.zodl.android:zcash-android-sdk`, and so on for the rest. Consumers must update their dependency
+  coordinates, and any repository content filter naming the old group - an `includeGroup("cash.z.ecc.android")`
+  on the snapshot repository, say - must name `com.zodl.android` instead, or resolution fails with an
+  unresolved-dependency error and no hint as to why. Java/Kotlin package names are unchanged: only the
+  publication coordinates move, so no import or call site needs editing.
+
+### Fixed
+- `Synchronizer.getFastestServers` now actually streams the latest blocks in its second validation stage.
+  The `getBlockRange` call returned a cold flow that was never collected, so the 60-second fetch check
+  measured nothing and every server that passed RPC validation also passed the fetch stage. Servers that
+  fail or time out while streaming the latest 100 blocks are now ruled out, and the call can take
+  correspondingly longer (MOB-1832).
+- The server benchmark scores every candidate on one common block range - the requested number of blocks
+  ending at the lowest chain tip any survivor reported - instead of anchoring the range on each server's
+  own tip. Servers a block apart used to be timed on different blocks, whose compact sizes differ by
+  orders of magnitude, so the scores compared payloads rather than servers (MOB-1832).
+- The server benchmark no longer leaks gRPC connections. The client of the candidate being streamed, and
+  every client created during RPC validation, are now disposed from a `NonCancellable` `finally`, so a
+  cancelled evaluation - which the app triggers on every foreground edge - or a throw mid-validation
+  closes the channel instead of abandoning it (MOB-1832).
+- The server benchmark's RPC validation stage runs its candidates in parallel again, and caps
+  `getLatestBlockHeight` with the same five-second timeout `getServerInfo` already had, so a server that
+  accepts a connection and then never answers can no longer stall the whole evaluation (MOB-1832).
+- The server benchmark's block-fetch stage honours the Tor flag instead of always opening a direct
+  connection, so benchmarking no longer exposes the user's address to every bundled host while Tor is on.
+  The stage is shared, so this covers `Synchronizer.getFastestServers` as well as the switch evaluation
+  (MOB-1832).
+- The benchmark's wallet-client disposal is capped at five seconds. It runs uncancellably, so a gRPC
+  shutdown that hangs rather than throws would otherwise be unstoppable and would wedge every later
+  evaluation behind it (MOB-1832).
+- Sends no longer crash with "database is locked" when they race the synchronizer's own
+  block-write bursts on the same wallet database; the connection now waits up to 15s for the
+  lock instead of failing instantly (MOB-1743).
+- `WalletCoordinator` no longer crashes the app on every launch when the persisted wallet's seed
+  does not match the existing wallet database (`InitializeException.SeedNotRelevant`, e.g. a
+  long-lived wallet originally created under a different app). The failure is now caught and
+  exposed via the new `WalletCoordinator.isSeedMismatch: StateFlow<Boolean>` instead of
+  propagating out of `synchronizerOrLockoutId`. This is also caught for the Slipstream engine,
+  which defers this failure past `Synchronizer.new()` rather than throwing it synchronously -
+  the previous fix attempt only covered the synchronous (default-engine) case, so it was dead
+  code on the default Slipstream build. New `Synchronizer.setupError: StateFlow<Throwable?>`
+  carries the same latched failure `onSetupErrorHandler` does, so `WalletCoordinator` can detect
+  it without taking over that single-slot handler - which a host app assigns its own handler to
+  on every synchronizer it receives, and whichever side assigned it last would otherwise silently
+  disable the other's setup-error handling (MOB-1397).
+- The Sapling proving parameters download (`SaplingParams`, ~50MB spend params) now retries up to
+  3 attempts with exponential backoff on `IOException` instead of failing outright on the first
+  transient network blip. Previously, a single `SocketTimeoutException` or `UnknownHostException`
+  resolving `download.z.cash` mid-download aborted `createProposedTransactions` before the actual
+  broadcast was ever attempted, and since nothing was cached on failure, the same full download
+  re-ran from scratch on every subsequent send attempt (MOB-1744).
+
+### Removed
+- The internal EIP-681 payment-URI types in `zcash-android-backend` - `Eip681`,
+  `RustEip681Tool` and `JniEip681TransactionRequest` under `cash.z.ecc.android.sdk.internal`, together
+  with their Rust counterpart - in favour of `PaymentUriParser`, which covers Ethereum alongside
+  Bitcoin, Litecoin and Solana. They sat under an `internal` package but were Kotlin-`public` on the
+  `zcash-android-backend` surface, so a consumer that reached for them directly must move to
+  `PaymentUriParser` (#7).
+
+## [3.1.1] - 2026-08-25
+
+### Added
+- `TransactionEncoderException.InsufficientFundsException` is thrown - by both the upstream and the
+  Slipstream engine - when a proposal cannot be created because the account lacks the spendable funds
+  to cover the requested amount together with its fee. It replaces
+  `ProposalFromParametersException`/`ProposalFromUriException`/`ProposalShieldingException` for that
+  specific failure, so callers no longer have to match on the Rust layer's error message (MOB-1723,
+  #680).
+- `PcztException.MultiStepProposalUnsupportedException` is thrown by `createPcztFromProposal` when the
+  given proposal needs more than one transaction. Only TEX (ZIP-320) payments produce such proposals,
+  so this is what a caller sees when it tries to pay a TEX address with an external signer (MOB-1723).
+
+### Changed
+- The Slipstream engine's `proposeTransfer`, `proposeFulfillingPaymentUri`, `proposeShielding` and
+  `proposeOrchardToIronwoodMigration` now report failures with the same `TransactionEncoderException`
+  subtypes the upstream engine uses, instead of letting the raw Rust `RuntimeException` escape
+  (MOB-1723).
+- The raw `Backend`/`RustBackend` API now validates numeric arguments (block heights must be
+  in the unsigned 32-bit range; indices and counts must be nonnegative) and throws
+  `IllegalArgumentException` before crossing the JNI boundary (MOB-1765).
+
+### Fixed
+- All JNI entry points now convert caller-supplied numeric arguments (network ids, the UTXO
+  output index, Tor dormant mode) with checked conversions instead of unchecked casts, so
+  out-of-range values fail with an exception instead of silently wrapping (MOB-1764).
+
+## [3.1.0] - 2026-08-20
+
 ### Added
 - Shielded voting: `voteSubmission(roundId, bundleIndex, proposalId)` returns `JniVoteSubmission`,
   the chain-ready fields needed to resend a cast-vote transaction before it confirms, without the
