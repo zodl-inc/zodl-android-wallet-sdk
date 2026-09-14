@@ -53,17 +53,30 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
         let round_id = java_string_to_rust(env, &round_id)?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let hotkey_secret = java_secret_bytes_at_least(
-            env,
-            &hotkey_secret,
-            "hotkeySecret",
-            HOTKEY_STORED_SECRET_BYTES,
-        )?;
-        let witness = java_van_witness(env, &witness)?;
-        require_delegation_ready_for_vote(&db, &round_id, bundle_index, &witness)?;
+
+        // The proof below runs for minutes, so it holds only this bundle's
+        // proof lock; other bundles of the round prove in parallel.
+        let proof_lock = db.proof_lock(&round_id, bundle_index)?;
+        let _proof_guard = proof_lock
+            .lock()
+            .map_err(|_| anyhow!("voting bundle proof mutex poisoned"))?;
+
+        // The pre-flight reads run under the shared access lock, which is
+        // released again before proving starts.
+        let (hotkey_secret, witness) = {
+            let _access_lock = db.access_lock()?;
+            let hotkey_secret = java_secret_bytes_at_least(
+                env,
+                &hotkey_secret,
+                "hotkeySecret",
+                HOTKEY_STORED_SECRET_BYTES,
+            )?;
+            let witness = java_van_witness(env, &witness)?;
+            require_delegation_ready_for_vote(&db, &round_id, bundle_index, &witness)?;
+            (hotkey_secret, witness)
+        };
 
         let hotkey = voting::types::VotingHotkey::from_stored_secret(
             hotkey_secret.expose_secret(),
@@ -85,8 +98,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let reporter = progress_reporter_from_callback(env, &progress_callback)?;
         let stages = VoteCommitStageProgressBridge(reporter.as_ref());
 
+        // The crate holds this VotingDb's connection mutex across the whole
+        // proof, so it gets a connection of its own where there is a file to
+        // reopen. An in-memory DB has none, and falls back to proving under the
+        // shared access lock exactly as before.
+        let private_db = db.open_private_connection()?;
+        let _shared_access_lock = match private_db {
+            Some(_) => None,
+            None => Some(db.access_lock()?),
+        };
+        let proving_db: &VotingDb = match private_db.as_ref() {
+            Some(private_db) => private_db,
+            None => &db,
+        };
+
         let committed = voting::vote::CommittedVote::commit(
-            &db,
+            proving_db,
             &round_id,
             bundle_index,
             &draft,
@@ -96,7 +123,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         )
         .map_err(|e| anyhow!("vote::commit: {}", e))?;
         let signed = committed
-            .signed_commitment(&db)
+            .signed_commitment(proving_db)
             .map_err(|e| anyhow!("signed_commitment: {}", e))?;
 
         make_jni_vote_commit_result(env, signed, bundle_index)
@@ -126,9 +153,13 @@ fn require_delegation_ready_for_vote(
     witness: &voting::vote::VanWitness,
 ) -> anyhow::Result<()> {
     // Callers hold VotingDbHandle::access_lock while this read-check sequence
-    // runs. Managed handles for the same DB path and wallet share that lock, so
-    // SDK-exposed writers cannot change delegation/VAN state between these
-    // reads and the subsequent vote commitment build.
+    // runs and release it before proving, so a proof never blocks other
+    // entrypoints. Managed handles for the same DB path and wallet share that
+    // lock, so SDK-exposed writers cannot change delegation/VAN state while
+    // these reads run. Between them and the vote commitment build, the
+    // per-bundle proof lock keeps a second proof of this bundle out, and the
+    // writers that can still run concurrently belong to other bundles and touch
+    // disjoint rows.
     let conn = db.conn();
     let wallet_id = db.wallet_id();
     voting::storage::queries::load_delegation_submission_data(

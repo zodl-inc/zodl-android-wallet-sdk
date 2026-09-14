@@ -420,46 +420,75 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let notes = java_note_info_array(env, &notes, "notes")?;
-        let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
         let round_id = java_string_to_rust(env, &round_id)?;
-        require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)?;
-        require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
 
-        let fvk_bytes = java_bytes_exact(env, &fvk_bytes, "fvkBytes", ORCHARD_FVK_BYTES)?;
-        let hotkey_secret = java_secret_bytes_at_least(
-            env,
-            &hotkey_secret,
-            "hotkeySecret",
-            HOTKEY_STORED_SECRET_BYTES,
-        )?;
-        let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
-        let account_index = jint_to_u32(account_index, "account_index")?;
-        let round_name = java_string_to_rust(env, &round_name)?;
+        // The proof below runs for minutes, so it holds only this bundle's
+        // proof lock; other bundles of the round prove in parallel.
+        let proof_lock = db.proof_lock(&round_id, bundle_index)?;
+        let _proof_guard = proof_lock
+            .lock()
+            .map_err(|_| anyhow!("voting bundle proof mutex poisoned"))?;
 
-        let hotkey = voting::types::VotingHotkey::from_stored_secret(
-            hotkey_secret.expose_secret(),
-            db.network,
-        )
-        .map_err(|e| anyhow!("VotingHotkey::from_stored_secret: {}", e))?;
-        let keys = voting::delegate::DelegationKeys::with_voting_hotkey(
-            fvk_bytes,
-            &hotkey,
-            seed_fingerprint,
-            account_index,
-            round_name,
-        )
-        .map_err(|e| anyhow!("DelegationKeys::with_voting_hotkey: {}", e))?;
+        // The pre-flight reads run under the shared access lock, which is
+        // released again before proving starts.
+        let (bundle_notes, keys, pir_client) = {
+            let _access_lock = db.access_lock()?;
+            let notes = java_note_info_array(env, &notes, "notes")?;
+            let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
+            require_round_phase_not_after(&db, &round_id, RoundPhase::DelegationProved)?;
+            require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
 
-        let pir_url = java_string_to_rust(env, &pir_server_url)?;
-        let pir_layout =
-            pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
-        let pir_client = db.pir_client_for(&pir_url, pir_layout)?;
+            let fvk_bytes = java_bytes_exact(env, &fvk_bytes, "fvkBytes", ORCHARD_FVK_BYTES)?;
+            let hotkey_secret = java_secret_bytes_at_least(
+                env,
+                &hotkey_secret,
+                "hotkeySecret",
+                HOTKEY_STORED_SECRET_BYTES,
+            )?;
+            let seed_fingerprint = java_bytes32(env, &seed_fingerprint, "seedFingerprint")?;
+            let account_index = jint_to_u32(account_index, "account_index")?;
+            let round_name = java_string_to_rust(env, &round_name)?;
+
+            let hotkey = voting::types::VotingHotkey::from_stored_secret(
+                hotkey_secret.expose_secret(),
+                db.network,
+            )
+            .map_err(|e| anyhow!("VotingHotkey::from_stored_secret: {}", e))?;
+            let keys = voting::delegate::DelegationKeys::with_voting_hotkey(
+                fvk_bytes,
+                &hotkey,
+                seed_fingerprint,
+                account_index,
+                round_name,
+            )
+            .map_err(|e| anyhow!("DelegationKeys::with_voting_hotkey: {}", e))?;
+
+            let pir_url = java_string_to_rust(env, &pir_server_url)?;
+            let pir_layout =
+                pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
+            let pir_client = db.pir_client_for(&pir_url, pir_layout)?;
+            (bundle_notes, keys, pir_client)
+        };
+
         let reporter = progress_reporter_from_callback(env, &progress_callback)?;
         let stages = DelegationProgressReporterBridge(reporter.as_ref());
-        let result = db
+
+        // The crate holds this VotingDb's connection mutex across the whole
+        // proof, so it gets a connection of its own where there is a file to
+        // reopen. An in-memory DB has none, and falls back to proving under the
+        // shared access lock exactly as before.
+        let private_db = db.open_private_connection()?;
+        let _shared_access_lock = match private_db {
+            Some(_) => None,
+            None => Some(db.access_lock()?),
+        };
+        let proving_db: &VotingDb = match private_db.as_ref() {
+            Some(private_db) => private_db,
+            None => &db,
+        };
+
+        let result = proving_db
             .build_and_prove_delegation(
                 &round_id,
                 bundle_index,
