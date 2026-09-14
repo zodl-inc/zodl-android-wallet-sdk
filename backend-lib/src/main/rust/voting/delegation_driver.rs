@@ -151,6 +151,71 @@ fn build_pipeline(
     Ok(Arc::new(pipeline))
 }
 
+/// Bootstraps (or validates) `round_id`'s `rounds` row from caller-supplied
+/// round metadata, via [`DelegationPipeline::ensure_round`].
+///
+/// # Why this exists (found while verifying the round-bootstrap fix on-device)
+///
+/// Removing `delegation_step_inputs_from_jni`'s premature `load_round_params`
+/// read (this file's main round-bootstrap fix) is necessary but was found,
+/// empirically, to be **not sufficient** on its own to let a delegation-
+/// enabled `runRoundNative` bootstrap a fully virgin round: `RoundDriver::run`
+/// never proposes a `Delegate`/`AdvanceDelegation` `NextStep` -- and therefore
+/// never reaches `DelegationPipeline::execute_prepare`'s own internal
+/// `observe_ensure_round_context` call -- until bundle rows already exist for
+/// the round (confirmed by reading `round_planning/classify.rs`: obligations
+/// are built by iterating a `delegation: BTreeMap<bundle_index,
+/// DelegationPhase>` snapshot derived from persisted `bundles` rows; an empty
+/// map produces zero obligations, hence zero next steps). Bundle rows in turn
+/// cannot be created -- `VotingDb::ensure_bundles_with_policy`'s insert has a
+/// foreign key on `rounds(round_id, wallet_id)` -- until the round row itself
+/// exists. That is a genuine circular dependency in the exposed JNI surface:
+/// nothing reachable through `runRoundNative` alone can break it.
+///
+/// [`DelegationPipeline::ensure_round`] is the crate's own standalone escape
+/// from that circle: unlike `execute_prepare`, it touches neither the wallet
+/// nor bundles, only `self.lwd`/the sidecar connection, so it can run before
+/// either exists. It is an inherent method on the concrete `DelegationPipeline`,
+/// not part of the object-safe `DelegationDriver` trait `RoundHostContext::
+/// delegation` carries, so `RoundDriver::run` could not reach it even if a
+/// `Delegate` step were somehow proposed -- it needs a dedicated call site,
+/// which is what this function (and `ensureRoundNative`) is.
+///
+/// No hotkey or real wallet path is needed: `ensure_round` calls neither
+/// `self.hotkey()?` nor `self.wallet.open_for_read()?`, and
+/// `DelegationPipeline::new`'s own contract allows `hotkey: None` for stages
+/// that need none (bundle setup and eligibility, per its doc comment).
+pub(super) fn ensure_round_from_jni(
+    db_handle: jlong,
+    round_id: &str,
+    anchor_tree_state: &[u8],
+    snapshot_height: u64,
+    ea_pk: &[u8],
+    nc_root: &[u8],
+    nullifier_imt_root: &[u8],
+) -> anyhow::Result<()> {
+    let db = db_from_handle(db_handle)?;
+    let round_params = VotingRoundParams {
+        vote_round_id: round_id.to_string(),
+        snapshot_height,
+        ea_pk: ea_pk.to_vec(),
+        nc_root: nc_root.to_vec(),
+        nullifier_imt_root: nullifier_imt_root.to_vec(),
+    };
+    let pipeline = build_pipeline(
+        &db,
+        "",                    // unused: ensure_round never opens the wallet.
+        "unused-account-uuid", // unused: ensure_round never reads the account.
+        anchor_tree_state,
+        round_params,
+        None, // unused: ensure_round never calls self.hotkey().
+    )?;
+    pipeline
+        .ensure_round()
+        .map_err(|e| anyhow!("DelegationPipeline::ensure_round: {}", e))?;
+    Ok(())
+}
+
 /// Builds a [`DelegationStepInputs`] for `RoundHostContext::delegation`,
 /// scoped to one round/account/hotkey/signer/PIR fleet.
 ///
@@ -248,6 +313,15 @@ struct DecodedDelegationInputs {
     software_seed: Option<Vec<u8>>,
     keystone_sig: Option<Vec<u8>>,
     keystone_sighash: Option<Vec<u8>>,
+    // Fixed post-Task-6 (round-bootstrap fix): the round's own metadata,
+    // supplied by the caller instead of read back from a `rounds` row that
+    // may not exist yet for a brand-new round_id. See
+    // `delegation_step_inputs_from_jni`'s doc comment for why this must
+    // never be a DB read.
+    snapshot_height: u64,
+    ea_pk: Vec<u8>,
+    nc_root: Vec<u8>,
+    nullifier_imt_root: Vec<u8>,
 }
 
 /// Decodes `runRoundNative`'s `delegation_inputs: JObject` parameter.
@@ -279,6 +353,16 @@ struct DecodedDelegationInputs {
 ///   selects `KeystoneSignatureSource::Provided`; both absent selects
 ///   `KeystoneSignatureSource::Stored` (resume from a previously persisted
 ///   Keystone signature); exactly one present is rejected.
+/// - `snapshotHeight: Long`, `eaPk: ByteArray`, `ncRoot: ByteArray`,
+///   `nullifierImtRoot: ByteArray` -- the round's own metadata (together with
+///   `round_id`, this is the complete `VotingRoundParams`). Added by the
+///   round-bootstrap fix: the caller already has these from the same
+///   authenticated round config it used to fetch `anchorTreeStateBytes` and
+///   to build `RoundBinding` for `openRoundSessionNative` -- this function
+///   must never read them back from the `rounds` table, since a brand-new
+///   `round_id` has no row there yet (that's exactly the row
+///   `DelegationPipeline`'s own bootstrap path, `ensure_round_context`, is
+///   responsible for creating).
 fn decode_delegation_inputs(
     env: &mut JNIEnv<'_>,
     obj: &JObject<'_>,
@@ -306,6 +390,13 @@ fn decode_delegation_inputs(
     let software_seed = java_nullable_byte_array_field(env, obj, "softwareSeed")?;
     let keystone_sig = java_nullable_byte_array_field(env, obj, "keystoneSig")?;
     let keystone_sighash = java_nullable_byte_array_field(env, obj, "keystoneSighash")?;
+    let snapshot_height = jlong_to_u64(
+        env.get_field(obj, "snapshotHeight", "J")?.j()?,
+        "snapshotHeight",
+    )?;
+    let ea_pk = java_byte_array_field(env, obj, "eaPk")?;
+    let nc_root = java_byte_array_field(env, obj, "ncRoot")?;
+    let nullifier_imt_root = java_byte_array_field(env, obj, "nullifierImtRoot")?;
 
     Ok(DecodedDelegationInputs {
         db,
@@ -319,6 +410,10 @@ fn decode_delegation_inputs(
         software_seed,
         keystone_sig,
         keystone_sighash,
+        snapshot_height,
+        ea_pk,
+        nc_root,
+        nullifier_imt_root,
     })
 }
 
@@ -346,11 +441,41 @@ fn signer_from_decoded(decoded: &DecodedDelegationInputs) -> anyhow::Result<Dele
     }
 }
 
-/// Full JNI-facing build: decodes `delegation_inputs`, loads the round's
-/// persisted params for `round_id`, and builds both the
-/// [`DelegationStepInputs`] `runRoundNative` needs and the
-/// [`DelegationPipeline`] the session caches for
-/// `getKeystoneSigningRequestsNative`.
+/// Full JNI-facing build: decodes `delegation_inputs`, builds
+/// `VotingRoundParams` from the caller-supplied round metadata (never a DB
+/// read -- see below), and builds both the [`DelegationStepInputs`]
+/// `runRoundNative` needs and the [`DelegationPipeline`] the session caches
+/// for `getKeystoneSigningRequestsNative`.
+///
+/// # Round-bootstrap fix (post-Task-6)
+///
+/// This function used to load `VotingRoundParams` back from the `rounds`
+/// table via `voting::storage::queries::load_round_params` before ever
+/// constructing a `DelegationPipeline`. That broke every delegation-enabled
+/// call against a brand-new `round_id`: `zcash_voting`'s own round-bootstrap
+/// mechanism (`DelegationPipeline`'s `execute_prepare` ->
+/// `delegate::observe_prepare_delegation_bundle` ->
+/// `prepare_delegation_bundle_inner` -> `observe_ensure_round_context` ->
+/// `VotingDb::ensure_round_state`/`ensure_round`, confirmed by reading
+/// `delegate.rs`/`round/mod.rs` in the pinned crate source) creates the
+/// `rounds` row itself, from the `VotingRoundParams` the caller already
+/// supplied at `DelegationPipeline::new` construction time via
+/// `DelegationLwdInputs::from_anchor_tree_state(network, round_params, ...)`
+/// -- it never needs (or expects) that row to already exist. The premature
+/// `load_round_params` SELECT rejected a virgin round with "round not
+/// found" before the pipeline -- and therefore the bootstrap path inside
+/// it -- was ever reached.
+///
+/// `VotingRoundParams` is now built directly from `round_id` plus 4
+/// caller-supplied `delegation_inputs` fields (`snapshotHeight`, `eaPk`,
+/// `ncRoot`, `nullifierImtRoot`) instead, mirroring how `RoundBinding` in
+/// `round_session.rs`'s `openRoundSessionNative` is already built from
+/// caller-supplied `round_id`/`network`/`proposals` rather than a DB read --
+/// the caller has this data from the same authenticated round config it
+/// already used to fetch `anchorTreeStateBytes`. `VotingDb::ensure_round`
+/// validates a pre-existing round's stored params against these on every
+/// call (rejecting a mismatch), so passing them in unconditionally is safe
+/// for both a brand-new round and one this session has already bootstrapped.
 pub(super) fn delegation_step_inputs_from_jni(
     env: &mut JNIEnv<'_>,
     obj: &JObject<'_>,
@@ -362,11 +487,12 @@ pub(super) fn delegation_step_inputs_from_jni(
 )> {
     let decoded = decode_delegation_inputs(env, obj)?;
 
-    let round_params = {
-        let conn = decoded.db.conn();
-        let wallet_id = decoded.db.wallet_id();
-        voting::storage::queries::load_round_params(&conn, round_id, &wallet_id)
-            .map_err(|e| anyhow!("load_round_params: {}", e))?
+    let round_params = VotingRoundParams {
+        vote_round_id: round_id.to_string(),
+        snapshot_height: decoded.snapshot_height,
+        ea_pk: decoded.ea_pk.clone(),
+        nc_root: decoded.nc_root.clone(),
+        nullifier_imt_root: decoded.nullifier_imt_root.clone(),
     };
 
     let hotkey = match &decoded.hotkey_secret {

@@ -24,6 +24,47 @@ fn pir_layout_from_jni(
     })
 }
 
+/// Bootstraps (or validates) `round_id`'s `rounds` row via
+/// `DelegationPipeline::ensure_round`, so a delegation-enabled `runRound`/
+/// `setupBundlesNative` call has a round to work against. See
+/// `delegation_driver::ensure_round_from_jni`'s doc comment for why this
+/// dedicated entry point exists (found while verifying the round-bootstrap
+/// fix on-device: nothing reachable through `runRoundNative` alone can
+/// create this row for a virgin round_id).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ensureRoundNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    anchor_tree_state_bytes: JByteArray<'local>,
+    snapshot_height: jlong,
+    ea_pk: JByteArray<'local>,
+    nc_root: JByteArray<'local>,
+    nullifier_imt_root: JByteArray<'local>,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let anchor_tree_state = java_bytes(env, &anchor_tree_state_bytes, "anchorTreeStateBytes")?;
+        let snapshot_height = jlong_to_u64(snapshot_height, "snapshotHeight")?;
+        let ea_pk = java_bytes(env, &ea_pk, "eaPk")?;
+        let nc_root = java_bytes(env, &nc_root, "ncRoot")?;
+        let nullifier_imt_root = java_bytes(env, &nullifier_imt_root, "nullifierImtRoot")?;
+        super::delegation_driver::ensure_round_from_jni(
+            db_handle,
+            &round_id,
+            &anchor_tree_state,
+            snapshot_height,
+            &ea_pk,
+            &nc_root,
+            &nullifier_imt_root,
+        )
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_precomputeDelegationPirNative<
     'local,
