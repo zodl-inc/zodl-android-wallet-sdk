@@ -152,8 +152,7 @@ const JNI_ROUND_RUN_REPORT_CTOR_SIG: &str = "(Ljava/lang/String;Ljava/lang/Strin
 // Vec<String>) JSON-encoded since ShareKey/ResubmittedShare are not
 // `Serialize` in the crate. No Kotlin class exists yet -- see the
 // JNI_SHARE_TRACKING_RUN_REPORT doc comment above.
-const JNI_SHARE_TRACKING_RUN_REPORT_CTOR_SIG: &str =
-    "(Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V";
+const JNI_SHARE_TRACKING_RUN_REPORT_CTOR_SIG: &str = "(Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V";
 
 pub(super) const ORCHARD_RAW_ADDRESS_BYTES: usize = 43;
 pub(super) const ORCHARD_FVK_BYTES: usize = 96;

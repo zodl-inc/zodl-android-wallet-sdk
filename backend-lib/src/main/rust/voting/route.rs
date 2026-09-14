@@ -1,8 +1,8 @@
-use std::sync::Arc;
 use std::io;
+use std::sync::Arc;
 
-use zcash_voting::{RouteError, RouteFuture, RouteHttp, RouteRequest, RouteResponse};
 use zcash_client_backend::tor::Error as TorError;
+use zcash_voting::{RouteError, RouteFuture, RouteHttp, RouteRequest, RouteResponse};
 
 use crate::tor::TorRuntime;
 
@@ -59,7 +59,9 @@ impl RouteHttp for ZodlVotingRoute {
                                 .collect()
                                 .await
                                 .map(|agg| agg.to_bytes())
-                                .map_err(|e| TorError::from(io::Error::new(io::ErrorKind::Other, e)))
+                                .map_err(|e| {
+                                    TorError::from(io::Error::new(io::ErrorKind::Other, e))
+                                })
                         },
                         0,
                         |_res| None,
@@ -78,7 +80,9 @@ impl RouteHttp for ZodlVotingRoute {
                                 .collect()
                                 .await
                                 .map(|agg| agg.to_bytes())
-                                .map_err(|e| TorError::from(io::Error::new(io::ErrorKind::Other, e)))
+                                .map_err(|e| {
+                                    TorError::from(io::Error::new(io::ErrorKind::Other, e))
+                                })
                         },
                         0,
                         |_res| None,
@@ -86,7 +90,8 @@ impl RouteHttp for ZodlVotingRoute {
                     .await
             };
 
-            let response: http::Response<bytes::Bytes> = outcome.map_err(|e| RouteError::after_dispatch(e.to_string()))?;
+            let response: http::Response<bytes::Bytes> =
+                outcome.map_err(|e| RouteError::after_dispatch(e.to_string()))?;
             let status = response.status().as_u16();
             let headers = response
                 .headers()
