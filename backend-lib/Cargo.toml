@@ -170,7 +170,35 @@ xz2 = { version = "0.1", features = ["static"] }
 # the same 4.0 port on zodl-swift-wallet-sdk). The diff between the old and new pin is
 # substantial (141 files, +13321/-1423 lines) -- re-verify any crate-API assumption made
 # before this comment against the new rev, do not assume anything carried over unchanged.
-zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "0eccfe692068e394991c143a0bac5ecbff753bf1", default-features = false, features = ["lrz"] }
+#
+# Re-pinned again 2026-09-14, briefly, to the tagged release `v4.0.0-rc.1`
+# (`44869c8b2e49e2190e54582cded54d73fc187dd9`) chasing Roman/Valargroup's (#ext-zodl-valargroup,
+# 2026-09-14) note that rc.1 "makes the voting-circuits version dependency compatible between the
+# vote chain and zcash_voting" -- suspected fix for stage's 5 live "37 Questions" test rounds
+# (vote_end_time 2026-09-17 19:27 UTC, status=1/ACTIVE, confirmed present directly against
+# stage.vote-chain-primary.valargroup.org/shielded-vote/v1/rounds) being silently absent from the
+# wallet's round list (fetchAllRounds() drops any round that fails authenticateVotingSessionOrNull,
+# no error surfaced). REVERTED within the hour: rc.1 turned out to be on a DIFFERENT, older release
+# lineage that never received the round-executor work at all -- confirmed via
+# `git merge-base 0eccfe69 44869c8` = `53804a6e` (v3.0.0-rc.3), ~50 commits before PR #287 "Round
+# executor, typed errors, delegation pipeline, routed transport, shared sidecar" (6fa5c65), and a
+# full-history grep of the rc.1 checkout found zero occurrences of RoundExecutor/RoundDriver/
+# HelperClient/ChainSubmissionControl/ShareTrackingDriver/DelegationPipeline/RouteHttp anywhere.
+# Whatever Valargroup tags "4.0.0" is apparently a separate line from the `main` snapshot we
+# originally pinned (0eccfe69, 2026-09-11) that already contained this architecture pre-release.
+#
+# Re-pinned 2026-09-14 (same day) to `v5.0.0` (`c2c99eb5e254cbbf778a96c0c911d6b898f45849`). The
+# CHANGELOG says outright "This release is zcash_voting 5.0.0 and supersedes the 4.0.0 prerelease
+# series" -- confirmed via `git merge-base --is-ancestor 0eccfe69 c2c99eb5` = true, i.e. v5.0.0 IS
+# a genuine linear descendant of our original pin (same architecture, not a rewrite). It includes
+# `65ec13fc` "chore: update voting-circuits to 0.12.1 (#346)" by Roman, 2026-09-13 -- one day
+# before his Slack message, and a much stronger candidate for the actual compatibility fix than
+# rc.1's abandoned line. Roman's Slack guidance was "stay on 4.0.x for the Retroactive Grants vote,
+# 5.0.x adds batch-vote functionality with meaningfully higher integration complexity" -- but we
+# are NOT adopting 5.0.0's new batching APIs here, only moving our existing round-executor
+# integration forward along its own architecture line to pick up the circuits-version fix; the
+# batch-vote complexity Roman warned about is opt-in surface we don't have to touch.
+zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "c2c99eb5e254cbbf778a96c0c911d6b898f45849", default-features = false, features = ["lrz"] }
 
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
