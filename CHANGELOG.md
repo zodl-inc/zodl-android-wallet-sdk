@@ -6,6 +6,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Shielded voting now builds against `zcash_voting` 4.0.0-rc.1 (`voting-circuits` 0.12.0). The vote
+  chain's circuit and verification key change with it: proposal ids may now range from 1 to 50 instead
+  of 1 to 15, as required for the 37-question Retroactive Grants round, and a client on the previous
+  circuit is rejected with `ConstraintSystemFailure` once the chain upgrades. The Rust API the SDK
+  wraps is unchanged; the crate's default backend is upstream librustzcash (`lrz`), so the native
+  library still links exactly one copy of each Zcash crate.
+
 ## [3.2.1] - 2026-09-15
 
 ### Changed
