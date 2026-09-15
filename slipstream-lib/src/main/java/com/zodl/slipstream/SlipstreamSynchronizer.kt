@@ -30,6 +30,7 @@ import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
 import cash.z.ecc.android.sdk.internal.Files
 import cash.z.ecc.android.sdk.internal.ImportAccountErrors
+import cash.z.ecc.android.sdk.internal.TorOhttpSender
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.TypesafeBackendImpl
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
@@ -77,6 +78,7 @@ import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.internal.OhttpSender
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.Response
@@ -1615,8 +1617,7 @@ class SlipstreamSynchronizer internal constructor(
         }
     }
 
-    override suspend fun ohttpSenderOverTor(): co.electriccoin.lightwallet.client.internal.OhttpSender =
-        cash.z.ecc.android.sdk.internal.TorOhttpSender(getTorClient())
+    override suspend fun ohttpSenderOverTor(): OhttpSender = TorOhttpSender(getTorClient())
 
     override suspend fun debugQuery(query: String): String {
         awaitDbReady()

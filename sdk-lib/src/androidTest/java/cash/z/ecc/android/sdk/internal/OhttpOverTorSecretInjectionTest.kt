@@ -27,7 +27,7 @@ import kotlin.time.Duration.Companion.seconds
  * `ohttpLive=true` is passed (skipped otherwise):
  *
  *   ./gradlew :sdk-lib:connectedDebugAndroidTest \
- *     -Pandroid.testInstrumentationRunnerArguments.class=cash.z.ecc.android.sdk.internal.OhttpOverTorSecretInjectionTest \
+ *     -Pandroid.testInstrumentationRunnerArguments.class=<this class's fully qualified name> \
  *     -Pandroid.testInstrumentationRunnerArguments.ohttpLive=true
  */
 class OhttpOverTorSecretInjectionTest {

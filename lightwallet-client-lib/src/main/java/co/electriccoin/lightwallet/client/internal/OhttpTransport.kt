@@ -173,7 +173,10 @@ internal fun stripSecretsForGateway(
     val stripped = headers.filter { (key, _) -> key !in SECRET_HEADERS }
     if (stripped.size < headers.size) {
         val removed = headers.filter { (key, _) -> key in SECRET_HEADERS }.map { it.first }
-        logger("OHTTP: stripped secret headers $removed for gateway-mapped host $authority (gateway injects server-side)")
+        logger(
+            "OHTTP: stripped secret headers $removed for gateway-mapped host $authority " +
+                "(gateway injects server-side)"
+        )
     }
     return stripped
 }

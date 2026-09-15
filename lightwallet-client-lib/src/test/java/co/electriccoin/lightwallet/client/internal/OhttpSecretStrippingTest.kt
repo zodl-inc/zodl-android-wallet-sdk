@@ -6,11 +6,12 @@ import org.junit.Test
 class OhttpSecretStrippingTest {
     @Test
     fun `stripSecretsForGateway removes Authorization for near_zodl_com`() {
-        val headers = listOf(
-            "Content-Type" to "application/json",
-            "Authorization" to "Bearer secret-token",
-            "Accept" to "application/json"
-        )
+        val headers =
+            listOf(
+                "Content-Type" to "application/json",
+                "Authorization" to "Bearer secret-token",
+                "Accept" to "application/json"
+            )
         val logged = mutableListOf<String>()
         val stripped = stripSecretsForGateway("near.zodl.com", headers) { logged.add(it) }
 
@@ -24,10 +25,11 @@ class OhttpSecretStrippingTest {
 
     @Test
     fun `stripSecretsForGateway removes X-CMC_PRO_API_KEY for cmc_zodl_com`() {
-        val headers = listOf(
-            "Accept" to "application/json",
-            "X-CMC_PRO_API_KEY" to "secret-key-12345"
-        )
+        val headers =
+            listOf(
+                "Accept" to "application/json",
+                "X-CMC_PRO_API_KEY" to "secret-key-12345"
+            )
         val logged = mutableListOf<String>()
         val stripped = stripSecretsForGateway("cmc.zodl.com", headers) { logged.add(it) }
 
@@ -40,11 +42,12 @@ class OhttpSecretStrippingTest {
 
     @Test
     fun `stripSecretsForGateway does not touch headers for non-secret-injecting hosts`() {
-        val headers = listOf(
-            "Content-Type" to "application/json",
-            "Authorization" to "Bearer token",
-            "X-CMC_PRO_API_KEY" to "key"
-        )
+        val headers =
+            listOf(
+                "Content-Type" to "application/json",
+                "Authorization" to "Bearer token",
+                "X-CMC_PRO_API_KEY" to "key"
+            )
         val logged = mutableListOf<String>()
         val stripped = stripSecretsForGateway("vote.zodl.com", headers) { logged.add(it) }
 
@@ -54,10 +57,11 @@ class OhttpSecretStrippingTest {
 
     @Test
     fun `stripSecretsForGateway handles headers without secrets`() {
-        val headers = listOf(
-            "Content-Type" to "application/json",
-            "Accept" to "application/json"
-        )
+        val headers =
+            listOf(
+                "Content-Type" to "application/json",
+                "Accept" to "application/json"
+            )
         val logged = mutableListOf<String>()
         val stripped = stripSecretsForGateway("near.zodl.com", headers) { logged.add(it) }
 
@@ -67,11 +71,12 @@ class OhttpSecretStrippingTest {
 
     @Test
     fun `stripSecretsForGateway removes both secrets when both present`() {
-        val headers = listOf(
-            "Authorization" to "Bearer token",
-            "X-CMC_PRO_API_KEY" to "key",
-            "Content-Type" to "application/json"
-        )
+        val headers =
+            listOf(
+                "Authorization" to "Bearer token",
+                "X-CMC_PRO_API_KEY" to "key",
+                "Content-Type" to "application/json"
+            )
         val logged = mutableListOf<String>()
         val stripped = stripSecretsForGateway("cmc.zodl.com", headers) { logged.add(it) }
 
