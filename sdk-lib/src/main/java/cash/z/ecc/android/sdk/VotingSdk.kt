@@ -13,6 +13,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSignatureRecord
 import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSigningRequest
 import cash.z.ecc.android.sdk.model.voting.VotingNoteInfo
 import cash.z.ecc.android.sdk.model.voting.VotingProposalRosterEntry
+import cash.z.ecc.android.sdk.model.voting.VotingRoundDriveProgressListener
 import cash.z.ecc.android.sdk.model.voting.VotingRoundPlan
 import cash.z.ecc.android.sdk.model.voting.VotingRoundRunReport
 import cash.z.ecc.android.sdk.model.voting.VotingRoundState
@@ -310,7 +311,10 @@ interface VotingRoundSession {
      * pre-existing round's stored params against these on every call, so passing them is safe
      * whether the round is new or already bootstrapped.
      */
-    suspend fun run(delegationInputs: VotingDelegationInputs? = null): VotingRoundRunReport?
+    suspend fun run(
+        delegationInputs: VotingDelegationInputs? = null,
+        progressListener: VotingRoundDriveProgressListener? = null
+    ): VotingRoundRunReport?
 
     /**
      * The Keystone signing requests for [bundleIndices], from the delegation pipeline a prior

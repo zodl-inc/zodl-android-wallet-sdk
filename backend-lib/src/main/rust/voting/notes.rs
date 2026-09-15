@@ -107,7 +107,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_com
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let notes = java_note_info_array(env, &notes, "notes")?;
-        let (count, weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
+        // BENCHMARK: privacy trim disabled (see setupBundlesNative's matching comment) so
+        // this preview agrees with what setupBundlesNative will actually persist.
+        let (count, weight, bundle_weights) =
+            bundle_setup_from_notes(&notes, voting::BundlePolicy::default().with_max_privacy_bundles(None))?;
         make_jni_bundle_setup_result(env, count, weight, &bundle_weights)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
@@ -127,14 +130,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
         let notes = java_note_info_array(env, &notes, "notes")?;
-        let (expected_count, expected_weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
+        // BENCHMARK-ONLY: disables `zcash_voting`'s default privacy trim (drops the
+        // smallest ~1% of value, capped at 2 bundles -- see `PrivacyTrimPolicy::default()`)
+        // so a benchmark run measures the real, uncapped bundle count/timing instead of
+        // the trimmed one. `with_max_privacy_bundles(None)` clears the whole
+        // `Option<PrivacyTrimPolicy>` field (cap + drop-bps + drop ceiling together, not
+        // three independent toggles) -- `max_real_notes_per_bundle` (5) is untouched.
+        // Revert to plain `voting::BundlePolicy::default()` before this ships anywhere
+        // real; dropping dust before bundling is a deliberate privacy feature.
+        let policy = voting::BundlePolicy::default().with_max_privacy_bundles(None);
+        let (expected_count, expected_weight, bundle_weights) =
+            bundle_setup_from_notes(&notes, policy)?;
         let round_id = java_string_to_rust(env, &round_id)?;
         let layout = db
-            .ensure_bundles_with_skipped_suffix_with_policy(
-                &round_id,
-                &notes,
-                voting::BundlePolicy::default(),
-            )
+            .ensure_bundles_with_skipped_suffix_with_policy(&round_id, &notes, policy)
             .map_err(|e| anyhow!("ensure_bundles_with_skipped_suffix_with_policy: {}", e))?;
         if layout.bundle_count != expected_count || layout.eligible_weight != expected_weight {
             // ensure_bundles_with_skipped_suffix_with_policy has already persisted the

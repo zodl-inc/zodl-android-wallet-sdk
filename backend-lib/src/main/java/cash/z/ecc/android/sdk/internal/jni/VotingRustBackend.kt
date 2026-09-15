@@ -18,6 +18,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniShareTrackingRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
+import cash.z.ecc.android.sdk.internal.model.voting.RoundDriveProgressListener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -556,13 +557,19 @@ class VotingRustBackend private constructor() {
          *
          * [delegationInputs] must be non-null for a pass that needs to advance delegation
          * signing; every other step tolerates `null`. See [JniDelegationInputs]'s doc comment.
+         *
+         * [progressListener], if non-null, receives one call per `RoundDriveEvent` the crate's
+         * `RoundDriver` emits over the course of this (potentially ~minute-plus) run — see
+         * [RoundDriveProgressListener]'s doc comment. `null` is fine; the round still drives to
+         * quiescence exactly the same either way.
          */
         @Throws(RuntimeException::class)
         suspend fun runRound(
             torRuntime: Long,
-            delegationInputs: JniDelegationInputs?
+            delegationInputs: JniDelegationInputs?,
+            progressListener: RoundDriveProgressListener? = null
         ): JniRoundRunReport? =
-            withHandle { handle -> runRoundNative(handle, torRuntime, delegationInputs) }
+            withHandle { handle -> runRoundNative(handle, torRuntime, delegationInputs, progressListener) }
 
         /**
          * Loops `DelegationPipeline::keystone_request` over [bundleIndices] against the
@@ -846,7 +853,8 @@ class VotingRustBackend private constructor() {
         private external fun runRoundNative(
             sessionHandle: Long,
             torRuntime: Long,
-            delegationInputs: JniDelegationInputs?
+            delegationInputs: JniDelegationInputs?,
+            progressListener: RoundDriveProgressListener?
         ): JniRoundRunReport?
 
         @JvmStatic

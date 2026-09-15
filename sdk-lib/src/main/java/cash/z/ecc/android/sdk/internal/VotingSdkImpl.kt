@@ -3,6 +3,7 @@ package cash.z.ecc.android.sdk.internal
 import cash.z.ecc.android.sdk.VotingDbSession
 import cash.z.ecc.android.sdk.VotingRoundSession
 import cash.z.ecc.android.sdk.VotingSdk
+import cash.z.ecc.android.sdk.internal.model.voting.RoundDriveProgressListener
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.voting.VotingBallotIntent
@@ -16,6 +17,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSignatureRecord
 import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSigningRequest
 import cash.z.ecc.android.sdk.model.voting.VotingNoteInfo
 import cash.z.ecc.android.sdk.model.voting.VotingProposalRosterEntry
+import cash.z.ecc.android.sdk.model.voting.VotingRoundDriveProgressListener
 import cash.z.ecc.android.sdk.model.voting.VotingRoundPlan
 import cash.z.ecc.android.sdk.model.voting.VotingRoundRunReport
 import cash.z.ecc.android.sdk.model.voting.VotingRoundState
@@ -243,8 +245,17 @@ internal class VotingRoundSessionImpl(
         return session.setBallotIntents(proposalIds, choices)?.toPublic()
     }
 
-    override suspend fun run(delegationInputs: VotingDelegationInputs?): VotingRoundRunReport? =
-        session.runRound(torRuntime, delegationInputs?.toInternal(session.dbHandle))?.toPublic()
+    override suspend fun run(
+        delegationInputs: VotingDelegationInputs?,
+        progressListener: VotingRoundDriveProgressListener?
+    ): VotingRoundRunReport? =
+        session.runRound(
+            torRuntime,
+            delegationInputs?.toInternal(session.dbHandle),
+            progressListener?.let { listener ->
+                RoundDriveProgressListener { step, detail -> listener.onProgress(step, detail) }
+            }
+        )?.toPublic()
 
     override suspend fun getKeystoneSigningRequests(bundleIndices: List<Int>): List<VotingKeystoneSigningRequest> =
         session.getKeystoneSigningRequests(bundleIndices.toIntArray()).map { it.toPublic() }

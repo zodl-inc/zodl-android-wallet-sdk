@@ -881,6 +881,25 @@ data class JniRoundPlan(
 }
 
 /**
+ * Callback for `runRoundNative`'s progress parameter, bridged from the crate's own
+ * `RoundDriveEvent`s by `round_drive_reporter_from_callback` in `round_session.rs` (see its doc
+ * comment). A `RoundDriver::run` pass can take on the order of a minute or more, so this exists
+ * to give the UI something to show while it runs rather than looking stuck.
+ *
+ * [step] is a short label (e.g. `"StepSelected"`, `"StepFinished"`) naming the
+ * [zcash_voting]'s `RoundDriveEvent` variant that fired; [detail] is that event's full
+ * `{:?}` debug dump (the exact `NextStep`, bundle index, disposition, etc.). Called from
+ * whichever native thread the round-driver's concurrent bundle tasks happen to be running on —
+ * an implementation must be safe to call from any thread and must not block.
+ */
+fun interface RoundDriveProgressListener {
+    fun onRoundDriveProgress(
+        step: String,
+        detail: String
+    )
+}
+
+/**
  * Typed JNI carrier for `zcash_voting::RoundRunReport`, `runRoundNative`'s return value: the
  * terminal outcome of one `RoundDriver::run` pass.
  *

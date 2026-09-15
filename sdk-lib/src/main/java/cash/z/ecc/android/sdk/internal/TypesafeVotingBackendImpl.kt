@@ -24,6 +24,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniShareTrackingRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
+import cash.z.ecc.android.sdk.internal.model.voting.RoundDriveProgressListener
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal class TypesafeVotingBackendImpl(
@@ -419,7 +420,8 @@ internal interface RoundSessionBackend {
 
     suspend fun runRound(
         torRuntime: Long,
-        delegationInputs: JniDelegationInputs?
+        delegationInputs: JniDelegationInputs?,
+        progressListener: RoundDriveProgressListener? = null
     ): JniRoundRunReport?
 
     suspend fun getKeystoneSigningRequests(bundleIndices: IntArray): Array<JniKeystoneSigningRequest>
@@ -446,8 +448,9 @@ private class RustRoundSessionBackend(
 
     override suspend fun runRound(
         torRuntime: Long,
-        delegationInputs: JniDelegationInputs?
-    ): JniRoundRunReport? = roundSession.runRound(torRuntime, delegationInputs)
+        delegationInputs: JniDelegationInputs?,
+        progressListener: RoundDriveProgressListener?
+    ): JniRoundRunReport? = roundSession.runRound(torRuntime, delegationInputs, progressListener)
 
     override suspend fun getKeystoneSigningRequests(bundleIndices: IntArray): Array<JniKeystoneSigningRequest> =
         roundSession.getKeystoneSigningRequests(bundleIndices)
@@ -598,8 +601,9 @@ internal class TypesafeRoundSessionImpl(
 
     override suspend fun runRound(
         torRuntime: Long,
-        delegationInputs: JniDelegationInputs?
-    ): JniRoundRunReport? = roundSession.runRound(torRuntime, delegationInputs)
+        delegationInputs: JniDelegationInputs?,
+        progressListener: RoundDriveProgressListener?
+    ): JniRoundRunReport? = roundSession.runRound(torRuntime, delegationInputs, progressListener)
 
     override suspend fun getKeystoneSigningRequests(bundleIndices: IntArray): List<JniKeystoneSigningRequest> =
         roundSession.getKeystoneSigningRequests(bundleIndices).asList()

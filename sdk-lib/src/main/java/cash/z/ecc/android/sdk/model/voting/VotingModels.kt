@@ -534,6 +534,23 @@ data class VotingChainOutcome(
 )
 
 /**
+ * Callback for [cash.z.ecc.android.sdk.VotingRoundSession.run]'s optional progress parameter. A
+ * `RoundDriver::run` pass can take on the order of a minute or more, so this exists to give a
+ * caller something to show while it runs rather than looking stuck.
+ *
+ * [step] is a short label naming the crate's `RoundDriveEvent` variant that fired (e.g.
+ * `"StepSelected"`, `"StepFinished"`); [detail] is that event's full debug text. Called from
+ * whichever native thread the round-driver's concurrent bundle tasks happen to be running on --
+ * an implementation must be safe to call from any thread and must not block.
+ */
+fun interface VotingRoundDriveProgressListener {
+    fun onProgress(
+        step: String,
+        detail: String
+    )
+}
+
+/**
  * Everything one run of a round did -- mirrors `zcash_voting::round_drive::RoundRunReport`, the
  * terminal output of [cash.z.ecc.android.sdk.VotingRoundSession.run].
  *

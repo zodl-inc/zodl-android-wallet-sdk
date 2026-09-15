@@ -41,15 +41,15 @@
 
 use super::db::db_from_handle;
 use super::helpers::*;
-use super::round_session::{optional_seconds, resolve_tor_runtime, unix_now_seconds};
+use super::round_session::{fallback_runtime, optional_seconds, resolve_tor_runtime, unix_now_seconds};
 use super::route::ZodlVotingRoute;
 use super::*;
 
 use tor_rtcompat::ToplevelBlockOn;
 
 use voting::{
-    ChainSubmissionControl, HelperClient, HelperHealth, HelperTransport, HyperTransport,
-    NoopShareTrackingReporter, ShareTrackingDriver, ShareTrackingHostContext,
+    ChainSubmissionControl, DirectRoute, HelperClient, HelperHealth, HelperTransport,
+    HyperTransport, NoopShareTrackingReporter, ShareTrackingDriver, ShareTrackingHostContext,
     ShareTrackingHostSourceBridge,
 };
 
@@ -91,18 +91,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_tra
         // SAFETY: `tor_runtime` is caller-supplied and must be a live handle
         // for the duration of this call -- see `resolve_tor_runtime`'s doc
         // comment in round_session.rs, which this export reuses unchanged.
-        let tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) }?;
-        let transport = Arc::new(HyperTransport::with_route(ZodlVotingRoute::new(
-            tor_runtime,
-        )));
-        let client = HelperClient::new(
-            transport as Arc<dyn HelperTransport>,
-            HelperHealth::default(),
-        );
+        //
+        // Resolved exactly once: `resolve_tor_runtime` hands back a `&mut
+        // TorRuntime`, and calling it a second time before this borrow's
+        // last use (inside the `Ok` arm's `block_on` below) would be a real
+        // aliasing bug, not just style.
+        let resolved_tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) };
 
         let control = ChainSubmissionControl::new(0);
         let database: &voting::storage::VotingDb = &db;
-        let driver = ShareTrackingDriver::new(database, &client, &round_id);
 
         let template = ShareTrackingHostContext {
             configured_helper_urls,
@@ -115,11 +112,39 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_tra
             ctx
         });
 
-        let report = tor_runtime.runtime().block_on(async {
-            driver
-                .run(&host, &control, &NoopShareTrackingReporter {})
-                .await
-        });
+        // Tor is a user preference, used when available -- a deliberate,
+        // permanent design decision (not a benchmark hack), matching the
+        // pre-4.0/4.0.0-rc.1 architecture's own settings-based Tor behavior
+        // and `runRoundNative`'s identical fallback in round_session.rs.
+        // When there is no live Tor runtime handle, route directly instead
+        // of failing share tracking outright, and drive the async work via
+        // `fallback_runtime`'s Tor-independent executor rather than the
+        // (absent) Tor runtime's.
+        let report = match resolved_tor_runtime {
+            Ok(tor_runtime) => {
+                let transport: Arc<dyn HelperTransport> = Arc::new(HyperTransport::with_route(
+                    ZodlVotingRoute::new(tor_runtime),
+                ));
+                let client = HelperClient::new(transport, HelperHealth::default());
+                let driver = ShareTrackingDriver::new(database, &client, &round_id);
+                tor_runtime.runtime().block_on(async {
+                    driver
+                        .run(&host, &control, &NoopShareTrackingReporter {})
+                        .await
+                })
+            }
+            Err(_) => {
+                let transport: Arc<dyn HelperTransport> =
+                    Arc::new(HyperTransport::with_route(DirectRoute::new()));
+                let client = HelperClient::new(transport, HelperHealth::default());
+                let driver = ShareTrackingDriver::new(database, &client, &round_id);
+                fallback_runtime()?.block_on(async {
+                    driver
+                        .run(&host, &control, &NoopShareTrackingReporter {})
+                        .await
+                })
+            }
+        };
 
         Ok(encode_share_tracking_report(env, &report)?.into_raw())
     });

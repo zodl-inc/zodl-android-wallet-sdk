@@ -140,11 +140,14 @@ fn build_pipeline(
         lwd,
         account_uuid,
         hotkey,
-        // BundlePolicy::default() is what the codebase's only production
-        // bundle-setup call site actually uses today (setupBundlesNative in
-        // notes.rs), not recoverable_bundle_policy_v1 -- see this task's
-        // report for the NOTE-2 resolution.
-        voting::BundlePolicy::default(),
+        // Must stay identical to the policy notes.rs's setupBundlesNative persists
+        // (the codebase's only production bundle-setup call site), not
+        // recoverable_bundle_policy_v1 -- see this task's report for the NOTE-2
+        // resolution. BENCHMARK-ONLY: privacy trim disabled to measure the real,
+        // uncapped bundle count -- see setupBundlesNative's matching comment.
+        // Revert to plain `voting::BundlePolicy::default()` together with that
+        // call site before this ships anywhere real.
+        voting::BundlePolicy::default().with_max_privacy_bundles(None),
         None,
     )
     .map_err(|e| anyhow!("DelegationPipeline::new: {}", e))?;

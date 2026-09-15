@@ -1871,10 +1871,19 @@ fn make_jni_fixed_byte_array_vec<'local>(
 
 /// Runs the voting note chunker and returns total count, total eligible weight,
 /// and each bundle's quantized voting weight.
-pub(super) fn bundle_setup_from_notes(notes: &[NoteInfo]) -> anyhow::Result<(u32, u64, Vec<u64>)> {
-    // zcash_voting 1.0.0 (merged-library patch) moved `chunk_notes` from `types` to
-    // `note_bundling`; same `&[NoteInfo] -> ChunkResult` signature.
-    let chunk_result = voting::note_bundling::chunk_notes(notes);
+///
+/// Takes an explicit `policy` (rather than the crate's `chunk_notes(notes)` convenience
+/// wrapper, which is hardcoded to `BundlePolicy::default()`) so this always agrees with
+/// whatever policy the caller actually persists via `ensure_bundles_with_skipped_suffix_with_policy`
+/// -- passing a different policy to each would silently desync `expected_count`/`expected_weight`
+/// from the persisted `layout` and trip `setupBundlesNative`'s mismatch check.
+pub(super) fn bundle_setup_from_notes(
+    notes: &[NoteInfo],
+    policy: voting::BundlePolicy,
+) -> anyhow::Result<(u32, u64, Vec<u64>)> {
+    // zcash_voting 1.0.0 (merged-library patch) moved `chunk_notes`/`chunk_notes_with_policy`
+    // from `types` to `note_bundling`; same `&[NoteInfo] -> ChunkResult` signature.
+    let chunk_result = voting::note_bundling::chunk_notes_with_policy(notes, policy);
     let bundle_weights = chunk_result
         .bundles
         .iter()

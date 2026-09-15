@@ -19,23 +19,66 @@
 
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::OnceLock;
 
 use super::db::db_from_handle;
 use super::helpers::*;
 use super::route::ZodlVotingRoute;
 use super::*;
 
-use tor_rtcompat::ToplevelBlockOn;
+use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
 use zeroize::Zeroizing;
 
 use voting::{
     BallotIntent, ChainAdvancePolicy, ChainSubmissionClientConfig, ChainSubmissionControl,
-    HelperClient, HelperHealth, HelperTransport, HyperTransport, NoopRoundDriveReporter,
-    ProposalRosterEntry, RoundBinding, RoundDrivePolicy, RoundDriver, RoundExecutor,
-    RoundHostContext, RoundHostSourceBridge,
+    DirectRoute, HelperClient, HelperHealth, HelperTransport, HyperTransport,
+    NoopRoundDriveReporter, ProposalRosterEntry, RouteFuture, RouteHttp, RouteRequest,
+    RoundBinding, RoundDriveEvent, RoundDrivePolicy, RoundDriveReporter, RoundDriveReporterBridge,
+    RoundDriver, RoundExecutor, RoundHostContext, RoundHostSourceBridge,
 };
 
 use crate::tor::TorRuntime;
+
+/// Route a round session's transport picks per-open, based on whether a live
+/// Tor runtime was available at `openRoundSessionNative` time: real Tor
+/// routing when the user's Tor preference is on (mirrors the pre-4.0
+/// architecture's own settings-based behavior -- Tor is a preference, never a
+/// hard requirement), plain HTTP only as the explicit fallback when it is
+/// off. Delegating [`RouteHttp`] through this enum -- rather than making
+/// [`SessionTransport`] a trait object -- keeps it a concrete type, so the
+/// crate's blanket `ChainTransport`/`HelperTransport`/PIR `Transport` impls
+/// for `HyperTransport<R: RouteHttp>` apply without any further casting.
+enum SessionRoute {
+    Tor(ZodlVotingRoute),
+    Direct(DirectRoute),
+}
+
+impl RouteHttp for SessionRoute {
+    fn execute<'a>(
+        &'a self,
+        request: RouteRequest<'a>,
+        on_dispatch: &'a (dyn Fn() + Send + Sync),
+    ) -> RouteFuture<'a> {
+        match self {
+            SessionRoute::Tor(route) => route.execute(request, on_dispatch),
+            SessionRoute::Direct(route) => route.execute(request, on_dispatch),
+        }
+    }
+
+    fn hook_precedes_connection_setup(&self) -> bool {
+        match self {
+            SessionRoute::Tor(route) => route.hook_precedes_connection_setup(),
+            SessionRoute::Direct(route) => route.hook_precedes_connection_setup(),
+        }
+    }
+
+    fn enforces_connect_timeout(&self) -> bool {
+        match self {
+            SessionRoute::Tor(route) => route.enforces_connect_timeout(),
+            SessionRoute::Direct(route) => route.enforces_connect_timeout(),
+        }
+    }
+}
 
 /// Wired transport type every round session uses: Task 1's Tor-backed
 /// [`ZodlVotingRoute`] under the crate's shared [`HyperTransport`] adapter,
@@ -54,7 +97,14 @@ use crate::tor::TorRuntime;
 /// time without either constructing two independent transports (defeating the
 /// brief's "shared between the executor's chain transport and a HelperClient"
 /// requirement) or this `Arc` wrapping.
-type SessionTransport = Arc<HyperTransport<ZodlVotingRoute>>;
+// Tor-optional design (mirrors the pre-4.0 architecture's settings-based Tor
+// behavior): the route picked at `openRoundSessionNative` time is real Tor
+// (`ZodlVotingRoute`) whenever the caller had a live Tor runtime to hand in,
+// and plain HTTP (`DirectRoute`) only as the explicit fallback when Tor is
+// disabled/unavailable -- see `SessionRoute` above. Never a silent fallback
+// while Tor is actually enabled: the choice is made once, explicitly, at
+// session-open time from `resolve_tor_runtime`'s own result.
+type SessionTransport = Arc<HyperTransport<SessionRoute>>;
 
 /// One open round session: a bound [`RoundExecutor`] plus its cancellation/
 /// operation-epoch control, plus the per-round host inputs
@@ -158,6 +208,30 @@ pub(super) unsafe fn resolve_tor_runtime<'a>(
     unsafe { ptr.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))
 }
 
+// A Tor-independent async executor, built once and reused, for
+// `runRoundNative` to drive the round-driver on when the caller has no live
+// Tor runtime to hand in (Tor disabled — see `SubmitVotesUseCase.kt`'s
+// `getVotingTorRuntimeHandle()` call site, which passes `0` in that case
+// instead of failing). Mirrors the pre-4.0 architecture's own behavior: Tor
+// is optional there too, never a hard requirement for voting to function.
+// `PreferredRuntime::create()` always builds a fresh runtime (per its own doc
+// comment), independent of any Tor bootstrap/circuit state — this is the same
+// `tor_rtcompat` executor type `TorRuntime::runtime()` itself returns
+// (`&PreferredRuntime`), just not backed by a live Tor client. Only ever
+// drives the round-driver's own async control flow, never HTTP dispatch --
+// `SessionRoute::Direct` (plain `DirectRoute`) is what actually carries
+// traffic in that case.
+static FALLBACK_RUNTIME: OnceLock<PreferredRuntime> = OnceLock::new();
+
+pub(super) fn fallback_runtime() -> anyhow::Result<&'static PreferredRuntime> {
+    if let Some(rt) = FALLBACK_RUNTIME.get() {
+        return Ok(rt);
+    }
+    let rt = PreferredRuntime::create()
+        .map_err(|e| anyhow!("failed to create fallback async runtime: {e}"))?;
+    Ok(FALLBACK_RUNTIME.get_or_init(|| rt))
+}
+
 pub(super) fn unix_now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -203,6 +277,77 @@ fn proposal_roster(
             })
         })
         .collect()
+}
+
+/// Bridges [`RoundDriveEvent`]s to a Kotlin `RoundDriveProgressListener`
+/// callback (`onRoundDriveProgress(String, String)` in `VotingRustBackend.kt`),
+/// so `runRoundNative`'s ~100-second round-drive run isn't silent from the
+/// UI's perspective (see `SubmitVotesUseCase.kt`'s `onProgress`). Mirrors
+/// `progress.rs`'s `JniProgressReporter`/`progress_reporter_from_callback`
+/// pattern -- attach-per-call, since `RoundDriveReporter`'s own doc comment
+/// says it is "called from several concurrent bundle tasks", so a captured
+/// `JNIEnv` from the original call would be unsound -- just bridging this
+/// crate's `RoundDriveReporter` trait instead of the proving-only
+/// `ProgressReporter` that file bridges.
+///
+/// `null` decodes to [`NoopRoundDriveReporter`] (no listener wired) rather
+/// than failing -- the progress parameter is a Kotlin-side nicety, never
+/// required for the round-drive to run.
+fn round_drive_reporter_from_callback(
+    env: &mut JNIEnv<'_>,
+    callback: &JObject<'_>,
+) -> anyhow::Result<Box<dyn RoundDriveReporter>> {
+    if callback.is_null() {
+        return Ok(Box::new(NoopRoundDriveReporter {}));
+    }
+    let vm = env.get_java_vm()?;
+    let callback = env.new_global_ref(callback)?;
+    Ok(Box::new(RoundDriveReporterBridge::new(
+        move |event: RoundDriveEvent| {
+            let step = round_drive_event_step_name(&event);
+            let detail = format!("{event:?}");
+            match vm.attach_current_thread() {
+                Ok(mut guard) => {
+                    let env: &mut JNIEnv = &mut guard;
+                    let (step_jstr, detail_jstr) =
+                        match (env.new_string(step), env.new_string(&detail)) {
+                            (Ok(s), Ok(d)) => (s, d),
+                            _ => return,
+                        };
+                    if let Err(e) = env.call_method(
+                        callback.as_obj(),
+                        "onRoundDriveProgress",
+                        "(Ljava/lang/String;Ljava/lang/String;)V",
+                        &[JValue::Object(&step_jstr), JValue::Object(&detail_jstr)],
+                    ) {
+                        let _ = env.exception_clear();
+                        tracing::warn!("round drive progress callback failed: {e}");
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    "attach_current_thread for round drive progress callback failed: {e}"
+                ),
+            }
+        },
+    )))
+}
+
+/// Short label for a [`RoundDriveEvent`] variant, for the `step` argument of
+/// `onRoundDriveProgress` -- the `detail` argument (a full `{:?}` dump) is
+/// where the exact `NextStep`/bundle-index/disposition fields live; this is
+/// only a quick-glance label a UI (or a logcat line) can group on.
+/// `RoundDriveEvent` is `#[non_exhaustive]`, hence the wildcard arm.
+fn round_drive_event_step_name(event: &RoundDriveEvent) -> &'static str {
+    match event {
+        RoundDriveEvent::PlanRefreshed { .. } => "PlanRefreshed",
+        RoundDriveEvent::StepSelected { .. } => "StepSelected",
+        RoundDriveEvent::StepProgress { .. } => "StepProgress",
+        RoundDriveEvent::StepFinished { .. } => "StepFinished",
+        RoundDriveEvent::StepFailed { .. } => "StepFailed",
+        RoundDriveEvent::AwaitingRepoll { .. } => "AwaitingRepoll",
+        RoundDriveEvent::BundleSkipped { .. } => "BundleSkipped",
+        _ => "Unknown",
+    }
 }
 
 /// Opens a round session: binds a [`RoundExecutor`] to `round_id`'s roster and
@@ -277,13 +422,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
                 .map_err(|e| anyhow!("VotingDb::scoped: {}", e))?,
         );
 
-        // SAFETY: `tor_runtime` is caller-supplied and must be a live handle
-        // for the duration of this call, per TorClient's existing JNI
-        // contract (see `resolve_tor_runtime`'s doc comment).
-        let tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) }?;
-        let transport: SessionTransport = Arc::new(HyperTransport::with_route(
-            ZodlVotingRoute::new(tor_runtime),
-        ));
+        // SAFETY: see `resolve_tor_runtime`'s doc comment. This open call must
+        // not fail just because the caller has no live Tor runtime to pass --
+        // Tor is a preference, not a hard requirement (see
+        // `SubmitVotesUseCase.kt`'s `getVotingTorRuntimeHandle()` call site,
+        // which falls back to `0` when Tor is disabled) -- so a resolution
+        // failure here picks `SessionRoute::Direct` rather than aborting the
+        // whole session open. When Tor *is* enabled and available, real Tor
+        // routing (`SessionRoute::Tor`) is what actually carries this
+        // session's chain/helper traffic for its whole lifetime.
+        let route = match unsafe { resolve_tor_runtime(tor_runtime) } {
+            Ok(tor_runtime) => SessionRoute::Tor(ZodlVotingRoute::new(tor_runtime)),
+            Err(_) => SessionRoute::Direct(DirectRoute::new()),
+        };
+        let transport: SessionTransport = Arc::new(HyperTransport::with_route(route));
         let helper_client = HelperClient::new(
             Arc::clone(&transport) as Arc<dyn HelperTransport>,
             HelperHealth::default(),
@@ -496,9 +648,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
     session_handle: jlong,
     tor_runtime: jlong,
     delegation_inputs: JObject<'local>,
+    progress_listener: JObject<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let session = session_from_handle(session_handle)?;
+        let reporter = round_drive_reporter_from_callback(env, &progress_listener)?;
 
         let delegation = if delegation_inputs.is_null() {
             None
@@ -518,15 +672,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
                 Some(pipeline);
             Some(step_inputs)
         };
-
-        // SAFETY: see `resolve_tor_runtime`'s doc comment. This is a separate
-        // resolution from `openRoundSessionNative`'s: the session's own Tor
-        // client (held inside its `ZodlVotingRoute`) already does the actual
-        // HTTP dispatch; this handle is used only to drive the async
-        // `RoundDriver::run` future synchronously from this JNI call, the
-        // same way `lib.rs`'s other `tor_runtime.runtime().block_on(..)`
-        // call sites do.
-        let tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) }?;
 
         let template = RoundHostContext {
             configured_helper_urls: session.configured_helper_urls.clone(),
@@ -548,12 +693,31 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
             ..RoundDrivePolicy::default()
         };
 
-        let report = tor_runtime.runtime().block_on(async {
-            RoundDriver::new(&session.executor)
-                .with_policy(policy)
-                .run(&host, &session.control, &NoopRoundDriveReporter {})
-                .await
-        });
+        // SAFETY: see `resolve_tor_runtime`'s doc comment. Used only to drive
+        // the async `RoundDriver::run` future synchronously from this JNI
+        // call (never for HTTP dispatch -- the session's own `SessionRoute`,
+        // picked once at `openRoundSessionNative` time, is what carries
+        // traffic; this executor selection is independent of that choice).
+        //
+        // Falls back to a Tor-independent executor (`fallback_runtime`) when
+        // the caller has no live Tor runtime handle to pass (Tor disabled),
+        // instead of failing the whole round-drive — mirrors the pre-4.0
+        // architecture, where Tor was always optional.
+        let resolved_tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) };
+        let report = match resolved_tor_runtime {
+            Ok(tor_runtime) => tor_runtime.runtime().block_on(async {
+                RoundDriver::new(&session.executor)
+                    .with_policy(policy)
+                    .run(&host, &session.control, reporter.as_ref())
+                    .await
+            }),
+            Err(_) => fallback_runtime()?.block_on(async {
+                RoundDriver::new(&session.executor)
+                    .with_policy(policy)
+                    .run(&host, &session.control, reporter.as_ref())
+                    .await
+            }),
+        };
 
         Ok(encode_round_run_report(env, &report)?.into_raw())
     });

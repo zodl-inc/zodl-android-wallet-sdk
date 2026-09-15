@@ -13,6 +13,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniShareTrackingRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
+import cash.z.ecc.android.sdk.internal.model.voting.RoundDriveProgressListener
 
 @Suppress("TooManyFunctions", "LongParameterList")
 internal interface TypesafeVotingBackend {
@@ -240,7 +241,8 @@ internal interface TypesafeRoundSession {
      */
     suspend fun runRound(
         torRuntime: Long,
-        delegationInputs: JniDelegationInputs?
+        delegationInputs: JniDelegationInputs?,
+        progressListener: RoundDriveProgressListener? = null
     ): JniRoundRunReport?
 
     /**
