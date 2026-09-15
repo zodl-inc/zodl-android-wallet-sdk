@@ -35,6 +35,7 @@ import cash.z.ecc.android.sdk.internal.ext.requireSingleStepForPczt
 import cash.z.ecc.android.sdk.internal.ext.tryNull
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
+import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.TorDormantMode
 import cash.z.ecc.android.sdk.internal.model.TorHttp
 import cash.z.ecc.android.sdk.internal.model.TreeState

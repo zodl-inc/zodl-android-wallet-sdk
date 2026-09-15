@@ -25,7 +25,7 @@ class TorOhttpSender(
         // want the Tor client retrying on top of that (would multiply total attempts).
         val response = torClient.httpPost(url, jniHeaders, body, retryLimit = 0)
         if (response.status != HttpURLConnection.HTTP_OK) {
-            throw OhttpTransport.OhttpException(
+            throw OhttpException(
                 "Relay/gateway returned HTTP ${response.status} (Tor path)",
                 response.status
             )
