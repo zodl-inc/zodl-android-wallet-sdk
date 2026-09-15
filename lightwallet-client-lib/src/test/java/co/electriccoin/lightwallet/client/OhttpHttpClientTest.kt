@@ -8,7 +8,7 @@ import org.junit.Test
 class OhttpHttpClientTest {
     @Test
     fun `canHandle returns true for static proxy mappings`() {
-        val client = OhttpHttpClient()
+        val client = OhttpHttpClient.create()
         assertTrue(client.canHandle("https://1click.chaindefuser.com/v0/tokens"))
         assertTrue(client.canHandle("https://voting.valargroup.dev/prod/dynamic-voting-config.json"))
         assertTrue(client.canHandle("https://download.z.cash/params/sapling-spend.params"))
@@ -17,7 +17,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `canHandle returns true for allowlisted suffixes`() {
-        val client = OhttpHttpClient()
+        val client = OhttpHttpClient.create()
         assertTrue(client.canHandle("https://voting-prod.valargroup.org/shielded-vote/v1/rounds"))
         assertTrue(client.canHandle("https://voting-prod-2.valargroup.org/shielded-vote/v1/rounds/active"))
         assertTrue(client.canHandle("https://api.valargroup.dev/config"))
@@ -26,7 +26,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `canHandle returns false for non-allowlisted hosts`() {
-        val client = OhttpHttpClient()
+        val client = OhttpHttpClient.create()
         assertFalse(client.canHandle("https://example.com/path"))
         assertFalse(client.canHandle("https://valargroup.com/path"))
         assertFalse(client.canHandle("https://malicious-valargroup.org/path"))
@@ -62,7 +62,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `canHandle handles invalid URLs gracefully`() {
-        val client = OhttpHttpClient()
+        val client = OhttpHttpClient.create()
         assertFalse(client.canHandle("not a url"))
         assertFalse(client.canHandle(""))
         assertFalse(client.canHandle("://missing-scheme"))
