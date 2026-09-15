@@ -3,7 +3,32 @@ use super::*;
 use std::{
     ops::Deref,
     sync::{MutexGuard, Weak},
+    time::Duration,
 };
+
+/// How long a connection waits for SQLite's single writer lock before giving
+/// up, on every voting-DB connection this module opens.
+///
+/// `rusqlite::Connection::open` already sets a 5s busy_timeout by default
+/// (`inner_connection.rs`'s `sqlite3_busy_timeout(db, 5000)`) -- WAL mode only
+/// buys concurrent *readers*, not concurrent writers, and without a busy
+/// handler a second writer gets an immediate `SQLITE_BUSY` ("database is
+/// locked") instead of waiting. That default was NOT enough to prevent the
+/// crash reported against a ~10-bundle/33-proposal wallet (this module's own
+/// 2-bundle test wallet never hit it purely from lower exposure -- see
+/// `private_connection_write_waits_instead_of_failing_when_a_sibling_write_is_in_flight`'s
+/// doc comment for why). With many more bundles/proposals there are more
+/// concurrent writers than just the two `MAX_CONCURRENT_PROOFS` proving
+/// connections -- background share delivery, confirmation polling, and tree
+/// sync each also write to this same file -- so the write-lock queue can run
+/// deeper than the default budgets for. We set this explicitly, well above
+/// the default, as cheap insurance: a whole submission already runs for
+/// minutes, so even a rare multi-second wait here is a non-issue on the
+/// happy path, and is far better than surfacing a raw crash mid-submission.
+/// The crate's own `vote_submission_waits_for_a_competing_wal_writer` test
+/// proves the underlying mechanism (a busy handler letting a writer wait
+/// instead of fail) is exactly what's needed here.
+const VOTING_DB_BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 
 static NEXT_DB_HANDLE: AtomicI64 = AtomicI64::new(1);
 static DB_REGISTRY: OnceLock<Mutex<HashMap<jlong, Arc<VotingDbHandle>>>> = OnceLock::new();
@@ -55,6 +80,9 @@ struct CachedPirClient {
 impl VotingDbHandle {
     fn open(path: &str, wallet_id: &str, network: voting::types::Network) -> anyhow::Result<Self> {
         let db = VotingDb::open(path).map_err(|e| anyhow!("VotingDb::open failed: {}", e))?;
+        db.conn()
+            .busy_timeout(VOTING_DB_BUSY_TIMEOUT)
+            .map_err(|e| anyhow!("failed to set busy_timeout on the shared voting DB connection: {}", e))?;
         db.set_wallet_id(wallet_id);
 
         Ok(Self {
@@ -121,6 +149,12 @@ impl VotingDbHandle {
         let db = VotingDb::open(&self.path).map_err(|e| {
             anyhow!(
                 "VotingDb::open for a private proving connection failed: {}",
+                e
+            )
+        })?;
+        db.conn().busy_timeout(VOTING_DB_BUSY_TIMEOUT).map_err(|e| {
+            anyhow!(
+                "failed to set busy_timeout on a private proving connection: {}",
                 e
             )
         })?;
@@ -381,6 +415,94 @@ mod tests {
         );
 
         drop(private_db);
+        drop(db);
+        remove_db_files(&db_path);
+    }
+
+    /// Holds writer A's lock for longer than rusqlite's own default 5s
+    /// `busy_timeout` (see `VOTING_DB_BUSY_TIMEOUT`'s doc comment), so this
+    /// test actually exercises OUR explicit, longer timeout rather than
+    /// passing for free on rusqlite's invisible default -- confirmed by
+    /// temporarily reverting the explicit `busy_timeout` call in
+    /// `open_private_connection` and re-running this test, which then fails
+    /// with exactly the reported "database is locked" error.
+    const LOCK_HOLD_EXCEEDING_RUSQLITES_DEFAULT_TIMEOUT: Duration = Duration::from_secs(6);
+
+    #[test]
+    fn private_connection_write_waits_instead_of_failing_when_a_sibling_write_is_in_flight() {
+        let db_path = unique_db_path();
+        let db_path_str = db_path.to_str().expect("test db path is valid UTF-8");
+        let db = VotingDbHandle::open(db_path_str, "wallet-1", voting::types::Network::Testnet)
+            .expect("file-backed DB open");
+
+        let params = voting::types::VotingRoundParams {
+            vote_round_id: "round-1".to_string(),
+            snapshot_height: 1000,
+            ea_pk: vec![0xEA; 32],
+            nc_root: vec![0xAA; 32],
+            nullifier_imt_root: vec![0xBB; 32],
+        };
+        db.init_round(voting::types::Network::Testnet, &params, None)
+            .expect("init round through the shared connection");
+
+        let writer_a = db
+            .open_private_connection()
+            .expect("private connection")
+            .expect("file-backed DB gets a private connection");
+        let writer_b = db
+            .open_private_connection()
+            .expect("private connection")
+            .expect("file-backed DB gets a private connection");
+
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        let holder = std::thread::spawn(move || {
+            let conn = writer_a.conn();
+            conn.execute_batch("BEGIN IMMEDIATE;")
+                .expect("begin immediate on writer A");
+            ready_tx
+                .send(())
+                .expect("signal writer A is holding the write lock");
+            release_rx
+                .recv()
+                .expect("wait for the main thread's release signal");
+            conn.execute_batch("COMMIT;").expect("commit writer A");
+        });
+
+        ready_rx
+            .recv()
+            .expect("writer A signaled it is holding the lock");
+
+        // Release writer A's transaction from another thread shortly after
+        // writer B starts its write, so a passing test proves the wait
+        // actually happened rather than that the two writes got lucky and
+        // never overlapped.
+        let release_after_delay = std::thread::spawn(move || {
+            std::thread::sleep(LOCK_HOLD_EXCEEDING_RUSQLITES_DEFAULT_TIMEOUT);
+            release_tx.send(()).expect("release writer A's transaction");
+        });
+
+        // With VOTING_DB_BUSY_TIMEOUT set on writer_b's connection (see
+        // open_private_connection), this write must wait for writer A's
+        // transaction to finish rather than failing immediately with
+        // SQLITE_BUSY ("database is locked") -- exactly the crash reported
+        // against a many-bundle wallet, where two bundles' private
+        // connections both tried to commit a vote at overlapping moments.
+        let write_result = writer_b
+            .conn()
+            .execute_batch("UPDATE rounds SET phase = 1 WHERE round_id = 'round-1';");
+
+        release_after_delay.join().expect("release thread panicked");
+        holder.join().expect("holder thread panicked");
+
+        write_result.expect(
+            "writer B's write must wait out writer A's transaction instead of failing \
+             immediately with SQLITE_BUSY -- this is exactly the 'database is locked' bug \
+             VOTING_DB_BUSY_TIMEOUT fixes",
+        );
+
+        drop(writer_b);
         drop(db);
         remove_db_files(&db_path);
     }
