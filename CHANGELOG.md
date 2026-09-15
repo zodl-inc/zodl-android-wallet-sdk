@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-09-15
+
 ### Changed
 
 - `Synchronizer.getTorHttpClient` on the Slipstream engine now always provides a Tor client, created lazily on
