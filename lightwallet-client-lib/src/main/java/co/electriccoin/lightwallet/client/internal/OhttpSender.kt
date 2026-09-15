@@ -1,7 +1,5 @@
 package co.electriccoin.lightwallet.client.internal
 
-import cash.z.ecc.android.sdk.internal.model.JniHttpHeader
-import cash.z.ecc.android.sdk.internal.model.TorClient
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -81,33 +79,5 @@ class DirectOhttpSender : OhttpSender {
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val ERROR_MESSAGE_MAX_LENGTH = 200
         private const val READ_BUFFER_SIZE = 16 * 1024
-    }
-}
-
-/**
- * Tor-backed OHTTP sender: routes the relay POST through an isolated Tor circuit. Used when
- * Tor is ON and the request targets a gateway-mapped external API (CMC, NEAR), ensuring the
- * relay never sees the app's clearnet IP. The gateway injects the API secret server-side.
- */
-class TorOhttpSender(
-    private val torClient: TorClient
-) : OhttpSender {
-    override suspend fun post(
-        url: String,
-        body: ByteArray,
-        headers: List<Pair<String, String>>,
-        timeoutMs: Int
-    ): ByteArray {
-        val jniHeaders = headers.map { (key, value) -> JniHttpHeader(key, value) }
-        // Retry limit 0: OHTTP already has its own retry-on-400 logic (key rotation); we don't
-        // want the Tor client retrying on top of that (would multiply total attempts).
-        val response = torClient.httpPost(url, jniHeaders, body, retryLimit = 0)
-        if (response.status != HttpURLConnection.HTTP_OK) {
-            throw OhttpTransport.OhttpException(
-                "Relay/gateway returned HTTP ${response.status} (Tor path)",
-                response.status
-            )
-        }
-        return response.body
     }
 }

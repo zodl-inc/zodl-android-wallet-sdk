@@ -769,6 +769,10 @@ class SdkSynchronizer private constructor(
             throw TorUnavailableException()
         }
 
+    override suspend fun ohttpSenderOverTor(): co.electriccoin.lightwallet.client.internal.OhttpSender =
+        cash.z.ecc.android.sdk.internal
+            .TorOhttpSender(getTorClient())
+
     override suspend fun debugQuery(query: String): String = storage.debugQuery(query)
 
     override suspend fun deleteAccount(accountUuid: AccountUuid) =

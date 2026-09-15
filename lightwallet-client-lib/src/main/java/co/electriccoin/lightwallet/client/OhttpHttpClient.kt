@@ -1,7 +1,6 @@
 package co.electriccoin.lightwallet.client
 
 import android.util.Log
-import cash.z.ecc.android.sdk.internal.model.TorClient
 import co.electriccoin.lightwallet.client.internal.BinaryHttp
 import co.electriccoin.lightwallet.client.internal.Constants
 import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
@@ -10,7 +9,6 @@ import co.electriccoin.lightwallet.client.internal.OhttpSender
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.PROXY_KEY_CONFIG_URL
 import co.electriccoin.lightwallet.client.internal.PROXY_RELAY_URL
-import co.electriccoin.lightwallet.client.internal.TorOhttpSender
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import co.electriccoin.lightwallet.client.internal.proxyGatewayHostFor
 import co.electriccoin.lightwallet.client.internal.stripSecretsForGateway
@@ -40,16 +38,13 @@ class OhttpHttpClient private constructor(
          * Creates an OHTTP client for external API requests (NEAR, CMC, voting).
          *
          * Privacy routing:
-         * - [viaTor] = null (default, Tor OFF): direct OHTTP via HttpURLConnection. The relay sees
+         * - [sender] = DirectOhttpSender() (default, Tor OFF): direct OHTTP via HttpURLConnection. The relay sees
          *   the app's clearnet IP; the gateway (which injects secrets) does not.
-         * - [viaTor] = TorClient (Tor ON): OHTTP relay leg goes over an isolated Tor stream. The
+         * - [sender] = TorOhttpSender (Tor ON): OHTTP relay leg goes over an isolated Tor stream. The
          *   relay sees only a Tor exit; the gateway still injects secrets server-side. The app MUST
          *   NOT send secrets in either mode (they are stripped with a warning if present).
          */
-        fun create(viaTor: TorClient? = null): OhttpHttpClient {
-            val sender = if (viaTor != null) TorOhttpSender(viaTor) else DirectOhttpSender()
-            return OhttpHttpClient(sender)
-        }
+        fun create(sender: OhttpSender = DirectOhttpSender()): OhttpHttpClient = OhttpHttpClient(sender)
     }
 
     /**
@@ -107,7 +102,7 @@ class OhttpHttpClient private constructor(
                 body = request.body
             )
         val mode = if (proxyHost != null) "mapped" else "allowlist"
-        val senderType = if (sender is TorOhttpSender) "Tor" else "direct"
+        val senderType = if (sender is DirectOhttpSender) "direct" else "Tor"
         Log.i(
             Constants.LOG_TAG,
             "OHTTP proxy ${request.method} host=$originalHost authority=$innerAuthority mode=$mode sender=$senderType"

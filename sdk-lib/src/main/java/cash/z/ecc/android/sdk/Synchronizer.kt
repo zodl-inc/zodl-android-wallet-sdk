@@ -908,6 +908,19 @@ interface Synchronizer {
     @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
     suspend fun getTorClient(): TorClient
 
+    /**
+     * Creates an OhttpSender that routes relay traffic through Tor, for use with OhttpHttpClient.
+     * Used when Tor is enabled in the app and the target is a gateway-mapped external API (CMC, NEAR).
+     * The relay leg goes over Tor, hiding the app's IP from the relay, and the gateway injects the
+     * secret server-side.
+     *
+     * @return TorOhttpSender wrapping an isolated TorClient
+     * @throws TorInitializationErrorException if Tor bootstrapping failed
+     * @throws TorUnavailableException if Tor is not enabled
+     */
+    @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
+    suspend fun ohttpSenderOverTor(): co.electriccoin.lightwallet.client.internal.OhttpSender
+
     suspend fun debugQuery(query: String): String
 
     suspend fun deleteAccount(accountUuid: AccountUuid): Boolean

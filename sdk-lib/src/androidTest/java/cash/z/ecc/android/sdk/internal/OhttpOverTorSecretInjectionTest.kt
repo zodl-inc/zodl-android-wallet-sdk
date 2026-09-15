@@ -1,5 +1,6 @@
-package cash.z.ecc.android.sdk.internal.jni
+package cash.z.ecc.android.sdk.internal
 
+import cash.z.ecc.android.sdk.internal.jni.FakeRustBackend
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import co.electriccoin.lightwallet.client.OhttpHttpClient
 import kotlinx.coroutines.test.runTest
@@ -27,26 +28,32 @@ class OhttpOverTorSecretInjectionTest {
     @Test
     @Ignore("requires network access and configured gateway; run manually on EC2 emulator")
     fun cmc_via_ohttp_over_tor_with_gateway_secret_injection() =
-        runTest(timeout = kotlinx.coroutines.test.TestTimeoutKt.TestCoroutineDispatcher.timeoutMs(120_000)) {
+        runTest(
+            timeout =
+                kotlinx.coroutines.test.TestTimeoutKt.TestCoroutineDispatcher
+                    .timeoutMs(120_000)
+        ) {
             // Bootstrap Tor
             val torDir = createTempDirectory("ohttp-tor-cmc-").toFile()
             val torClient = TorClient.new(torDir, FakeRustBackend(0, mutableListOf()))
             val isolatedTor = torClient.isolatedTorClient()
 
             // Create OHTTP client with Tor sender
-            val ohttpClient = OhttpHttpClient.create(viaTor = isolatedTor)
+            val torSender = TorOhttpSender(isolatedTor)
+            val ohttpClient = OhttpHttpClient.create(sender = torSender)
 
             // CMC key/info endpoint — gateway injects X-CMC_PRO_API_KEY server-side
             val url = "https://pro-api.coinmarketcap.com/v1/key/info"
             assertTrue(ohttpClient.canHandle(url), "OHTTP client should handle CMC host")
 
             // Execute without app secret (stripped if present)
-            val response = ohttpClient.execute(
-                OhttpHttpClient.Request(
-                    url = url,
-                    headers = listOf("Accept" to "application/json")
+            val response =
+                ohttpClient.execute(
+                    OhttpHttpClient.Request(
+                        url = url,
+                        headers = listOf("Accept" to "application/json")
+                    )
                 )
-            )
 
             // Assert success (gateway injected the key)
             assertEquals(200, response.status, "Gateway should inject CMC key and return 200")
@@ -63,26 +70,32 @@ class OhttpOverTorSecretInjectionTest {
     @Test
     @Ignore("requires network access and configured gateway; run manually on EC2 emulator")
     fun near_via_ohttp_over_tor_with_gateway_secret_injection() =
-        runTest(timeout = kotlinx.coroutines.test.TestTimeoutKt.TestCoroutineDispatcher.timeoutMs(120_000)) {
+        runTest(
+            timeout =
+                kotlinx.coroutines.test.TestTimeoutKt.TestCoroutineDispatcher
+                    .timeoutMs(120_000)
+        ) {
             // Bootstrap Tor
             val torDir = createTempDirectory("ohttp-tor-near-").toFile()
             val torClient = TorClient.new(torDir, FakeRustBackend(0, mutableListOf()))
             val isolatedTor = torClient.isolatedTorClient()
 
             // Create OHTTP client with Tor sender
-            val ohttpClient = OhttpHttpClient.create(viaTor = isolatedTor)
+            val torSender = TorOhttpSender(isolatedTor)
+            val ohttpClient = OhttpHttpClient.create(sender = torSender)
 
             // NEAR 1click tokens endpoint — gateway injects Authorization server-side
             val url = "https://1click.chaindefuser.com/v0/tokens"
             assertTrue(ohttpClient.canHandle(url), "OHTTP client should handle NEAR host")
 
             // Execute without app secret (stripped if present)
-            val response = ohttpClient.execute(
-                OhttpHttpClient.Request(
-                    url = url,
-                    headers = listOf("Accept" to "application/json")
+            val response =
+                ohttpClient.execute(
+                    OhttpHttpClient.Request(
+                        url = url,
+                        headers = listOf("Accept" to "application/json")
+                    )
                 )
-            )
 
             // If gateway injection is not yet live, expect 401; otherwise 200
             // Update assertion once gateway injection is deployed
