@@ -1,14 +1,16 @@
 package cash.z.ecc.android.sdk.internal
 
+import androidx.test.platform.app.InstrumentationRegistry
 import cash.z.ecc.android.sdk.internal.jni.FakeRustBackend
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import co.electriccoin.lightwallet.client.OhttpHttpClient
 import kotlinx.coroutines.test.runTest
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import kotlin.io.path.createTempDirectory
-import kotlin.test.Ignore
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Instrumented test for the OHTTP-over-Tor routing rule: external APIs that need secrets
@@ -21,18 +23,24 @@ import kotlin.test.assertTrue
  * 3. The gateway injects secrets and the requests succeed (HTTP 200)
  *
  * Requires network access and a running gateway configured to inject secrets for
- * cmc.zodl.com and near.zodl.com.
+ * cmc.zodl.com and near.zodl.com, so it only runs when the instrumentation argument
+ * `ohttpLive=true` is passed (skipped otherwise):
+ *
+ *   ./gradlew :sdk-lib:connectedDebugAndroidTest \
+ *     -Pandroid.testInstrumentationRunnerArguments.class=cash.z.ecc.android.sdk.internal.OhttpOverTorSecretInjectionTest \
+ *     -Pandroid.testInstrumentationRunnerArguments.ohttpLive=true
  */
 class OhttpOverTorSecretInjectionTest {
+    private fun assumeLive() {
+        val live = InstrumentationRegistry.getArguments().getString("ohttpLive") == "true"
+        assumeTrue("set instrumentation argument ohttpLive=true to run the live OHTTP-over-Tor test", live)
+    }
+
     @OptIn(ExperimentalStdlibApi::class)
     @Test
-    @Ignore("requires network access and configured gateway; run manually on EC2 emulator")
     fun cmc_via_ohttp_over_tor_with_gateway_secret_injection() =
-        runTest(
-            timeout =
-                kotlinx.coroutines.test.TestTimeoutKt.TestCoroutineDispatcher
-                    .timeoutMs(120_000)
-        ) {
+        runTest(timeout = 180.seconds) {
+            assumeLive()
             // Bootstrap Tor
             val torDir = createTempDirectory("ohttp-tor-cmc-").toFile()
             val torClient = TorClient.new(torDir, FakeRustBackend(0, mutableListOf()))
@@ -68,13 +76,9 @@ class OhttpOverTorSecretInjectionTest {
 
     @OptIn(ExperimentalStdlibApi::class)
     @Test
-    @Ignore("requires network access and configured gateway; run manually on EC2 emulator")
     fun near_via_ohttp_over_tor_with_gateway_secret_injection() =
-        runTest(
-            timeout =
-                kotlinx.coroutines.test.TestTimeoutKt.TestCoroutineDispatcher
-                    .timeoutMs(120_000)
-        ) {
+        runTest(timeout = 180.seconds) {
+            assumeLive()
             // Bootstrap Tor
             val torDir = createTempDirectory("ohttp-tor-near-").toFile()
             val torClient = TorClient.new(torDir, FakeRustBackend(0, mutableListOf()))
@@ -97,18 +101,11 @@ class OhttpOverTorSecretInjectionTest {
                     )
                 )
 
-            // If gateway injection is not yet live, expect 401; otherwise 200
-            // Update assertion once gateway injection is deployed
-            assertTrue(
-                response.status == 200 || response.status == 401,
-                "Expected 200 (gateway injects token) or 401 (not yet deployed); got ${response.status}"
-            )
-
-            if (response.status == 200) {
-                val json = response.body.decodeToString()
-                // NEAR tokens response should be a JSON array
-                assertTrue(json.trim().startsWith("["), "NEAR tokens should be a JSON array")
-            }
+            // The gateway injects the NEAR 1click JWT server-side (Authorization: Bearer ...)
+            assertEquals(200, response.status, "Gateway should inject the NEAR JWT and return 200")
+            val json = response.body.decodeToString()
+            // NEAR tokens response should be a JSON array
+            assertTrue(json.trim().startsWith("["), "NEAR tokens should be a JSON array")
 
             torClient.dispose()
         }
