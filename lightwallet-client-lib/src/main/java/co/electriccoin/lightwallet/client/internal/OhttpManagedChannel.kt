@@ -229,7 +229,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             onResponse(response)
         } catch (e: SocketTimeoutException) {
             finish(Status.DEADLINE_EXCEEDED.withDescription("OHTTP request timed out").withCause(e), Metadata())
-        } catch (e: OhttpTransport.OhttpException) {
+        } catch (e: OhttpException) {
             logger("OHTTP ${method.fullMethodName} failed: ${e.message}")
             finish(Status.UNAVAILABLE.withDescription(e.message).withCause(e), Metadata())
         } catch (e: java.io.IOException) {
