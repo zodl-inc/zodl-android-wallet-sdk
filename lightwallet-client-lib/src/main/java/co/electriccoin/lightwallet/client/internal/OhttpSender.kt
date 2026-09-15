@@ -14,7 +14,7 @@ import java.net.URI
 interface OhttpSender {
     /**
      * POSTs [body] to [url] with the given [headers] and [timeoutMs], returning the response body.
-     * @throws OhttpTransport.OhttpException on failure (network, HTTP error, timeout).
+     * @throws OhttpException on failure (network, HTTP error, timeout).
      */
     suspend fun post(url: String, body: ByteArray, headers: List<Pair<String, String>>, timeoutMs: Int): ByteArray
 }
@@ -44,7 +44,7 @@ class DirectOhttpSender : OhttpSender {
                         ?.use { it.readFully() }
                         ?.toString(Charsets.UTF_8)
                         ?.take(ERROR_MESSAGE_MAX_LENGTH)
-                throw OhttpTransport.OhttpException(
+                throw OhttpException(
                     "Relay/gateway returned HTTP $status${detail?.let { ": $it" } ?: ""}",
                     status
                 )

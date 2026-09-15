@@ -22,6 +22,18 @@ internal class OhttpTransport(
     private val lock = Any()
     private var cachedKeyConfig: OhttpKeyConfig? = null
 
+    /** Fetches (or returns the cached) gateway key configuration. */
+    fun keyConfig(forceRefresh: Boolean = false): OhttpKeyConfig {
+        synchronized(lock) {
+            if (!forceRefresh) cachedKeyConfig?.let { return it }
+        }
+        val bytes = httpGet(keyConfigUrl, KEY_FETCH_TIMEOUT_MS)
+        val parsed = OhttpKeyConfig.parseSupported(bytes)
+        logger("OHTTP key config fetched: key_id=${parsed.keyId}")
+        synchronized(lock) { cachedKeyConfig = parsed }
+        return parsed
+    }
+
     /**
      * Performs one OHTTP round trip. A gateway rejection (HTTP 400 from the relay/gateway pair) is
      * retried once after refreshing the key configuration, which handles gateway key rotation.
