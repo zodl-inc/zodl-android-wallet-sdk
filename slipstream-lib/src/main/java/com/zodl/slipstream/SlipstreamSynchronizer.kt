@@ -1600,6 +1600,24 @@ class SlipstreamSynchronizer internal constructor(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught")
+    override suspend fun getTorClient(): cash.z.ecc.android.sdk.internal.model.TorClient {
+        if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
+        val client =
+            lazyTorClient
+                ?: throw TorInitializationErrorException(NullPointerException("Tor has not been initialized during synchronizer setup"))
+        return try {
+            client.getOrCreate().isolatedTorClient()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw TorInitializationErrorException(e)
+        }
+    }
+
+    override suspend fun ohttpSenderOverTor(): co.electriccoin.lightwallet.client.internal.OhttpSender =
+        cash.z.ecc.android.sdk.internal.TorOhttpSender(getTorClient())
+
     override suspend fun debugQuery(query: String): String {
         awaitDbReady()
         return transactionReader.debugQuery(query)
