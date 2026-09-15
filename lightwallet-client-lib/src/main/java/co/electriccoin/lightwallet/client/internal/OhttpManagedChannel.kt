@@ -7,6 +7,7 @@ import io.grpc.ManagedChannel
 import io.grpc.Metadata
 import io.grpc.MethodDescriptor
 import io.grpc.Status
+import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.SocketTimeoutException
@@ -224,7 +225,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
                     body = requestBody.toByteArray()
                 )
 
-            val response = transport.roundTrip(request, timeoutMs + TIMEOUT_SLACK_MS)
+            val response = runBlocking { transport.roundTrip(request, timeoutMs + TIMEOUT_SLACK_MS) }
             onResponse(response)
         } catch (e: SocketTimeoutException) {
             finish(Status.DEADLINE_EXCEEDED.withDescription("OHTTP request timed out").withCause(e), Metadata())
