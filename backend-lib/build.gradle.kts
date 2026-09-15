@@ -114,19 +114,27 @@ android {
 cargo {
     module = "."
     libname = "zcashwalletsdk"
-    targets = listOf(
-        "arm",
-        "arm64",
-        "x86",
-        "x86_64"
-    )
+
+    // Read RUST_ANDROID_ABIS from environment first, then Gradle property, or default to all ABIs.
+    // This allows CI to build a subset of ABIs (e.g., x86_64 only for emulator tests) to save disk space.
+    val rustAbisInput = System.getenv("RUST_ANDROID_ABIS")
+        ?: findProperty("RUST_ANDROID_ABIS")?.toString()
+        ?: "arm,arm64,x86,x86_64"
+
+    val validAbis = setOf("arm", "arm64", "x86", "x86_64")
+    val requestedAbis = rustAbisInput.split(",").map { it.trim() }
+
+    requestedAbis.forEach { abi ->
+        if (abi !in validAbis) {
+            throw GradleException(
+                "Invalid ABI '$abi' in RUST_ANDROID_ABIS. Valid values: ${validAbis.joinToString(", ")}"
+            )
+        }
+    }
+
+    targets = requestedAbis
     val minSdkVersion = project.property("ANDROID_MIN_SDK_VERSION").toString().toInt()
-    apiLevels = mapOf(
-        "arm" to minSdkVersion,
-        "arm64" to minSdkVersion,
-        "x86" to minSdkVersion,
-        "x86_64" to minSdkVersion,
-    )
+    apiLevels = requestedAbis.associateWith { minSdkVersion }
     profile = "release"
     extraCargoBuildArguments = run {
         val features = mutableListOf<String>()
