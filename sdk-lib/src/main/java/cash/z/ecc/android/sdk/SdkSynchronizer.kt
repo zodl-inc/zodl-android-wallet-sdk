@@ -752,6 +752,7 @@ class SdkSynchronizer private constructor(
             throw TorUnavailableException()
         }
 
+    @Suppress("TooGenericExceptionCaught")
     override suspend fun getTorClient(): TorClient =
         if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
             if (lazyTorClient == null) {
