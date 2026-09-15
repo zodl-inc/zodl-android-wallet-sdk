@@ -897,6 +897,17 @@ interface Synchronizer {
     @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
     suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit = {}): HttpClient
 
+    /**
+     * Returns an isolated TorClient handle for use with OHTTP external API calls (NEAR, CMC).
+     * Used by OhttpHttpClient to route the relay leg over Tor when Tor is enabled, ensuring
+     * the relay never sees the app's clearnet IP (the gateway injects secrets server-side).
+     *
+     * @throws TorInitializationErrorException if Tor bootstrapping failed
+     * @throws TorUnavailableException if Tor is not enabled
+     */
+    @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
+    suspend fun getTorClient(): TorClient
+
     suspend fun debugQuery(query: String): String
 
     suspend fun deleteAccount(accountUuid: AccountUuid): Boolean

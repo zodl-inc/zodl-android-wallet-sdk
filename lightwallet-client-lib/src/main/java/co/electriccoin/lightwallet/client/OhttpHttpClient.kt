@@ -1,19 +1,26 @@
 package co.electriccoin.lightwallet.client
 
 import android.util.Log
+import cash.z.ecc.android.sdk.internal.model.TorClient
 import co.electriccoin.lightwallet.client.internal.BinaryHttp
 import co.electriccoin.lightwallet.client.internal.Constants
+import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.OHTTP_PROXY_ALLOWED_SUFFIXES
+import co.electriccoin.lightwallet.client.internal.OhttpSender
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.PROXY_KEY_CONFIG_URL
 import co.electriccoin.lightwallet.client.internal.PROXY_RELAY_URL
+import co.electriccoin.lightwallet.client.internal.TorOhttpSender
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import co.electriccoin.lightwallet.client.internal.proxyGatewayHostFor
+import co.electriccoin.lightwallet.client.internal.stripSecretsForGateway
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URI
 
-class OhttpHttpClient {
+class OhttpHttpClient private constructor(
+    private val sender: OhttpSender
+) {
     data class Request(
         val url: String,
         val method: String = "GET",
@@ -28,6 +35,21 @@ class OhttpHttpClient {
 
     companion object {
         private const val DEFAULT_TIMEOUT_MS = 30_000
+
+        /**
+         * Creates an OHTTP client for external API requests (NEAR, CMC, voting).
+         *
+         * Privacy routing:
+         * - [viaTor] = null (default, Tor OFF): direct OHTTP via HttpURLConnection. The relay sees
+         *   the app's clearnet IP; the gateway (which injects secrets) does not.
+         * - [viaTor] = TorClient (Tor ON): OHTTP relay leg goes over an isolated Tor stream. The
+         *   relay sees only a Tor exit; the gateway still injects secrets server-side. The app MUST
+         *   NOT send secrets in either mode (they are stripped with a warning if present).
+         */
+        fun create(viaTor: TorClient? = null): OhttpHttpClient {
+            val sender = if (viaTor != null) TorOhttpSender(viaTor) else DirectOhttpSender()
+            return OhttpHttpClient(sender)
+        }
     }
 
     /**
@@ -63,7 +85,13 @@ class OhttpHttpClient {
                 isOhttpProxyAllowedHost(originalHost) -> originalHost
                 else -> error("No OHTTP proxy for: $originalHost")
             }
-        val transport = OhttpTransport(PROXY_RELAY_URL, PROXY_KEY_CONFIG_URL)
+        // Strip secrets for gateway-mapped hosts (cmc.zodl.com, near.zodl.com) — the gateway
+        // injects them server-side. The app should not send these at all; log a warning if present.
+        val filteredHeaders =
+            stripSecretsForGateway(innerAuthority, request.headers) { msg ->
+                Log.w(Constants.LOG_TAG, msg)
+            }
+        val transport = OhttpTransport(PROXY_RELAY_URL, PROXY_KEY_CONFIG_URL, sender)
         val pathQ =
             uri.rawPath
                 .let { p ->
@@ -75,13 +103,14 @@ class OhttpHttpClient {
                 scheme = uri.scheme ?: "https",
                 authority = innerAuthority,
                 path = pathQ,
-                headers = request.headers,
+                headers = filteredHeaders,
                 body = request.body
             )
         val mode = if (proxyHost != null) "mapped" else "allowlist"
+        val senderType = if (sender is TorOhttpSender) "Tor" else "direct"
         Log.i(
             Constants.LOG_TAG,
-            "OHTTP proxy ${request.method} host=$originalHost authority=$innerAuthority mode=$mode"
+            "OHTTP proxy ${request.method} host=$originalHost authority=$innerAuthority mode=$mode sender=$senderType"
         )
         val bRes = withContext(Dispatchers.IO) { transport.roundTrip(bReq, DEFAULT_TIMEOUT_MS) }
         Log.i(

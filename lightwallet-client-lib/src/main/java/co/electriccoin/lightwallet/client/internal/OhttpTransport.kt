@@ -16,6 +16,7 @@ import java.net.URI
 internal class OhttpTransport(
     private val relayUrl: String,
     private val keyConfigUrl: String,
+    private val sender: OhttpSender = DirectOhttpSender(),
     private val logger: (String) -> Unit = {}
 ) {
     private val lock = Any()
@@ -43,7 +44,7 @@ internal class OhttpTransport(
      * Performs one OHTTP round trip. A gateway rejection (HTTP 400 from the relay/gateway pair) is
      * retried once after refreshing the key configuration, which handles gateway key rotation.
      */
-    fun roundTrip(request: BinaryHttp.Request, timeoutMs: Int): BinaryHttp.Response {
+    suspend fun roundTrip(request: BinaryHttp.Request, timeoutMs: Int): BinaryHttp.Response {
         var keyConfig = keyConfig()
         return try {
             roundTripWith(keyConfig, request, timeoutMs)
@@ -58,7 +59,7 @@ internal class OhttpTransport(
         }
     }
 
-    private fun roundTripWith(
+    private suspend fun roundTripWith(
         keyConfig: OhttpKeyConfig,
         request: BinaryHttp.Request,
         timeoutMs: Int
@@ -71,7 +72,13 @@ internal class OhttpTransport(
         val ciphertext = context.seal(ByteArray(0), plaintext)
         val encapsulatedRequest = header + context.enc + ciphertext
 
-        val encapsulatedResponse = httpPost(relayUrl, encapsulatedRequest, timeoutMs)
+        val relayHeaders =
+            listOf(
+                "Content-Type" to REQUEST_MEDIA_TYPE,
+                "Accept" to RESPONSE_MEDIA_TYPE,
+                "Accept-Encoding" to "identity"
+            )
+        val encapsulatedResponse = sender.post(relayUrl, encapsulatedRequest, relayHeaders, timeoutMs)
 
         // RFC 9458 §4.4 — Encapsulation of Responses (client side: decapsulate)
         val nonceLength = maxOf(Hpke.N_N, Hpke.N_K)
@@ -113,32 +120,6 @@ internal class OhttpTransport(
         }
     }
 
-    private fun httpPost(url: String, body: ByteArray, timeoutMs: Int): ByteArray {
-        val connection = open(url, timeoutMs)
-        try {
-            connection.requestMethod = "POST"
-            connection.doOutput = true
-            connection.setFixedLengthStreamingMode(body.size)
-            connection.setRequestProperty("Content-Type", REQUEST_MEDIA_TYPE)
-            connection.setRequestProperty("Accept", RESPONSE_MEDIA_TYPE)
-            connection.setRequestProperty("Accept-Encoding", "identity")
-            connection.outputStream.use { it.write(body) }
-
-            val status = connection.responseCode
-            if (status != HttpURLConnection.HTTP_OK) {
-                val detail =
-                    connection.errorStream
-                        ?.use { it.readFully() }
-                        ?.toString(Charsets.UTF_8)
-                        ?.take(ERROR_MESSAGE_MAX_LENGTH)
-                throw OhttpException("Relay/gateway returned HTTP $status${detail?.let { ": $it" } ?: ""}", status)
-            }
-            return connection.inputStream.use { it.readFully() }
-        } finally {
-            connection.disconnect()
-        }
-    }
-
     private fun open(url: String, timeoutMs: Int): HttpURLConnection {
         val connection = URI(url).toURL().openConnection() as HttpURLConnection
         connection.connectTimeout = CONNECT_TIMEOUT_MS
@@ -169,7 +150,36 @@ internal class OhttpTransport(
 
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val KEY_FETCH_TIMEOUT_MS = 15_000
-        private const val ERROR_MESSAGE_MAX_LENGTH = 200
         private const val READ_BUFFER_SIZE = 16 * 1024
     }
+}
+
+/**
+ * Gateway-mapped hosts where the gateway injects secrets server-side. The app must NOT send
+ * secrets (X-CMC_PRO_API_KEY, Authorization) in OHTTP requests to these hosts.
+ */
+private val SECRET_INJECTING_GATEWAY_HOSTS = setOf("cmc.zodl.com", "near.zodl.com")
+
+/**
+ * Headers that must be stripped from OHTTP requests to [SECRET_INJECTING_GATEWAY_HOSTS].
+ */
+private val SECRET_HEADERS = setOf("X-CMC_PRO_API_KEY", "Authorization")
+
+/**
+ * Strips secret-bearing headers from [headers] if [authority] is a gateway-mapped host that
+ * injects secrets server-side. Returns the filtered header list and logs a warning if any
+ * secret header was present (the app should not send these at all).
+ */
+internal fun stripSecretsForGateway(
+    authority: String,
+    headers: List<Pair<String, String>>,
+    logger: (String) -> Unit
+): List<Pair<String, String>> {
+    if (authority !in SECRET_INJECTING_GATEWAY_HOSTS) return headers
+    val stripped = headers.filter { (key, _) -> key !in SECRET_HEADERS }
+    if (stripped.size < headers.size) {
+        val removed = headers.filter { (key, _) -> key in SECRET_HEADERS }.map { it.first }
+        logger("OHTTP: stripped secret headers $removed for gateway-mapped host $authority (gateway injects server-side)")
+    }
+    return stripped
 }
