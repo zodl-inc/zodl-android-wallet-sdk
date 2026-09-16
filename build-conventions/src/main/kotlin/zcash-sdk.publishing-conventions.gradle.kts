@@ -9,7 +9,7 @@ val publicationVariant = "release"
 val isSnapshot = project.property("IS_SNAPSHOT").toString().toBoolean()
 val myVersion = project.property("LIBRARY_VERSION").toString()
 
-val myGroup = "cash.z.ecc.android"
+val myGroup = "com.zodl.android"
 project.group = myGroup
 
 plugins.apply(MavenPublishPlugin::class.java)

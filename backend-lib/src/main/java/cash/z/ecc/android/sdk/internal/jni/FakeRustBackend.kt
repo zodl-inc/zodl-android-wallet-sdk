@@ -1,11 +1,14 @@
 package cash.z.ecc.android.sdk.internal.jni
 
 import cash.z.ecc.android.sdk.internal.Backend
+import cash.z.ecc.android.sdk.internal.ext.requireNonNegative
+import cash.z.ecc.android.sdk.internal.ext.requireValidHeight
 import cash.z.ecc.android.sdk.internal.model.JniAccount
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.JniRewindResult
 import cash.z.ecc.android.sdk.internal.model.JniScanRange
+import cash.z.ecc.android.sdk.internal.model.JniScanSummary
 import cash.z.ecc.android.sdk.internal.model.JniSingleUseTransparentAddress
 import cash.z.ecc.android.sdk.internal.model.JniSubtreeRoot
 import cash.z.ecc.android.sdk.internal.model.JniTransactionDataRequest
@@ -26,6 +29,7 @@ class FakeRustBackend(
     }
 
     override suspend fun rewindToHeight(height: Long): JniRewindResult {
+        requireValidHeight(height, "height")
         metadata.removeAll { it.height > height }
         return JniRewindResult.Success(height)
     }
@@ -41,10 +45,14 @@ class FakeRustBackend(
         ironwoodStartIndex: Long,
         ironwoodRoots: List<JniSubtreeRoot>,
     ) {
+        requireNonNegative(saplingStartIndex, "saplingStartIndex")
+        requireNonNegative(orchardStartIndex, "orchardStartIndex")
+        requireNonNegative(ironwoodStartIndex, "ironwoodStartIndex")
         error("Intentionally not implemented yet.")
     }
 
     override suspend fun updateChainTip(height: Long) {
+        requireValidHeight(height, "height")
         error("Intentionally not implemented yet.")
     }
 
@@ -77,6 +85,8 @@ class FakeRustBackend(
         value: Long,
         height: Long
     ) {
+        requireNonNegative(index, "index")
+        requireValidHeight(height, "height")
         error("Intentionally not implemented yet.")
     }
 
@@ -87,9 +97,13 @@ class FakeRustBackend(
         error("Intentionally not implemented yet.")
     }
 
-    override suspend fun findBlockMetadata(height: Long): JniBlockMeta? = metadata.findLast { it.height == height }
+    override suspend fun findBlockMetadata(height: Long): JniBlockMeta? {
+        requireValidHeight(height, "height")
+        return metadata.findLast { it.height == height }
+    }
 
     override suspend fun rewindBlockMetadataToHeight(height: Long) {
+        requireValidHeight(height, "height")
         metadata.removeAll { it.height > height }
     }
 
@@ -245,6 +259,7 @@ class FakeRustBackend(
     }
 
     override fun getBranchIdForHeight(height: Long): Long {
+        requireValidHeight(height, "height")
         error("Intentionally not implemented yet.")
     }
 
@@ -253,6 +268,7 @@ class FakeRustBackend(
         protocol: Int,
         outputIndex: Int
     ): String? {
+        requireNonNegative(outputIndex, "outputIndex")
         error("Intentionally not implemented yet.")
     }
 
@@ -260,7 +276,11 @@ class FakeRustBackend(
         fromHeight: Long,
         fromState: ByteArray,
         limit: Long
-    ) = error("Intentionally not implemented in mocked FakeRustBackend implementation.")
+    ): JniScanSummary {
+        requireValidHeight(fromHeight, "fromHeight")
+        requireNonNegative(limit, "limit")
+        error("Intentionally not implemented in mocked FakeRustBackend implementation.")
+    }
 
     override suspend fun transactionDataRequests(): List<JniTransactionDataRequest> {
         error("Intentionally not implemented yet.")

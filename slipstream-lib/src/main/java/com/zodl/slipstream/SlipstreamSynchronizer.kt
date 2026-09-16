@@ -23,7 +23,6 @@ import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.PcztException
 import cash.z.ecc.android.sdk.exception.RustLayerException
 import cash.z.ecc.android.sdk.exception.TorInitializationErrorException
-import cash.z.ecc.android.sdk.exception.TorUnavailableException
 import cash.z.ecc.android.sdk.ext.ConsensusBranchId
 import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.internal.Backend
@@ -116,6 +115,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.emitAll
@@ -141,7 +141,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.Duration
 
 /**
@@ -232,7 +231,7 @@ class SlipstreamSynchronizer internal constructor(
     private val walletClientFactory: WalletClientFactory,
     private val defaultEndpoint: LightWalletEndpoint,
     private val engineTorDir: String?,
-    private val lazyTorClient: LazyTorClient?,
+    private val lazyTorClient: LazyTorClient,
     private val exchangeRateFetcher: UsdExchangeRateFetcher?,
     private val sdkFlags: SdkFlags,
     private val fastestServerFetcher: FastestServerFetcher,
@@ -282,9 +281,19 @@ class SlipstreamSynchronizer internal constructor(
 
     /**
      * The preparation failure, latched so it can be replayed to an [onSetupErrorHandler] that is
-     * attached after the failure already happened (see that property's KDoc).
+     * attached after the failure already happened (see that property's KDoc), and exposed as
+     * [setupError] for consumers that would rather collect it than take over the single
+     * [onSetupErrorHandler] slot.
      */
-    private val latchedSetupError = AtomicReference<Throwable?>(null)
+    private val _setupError = MutableStateFlow<Throwable?>(null)
+
+    /**
+     * The [Synchronizer.setupError] override: the same latched failure as [onSetupErrorHandler],
+     * published so a coordinator-level consumer (e.g. `WalletCoordinator`) can observe it without
+     * racing whichever handler a host app assigns to [onSetupErrorHandler] of its own - unlike that
+     * single-slot `var`, any number of independent collectors can read this concurrently.
+     */
+    override val setupError: StateFlow<Throwable?> = _setupError.asStateFlow()
 
     /*
      * Last lifecycle signal seen via [onForeground]/[onBackground]; [syncBurst]'s restore reads it
@@ -386,15 +395,6 @@ class SlipstreamSynchronizer internal constructor(
     override val latestBirthdayHeight: BlockHeight
         get() = startBirthday
 
-    /**
-     * [lazyTorClient] is only ever `null` when [SdkFlags.isTorEnabled] is also `false` (see how [lazyTorClient]
-     * is constructed in [Companion.newLocked]), so this condition is never actually met: Tor client creation is
-     * lazy, and its failure is no longer observable at construction time. See
-     * [Synchronizer.InitializationError.TOR_NOT_AVAILABLE].
-     */
-    override val initializationError: Synchronizer.InitializationError?
-        get() = if (lazyTorClient == null && sdkFlags.isTorEnabled) Synchronizer.InitializationError.TOR_NOT_AVAILABLE else null
-
     override val broadcaster: Broadcaster get() = broadcasterImpl
 
     /**
@@ -462,10 +462,12 @@ class SlipstreamSynchronizer internal constructor(
      * since the host maps it onto the same latched error state.
      *
      * The two sides run on different threads - [runPrepare] fails on `Dispatchers.IO` while the host
-     * attaches from its own - so the `@Volatile` backing field pairs with the atomic
-     * [latchedSetupError]: each side stores into its own before loading the other's, which makes at
-     * least one of the two loads observe the other's store. Neither side can therefore miss the
-     * error; the worst case is the benign double invocation above.
+     * attaches from its own - so the `@Volatile` backing field pairs with [_setupError] (a
+     * [MutableStateFlow], itself backed by an atomic reference): each side stores into its own
+     * before loading the other's, which makes at least one of the two loads observe the other's
+     * store. Neither side can therefore miss the error; the worst case is the benign double
+     * invocation above. [setupError] carries the exact same latched value for consumers that would
+     * rather collect it than take over this slot.
      *
      * Server-mismatch and runtime sync problems still surface through [onProcessorErrorHandler].
      */
@@ -474,7 +476,7 @@ class SlipstreamSynchronizer internal constructor(
         set(value) {
             field = value
             if (value != null) {
-                latchedSetupError.get()?.let { value.invoke(it) }
+                _setupError.value?.let { value.invoke(it) }
             }
         }
 
@@ -646,7 +648,7 @@ class SlipstreamSynchronizer internal constructor(
                  * open's own tick already reported.
                  */
                 engine.status.value = Synchronizer.Status.DISCONNECTED
-                latchedSetupError.set(t)
+                _setupError.value = t
                 onSetupErrorHandler?.invoke(t)
             }
         }
@@ -918,6 +920,22 @@ class SlipstreamSynchronizer internal constructor(
     override suspend fun getFastestServers(servers: List<LightWalletEndpoint>) =
         fastestServerFetcher(servers)
 
+    override suspend fun evaluateServerSwitch(
+        current: LightWalletEndpoint,
+        candidates: List<LightWalletEndpoint>,
+        fetchThreshold: Duration,
+        blocksToFetch: Int
+    ): LightWalletEndpoint? =
+        fastestServerFetcher.evaluateServerSwitch(
+            current = current,
+            candidates = candidates,
+            fetchThreshold = fetchThreshold,
+            blocksToFetch = blocksToFetch
+        )
+
+    override suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint) =
+        fastestServerFetcher.confirmServerSwitch(endpoint)
+
     override suspend fun getUnifiedAddress(account: Account): String =
         wrapGetAddress { backend.getCurrentAddress(account.accountUuid.value) }
 
@@ -1006,7 +1024,12 @@ class SlipstreamSynchronizer internal constructor(
     ): Pczt {
         awaitReady()
         return runCatchingCancellable { spendService.createPcztFromProposal(accountUuid, proposal) }
-            .getOrElse { throw PcztException.CreatePcztFromProposalException(it.message, it) }
+            .getOrElse {
+                throw when (it) {
+                    is PcztException.MultiStepProposalUnsupportedException -> it
+                    else -> PcztException.CreatePcztFromProposalException(it.message, it)
+                }
+            }
     }
 
     override suspend fun redactPcztForSigner(pczt: Pczt): Pczt {
@@ -1402,7 +1425,7 @@ class SlipstreamSynchronizer internal constructor(
             if (!awaitPrepared()) return@launchGuarded
             engine.stopPolling()
             engine.stop()
-            lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) }
+            lazyTorClient.ifCreated { it.setDormant(TorDormantMode.SOFT) }
         }
     }
 
@@ -1509,7 +1532,7 @@ class SlipstreamSynchronizer internal constructor(
             !inForeground.get() -> {
                 engine.stopPolling()
                 engine.stop()
-                lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) }
+                lazyTorClient.ifCreated { it.setDormant(TorDormantMode.SOFT) }
             }
 
             // Mirror onForeground(): a live foreground wallet — leave it running and polling.
@@ -1535,7 +1558,7 @@ class SlipstreamSynchronizer internal constructor(
         if (burstActive.get()) return
         launchGuarded("onForeground") {
             if (!awaitPrepared()) return@launchGuarded
-            lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.NORMAL) }
+            lazyTorClient.ifCreated { it.setDormant(TorDormantMode.NORMAL) }
             if (!engine.isRunning) {
                 engine.start(ufvk = null, birthday = startBirthday.value)
             }
@@ -1545,13 +1568,9 @@ class SlipstreamSynchronizer internal constructor(
 
     @Suppress("TooGenericExceptionCaught")
     override suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit): HttpClient {
-        if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
-        val client =
-            lazyTorClient
-                ?: throw TorInitializationErrorException(NullPointerException("Tor has not been initialized during synchronizer setup"))
         val isolatedTor =
             try {
-                client.getOrCreate().isolatedTorClient()
+                lazyTorClient.getOrCreate().isolatedTorClient()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1654,7 +1673,7 @@ class SlipstreamSynchronizer internal constructor(
                     step("stop") { engine.stop() }
                     step("free") { engine.free() }
                     step("shutdown") { engine.shutdown() }
-                    step("lazyTorClient.dispose") { lazyTorClient?.dispose() }
+                    step("lazyTorClient.dispose") { lazyTorClient.dispose() }
                     step("walletClient.dispose") { walletClient.dispose() }
                     step("exchangeRateFetcher.dispose") { exchangeRateFetcher?.dispose() }
                 }
@@ -1844,22 +1863,15 @@ class SlipstreamSynchronizer internal constructor(
              * Tor is only needed for on-demand/background work, never on the cold-start critical
              * path, so its creation (~1s) is deferred to first use via [LazyTorClient].
              */
-            val lazyTorClient =
-                if (isTorEnabled || isExchangeRateEnabled) {
-                    LazyTorClient { TorClient.new(Files.getTorDir(applicationContext), backend) }
-                } else {
-                    null
-                }
+            val lazyTorClient = LazyTorClient { TorClient.new(Files.getTorDir(applicationContext), backend) }
             val exchangeRateFetcher =
                 if (isExchangeRateEnabled) {
-                    lazyTorClient?.let { holder ->
-                        UsdExchangeRateFetcher(
-                            isolatedTorClient =
-                                LazyTorClient {
-                                    holder.getOrCreate().isolatedTorClient()
-                                }
-                        )
-                    }
+                    UsdExchangeRateFetcher(
+                        isolatedTorClient =
+                            LazyTorClient {
+                                lazyTorClient.getOrCreate().isolatedTorClient()
+                            }
+                    )
                 } else {
                     null
                 }
