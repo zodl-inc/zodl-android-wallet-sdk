@@ -954,12 +954,15 @@ mod client_trace {
             cleaned
         } else {
             // Drop leading non-alphanumeric
-            cleaned
+            let result: String = cleaned
                 .chars()
                 .skip_while(|c| !c.is_ascii_alphanumeric())
-                .collect::<String>()
-                .or_else(|| Some("trace".to_string()))
-                .unwrap()
+                .collect();
+            if result.is_empty() {
+                "trace".to_string()
+            } else {
+                result
+            }
         }
     }
 
