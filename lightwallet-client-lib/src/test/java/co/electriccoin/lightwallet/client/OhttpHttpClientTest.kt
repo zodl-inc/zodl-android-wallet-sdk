@@ -1,10 +1,11 @@
 package co.electriccoin.lightwallet.client
 
-import OhttpException
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+
+private typealias OhttpEx = co.electriccoin.lightwallet.client.internal.OhttpEx
 
 class OhttpHttpClientTest {
     @Test
@@ -80,7 +81,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw OhttpException("test abort")
+                    throw OhttpEx("test abort")
                 }
             }
         val transport =
@@ -106,7 +107,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue(exceptionThrown is OhttpException)
+        assertTrue(exceptionThrown is OhttpEx)
         assertTrue(capturedHeaders.isNotEmpty())
         val headerKeys = capturedHeaders.first().map { it.first }
         assertFalse(headerKeys.contains("X-Client-Trace-Id"))
@@ -125,7 +126,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw OhttpException("test abort")
+                    throw OhttpEx("test abort")
                 }
             }
         val transport =
@@ -151,7 +152,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue(exceptionThrown is OhttpException)
+        assertTrue(exceptionThrown is OhttpEx)
         assertTrue(capturedHeaders.isNotEmpty())
         val headers = capturedHeaders.first()
         val traceIdHeader = headers.find { it.first == "X-Client-Trace-Id" }
@@ -179,7 +180,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw OhttpException("test abort")
+                    throw OhttpEx("test abort")
                 }
             }
         val transport =
@@ -205,7 +206,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue(exceptionThrown is OhttpException)
+        assertTrue(exceptionThrown is OhttpEx)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
         assertTrue(traceIdHeader != null)
@@ -230,7 +231,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw OhttpException("test abort")
+                    throw OhttpEx("test abort")
                 }
             }
         val longPrefix = "a".repeat(60)
@@ -257,7 +258,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue(exceptionThrown is OhttpException)
+        assertTrue(exceptionThrown is OhttpEx)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
         assertTrue(traceIdHeader != null)
