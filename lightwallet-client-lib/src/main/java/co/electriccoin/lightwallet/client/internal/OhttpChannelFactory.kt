@@ -16,7 +16,12 @@ import io.grpc.ManagedChannel
  * See [OhttpManagedChannel] for the gRPC transport and [OhttpTransport] for the OHTTP framing.
  */
 internal class OhttpChannelFactory(
-    private val relayUrl: String
+    private val relayUrl: String,
+    /**
+     * Optional client trace ID prefix. When set, every outer OHTTP POST to the relay carries
+     * `X-Client-Trace-Id: <prefix>-<uuid>`. See [OhttpTransport.ohttpClientTraceIdPrefix] for details.
+     */
+    private val ohttpClientTraceIdPrefix: String? = null
 ) : ChannelFactory {
     override fun newChannel(endpoint: LightWalletEndpoint): ManagedChannel {
         require(endpoint.isSecure) { "OHTTP endpoints must be secure (https)" }
@@ -26,7 +31,8 @@ internal class OhttpChannelFactory(
             OhttpTransport(
                 relayUrl = relayUrl,
                 keyConfigUrl = OhttpEndpoints.keyConfigUrlFor(endpoint.host),
-                logger = logger
+                logger = logger,
+                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
             )
         return OhttpManagedChannel(authority = endpoint.host, transport = transport, logger = logger)
     }

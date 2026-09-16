@@ -67,3 +67,187 @@ class OhttpHttpClientTest {
         assertFalse(client.canHandle("://missing-scheme"))
     }
 }
+
+    @Test
+    fun `client trace ID header is absent when prefix not set`() {
+        val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
+        val mockSender = object : co.electriccoin.lightwallet.client.internal.OhttpSender {
+            override suspend fun post(
+                url: String,
+                body: ByteArray,
+                headers: List<Pair<String, String>>,
+                timeoutMs: Int
+            ): ByteArray {
+                capturedHeaders.add(headers)
+                throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
+            }
+        }
+        val transport = co.electriccoin.lightwallet.client.internal.OhttpTransport(
+            relayUrl = "https://relay.zodl.com/relay",
+            keyConfigUrl = "https://gateway.zodl.com/ohttp-keys",
+            sender = mockSender,
+            ohttpClientTraceIdPrefix = null
+        )
+        try {
+            kotlinx.coroutines.runBlocking {
+                transport.roundTrip(
+                    co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
+                        method = "GET",
+                        scheme = "https",
+                        authority = "example.zodl.com",
+                        path = "/test",
+                        headers = emptyList(),
+                        body = ByteArray(0)
+                    ),
+                    timeoutMs = 5000
+                )
+            }
+        } catch (e: co.electriccoin.lightwallet.client.internal.OhttpException) {
+            // Expected
+        }
+        assertTrue(capturedHeaders.isNotEmpty())
+        val headerKeys = capturedHeaders.first().map { it.first }
+        assertFalse(headerKeys.contains("X-Client-Trace-Id"))
+        assertFalse(headerKeys.contains("X-Request-Id"))
+    }
+
+    @Test
+    fun `client trace ID header is present and well-formed when prefix set`() {
+        val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
+        val mockSender = object : co.electriccoin.lightwallet.client.internal.OhttpSender {
+            override suspend fun post(
+                url: String,
+                body: ByteArray,
+                headers: List<Pair<String, String>>,
+                timeoutMs: Int
+            ): ByteArray {
+                capturedHeaders.add(headers)
+                throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
+            }
+        }
+        val transport = co.electriccoin.lightwallet.client.internal.OhttpTransport(
+            relayUrl = "https://relay.zodl.com/relay",
+            keyConfigUrl = "https://gateway.zodl.com/ohttp-keys",
+            sender = mockSender,
+            ohttpClientTraceIdPrefix = "test-wallet"
+        )
+        try {
+            kotlinx.coroutines.runBlocking {
+                transport.roundTrip(
+                    co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
+                        method = "GET",
+                        scheme = "https",
+                        authority = "example.zodl.com",
+                        path = "/test",
+                        headers = emptyList(),
+                        body = ByteArray(0)
+                    ),
+                    timeoutMs = 5000
+                )
+            }
+        } catch (e: co.electriccoin.lightwallet.client.internal.OhttpException) {
+            // Expected
+        }
+        assertTrue(capturedHeaders.isNotEmpty())
+        val headers = capturedHeaders.first()
+        val traceIdHeader = headers.find { it.first == "X-Client-Trace-Id" }
+        assertTrue("X-Client-Trace-Id header must be present", traceIdHeader != null)
+        val traceId = traceIdHeader!!.second
+        assertTrue("Trace ID must start with prefix", traceId.startsWith("test-wallet-"))
+        assertTrue("Trace ID must be ≤ 64 chars", traceId.length <= 64)
+        assertTrue("Trace ID must match allowed charset", traceId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")))
+        // Verify X-Request-Id is never set
+        assertFalse(headers.any { it.first == "X-Request-Id" })
+    }
+
+    @Test
+    fun `client trace ID sanitises invalid characters`() {
+        val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
+        val mockSender = object : co.electriccoin.lightwallet.client.internal.OhttpSender {
+            override suspend fun post(
+                url: String,
+                body: ByteArray,
+                headers: List<Pair<String, String>>,
+                timeoutMs: Int
+            ): ByteArray {
+                capturedHeaders.add(headers)
+                throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
+            }
+        }
+        val transport = co.electriccoin.lightwallet.client.internal.OhttpTransport(
+            relayUrl = "https://relay.zodl.com/relay",
+            keyConfigUrl = "https://gateway.zodl.com/ohttp-keys",
+            sender = mockSender,
+            ohttpClientTraceIdPrefix = "test@wallet#123"
+        )
+        try {
+            kotlinx.coroutines.runBlocking {
+                transport.roundTrip(
+                    co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
+                        method = "GET",
+                        scheme = "https",
+                        authority = "example.zodl.com",
+                        path = "/test",
+                        headers = emptyList(),
+                        body = ByteArray(0)
+                    ),
+                    timeoutMs = 5000
+                )
+            }
+        } catch (e: co.electriccoin.lightwallet.client.internal.OhttpException) {
+            // Expected
+        }
+        assertTrue(capturedHeaders.isNotEmpty())
+        val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
+        assertTrue(traceIdHeader != null)
+        val traceId = traceIdHeader!!.second
+        assertFalse("Trace ID must not contain @", traceId.contains("@"))
+        assertFalse("Trace ID must not contain #", traceId.contains("#"))
+        assertTrue("Trace ID must match allowed charset", traceId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")))
+    }
+
+    @Test
+    fun `client trace ID truncates to 64 chars`() {
+        val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
+        val mockSender = object : co.electriccoin.lightwallet.client.internal.OhttpSender {
+            override suspend fun post(
+                url: String,
+                body: ByteArray,
+                headers: List<Pair<String, String>>,
+                timeoutMs: Int
+            ): ByteArray {
+                capturedHeaders.add(headers)
+                throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
+            }
+        }
+        val longPrefix = "a".repeat(60)
+        val transport = co.electriccoin.lightwallet.client.internal.OhttpTransport(
+            relayUrl = "https://relay.zodl.com/relay",
+            keyConfigUrl = "https://gateway.zodl.com/ohttp-keys",
+            sender = mockSender,
+            ohttpClientTraceIdPrefix = longPrefix
+        )
+        try {
+            kotlinx.coroutines.runBlocking {
+                transport.roundTrip(
+                    co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
+                        method = "GET",
+                        scheme = "https",
+                        authority = "example.zodl.com",
+                        path = "/test",
+                        headers = emptyList(),
+                        body = ByteArray(0)
+                    ),
+                    timeoutMs = 5000
+                )
+            }
+        } catch (e: co.electriccoin.lightwallet.client.internal.OhttpException) {
+            // Expected
+        }
+        assertTrue(capturedHeaders.isNotEmpty())
+        val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
+        assertTrue(traceIdHeader != null)
+        val traceId = traceIdHeader!!.second
+        assertTrue("Trace ID must be exactly 64 chars", traceId.length == 64)
+    }
+}

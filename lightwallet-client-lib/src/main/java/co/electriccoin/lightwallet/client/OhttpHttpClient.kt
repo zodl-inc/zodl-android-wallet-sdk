@@ -17,7 +17,12 @@ import kotlinx.coroutines.withContext
 import java.net.URI
 
 class OhttpHttpClient private constructor(
-    private val sender: OhttpSender
+    private val sender: OhttpSender,
+    /**
+     * Optional client trace ID prefix. When set, every outer OHTTP POST to the relay carries
+     * `X-Client-Trace-Id: <prefix>-<uuid>`. See [co.electriccoin.lightwallet.client.internal.OhttpTransport.ohttpClientTraceIdPrefix] for details.
+     */
+    private val ohttpClientTraceIdPrefix: String? = null
 ) {
     data class Request(
         val url: String,
@@ -43,8 +48,13 @@ class OhttpHttpClient private constructor(
          * - [sender] = TorOhttpSender (Tor ON): OHTTP relay leg goes over an isolated Tor stream. The
          *   relay sees only a Tor exit; the gateway still injects secrets server-side. The app MUST
          *   NOT send secrets in either mode (they are stripped with a warning if present).
+         *
+         * @param ohttpClientTraceIdPrefix Optional client trace ID prefix for end-to-end tracing.
          */
-        fun create(sender: OhttpSender = DirectOhttpSender()): OhttpHttpClient = OhttpHttpClient(sender)
+        fun create(
+            sender: OhttpSender = DirectOhttpSender(),
+            ohttpClientTraceIdPrefix: String? = null
+        ): OhttpHttpClient = OhttpHttpClient(sender, ohttpClientTraceIdPrefix)
     }
 
     /**
@@ -86,7 +96,12 @@ class OhttpHttpClient private constructor(
             stripSecretsForGateway(innerAuthority, request.headers) { msg ->
                 Log.w(Constants.LOG_TAG, msg)
             }
-        val transport = OhttpTransport(PROXY_RELAY_URL, PROXY_KEY_CONFIG_URL, sender)
+        val transport = OhttpTransport(
+            PROXY_RELAY_URL,
+            PROXY_KEY_CONFIG_URL,
+            sender,
+            ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+        )
         val pathQ =
             uri.rawPath
                 .let { p ->

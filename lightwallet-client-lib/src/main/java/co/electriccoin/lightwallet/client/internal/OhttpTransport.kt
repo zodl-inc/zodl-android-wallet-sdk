@@ -5,6 +5,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
+import java.util.UUID
 
 /**
  * OHTTP (RFC 9458) client transport: encapsulates a Binary HTTP request with HPKE, POSTs it to the
@@ -17,7 +18,17 @@ internal class OhttpTransport(
     private val relayUrl: String,
     private val keyConfigUrl: String,
     private val sender: OhttpSender = DirectOhttpSender(),
-    private val logger: (String) -> Unit = {}
+    private val logger: (String) -> Unit = {},
+    /**
+     * Optional client trace ID prefix. When set, every outer OHTTP POST to the relay carries
+     * `X-Client-Trace-Id: <prefix>-<uuid>` so a tester can tag and follow requests end-to-end in
+     * Grafana (relay → gateway → downstream). The prefix is sanitised to `[A-Za-z0-9._:-]` and
+     * truncated so the full header value ≤ 64 chars.
+     *
+     * **Privacy warning:** a custom trace ID makes that wallet's requests linkable across relay
+     * and gateway logs. DEBUG ONLY. Never set in release builds. Off by default.
+     */
+    private val ohttpClientTraceIdPrefix: String? = null
 ) {
     private val lock = Any()
     private var cachedKeyConfig: OhttpKeyConfig? = null
@@ -66,12 +77,15 @@ internal class OhttpTransport(
         val ciphertext = context.seal(ByteArray(0), plaintext)
         val encapsulatedRequest = header + context.enc + ciphertext
 
-        val relayHeaders =
-            listOf(
-                "Content-Type" to REQUEST_MEDIA_TYPE,
-                "Accept" to RESPONSE_MEDIA_TYPE,
-                "Accept-Encoding" to "identity"
-            )
+        val relayHeaders = buildList {
+            add("Content-Type" to REQUEST_MEDIA_TYPE)
+            add("Accept" to RESPONSE_MEDIA_TYPE)
+            add("Accept-Encoding" to "identity")
+            ohttpClientTraceIdPrefix?.let { prefix ->
+                val traceId = generateClientTraceId(prefix)
+                add("X-Client-Trace-Id" to traceId)
+            }
+        }
         val encapsulatedResponse = sender.post(relayUrl, encapsulatedRequest, relayHeaders, timeoutMs)
 
         // RFC 9458 §4.4 — Encapsulation of Responses (client side: decapsulate)
@@ -145,6 +159,17 @@ internal class OhttpTransport(
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val KEY_FETCH_TIMEOUT_MS = 15_000
         private const val READ_BUFFER_SIZE = 16 * 1024
+
+        /**
+         * Generates a client trace ID from the given prefix: `<sanitized-prefix>-<uuid>`, truncated to
+         * 64 chars. The prefix is sanitised to match `^[A-Za-z0-9._:-]+$` (relay/gateway requirement).
+         */
+        private fun generateClientTraceId(prefix: String): String {
+            val sanitized = prefix.replace(Regex("[^A-Za-z0-9._:-]"), "")
+            val uuid = UUID.randomUUID().toString()
+            val full = "$sanitized-$uuid"
+            return if (full.length <= 64) full else full.take(64)
+        }
     }
 }
 
