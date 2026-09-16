@@ -115,6 +115,7 @@ use crate::utils::{
 #[rustfmt::skip]
 mod liberated_payment;
 mod gift_card;
+mod ledger;
 mod migration;
 mod migration_engine;
 mod migration_keystone;

@@ -7,6 +7,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The `zcash-android-backend` artifact gains `LedgerBackend` and its JNI implementation
+  `LedgerRustBackend`, the native boundary to the Ledger hardware-wallet engine (`pczt_ledger`). They
+  exist for the SDK's own Ledger support and are not intended to be called directly; no existing call
+  site changes.
 - `GiftCard`, a gift card read from a gift card link with `GiftCard.parse(link)`: this SDK's
   own links (`https://gift.zodl.com/#v=1&key=...&height=...`) and the legacy JSON payment-link
   encoding at `/payment-links/open#vN=` (`v1=` / `v2=` / `v3=` payloads). Exposes `origin`
