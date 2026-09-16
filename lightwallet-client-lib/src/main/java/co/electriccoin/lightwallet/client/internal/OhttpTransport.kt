@@ -5,7 +5,6 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
-import java.util.UUID
 
 /**
  * OHTTP (RFC 9458) client transport: encapsulates a Binary HTTP request with HPKE, POSTs it to the
@@ -21,17 +20,18 @@ internal class OhttpTransport(
     private val logger: (String) -> Unit = {},
     /**
      * Optional client trace ID prefix. When set, every outer OHTTP POST to the relay carries
-     * `X-Client-Trace-Id: <prefix>-<uuid>` so a tester can tag and follow requests end-to-end in
-     * Grafana (relay → gateway → downstream). The prefix is sanitised to `[A-Za-z0-9._:-]` and
-     * truncated so the full header value ≤ 64 chars.
+     * `X-Client-Trace-Id: <prefix>-<sessionUuid>-<seq>` so a tester can tag and follow requests
+     * end-to-end in Grafana (relay → gateway → downstream). The prefix is sanitised to
+     * `[A-Za-z0-9._:-]` with first char alphanumeric, and truncated so the full header value ≤ 64 chars.
      *
      * **Privacy warning:** a custom trace ID makes that wallet's requests linkable across relay
      * and gateway logs. DEBUG ONLY. Never set in release builds. Off by default.
      */
-    private val ohttpClientTraceIdPrefix: String? = null
+    ohttpClientTraceIdPrefix: String? = null
 ) {
     private val lock = Any()
     private var cachedKeyConfig: OhttpKeyConfig? = null
+    private val clientTrace: OhttpClientTrace? = ohttpClientTraceIdPrefix?.let { OhttpClientTrace(it) }
 
     /** Fetches (or returns the cached) gateway key configuration. */
     fun keyConfig(forceRefresh: Boolean = false): OhttpKeyConfig {
@@ -82,9 +82,8 @@ internal class OhttpTransport(
                 add("Content-Type" to REQUEST_MEDIA_TYPE)
                 add("Accept" to RESPONSE_MEDIA_TYPE)
                 add("Accept-Encoding" to "identity")
-                ohttpClientTraceIdPrefix?.let { prefix ->
-                    val traceId = generateClientTraceId(prefix)
-                    add("X-Client-Trace-Id" to traceId)
+                clientTrace?.let { trace ->
+                    add("X-Client-Trace-Id" to trace.next())
                 }
             }
         val encapsulatedResponse = sender.post(relayUrl, encapsulatedRequest, relayHeaders, timeoutMs)
@@ -160,22 +159,6 @@ internal class OhttpTransport(
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val KEY_FETCH_TIMEOUT_MS = 15_000
         private const val READ_BUFFER_SIZE = 16 * 1024
-        private const val MAX_CLIENT_TRACE_ID_LENGTH = 64
-
-        /**
-         * Generates a client trace ID from the given prefix: `<sanitized-prefix>-<uuid>`, truncated to
-         * 64 chars. The prefix is sanitised to match `^[A-Za-z0-9._:-]+$` (relay/gateway requirement).
-         */
-        private fun generateClientTraceId(prefix: String): String {
-            val sanitized = prefix.replace(Regex("[^A-Za-z0-9._:-]"), "")
-            val uuid = UUID.randomUUID().toString()
-            val full = "$sanitized-$uuid"
-            return if (full.length <= MAX_CLIENT_TRACE_ID_LENGTH) {
-                full
-            } else {
-                full.take(MAX_CLIENT_TRACE_ID_LENGTH)
-            }
-        }
     }
 }
 

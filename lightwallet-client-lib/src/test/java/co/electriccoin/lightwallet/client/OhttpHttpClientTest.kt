@@ -135,7 +135,8 @@ class OhttpHttpClientTest {
                 sender = mockSender,
                 ohttpClientTraceIdPrefix = "test-wallet"
             )
-        val exceptionThrown =
+        // Make two requests to verify sequence counter increments
+        repeat(2) {
             runCatching {
                 kotlinx.coroutines.runBlocking {
                     transport.roundTrip(
@@ -150,21 +151,39 @@ class OhttpHttpClientTest {
                         timeoutMs = 5000
                     )
                 }
-            }.exceptionOrNull()
-        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
-        assertTrue(capturedHeaders.isNotEmpty())
-        val headers = capturedHeaders.first()
-        val traceIdHeader = headers.find { it.first == "X-Client-Trace-Id" }
-        assertTrue("X-Client-Trace-Id header must be present", traceIdHeader != null)
-        val traceId = traceIdHeader!!.second
-        assertTrue("Trace ID must start with prefix", traceId.startsWith("test-wallet-"))
-        assertTrue("Trace ID must be ≤ 64 chars", traceId.length <= 64)
+            }
+        }
+        assertTrue("Must have captured two requests", capturedHeaders.size == 2)
+        // Check first request
+        val headers1 = capturedHeaders[0]
+        val traceIdHeader1 = headers1.find { it.first == "X-Client-Trace-Id" }
+        assertTrue("X-Client-Trace-Id header must be present", traceIdHeader1 != null)
+        val traceId1 = traceIdHeader1!!.second
+        assertTrue("Trace ID must start with prefix", traceId1.startsWith("test-wallet-"))
+        assertTrue("Trace ID must be ≤ 64 chars", traceId1.length <= 64)
+        // Format: <prefix>-<uuid>-<seq> where uuid is 36 chars, seq is 6 digits
         assertTrue(
-            "Trace ID must match allowed charset",
-            traceId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"))
+            "Trace ID must match format <prefix>-<uuid>-<seq>",
+            traceId1.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-\\d{6}$"))
         )
+        // Check second request - must have same session UUID but incremented seq
+        val traceIdHeader2 = capturedHeaders[1].find { it.first == "X-Client-Trace-Id" }
+        assertTrue(traceIdHeader2 != null)
+        val traceId2 = traceIdHeader2!!.second
+        // Extract session UUID and seq from both
+        val parts1 = traceId1.split("-")
+        val parts2 = traceId2.split("-")
+        // Session UUID should be the same (parts 1-5)
+        val sessionUuid1 = parts1.subList(1, 6).joinToString("-")
+        val sessionUuid2 = parts2.subList(1, 6).joinToString("-")
+        assertTrue("Session UUID must be same across requests", sessionUuid1 == sessionUuid2)
+        // Sequence number should increment
+        val seq1 = parts1.last().toInt()
+        val seq2 = parts2.last().toInt()
+        assertTrue("Sequence must increment", seq2 == seq1 + 1)
+        assertTrue("First sequence must be 0", seq1 == 0)
         // Verify X-Request-Id is never set
-        assertFalse(headers.any { it.first == "X-Request-Id" })
+        assertFalse(headers1.any { it.first == "X-Request-Id" })
     }
 
     @Test
@@ -212,10 +231,15 @@ class OhttpHttpClientTest {
         val traceId = traceIdHeader!!.second
         assertFalse("Trace ID must not contain @", traceId.contains("@"))
         assertFalse("Trace ID must not contain #", traceId.contains("#"))
+        // Must start with alphanumeric
+        assertTrue("Trace ID must start with alphanumeric", traceId.first().isLetterOrDigit())
+        // Format: <prefix>-<uuid>-<seq>
         assertTrue(
-            "Trace ID must match allowed charset",
-            traceId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"))
+            "Trace ID must match format",
+            traceId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-\\d{6}$"))
         )
+        // The prefix should be "testwallet123" after sanitization (@ and # removed)
+        assertTrue("Trace ID must start with sanitized prefix", traceId.startsWith("testwallet123-"))
     }
 
     @Test
@@ -233,6 +257,7 @@ class OhttpHttpClientTest {
                     throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
                 }
             }
+        // Long prefix: 60 'a' + 1 '-' + 36 UUID + 1 '-' + 6 digits = 104 chars → truncated to 64
         val longPrefix = "a".repeat(60)
         val transport =
             co.electriccoin.lightwallet.client.internal.OhttpTransport(
@@ -263,5 +288,7 @@ class OhttpHttpClientTest {
         assertTrue(traceIdHeader != null)
         val traceId = traceIdHeader!!.second
         assertTrue("Trace ID must be exactly 64 chars", traceId.length == 64)
+        // Must still start with the prefix (truncated)
+        assertTrue("Trace ID must start with truncated prefix", traceId.startsWith("a"))
     }
 }

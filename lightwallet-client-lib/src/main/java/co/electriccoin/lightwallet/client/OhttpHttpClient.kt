@@ -20,8 +20,8 @@ class OhttpHttpClient private constructor(
     private val sender: OhttpSender,
     /**
      * Optional client trace ID prefix. When set, every outer OHTTP POST to the relay carries
-     * `X-Client-Trace-Id: <prefix>-<uuid>`. See OhttpTransport.ohttpClientTraceIdPrefix for
-     * details.
+     * `X-Client-Trace-Id: <prefix>-<sessionUuid>-<seq>`. See OhttpTransport.ohttpClientTraceIdPrefix
+     * for details.
      */
     private val ohttpClientTraceIdPrefix: String? = null
 ) {
