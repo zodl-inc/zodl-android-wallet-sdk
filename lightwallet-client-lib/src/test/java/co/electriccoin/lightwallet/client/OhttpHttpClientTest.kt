@@ -66,7 +66,6 @@ class OhttpHttpClientTest {
         assertFalse(client.canHandle(""))
         assertFalse(client.canHandle("://missing-scheme"))
     }
-}
 
     @Test
     fun `client trace ID header is absent when prefix not set`() {
@@ -88,7 +87,7 @@ class OhttpHttpClientTest {
             sender = mockSender,
             ohttpClientTraceIdPrefix = null
         )
-        try {
+        val exceptionThrown = runCatching {
             kotlinx.coroutines.runBlocking {
                 transport.roundTrip(
                     co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
@@ -102,9 +101,8 @@ class OhttpHttpClientTest {
                     timeoutMs = 5000
                 )
             }
-        } catch (e: co.electriccoin.lightwallet.client.internal.OhttpException) {
-            // Expected
-        }
+        }.exceptionOrNull()
+        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val headerKeys = capturedHeaders.first().map { it.first }
         assertFalse(headerKeys.contains("X-Client-Trace-Id"))
@@ -131,7 +129,7 @@ class OhttpHttpClientTest {
             sender = mockSender,
             ohttpClientTraceIdPrefix = "test-wallet"
         )
-        try {
+        val exceptionThrown = runCatching {
             kotlinx.coroutines.runBlocking {
                 transport.roundTrip(
                     co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
@@ -145,9 +143,8 @@ class OhttpHttpClientTest {
                     timeoutMs = 5000
                 )
             }
-        } catch (e: co.electriccoin.lightwallet.client.internal.OhttpException) {
-            // Expected
-        }
+        }.exceptionOrNull()
+        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val headers = capturedHeaders.first()
         val traceIdHeader = headers.find { it.first == "X-Client-Trace-Id" }
@@ -155,7 +152,10 @@ class OhttpHttpClientTest {
         val traceId = traceIdHeader!!.second
         assertTrue("Trace ID must start with prefix", traceId.startsWith("test-wallet-"))
         assertTrue("Trace ID must be ≤ 64 chars", traceId.length <= 64)
-        assertTrue("Trace ID must match allowed charset", traceId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")))
+        assertTrue(
+            "Trace ID must match allowed charset",
+            traceId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"))
+        )
         // Verify X-Request-Id is never set
         assertFalse(headers.any { it.first == "X-Request-Id" })
     }
@@ -180,7 +180,7 @@ class OhttpHttpClientTest {
             sender = mockSender,
             ohttpClientTraceIdPrefix = "test@wallet#123"
         )
-        try {
+        val exceptionThrown = runCatching {
             kotlinx.coroutines.runBlocking {
                 transport.roundTrip(
                     co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
@@ -194,16 +194,18 @@ class OhttpHttpClientTest {
                     timeoutMs = 5000
                 )
             }
-        } catch (e: co.electriccoin.lightwallet.client.internal.OhttpException) {
-            // Expected
-        }
+        }.exceptionOrNull()
+        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
         assertTrue(traceIdHeader != null)
         val traceId = traceIdHeader!!.second
         assertFalse("Trace ID must not contain @", traceId.contains("@"))
         assertFalse("Trace ID must not contain #", traceId.contains("#"))
-        assertTrue("Trace ID must match allowed charset", traceId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")))
+        assertTrue(
+            "Trace ID must match allowed charset",
+            traceId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"))
+        )
     }
 
     @Test
@@ -227,7 +229,7 @@ class OhttpHttpClientTest {
             sender = mockSender,
             ohttpClientTraceIdPrefix = longPrefix
         )
-        try {
+        val exceptionThrown = runCatching {
             kotlinx.coroutines.runBlocking {
                 transport.roundTrip(
                     co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
@@ -241,9 +243,8 @@ class OhttpHttpClientTest {
                     timeoutMs = 5000
                 )
             }
-        } catch (e: co.electriccoin.lightwallet.client.internal.OhttpException) {
-            // Expected
-        }
+        }.exceptionOrNull()
+        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
         assertTrue(traceIdHeader != null)

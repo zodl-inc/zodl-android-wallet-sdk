@@ -77,15 +77,16 @@ internal class OhttpTransport(
         val ciphertext = context.seal(ByteArray(0), plaintext)
         val encapsulatedRequest = header + context.enc + ciphertext
 
-        val relayHeaders = buildList {
-            add("Content-Type" to REQUEST_MEDIA_TYPE)
-            add("Accept" to RESPONSE_MEDIA_TYPE)
-            add("Accept-Encoding" to "identity")
-            ohttpClientTraceIdPrefix?.let { prefix ->
-                val traceId = generateClientTraceId(prefix)
-                add("X-Client-Trace-Id" to traceId)
+        val relayHeaders =
+            buildList {
+                add("Content-Type" to REQUEST_MEDIA_TYPE)
+                add("Accept" to RESPONSE_MEDIA_TYPE)
+                add("Accept-Encoding" to "identity")
+                ohttpClientTraceIdPrefix?.let { prefix ->
+                    val traceId = generateClientTraceId(prefix)
+                    add("X-Client-Trace-Id" to traceId)
+                }
             }
-        }
         val encapsulatedResponse = sender.post(relayUrl, encapsulatedRequest, relayHeaders, timeoutMs)
 
         // RFC 9458 §4.4 — Encapsulation of Responses (client side: decapsulate)
@@ -159,6 +160,9 @@ internal class OhttpTransport(
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val KEY_FETCH_TIMEOUT_MS = 15_000
         private const val READ_BUFFER_SIZE = 16 * 1024
+        private const val MAX_CLIENT_TRACE_ID_LENGTH = 64
+        private const val UUID_STRING_LENGTH = 36
+        private const val TRACE_ID_SEPARATOR_LENGTH = 1
 
         /**
          * Generates a client trace ID from the given prefix: `<sanitized-prefix>-<uuid>`, truncated to
@@ -168,7 +172,11 @@ internal class OhttpTransport(
             val sanitized = prefix.replace(Regex("[^A-Za-z0-9._:-]"), "")
             val uuid = UUID.randomUUID().toString()
             val full = "$sanitized-$uuid"
-            return if (full.length <= 64) full else full.take(64)
+            return if (full.length <= MAX_CLIENT_TRACE_ID_LENGTH) {
+                full
+            } else {
+                full.take(MAX_CLIENT_TRACE_ID_LENGTH)
+            }
         }
     }
 }

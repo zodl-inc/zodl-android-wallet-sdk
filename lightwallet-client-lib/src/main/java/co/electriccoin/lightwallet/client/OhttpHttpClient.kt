@@ -20,7 +20,8 @@ class OhttpHttpClient private constructor(
     private val sender: OhttpSender,
     /**
      * Optional client trace ID prefix. When set, every outer OHTTP POST to the relay carries
-     * `X-Client-Trace-Id: <prefix>-<uuid>`. See [co.electriccoin.lightwallet.client.internal.OhttpTransport.ohttpClientTraceIdPrefix] for details.
+     * `X-Client-Trace-Id: <prefix>-<uuid>`. See OhttpTransport.ohttpClientTraceIdPrefix for
+     * details.
      */
     private val ohttpClientTraceIdPrefix: String? = null
 ) {
@@ -96,12 +97,13 @@ class OhttpHttpClient private constructor(
             stripSecretsForGateway(innerAuthority, request.headers) { msg ->
                 Log.w(Constants.LOG_TAG, msg)
             }
-        val transport = OhttpTransport(
-            PROXY_RELAY_URL,
-            PROXY_KEY_CONFIG_URL,
-            sender,
-            ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
-        )
+        val transport =
+            OhttpTransport(
+                PROXY_RELAY_URL,
+                PROXY_KEY_CONFIG_URL,
+                sender,
+                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+            )
         val pathQ =
             uri.rawPath
                 .let { p ->
