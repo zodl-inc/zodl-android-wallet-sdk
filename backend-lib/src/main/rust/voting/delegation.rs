@@ -474,21 +474,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let reporter = progress_reporter_from_callback(env, &progress_callback)?;
         let stages = DelegationProgressReporterBridge(reporter.as_ref());
 
-        // The crate holds this VotingDb's connection mutex across the whole
-        // proof, so it gets a connection of its own where there is a file to
-        // reopen. An in-memory DB has none, and falls back to proving under the
-        // shared access lock exactly as before.
-        let private_db = db.open_private_connection()?;
-        let _shared_access_lock = match private_db {
-            Some(_) => None,
-            None => Some(db.access_lock()?),
-        };
-        let proving_db: &VotingDb = match private_db.as_ref() {
-            Some(private_db) => private_db,
-            None => &db,
-        };
-
-        let result = proving_db
+        // The crate releases the shared connection while proof generation is
+        // running and reacquires it only for its short immediate persistence
+        // transaction, so every bundle can prove against one database owner.
+        let result = db
             .build_and_prove_delegation(
                 &round_id,
                 bundle_index,

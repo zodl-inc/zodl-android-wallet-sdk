@@ -21,10 +21,6 @@ struct DbKey {
 
 pub(super) struct VotingDbHandle {
     db: VotingDb,
-    // The database location this handle was opened from, kept so a proof can
-    // reopen it on a private connection (see open_private_connection).
-    path: String,
-    wallet_id: String,
     // VoteTreeSync owns only its synchronous tree-client cache and protects
     // that cache internally. JNI vote-tree entrypoints still hold access_mutex
     // before calling it so DB writes and tree-client state changes are
@@ -35,11 +31,11 @@ pub(super) struct VotingDbHandle {
     // need a redundant network_id parameter once a handle is open.
     pub(super) network: voting::types::Network,
     pir_client: Mutex<Option<CachedPirClient>>,
-    // Proving entrypoints deliberately do not hold access_mutex: a Halo2 proof
-    // runs for minutes, and holding it would stop every other bundle of the
-    // round. They hold a per-(round, bundle) lock from proof_locks instead and
-    // run the crate call on a private connection, so two bundles can prove at
-    // the same time while the same bundle still cannot prove twice at once.
+    // Proving entrypoints deliberately do not hold access_mutex: the voting
+    // crate captures its SQLite inputs, releases its connection while Halo2
+    // runs, then reacquires that same owner to persist under an immediate
+    // transaction. Per-(round, bundle) locks still keep duplicate work out
+    // while different bundles prove concurrently.
     proof_locks: Mutex<HashMap<(String, u32), ProofLock>>,
 }
 
@@ -59,8 +55,6 @@ impl VotingDbHandle {
 
         Ok(Self {
             db,
-            path: path.to_string(),
-            wallet_id: wallet_id.to_string(),
             tree_sync: VoteTreeSync::new(),
             access_mutex: Mutex::new(()),
             network,
@@ -96,36 +90,6 @@ impl VotingDbHandle {
             .entry((round_id.to_string(), bundle_index))
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone())
-    }
-
-    /// Opens a second connection to this handle's voting database, for one
-    /// proof to use on its own.
-    ///
-    /// `zcash_voting` holds a `VotingDb`'s internal connection mutex for the
-    /// whole vote-commitment proof, so proving through the shared handle would
-    /// block every other caller of that `VotingDb` instance for the duration of
-    /// the proof. Proving on a private connection keeps that guard private to
-    /// the proof. It is safe to write through: the database is in WAL mode, the
-    /// crate's writes are single statements or short immediate transactions,
-    /// the bundles of a round write disjoint rows, and the per-bundle proof
-    /// lock keeps two proofs of one bundle apart.
-    ///
-    /// Returns `None` for an in-memory database, where a second connection
-    /// would be a different, empty database instead of the same one; in-memory
-    /// handles (tests and fixtures) keep proving through the shared connection.
-    pub(super) fn open_private_connection(&self) -> anyhow::Result<Option<VotingDb>> {
-        if self.path == ":memory:" {
-            return Ok(None);
-        }
-
-        let db = VotingDb::open(&self.path).map_err(|e| {
-            anyhow!(
-                "VotingDb::open for a private proving connection failed: {}",
-                e
-            )
-        })?;
-        db.set_wallet_id(&self.wallet_id);
-        Ok(Some(db))
     }
 
     /// Returns a PIR client connected to `url` for `layout`, connecting only
@@ -338,60 +302,6 @@ mod tests {
         assert!(other_bundle.try_lock().is_ok());
         assert!(other_round.try_lock().is_ok());
         drop(guard);
-    }
-
-    #[test]
-    fn open_private_connection_returns_none_for_memory_path() {
-        let db = VotingDbHandle::open(":memory:", "wallet-1", voting::types::Network::Testnet)
-            .expect("in-memory DB open");
-
-        assert!(
-            db.open_private_connection()
-                .expect("private connection")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn private_connection_sees_rows_written_through_the_shared_one() {
-        let db_path = unique_db_path();
-        let db_path_str = db_path.to_str().expect("test db path is valid UTF-8");
-        let db = VotingDbHandle::open(db_path_str, "wallet-1", voting::types::Network::Testnet)
-            .expect("file-backed DB open");
-
-        let params = voting::types::VotingRoundParams {
-            vote_round_id: "round-1".to_string(),
-            snapshot_height: 1000,
-            ea_pk: vec![0xEA; 32],
-            nc_root: vec![0xAA; 32],
-            nullifier_imt_root: vec![0xBB; 32],
-        };
-        db.init_round(voting::types::Network::Testnet, &params, None)
-            .expect("init round through the shared connection");
-
-        let private_db = db
-            .open_private_connection()
-            .expect("private connection")
-            .expect("file-backed DB gets a private connection");
-        assert_eq!(private_db.wallet_id(), "wallet-1");
-        assert!(
-            private_db
-                .has_round("round-1")
-                .expect("has_round on the private connection")
-        );
-
-        drop(private_db);
-        drop(db);
-        remove_db_files(&db_path);
-    }
-
-    fn remove_db_files(db_path: &std::path::Path) {
-        let _ = fs::remove_file(db_path);
-        for suffix in ["-wal", "-shm"] {
-            let mut sidecar = db_path.as_os_str().to_os_string();
-            sidecar.push(suffix);
-            let _ = fs::remove_file(std::path::PathBuf::from(sidecar));
-        }
     }
 
     fn unique_db_path() -> std::path::PathBuf {

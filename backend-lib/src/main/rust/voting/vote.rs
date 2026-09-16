@@ -98,22 +98,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         let reporter = progress_reporter_from_callback(env, &progress_callback)?;
         let stages = VoteCommitStageProgressBridge(reporter.as_ref());
 
-        // The crate holds this VotingDb's connection mutex across the whole
-        // proof, so it gets a connection of its own where there is a file to
-        // reopen. An in-memory DB has none, and falls back to proving under the
-        // shared access lock exactly as before.
-        let private_db = db.open_private_connection()?;
-        let _shared_access_lock = match private_db {
-            Some(_) => None,
-            None => Some(db.access_lock()?),
-        };
-        let proving_db: &VotingDb = match private_db.as_ref() {
-            Some(private_db) => private_db,
-            None => &db,
-        };
-
+        // The crate prepares the proof without holding its SQLite connection,
+        // then serializes optimistic revalidation and persistence on that same
+        // database owner with an immediate transaction.
         let committed = voting::vote::CommittedVote::commit(
-            proving_db,
+            &db,
             &round_id,
             bundle_index,
             &draft,
@@ -123,7 +112,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         )
         .map_err(|e| anyhow!("vote::commit: {}", e))?;
         let signed = committed
-            .signed_commitment(proving_db)
+            .signed_commitment(&db)
             .map_err(|e| anyhow!("signed_commitment: {}", e))?;
 
         make_jni_vote_commit_result(env, signed, bundle_index)
