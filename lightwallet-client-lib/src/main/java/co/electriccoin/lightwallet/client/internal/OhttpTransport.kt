@@ -161,8 +161,6 @@ internal class OhttpTransport(
         private const val KEY_FETCH_TIMEOUT_MS = 15_000
         private const val READ_BUFFER_SIZE = 16 * 1024
         private const val MAX_CLIENT_TRACE_ID_LENGTH = 64
-        private const val UUID_STRING_LENGTH = 36
-        private const val TRACE_ID_SEPARATOR_LENGTH = 1
 
         /**
          * Generates a client trace ID from the given prefix: `<sanitized-prefix>-<uuid>`, truncated to
