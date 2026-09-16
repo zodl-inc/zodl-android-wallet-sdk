@@ -170,6 +170,12 @@ internal interface TypesafeVotingDb {
         witnesses: List<JniWitnessData>
     )
 
+    suspend fun hasCompleteWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        notes: List<VotingNoteInfo>
+    ): Boolean
+
     suspend fun precomputeDelegationPir(
         roundId: String,
         bundleIndex: Int,
