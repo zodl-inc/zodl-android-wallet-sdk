@@ -5,7 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/* ktlint-disable max-line-length */
+@Suppress("ktlint:standard:max-line-length", "ktlint:standard:chain-method-continuation")
 class OhttpHttpClientTest {
     @Test
     fun `canHandle returns true for static proxy mappings`() {
