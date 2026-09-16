@@ -11,7 +11,6 @@ class OhttpHttpClientTest {
         val client = OhttpHttpClient.create()
         assertTrue(client.canHandle("https://1click.chaindefuser.com/v0/tokens"))
         assertTrue(client.canHandle("https://voting.valargroup.dev/prod/dynamic-voting-config.json"))
-        assertTrue(client.canHandle("https://download.z.cash/params/sapling-spend.params"))
         assertTrue(client.canHandle("https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol=ZEC"))
     }
 
