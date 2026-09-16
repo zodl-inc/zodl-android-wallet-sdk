@@ -27,7 +27,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.security.SecureRandom
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Synchronous native proof progress callback.
@@ -37,8 +36,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * attaches whichever native thread invokes this callback, so callers must not
  * assume Android main-thread or coroutine-dispatcher affinity.
  *
- * This callback runs while the owning voting DB handle is locked by the in-flight
- * proof operation. Implementations must not call back into this VotingDb's methods.
+ * The proof this callback reports on holds a lock for its own bundle and runs against
+ * its own native database connection, so it does not block the rest of the voting DB.
+ * Implementations must still not call back into this VotingDb's methods.
  * Native code treats callback failures as best-effort progress reporting and
  * continues proof generation after logging the failure.
  */
@@ -295,11 +295,35 @@ class VotingRustBackend private constructor() {
 
     @Suppress("TooManyFunctions", "LongParameterList")
     class VotingDb internal constructor(
-        private var dbHandle: Long?
+        initialHandle: Long
     ) {
-        private val accessMutex = Mutex()
-        private val proofProgressCallbackDepth = AtomicInteger(0)
+        /**
+         * The native handle, or `null` once [close] has released it.
+         *
+         * Volatile because [withHandleForProving] reads it without holding [accessMutex], so a
+         * concurrent [close] on another thread has to be visible to that read.
+         */
+        @Volatile
+        private var dbHandle: Long? = initialHandle
 
+        private val accessMutex = Mutex()
+
+        /**
+         * Re-entry depth of [withVotingDbReentryGuard], per thread.
+         *
+         * The native progress reporter attaches whichever thread invokes the callback, and the
+         * guard only has to refuse a call made from inside a callback on that same thread. Proofs
+         * now run outside [accessMutex], so a single shared counter would also make this VotingDb
+         * throw for unrelated callers on other threads while a proof reports progress.
+         */
+        private val proofProgressCallbackDepth: ThreadLocal<Int> = ThreadLocal.withInitial { 0 }
+
+        /**
+         * Closes the native handle.
+         *
+         * A proof in flight holds the native handle alive on its own, so closing during one is
+         * safe; calls made after the close fail with "Voting DB handle is closed".
+         */
         suspend fun close() {
             checkNotInProofProgressCallback()
 
@@ -484,6 +508,25 @@ class VotingRustBackend private constructor() {
             )
         }
 
+        /**
+         * True when the cached witnesses for this bundle exactly cover its notes, so witness
+         * generation can be skipped.
+         */
+        @Throws(RuntimeException::class)
+        suspend fun hasCompleteWitnesses(
+            roundId: String,
+            bundleIndex: Int,
+            notes: List<JniNoteInfo>
+        ): Boolean =
+            withHandle { handle ->
+                hasCompleteWitnessesNative(
+                    handle,
+                    roundId,
+                    bundleIndex,
+                    notes.toTypedArray()
+                )
+            }
+
         @Throws(RuntimeException::class)
         suspend fun precomputeDelegationPir(
             roundId: String,
@@ -526,7 +569,7 @@ class VotingRustBackend private constructor() {
             roundName: String,
             proofProgress: VotingProofProgressCallback?
         ): JniDelegationProofResult =
-            withHandle { handle ->
+            withHandleForProving { handle ->
                 buildAndProveDelegationNative(
                     handle,
                     roundId,
@@ -702,7 +745,7 @@ class VotingRustBackend private constructor() {
             singleShare: Boolean,
             proofProgress: VotingProofProgressCallback?
         ): JniVoteCommitResult =
-            withHandle { handle ->
+            withHandleForProving { handle ->
                 buildVoteCommitmentNative(
                     handle,
                     roundId,
@@ -963,19 +1006,42 @@ class VotingRustBackend private constructor() {
             }
         }
 
+        /**
+         * Runs a proving native call without [accessMutex] and off the SDK's single database
+         * thread.
+         *
+         * The JNI call blocks its thread for the whole proof while the native side proves on a
+         * worker thread and rayon, so it runs on [Dispatchers.IO] rather than a CPU-bound
+         * dispatcher. The native side takes a per-bundle proof lock and gives the proof its own
+         * database connection, so [accessMutex] buys nothing here and holding it would serialize
+         * the proofs of two bundles of the same round.
+         */
+        private suspend fun <T> withHandleForProving(block: (Long) -> T): T {
+            checkNotInProofProgressCallback()
+
+            val handle =
+                checkNotNull(dbHandle) {
+                    "Voting DB handle is closed"
+                }
+            return withContext(Dispatchers.IO) {
+                block(handle)
+            }
+        }
+
         private fun checkNotInProofProgressCallback() {
-            check(proofProgressCallbackDepth.get() == 0) {
+            check((proofProgressCallbackDepth.get() ?: 0) == 0) {
                 PROOF_PROGRESS_REENTRY_ERROR
             }
         }
 
         private fun VotingProofProgressCallback.withVotingDbReentryGuard() =
             VotingProofProgressCallback { progress ->
-                proofProgressCallbackDepth.incrementAndGet()
+                val depth = proofProgressCallbackDepth.get() ?: 0
+                proofProgressCallbackDepth.set(depth + 1)
                 try {
                     onProgress(progress)
                 } finally {
-                    proofProgressCallbackDepth.decrementAndGet()
+                    proofProgressCallbackDepth.set(depth)
                 }
             }
     }
@@ -1213,6 +1279,15 @@ class VotingRustBackend private constructor() {
             notes: Array<JniNoteInfo>,
             witnesses: Array<JniWitnessData>
         )
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun hasCompleteWitnessesNative(
+            dbHandle: Long,
+            roundId: String,
+            bundleIndex: Int,
+            notes: Array<JniNoteInfo>
+        ): Boolean
 
         @JvmStatic
         @Throws(RuntimeException::class)
