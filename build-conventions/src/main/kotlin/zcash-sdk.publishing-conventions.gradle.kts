@@ -50,8 +50,8 @@ extensions.getByType<MavenPublishBaseExtension>().apply {
         }
         licenses {
             license {
-                name.set("The MIT License")
-                url.set("http://opensource.org/licenses/MIT")
+                name.set("GNU Affero General Public License v3.0 only")
+                url.set("https://www.gnu.org/licenses/agpl-3.0.txt")
                 distribution.set("repo")
             }
         }

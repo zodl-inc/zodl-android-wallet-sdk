@@ -6,6 +6,28 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-09-16
+
+### Added
+- `VotingDbSession.hasCompleteWitnesses(roundId, bundleIndex, notes)` reports whether the witnesses
+  already cached for a bundle exactly cover its notes. Callers that persisted witnesses in an earlier
+  precompute pass can use it to skip regenerating them instead of paying for the work twice.
+
+### Changed
+- Shielded voting's delegation and vote proofs no longer hold the voting DB lock, so two bundles of a
+  round can prove at once.
+- Shielded voting no longer holds the voting DB lock across a PIR handshake, and a panic inside a
+  proof or a PIR handshake no longer leaves the voting DB unable to prove for the rest of its life.
+- Shielded voting's PIR client is now connected once per open voting DB and reused by delegation
+  precompute and proof generation for every bundle of a round, instead of being rebuilt - tokio
+  runtime, TLS client, tier parameters and a full Tier-0 dataset download - on each of those calls.
+- Shielded voting now builds against `zcash_voting` 4.0.0-rc.2 (`voting-circuits` 0.12.0). The vote
+  chain's circuit and verification key change with it: proposal ids may now range from 1 to 50 instead
+  of 1 to 15, as required for the 37-question Retroactive Grants round, and a client on the previous
+  circuit is rejected with `ConstraintSystemFailure` once the chain upgrades. The Rust API the SDK
+  wraps is unchanged; the crate's default backend is upstream librustzcash (`lrz`), so the native
+  library still links exactly one copy of each Zcash crate.
+
 ## [3.2.1] - 2026-09-15
 
 ### Changed
@@ -161,6 +183,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drives the classic `Synchronizer`.
 
 ### Changed
+- The SDK is now licensed under the GNU Affero General Public License, version 3 only
+  (AGPL-3.0-only) instead of the MIT License. An application that incorporates it must make the
+  complete corresponding source of that application available under the AGPL to its users,
+  including users who interact with it over a network, and no permission is granted to distribute
+  such an application through Google Play or any other channel whose terms are incompatible with
+  the AGPL. A commercial license is available for applications that cannot meet those conditions;
+  see `COMMERCIAL-LICENSE.md`. `LICENSE-EXCEPTIONS.md` covers Google Play distribution, the
+  MIT-licensed upstream this work derives from (reproduced in `LICENSE-MIT`), and trademark use.
 - Updated the `zcash_voting` dependency to `2.0.0-rc.5` 
 - **Shielded voting works again, on a source-incompatible API.** 2.8.0-rc.1 shipped with the
   voting module switched off and `VotingRustBackend` deprecated at `ERROR` level; the module is

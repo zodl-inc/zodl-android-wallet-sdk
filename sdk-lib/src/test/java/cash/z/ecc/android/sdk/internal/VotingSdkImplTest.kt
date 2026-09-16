@@ -4,6 +4,8 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniVoteRecord
+import cash.z.ecc.android.sdk.model.voting.VotingNoteInfo
+import cash.z.ecc.android.sdk.model.voting.VotingNoteScope
 import cash.z.ecc.android.sdk.model.voting.VotingRoundPhase
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
@@ -173,6 +175,24 @@ class VotingSdkImplTest {
         }
 
     @Test
+    fun hasCompleteWitnesses_forwards_the_mapped_notes_and_returns_the_backend_answer(): Unit =
+        runBlocking {
+            val backend = mock(TypesafeVotingBackend::class.java)
+            val votingDb = mock(TypesafeVotingDb::class.java)
+            `when`(backend.openVotingDb("path", "wallet-1", 0)).thenReturn(votingDb)
+            val notes = listOf(votingNoteInfo(1), votingNoteInfo(2))
+            `when`(votingDb.hasCompleteWitnesses("round-1", 3, notes.map { it.toInternal() }))
+                .thenReturn(true)
+            val session = VotingSdkImpl(backend).openDb("path", "wallet-1", 0)
+
+            assertTrue(session.hasCompleteWitnesses("round-1", 3, notes))
+
+            org.mockito.Mockito
+                .verify(votingDb)
+                .hasCompleteWitnesses("round-1", 3, notes.map { it.toInternal() })
+        }
+
+    @Test
     fun resetVotingSessionState_forwards_to_backend() =
         runBlocking {
             val backend = mock(TypesafeVotingBackend::class.java)
@@ -186,4 +206,17 @@ class VotingSdkImplTest {
                 .verify(votingDb)
                 .resetVotingSessionState("round-1")
         }
+
+    private fun votingNoteInfo(seed: Byte) =
+        VotingNoteInfo(
+            commitment = byteArrayOf(seed, 1),
+            nullifier = byteArrayOf(seed, 2),
+            value = seed.toLong(),
+            position = seed.toLong(),
+            diversifier = byteArrayOf(seed, 3),
+            rho = byteArrayOf(seed, 4),
+            rseed = byteArrayOf(seed, 5),
+            scope = VotingNoteScope.EXTERNAL,
+            ufvk = "ufvk-$seed"
+        )
 }

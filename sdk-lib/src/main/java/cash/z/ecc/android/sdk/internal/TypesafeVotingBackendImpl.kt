@@ -349,6 +349,12 @@ internal interface VotingDbBackend {
         witnesses: List<JniWitnessData>
     )
 
+    suspend fun hasCompleteWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        notes: List<JniNoteInfo>
+    ): Boolean
+
     suspend fun precomputeDelegationPir(
         roundId: String,
         bundleIndex: Int,
@@ -623,6 +629,12 @@ private class RustVotingDbBackend(
         notes: List<JniNoteInfo>,
         witnesses: List<JniWitnessData>
     ) = votingDb.storeWitnesses(roundId, bundleIndex, notes, witnesses)
+
+    override suspend fun hasCompleteWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        notes: List<JniNoteInfo>
+    ): Boolean = votingDb.hasCompleteWitnesses(roundId, bundleIndex, notes)
 
     override suspend fun precomputeDelegationPir(
         roundId: String,
@@ -978,6 +990,12 @@ internal class TypesafeVotingDbImpl(
         notes: List<VotingNoteInfo>,
         witnesses: List<JniWitnessData>
     ) = votingDb.storeWitnesses(roundId, bundleIndex, notes.toJniNoteInfos(), witnesses)
+
+    override suspend fun hasCompleteWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        notes: List<VotingNoteInfo>
+    ): Boolean = votingDb.hasCompleteWitnesses(roundId, bundleIndex, notes.toJniNoteInfos())
 
     override suspend fun precomputeDelegationPir(
         roundId: String,

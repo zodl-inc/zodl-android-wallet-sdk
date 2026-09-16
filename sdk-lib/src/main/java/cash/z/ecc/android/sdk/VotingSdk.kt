@@ -183,6 +183,16 @@ interface VotingDbSession {
         witnesses: List<VotingWitness>
     )
 
+    /**
+     * True when the cached witnesses for this bundle exactly cover its notes, so witness
+     * generation can be skipped.
+     */
+    suspend fun hasCompleteWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        notes: List<VotingNoteInfo>
+    ): Boolean
+
     suspend fun precomputeDelegationPir(
         roundId: String,
         bundleIndex: Int,
