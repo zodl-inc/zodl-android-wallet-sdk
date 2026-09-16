@@ -5,8 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-private typealias OhttpEx = co.electriccoin.lightwallet.client.internal.OhttpEx
-
+/* ktlint-disable max-line-length */
 class OhttpHttpClientTest {
     @Test
     fun `canHandle returns true for static proxy mappings`() {
@@ -81,7 +80,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw OhttpEx("test abort")
+                    throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
                 }
             }
         val transport =
@@ -107,7 +106,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue(exceptionThrown is OhttpEx)
+        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val headerKeys = capturedHeaders.first().map { it.first }
         assertFalse(headerKeys.contains("X-Client-Trace-Id"))
@@ -126,7 +125,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw OhttpEx("test abort")
+                    throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
                 }
             }
         val transport =
@@ -152,7 +151,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue(exceptionThrown is OhttpEx)
+        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val headers = capturedHeaders.first()
         val traceIdHeader = headers.find { it.first == "X-Client-Trace-Id" }
@@ -180,7 +179,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw OhttpEx("test abort")
+                    throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
                 }
             }
         val transport =
@@ -206,7 +205,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue(exceptionThrown is OhttpEx)
+        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
         assertTrue(traceIdHeader != null)
@@ -231,7 +230,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw OhttpEx("test abort")
+                    throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
                 }
             }
         val longPrefix = "a".repeat(60)
@@ -258,7 +257,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue(exceptionThrown is OhttpEx)
+        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
         assertTrue(traceIdHeader != null)
