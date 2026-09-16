@@ -104,7 +104,8 @@ class OhttpHttpClientTest {
                         timeoutMs = 5000
                     )
                 }
-            }.exceptionOrNull()
+            }
+                .exceptionOrNull()
         assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val headerKeys = capturedHeaders.first().map { it.first }
@@ -149,7 +150,8 @@ class OhttpHttpClientTest {
                         timeoutMs = 5000
                     )
                 }
-            }.exceptionOrNull()
+            }
+                .exceptionOrNull()
         assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val headers = capturedHeaders.first()
@@ -203,7 +205,8 @@ class OhttpHttpClientTest {
                         timeoutMs = 5000
                     )
                 }
-            }.exceptionOrNull()
+            }
+                .exceptionOrNull()
         assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
@@ -255,7 +258,8 @@ class OhttpHttpClientTest {
                         timeoutMs = 5000
                     )
                 }
-            }.exceptionOrNull()
+            }
+                .exceptionOrNull()
         assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
