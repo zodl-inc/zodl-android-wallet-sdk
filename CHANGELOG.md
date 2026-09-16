@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-09-16
+
 ### Added
 - `VotingDbSession.hasCompleteWitnesses(roundId, bundleIndex, notes)` reports whether the witnesses
   already cached for a bundle exactly cover its notes. Callers that persisted witnesses in an earlier
