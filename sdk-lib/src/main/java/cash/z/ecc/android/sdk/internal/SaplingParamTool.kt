@@ -14,6 +14,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import io.ktor.client.HttpClient
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.utils.io.jvm.javaio.toInputStream
 import java.io.File
 import java.io.IOException
 import java.net.URL
@@ -23,6 +27,12 @@ import kotlin.time.Duration.Companion.milliseconds
 internal class SaplingParamTool(
     val properties: SaplingParamToolProperties
 ) {
+    /**
+     * Optional provider for a Tor HTTP client. When set, Sapling parameter downloads will be routed
+     * through Tor. When null, downloads use direct HTTPS.
+     */
+    var torHttpClientProvider: (suspend () -> HttpClient)? = null
+
     val spendParamsFile: File
         get() = File(properties.paramsDirectory, SPEND_PARAM_FILE_NAME)
 
@@ -71,9 +81,9 @@ internal class SaplingParamTool(
         internal const val OUTPUT_PARAM_FILE_SHA1_HASH = "0ebc5a1ef3653948e1c46cf7a16071eac4b7e352"
 
         /**
-         * The Url that is used by default in zcashd
+         * The URL for Sapling parameter files, hosted on GitHub
          */
-        private const val CLOUD_PARAM_DIR_URL = "https://download.z.cash/downloads/"
+        private const val CLOUD_PARAM_DIR_URL = "https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/main/"
 
         private val checkFilesMutex = Mutex()
 
@@ -296,6 +306,8 @@ internal class SaplingParamTool(
      * Transfers bytes from [url] to [temporaryFile], from position 0 up to [maxSizeBytes]. This eliminates the
      * risk of downloading a potentially large file from a malicious server.
      *
+     * If [torHttpClientProvider] is set, the download is routed through Tor. Otherwise, it uses direct HTTPS.
+     *
      * Failures surfaced here (non-exhaustive): [IllegalArgumentException] - preconditions on the parameters don't
      * hold; [java.nio.channels.NonReadableChannelException]/[java.nio.channels.NonWritableChannelException] -
      * source/destination channel opened for the wrong direction; [java.nio.channels.ClosedChannelException]/
@@ -308,10 +320,29 @@ internal class SaplingParamTool(
         maxSizeBytes: Long
     ): Result<Unit> =
         runCatching {
-            Channels.newChannel(url.openStream()).use { readableByteChannel ->
-                temporaryFile.outputStream().use { fileOutputStream ->
-                    fileOutputStream.channel.use { fileChannel ->
-                        fileChannel.transferFrom(readableByteChannel, 0, maxSizeBytes)
+            val torProvider = torHttpClientProvider
+            if (torProvider != null) {
+                // Download via Tor
+                Twig.debug { "Sapling params: downloading ${url.file.substringAfterLast('/')} via Tor" }
+                val client = torProvider()
+                val response = client.get(url.toString())
+                response.bodyAsChannel().toInputStream().use { inputStream ->
+                    temporaryFile.outputStream().use { fileOutputStream ->
+                        fileOutputStream.channel.use { fileChannel ->
+                            Channels.newChannel(inputStream).use { readableByteChannel ->
+                                fileChannel.transferFrom(readableByteChannel, 0, maxSizeBytes)
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Direct HTTPS download
+                Twig.debug { "Sapling params: downloading ${url.file.substringAfterLast('/')} via direct HTTPS" }
+                Channels.newChannel(url.openStream()).use { readableByteChannel ->
+                    temporaryFile.outputStream().use { fileOutputStream ->
+                        fileOutputStream.channel.use { fileChannel ->
+                            fileChannel.transferFrom(readableByteChannel, 0, maxSizeBytes)
+                        }
                     }
                 }
             }

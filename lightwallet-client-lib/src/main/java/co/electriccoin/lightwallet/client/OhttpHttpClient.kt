@@ -49,7 +49,7 @@ class OhttpHttpClient private constructor(
 
     /**
      * Returns true if [url] can be routed through the OHTTP gateway: either the host has a static
-     * proxy mapping (near.zodl.com, vote.zodl.com, params.zodl.com) or it matches an allowlisted
+     * proxy mapping (near.zodl.com, vote.zodl.com) or it matches an allowlisted
      * suffix (.valargroup.org, .valargroup.dev, chaindefuser.com).
      */
     fun canHandle(url: String): Boolean {
@@ -71,8 +71,8 @@ class OhttpHttpClient private constructor(
         val uri = URI.create(request.url)
         val originalHost = uri.host ?: error("No host in URL: ${request.url}")
         // Gateway v1.4.5+ supports direct proxying for allowlisted suffixes (the inner request's
-        // :authority is NOT rewritten). Static proxy mappings (near.zodl.com, vote.zodl.com,
-        // params.zodl.com) still get rewritten for backward compatibility.
+        // :authority is NOT rewritten). Static proxy mappings (near.zodl.com, vote.zodl.com)
+        // still get rewritten for backward compatibility.
         val proxyHost = proxyGatewayHostFor(originalHost)
         val innerAuthority =
             when {

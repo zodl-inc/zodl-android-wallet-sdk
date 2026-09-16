@@ -1250,7 +1250,21 @@ interface Synchronizer {
                 var walletClient: CombinedWalletClient? = null
                 try {
                     val (saplingParamTool, backend) = backendDeferred.await()
-                    val saplingParamFetcher = SaplingParamFetcher(saplingParamTool, backend)
+                    val torHttpClientProvider: (suspend () -> io.ktor.client.HttpClient)? =
+                        if (sdkFlags.isTorEnabled && lazyTorClient != null) {
+                            {
+                                val isolatedTor = lazyTorClient.getOrCreate().isolatedTorClient()
+                                io.ktor.client.HttpClient(cash.z.ecc.android.sdk.internal.model.TorHttp) {
+                                    engine {
+                                        tor = isolatedTor
+                                        retryLimit = 1
+                                    }
+                                }
+                            }
+                        } else {
+                            null
+                        }
+                    val saplingParamFetcher = SaplingParamFetcher(saplingParamTool, backend, torHttpClientProvider)
                     val blockStore =
                         DefaultSynchronizerFactory
                             .defaultCompactBlockRepository(coordinator.fsBlockDbRoot(zcashNetwork, alias), backend)

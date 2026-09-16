@@ -86,13 +86,16 @@ internal class OhttpKeyConfig(
 // =============================================================================
 // External API proxy mappings
 // =============================================================================
-// Non-LWD calls (NEAR intents, voting config, Sapling params) can also be routed
+// Non-LWD calls (NEAR intents, voting config) can also be routed
 // through the OHTTP gateway. The gateway routes by `authority` header and proxies
 // to the real backend; external services only ever see the gateway's IP.
 //
 // Privacy routing matrix:
 //   Tor OFF: use OHTTP for all external calls (gateway hides client IP)
 //   Tor ON:  LWD → Tor→OHTTP; other external calls → Tor direct (no double-wrap)
+//
+// Note: Sapling params are now hosted on GitHub (raw.githubusercontent.com) and downloaded
+// directly via HTTPS (Tor OFF) or through the SDK's Tor client (Tor ON); no OHTTP proxying.
 
 /**
  * Allowlisted host suffixes for direct OHTTP proxying (gateway v1.4.5+).
@@ -107,7 +110,6 @@ internal fun proxyGatewayHostFor(originalHost: String): String? =
         "1click.chaindefuser.com" -> "near.zodl.com"
         "pro-api.coinmarketcap.com" -> "cmc.zodl.com"
         "voting.valargroup.dev" -> "vote.zodl.com"
-        "download.z.cash" -> "params.zodl.com"
         else -> null
     }
 
