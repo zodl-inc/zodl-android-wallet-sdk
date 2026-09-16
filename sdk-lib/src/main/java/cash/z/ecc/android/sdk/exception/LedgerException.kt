@@ -1,8 +1,9 @@
 package cash.z.ecc.android.sdk.exception
 
 /**
- * Failures of the Ledger hardware-wallet integration: pairing an account, displaying an address, and
- * signing a PCZT over a [cash.z.ecc.android.sdk.ledger.LedgerApduTransport].
+ * Failures of the Ledger hardware-wallet integration: pairing an account, displaying an address,
+ * signing a PCZT over a [cash.z.ecc.android.sdk.ledger.LedgerApduTransport], and the Bluetooth LE
+ * transport itself.
  *
  * Messages are fixed text. Nothing here carries an APDU, a device reply, a PCZT, a viewing key, an
  * address, a device identity or a signature; [reason], where present, is built from text written
@@ -114,6 +115,65 @@ sealed class LedgerException(
     class InvalidInput internal constructor(
         override val reason: String?
     ) : LedgerException("A value passed to the Ledger integration is invalid.")
+
+    /**
+     * This device has no Bluetooth LE support, or a Bluetooth LE scan could not be started.
+     *
+     * @param scanErrorCode The `ScanCallback.SCAN_FAILED_*` code when a scan failed to start.
+     */
+    class BluetoothUnavailable internal constructor(
+        val scanErrorCode: Int? = null
+    ) : LedgerException("Bluetooth LE is not available on this device.")
+
+    /**
+     * A Bluetooth permission the app needs for this API level is not granted; see `docs/Ledger.md`.
+     *
+     * @param missingPermissions The permissions not granted, when known.
+     */
+    class BluetoothUnauthorized internal constructor(
+        val missingPermissions: List<String>,
+        cause: Throwable? = null
+    ) : LedgerException("Bluetooth permission has not been granted.", cause)
+
+    /**
+     * Bluetooth is turned off.
+     */
+    class BluetoothDisabled internal constructor() : LedgerException("Bluetooth is turned off.")
+
+    /**
+     * The Ledger device could not be found: the address is not a Bluetooth device, or the device
+     * that answered offers no Ledger service.
+     */
+    class DeviceNotFound internal constructor() : LedgerException("The Ledger device could not be found.")
+
+    /**
+     * The Bluetooth connection to the device could not be set up. Make sure the device is on,
+     * unlocked, nearby, and not connected to another phone.
+     */
+    class ConnectionFailed internal constructor(
+        override val reason: String?,
+        cause: Throwable? = null
+    ) : LedgerException("Could not connect to the Ledger device.", cause)
+
+    /**
+     * The device disconnected, or the transport was closed, or an earlier exchange failed and left
+     * the connection unusable. Connect again.
+     */
+    class Disconnected internal constructor() : LedgerException("The Ledger device is disconnected.")
+
+    /**
+     * Bluetooth pairing with the device was refused or failed. The user has to accept the pairing
+     * request on both the phone and the device; if the device was reset or paired elsewhere, the
+     * user has to remove it from the phone's Bluetooth settings first.
+     */
+    class PairingRefused internal constructor(
+        override val reason: String?
+    ) : LedgerException("Bluetooth pairing with the Ledger device failed.")
+
+    /**
+     * The device did not answer in time. The connection is closed; connect again.
+     */
+    class Timeout internal constructor() : LedgerException("The Ledger device did not answer in time.")
 
     /**
      * An unexpected failure on this side of the transport.

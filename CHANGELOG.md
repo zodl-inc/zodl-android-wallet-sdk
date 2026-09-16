@@ -40,6 +40,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DeviceRefused` (with `statusWord` and `isTransient`), `TransactionNotSignable`, `MalformedReply`,
   `InvalidInput` and `Internal`, each with `isRestartable` and, where the engine gives one, a loggable
   `reason`. Messages are fixed text and carry no key, address, identity, transaction or signature data.
+  The Bluetooth transport adds `BluetoothUnavailable`, `BluetoothUnauthorized` (with
+  `missingPermissions`), `BluetoothDisabled`, `DeviceNotFound`, `ConnectionFailed`, `Disconnected`,
+  `PairingRefused` and `Timeout`.
+- `LedgerBluetoothScanner(context).devices()`, a `Flow` of the `LedgerBluetoothDevice`s (model, name,
+  identifier, RSSI) found so far - Nano X, Stax, Flex and Nano Gen5 - and `LedgerBluetoothScanner.connect(device,
+  connectTimeout)` / `LedgerBluetoothTransport.connect(context, device, connectTimeout)`, which return a
+  `LedgerApduTransport` over Bluetooth LE. The first connection bonds with the device
+  through the OS pairing prompt. The SDK's manifest declares no Bluetooth permission: an app that uses
+  these must declare and request `BLUETOOTH_SCAN` (with `neverForLocation`) and `BLUETOOTH_CONNECT` on
+  API 31 and later, and `BLUETOOTH`, `BLUETOOTH_ADMIN` and `ACCESS_FINE_LOCATION` on API 30 and earlier
+  (see `docs/Ledger.md`). An exchange that fails or is cancelled closes the transport.
 - `GiftCard`, a gift card read from a gift card link with `GiftCard.parse(link)`: this SDK's
   own links (`https://gift.zodl.com/#v=1&key=...&height=...`) and the legacy JSON payment-link
   encoding at `/payment-links/open#vN=` (`v1=` / `v2=` / `v3=` payloads). Exposes `origin`

@@ -1,12 +1,68 @@
 # Ledger hardware wallets
 
 The SDK signs transactions with a Ledger device running the Zcash app (3.6.0 or later; 3.9.3 is the
-version the engine is pinned to). The protocol engine is [`pczt_ledger`](https://github.com/zodl-inc/pczt-ledger),
-compiled into the SDK's native library. It performs no I/O: the SDK drives it over a
-`LedgerApduTransport`, a request/response channel to one device that the app provides.
+version the engine is pinned to) over Bluetooth LE. The protocol engine is
+[`pczt_ledger`](https://github.com/zodl-inc/pczt-ledger), compiled into the SDK's native library. It
+performs no I/O: the SDK drives it over a `LedgerApduTransport`, a request/response channel to one
+device — `LedgerBluetoothTransport`, or a channel of the app's own.
 
 All Ledger types are in `cash.z.ecc.android.sdk.ledger`; every failure is a
 `cash.z.ecc.android.sdk.exception.LedgerException`.
+
+## Connecting over Bluetooth LE
+
+`LedgerBluetoothScanner` finds devices and `LedgerBluetoothTransport` connects to one; USB is not
+supported. Nano X, Stax, Flex and Nano Gen5 speak Bluetooth LE.
+
+```kotlin
+val scanner = LedgerBluetoothScanner(context)
+val device = scanner.devices().first { it.isNotEmpty() }.first() // or collect and let the user pick
+val transport = scanner.connect(device)
+try {
+    // LedgerDevice.new(transport, network) and/or synchronizer.signPcztWithLedger(..., transport)
+} finally {
+    transport.close()
+}
+```
+
+The first connection bonds the phone with the device: Android shows its pairing prompt and the device
+shows a code for the user to confirm. A declined pairing is `LedgerException.PairingRefused`; if the
+device was reset or paired with another phone, the user has to remove it from the phone's Bluetooth
+settings first. A device that is connected to another phone or app does not advertise and is not found.
+
+### What the app has to declare and request
+
+The SDK's manifest declares no Bluetooth permission, so apps that never use a Ledger do not acquire
+them. An app that does declares:
+
+```xml
+<!-- API 31+ -->
+<uses-permission
+    android:name="android.permission.BLUETOOTH_SCAN"
+    android:usesPermissionFlags="neverForLocation"
+    tools:targetApi="s" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<!-- API 30 and earlier -->
+<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+
+<uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+```
+
+and requests `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` (API 31+) or `ACCESS_FINE_LOCATION` (API 30 and
+earlier) at runtime before scanning. `neverForLocation` is accurate: scan results are used only to find
+Ledger devices. Missing permissions fail with `LedgerException.BluetoothUnauthorized`
+(`missingPermissions` names them); Bluetooth being off is `LedgerException.BluetoothDisabled`, and a
+phone without Bluetooth LE is `LedgerException.BluetoothUnavailable`.
+
+### Transport rules
+
+One exchange runs at a time. An exchange that fails — a timeout, a disconnect, a reply that does not
+reassemble, a cancellation — closes the transport, and every later exchange fails with
+`LedgerException.Disconnected`: the device's reply to the failed command may still arrive, and must not
+be taken for the answer to the next one. Connect again to continue. The device's identifier (its
+Bluetooth address) is a stable hardware identifier; do not log it or send it anywhere.
 
 ## Pairing an account
 
@@ -89,3 +145,27 @@ The Orchard-to-Ironwood migration signs its transactions in-process or with Keys
 There is no Ledger path for it: a migration run is sized for those signers only, and a Ledger account
 cannot sign one.
 
+## Manual test plan (testnet)
+
+Real devices cannot be exercised in CI. Before a release, on a testnet build, with a Nano X, a Stax and a
+Flex running the Zcash app 3.6.0 or later (3.9.3 preferred) with a testnet-configured seed:
+
+1. With Bluetooth permissions not granted, scanning fails with `BluetoothUnauthorized`; with Bluetooth
+   off, `BluetoothDisabled`.
+2. Grant permissions, open the Zcash app on the device, scan: the device appears with its model.
+3. Connect for the first time: the OS pairing prompt and the device's code appear; decline once
+   (`PairingRefused`), then accept.
+4. Pair account 0: approve the viewing key export on the device. Decline once first (`UserRejected`).
+   Import it with `pairing.accountImportSetup(...)` and sync; the account's balance matches the device's.
+5. `displayUnifiedAddress`: the address on the device matches the returned one; reject once.
+6. Receive testnet funds to the account's Orchard address and to its transparent address.
+7. Send from Orchard to another wallet: review on the device (recipient, amount, fee), approve; the
+   transaction confirms. Repeat and reject the review: `UserRejected` with `isRestartable`, then sign
+   again with the same PCZT on the same transport.
+8. Shield the transparent funds: the device shows no third-party output; approve; it confirms.
+9. With a second Ledger holding a different seed, sign with the first device's binding:
+   `DeviceMismatch`, and nothing is shown on the second device.
+10. Close the Zcash app mid-stream: `WrongApp` or `DeviceRefused`. Walk out of range mid-review:
+    `Disconnected`; reconnect and sign again.
+11. A transaction with Sapling inputs, or more outputs than the device reviews, fails with
+    `TransactionNotSignable` before anything is sent.

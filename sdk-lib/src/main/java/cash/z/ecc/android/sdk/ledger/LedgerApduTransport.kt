@@ -5,8 +5,9 @@ import kotlin.time.Duration
 /**
  * A request/response channel to one Ledger device.
  *
- * [LedgerDevice] and `Synchronizer.signPcztWithLedger` drive a device through it; an app provides the
- * channel.
+ * [LedgerDevice] and `Synchronizer.signPcztWithLedger` drive a device through it. The SDK's Bluetooth
+ * LE implementation is [LedgerBluetoothTransport]; tests and other channels implement this interface
+ * directly.
  *
  * # Contract
  *
