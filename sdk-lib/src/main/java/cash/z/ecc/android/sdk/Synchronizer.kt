@@ -193,16 +193,6 @@ interface Synchronizer {
     val accountsFlow: Flow<List<Account>?>
 
     /**
-     * Emits error states of the synchronizer.
-     *
-     * Since Tor client creation is now lazy (see [InitializationError.TOR_NOT_AVAILABLE]), this is not
-     * currently produced at construction time; Tor bootstrap failures instead surface per-call, e.g. as
-     * [TorInitializationErrorException] from [getTorHttpClient] or as `Response.Failure.OverTor` from
-     * Tor-mode network calls.
-     */
-    val initializationError: InitializationError?
-
-    /**
      * Tells the wallet to track an account using a unified full viewing key.
      *
      * Returns details about the imported account, including the unique account identifier for
@@ -263,6 +253,56 @@ interface Synchronizer {
      * @return a [Flow] of fastest servers which updates it's state during measurement stages
      */
     suspend fun getFastestServers(servers: List<LightWalletEndpoint>): Flow<FastestServersResult>
+
+    /**
+     * This function decides whether automatic server selection should move the wallet away from [current].
+     *
+     * [current] and every endpoint in [candidates] are benchmarked in full: server info and latest block
+     * height are fetched and timed, and an endpoint is ruled out unless its chain name, consensus branch
+     * and sync state match this SDK. Each survivor then streams the same [blocksToFetch] blocks, ending at
+     * the lowest tip any survivor reported; the stream time is its score and a candidate that needs longer
+     * than [fetchThreshold] is ruled out. [current] is measured whether or not [candidates] contains it,
+     * so a host dropped from the caller's list is never abandoned without being measured.
+     *
+     * A switch is only recommended when the best candidate beats [current] by at least 200 milliseconds and
+     * by at least 25 percent of the current server's score, or when [current] fails benchmarking in two
+     * consecutive evaluations. A switch of the first kind is additionally held off for thirty minutes after
+     * the previous one; a switch away from a server that could not be measured is not, because the two
+     * consecutive failures are already its gate and waiting out the cooldown on an unreachable server costs
+     * more than the rebuild does. This hysteresis keeps the wallet from flip-flopping between two
+     * near-equal or intermittently slow servers; the consecutive-failure count and the cooldown are held in
+     * memory for the lifetime of the process. The failure count belongs to the server it was accrued
+     * against, so changing [current] between evaluations starts it over.
+     *
+     * This call only counts a failed measurement of [current]; it never clears that count and never starts
+     * the cooldown, because the caller is free to decline the recommendation. Call [confirmServerSwitch]
+     * once the returned endpoint has actually been applied - without it the cooldown never starts, and with
+     * it on a switch that never happened a genuinely broken server would be given another thirty minutes.
+     *
+     * @param current the endpoint the wallet is connected to right now
+     * @param candidates the endpoints to benchmark alongside [current]
+     * @param fetchThreshold per-candidate cap for the block-fetch stage
+     * @param blocksToFetch how many blocks to stream from every candidate while timing it
+     *
+     * @return the endpoint to switch to, or null when the wallet should stay on [current]
+     */
+    suspend fun evaluateServerSwitch(
+        current: LightWalletEndpoint,
+        candidates: List<LightWalletEndpoint>,
+        fetchThreshold: Duration = 5.seconds,
+        blocksToFetch: Int = 1
+    ): LightWalletEndpoint?
+
+    /**
+     * Tells the SDK that the wallet has actually been moved to [endpoint], which [evaluateServerSwitch]
+     * recommended. The consecutive-failure count starts over against [endpoint] and the switch cooldown
+     * starts now.
+     *
+     * Call this only after the switch was applied, and always when it was; see [evaluateServerSwitch].
+     *
+     * @param endpoint the endpoint the wallet was moved to
+     */
+    suspend fun confirmServerSwitch(endpoint: LightWalletEndpoint)
 
     /**
      * Gets the current unified address for the given account.
@@ -328,6 +368,11 @@ interface Synchronizer {
      * @param memo the optional memo to include as part of the proposal's transactions.
      *
      * @return the proposal or an exception
+     *
+     * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
+     * requested amount together with the required fee
+     * @throws TransactionEncoderException.ProposalFromParametersException if the proposal cannot be
+     * created for any other reason
      */
     suspend fun proposeTransfer(
         account: Account,
@@ -357,6 +402,8 @@ interface Synchronizer {
      *
      * @return the proposal or an exception
      *
+     * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
+     * migration together with the required fee
      * @throws TransactionEncoderException.ProposalFromParametersException if NU6.3 is not
      * active, if any Orchard note is not yet spendable, or if the proposal cannot be created
      */
@@ -369,6 +416,11 @@ interface Synchronizer {
      * @param uri a ZIP-321 compliant payment URI String
      *
      * @return the proposal or an exception
+     *
+     * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
+     * requested payment together with the required fee
+     * @throws TransactionEncoderException.ProposalFromUriException if the proposal cannot be created
+     * for any other reason
      */
     suspend fun proposeFulfillingPaymentUri(
         account: Account,
@@ -390,8 +442,11 @@ interface Synchronizer {
      * @return the proposal, or null if the transparent balance that would be shielded is
      *         zero or below `shieldingThreshold`.
      *
-     * @throws Exception if `transparentReceiver` is null and there are transparent funds
-     *         in more than one of the account's transparent receivers.
+     * @throws TransactionEncoderException.InsufficientFundsException if the transparent funds do not
+     *         cover the required fee
+     * @throws TransactionEncoderException.ProposalShieldingException if the proposal cannot be
+     *         created for any other reason, e.g. if `transparentReceiver` is null and there are
+     *         transparent funds in more than one of the account's transparent receivers.
      */
     suspend fun proposeShielding(
         account: Account,
@@ -427,9 +482,14 @@ interface Synchronizer {
      *
      * @return The partially created transaction in [Pczt] format.
      *
+     * @throws PcztException.MultiStepProposalUnsupportedException if the proposal needs more than one
+     * transaction, which an external PCZT signer cannot fulfill
      * @throws PcztException.CreatePcztFromProposalException as a common indicator of the operation failure
      */
-    @Throws(PcztException.CreatePcztFromProposalException::class)
+    @Throws(
+        PcztException.MultiStepProposalUnsupportedException::class,
+        PcztException.CreatePcztFromProposalException::class
+    )
     suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
         proposal: Proposal
@@ -822,7 +882,9 @@ interface Synchronizer {
      * @return http client that does http communication over Tor network
      *
      * @throws TorInitializationErrorException if an error occurred during Tor setup
-     * @throws TorUnavailableException if Tor or exchange rate is not enabled
+     * @throws TorUnavailableException only from the legacy [SdkSynchronizer] engine, when neither Tor nor
+     * exchange rates are enabled; the Slipstream engine always provides a Tor client, created lazily on
+     * first use
      */
     @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
     suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit = {}): HttpClient
@@ -882,6 +944,21 @@ interface Synchronizer {
     var onSetupErrorHandler: ((Throwable?) -> Boolean)?
 
     /**
+     * The state-flow twin of [onSetupErrorHandler]'s latched failure, for consumers that want to
+     * observe it rather than own the single [onSetupErrorHandler] slot. [onSetupErrorHandler] is a
+     * `var`: whichever caller assigns it last silently replaces any handler a different caller
+     * already installed, which is a real hazard when both an SDK-internal coordinator and a host
+     * app each want to react to the same failure. A [StateFlow] has no such single-slot problem -
+     * any number of independent collectors can observe the same latched value.
+     *
+     * Always emits `null` on an engine whose setup failures are thrown synchronously out of
+     * [Synchronizer.new] instead of latched (the default engine). An engine that instead defers
+     * setup failures past construction - surfacing them only through [onSetupErrorHandler] - is
+     * expected to latch the same failure here too.
+     */
+    val setupError: StateFlow<Throwable?>
+
+    /**
      * A callback to invoke whenever a chain error is encountered. These occur whenever the
      * processor detects a missing or non-chain-sequential block (i.e. a reorg). At a minimum, it is
      * best to log these errors because they are the most common source of bugs and unexpected
@@ -936,22 +1013,6 @@ interface Synchronizer {
          * When set, a UI element may want to turn green. In this state, the balance can be trusted.
          */
         SYNCED
-    }
-
-    enum class InitializationError {
-        /**
-         * Indicates that tor is required but not available.
-         *
-         * Typically this means that [SdkFlags.isTorEnabled] is set to true but Tor instantiation
-         * failed.
-         *
-         * Tor client creation is lazy (deferred to first use, via `LazyTorClient`) rather than happening
-         * eagerly during [Synchronizer.Companion.new], so this error is no longer produced at
-         * construction time. Tor bootstrap failures now surface per-call instead, e.g. as
-         * [TorInitializationErrorException] from [getTorHttpClient] or as `Response.Failure.OverTor` from
-         * Tor-mode network calls. This case is kept for source/binary compatibility.
-         */
-        TOR_NOT_AVAILABLE,
     }
 
     companion object {

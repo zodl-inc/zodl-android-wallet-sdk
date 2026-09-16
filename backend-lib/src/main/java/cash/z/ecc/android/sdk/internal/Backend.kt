@@ -238,10 +238,14 @@ interface Backend {
 
     suspend fun listTransparentReceivers(accountUuid: ByteArray): List<String>
 
+    /**
+     * @throws IllegalArgumentException if [height] is outside the valid UInt range.
+     */
     fun getBranchIdForHeight(height: Long): Long
 
     /**
      * @throws RuntimeException as a common indicator of the operation failure
+     * @throws IllegalArgumentException if [outputIndex] is negative.
      */
     @Throws(RuntimeException::class)
     suspend fun getMemoAsUtf8(
@@ -252,6 +256,7 @@ interface Backend {
 
     /**
      * @throws RuntimeException as a common indicator of the operation failure
+     * @throws IllegalArgumentException if [height] is outside the valid UInt range.
      */
     @Throws(RuntimeException::class)
     suspend fun rewindToHeight(height: Long): JniRewindResult
@@ -271,6 +276,8 @@ interface Backend {
 
     /**
      * @throws RuntimeException as a common indicator of the operation failure
+     * @throws IllegalArgumentException if [saplingStartIndex], [orchardStartIndex], or
+     *         [ironwoodStartIndex] is negative.
      */
     @Throws(RuntimeException::class)
     @Suppress("LongParameterList")
@@ -285,6 +292,7 @@ interface Backend {
 
     /**
      * @throws RuntimeException as a common indicator of the operation failure
+     * @throws IllegalArgumentException if [height] is outside the valid UInt range.
      */
     @Throws(RuntimeException::class)
     suspend fun updateChainTip(height: Long)
@@ -328,6 +336,8 @@ interface Backend {
 
     /**
      * @throws RuntimeException as a common indicator of the operation failure
+     * @throws IllegalArgumentException if [fromHeight] is outside the valid UInt range, or if
+     *         [limit] is negative.
      */
     @Throws(RuntimeException::class)
     suspend fun scanBlocks(
@@ -369,14 +379,22 @@ interface Backend {
      */
     suspend fun getLatestCacheHeight(): Long?
 
+    /**
+     * @throws IllegalArgumentException if [height] is outside the valid UInt range.
+     */
     suspend fun findBlockMetadata(height: Long): JniBlockMeta?
 
+    /**
+     * @throws IllegalArgumentException if [height] is outside the valid UInt range.
+     */
     suspend fun rewindBlockMetadataToHeight(height: Long)
 
     suspend fun getTotalTransparentBalance(address: String): Long
 
     /**
      * @throws RuntimeException as a common indicator of the operation failure
+     * @throws IllegalArgumentException if [index] is negative, or if [height] is outside the
+     *         valid UInt range.
      */
     @Suppress("LongParameterList")
     @Throws(RuntimeException::class)

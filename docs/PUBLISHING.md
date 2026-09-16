@@ -29,7 +29,7 @@ dependencyResolutionManagement {
         maven("https://central.sonatype.com/repository/maven-snapshots/") {
             // Optional; ensures only explicitly declared dependencies come from this repository
             content {
-                includeGroup("cash.z.ecc.android")
+                includeGroup("com.zodl.android")
             }
         }
     }
@@ -73,7 +73,7 @@ would need to be configured in a repository fork.
 ## Every time
 1. Update the [build number](https://github.com/zcash/zcash-android-wallet-sdk/blob/main/gradle.properties) and the [CHANGELOG](../CHANGELOG.md).  For release builds, suffix the Gradle invocations below with `-PIS_SNAPSHOT=false`.
 1. Build locally
-    * This will install the files in your local maven repo at `~/.m2/repository/cash/z/ecc/android/`
+    * This will install the files in your local maven repo at `~/.m2/repository/com/zodl/android/`
 ```zsh
 ./gradlew publishToMavenLocal
 ```
@@ -85,12 +85,15 @@ would need to be configured in a repository fork.
         3. Alternatively, `./gradlew publishAndReleaseToMavenCentral -PIS_SNAPSHOT=false` uploads and publishes in one step, skipping the manual review.
 
 ### Artifacts availability 
-- Our existing release artifacts can be found here and here:
-   - https://search.maven.org/artifact/cash.z.ecc.android/zcash-android-sdk
-   - https://repo1.maven.org/maven2/cash/z/ecc/android/
+- Our release artifacts can be found here and here:
+   - https://search.maven.org/artifact/com.zodl.android/zcash-android-sdk
+   - https://repo1.maven.org/maven2/com/zodl/android/
 
 - And our snapshot artifacts here:
-   - https://central.sonatype.com/repository/maven-snapshots/cash/z/ecc/android/
+   - https://central.sonatype.com/repository/maven-snapshots/com/zodl/android/
+
+- Releases published before 3.2.0 use the previous `cash.z.ecc.android` group and stay where they are:
+   - https://repo1.maven.org/maven2/cash/z/ecc/android/
 
 ### Obtain new user token
 1. Log in to the Sonatype Central Portal:
