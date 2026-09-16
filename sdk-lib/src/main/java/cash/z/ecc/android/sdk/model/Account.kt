@@ -51,6 +51,13 @@ data class Account internal constructor(
     }
 
     companion object {
+        /**
+         * The [keySource] to import an account paired with a Ledger device under
+         * ([cash.z.ecc.android.sdk.ledger.LedgerDevice.pairAccount]). It marks the account as one
+         * whose spend authority is on a Ledger, to be signed with `Synchronizer.signPcztWithLedger`.
+         */
+        const val LEDGER_KEY_SOURCE = "ledger"
+
         fun new(jniAccount: JniAccount): Account =
             Account(
                 accountUuid = AccountUuid.new(jniAccount.accountUuid),

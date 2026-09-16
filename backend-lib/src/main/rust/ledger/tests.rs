@@ -176,6 +176,44 @@ fn status_reply(status: StatusWord) -> Vec<u8> {
     status.to_u16().to_be_bytes().to_vec()
 }
 
+/// `LedgerDevice.exportUfvk` loops on `UfvkExportStep.RetrySameApdu` with no cap of its own, so
+/// the bound it relies on is the engine's: a `0x6901` refusal is absorbed and the same command
+/// handed out again at most `MAX_CMD_NOT_ACCEPTED_RETRIES` times, and the next one fails the export
+/// as a device refusal. This pins that behavior of `pczt_ledger`, which the Kotlin loop would spin
+/// on forever if it ever went away.
+#[test]
+fn a_viewing_key_export_gives_up_after_the_engines_refusal_budget() {
+    use pczt_ledger::apdu::MAX_CMD_NOT_ACCEPTED_RETRIES;
+    use pczt_ledger::pairing::{VkExchange, VkStep};
+
+    let mut export = VkExchange::ufvk(LedgerNetwork::Test, zip32::AccountId::ZERO).expect("export");
+    let first = export
+        .next_apdu()
+        .expect("the export starts with a command");
+    let refusal = status_reply(StatusWord::CmdNotAccepted);
+
+    for attempt in 0..MAX_CMD_NOT_ACCEPTED_RETRIES {
+        assert!(
+            matches!(export.process_response(&refusal), Ok(VkStep::RetrySameApdu)),
+            "refusal {attempt} is absorbed and the command is to be resent"
+        );
+        assert_eq!(
+            export.next_apdu().as_deref(),
+            Some(first.as_slice()),
+            "the resend is the identical command"
+        );
+    }
+
+    let err = export
+        .process_response(&refusal)
+        .expect_err("one refusal past the budget ends the export");
+    assert_eq!(LedgerError::from_pairing(&err).kind, Kind::DeviceRefused);
+    assert!(
+        export.next_apdu().is_none(),
+        "a failed export hands out nothing more, so the loop cannot continue"
+    );
+}
+
 #[test]
 fn a_device_identity_round_trips_through_its_string_form() {
     let identity = pczt_ledger::pairing::parse_device_identity_response(&wallet_public_key_reply(

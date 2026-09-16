@@ -34,6 +34,8 @@ import cash.z.ecc.android.sdk.internal.ext.existsSuspend
 import cash.z.ecc.android.sdk.internal.ext.requireSingleStepForPczt
 import cash.z.ecc.android.sdk.internal.ext.tryNull
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
+import cash.z.ecc.android.sdk.internal.ledger.LedgerPcztSigner
+import cash.z.ecc.android.sdk.internal.ledger.TypesafeLedgerBackendImpl
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
 import cash.z.ecc.android.sdk.internal.model.TorDormantMode
 import cash.z.ecc.android.sdk.internal.model.TorHttp
@@ -57,6 +59,9 @@ import cash.z.ecc.android.sdk.internal.transaction.SdkBroadcaster
 import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoder
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoderImpl
+import cash.z.ecc.android.sdk.ledger.LedgerAccountBinding
+import cash.z.ecc.android.sdk.ledger.LedgerApduTransport
+import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
@@ -1291,6 +1296,23 @@ class SdkSynchronizer private constructor(
             endpoint = defaultSubmitEndpoint
         )
     }
+
+    override suspend fun signPcztWithLedger(
+        pczt: Pczt,
+        accountUuid: AccountUuid,
+        binding: LedgerAccountBinding,
+        transport: LedgerApduTransport,
+        onProgress: ((LedgerSigningProgress) -> Unit)?
+    ): Pczt =
+        LedgerPcztSigner(TypesafeLedgerBackendImpl.new()).sign(
+            dataDbFile = backend.backend.dataDbFile,
+            network = network,
+            pczt = pczt,
+            accountUuid = accountUuid,
+            binding = binding,
+            transport = transport,
+            onProgress = onProgress
+        )
 
     override suspend fun refreshUtxos(
         account: Account,

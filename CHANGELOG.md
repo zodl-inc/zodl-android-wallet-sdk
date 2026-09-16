@@ -11,6 +11,35 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LedgerRustBackend`, the native boundary to the Ledger hardware-wallet engine (`pczt_ledger`). They
   exist for the SDK's own Ledger support and are not intended to be called directly; no existing call
   site changes.
+- Ledger hardware wallets, in the new `cash.z.ecc.android.sdk.ledger` package. `LedgerDevice.new(transport, network)`
+  wraps a `LedgerApduTransport` (an app-provided channel to the device) and offers `appVersion()`,
+  `deviceIdentity()`, `pairAccount(zip32AccountIndex)` and `displayUnifiedAddress(zip32AccountIndex,
+  transparentAddressIndex)`. `pairAccount` exports the account's `UnifiedFullViewingKey` (the user
+  approves it on the device) and returns it in a `LedgerAccountPairing` with a `LedgerAccountBinding`
+  (the device's `LedgerDeviceIdentity` and the ZIP 32 account index) and the device's `LedgerAppVersion`.
+  Import the account with `Synchronizer.importAccountByUfvk(pairing.accountImportSetup(name, birthday))`,
+  which imports a spending account with no ZIP 32 derivation under the new `Account.LEDGER_KEY_SOURCE`,
+  and persist the binding next to the account (`LedgerDeviceIdentity.encoding` and
+  `Zip32AccountIndex.index`; restore with `LedgerDeviceIdentity.new`). A `LedgerDeviceIdentity` can be
+  matched to the account's first transparent address once that address has spent on chain: store it as
+  you would that address. Its `toString()` does not print it.
+- `displayUnifiedAddress` returns a unified address carrying only the account's Orchard receiver at
+  diversifier index 0, whatever the transparent address index; compare it with an address built from
+  that receiver alone, not with the account's full unified address, which never matches.
+- `Synchronizer.signPcztWithLedger(pczt, accountUuid, binding, transport, onProgress)` signs the PCZT
+  `createPcztFromProposal` returned, over the transport, and returns the PCZT carrying the device's
+  signatures, which `createTransactionFromPczt` takes as `pcztWithSignatures` next to the result of
+  `addProofsToPczt` on the same PCZT. The device receives the whole transaction - recipients, amounts,
+  memos and the randomness of every shielded action - and the user reviews its outputs on the device.
+  Nothing is sent to a device whose identity is not the binding's. `onProgress` receives
+  `LedgerSigningProgress` values (`IdentifyingDevice`, `Streaming(sent, total)`, `AwaitingReviewOnDevice`,
+  `Signing`, `Complete`). A failed exchange or a cancellation closes the transport. `Synchronizer` gains
+  the member as abstract, so any implementer or test fake must now provide it.
+- `LedgerException`, a sealed `SdkException` every Ledger operation fails with: `UserRejected`,
+  `WrongApp`, `AppTooOld`, `DeviceMismatch`, `CapsMismatch`, `DerivationBudgetExhausted`,
+  `DeviceRefused` (with `statusWord` and `isTransient`), `TransactionNotSignable`, `MalformedReply`,
+  `InvalidInput` and `Internal`, each with `isRestartable` and, where the engine gives one, a loggable
+  `reason`. Messages are fixed text and carry no key, address, identity, transaction or signature data.
 - `GiftCard`, a gift card read from a gift card link with `GiftCard.parse(link)`: this SDK's
   own links (`https://gift.zodl.com/#v=1&key=...&height=...`) and the legacy JSON payment-link
   encoding at `/payment-links/open#vN=` (`v1=` / `v2=` / `v3=` payloads). Exposes `origin`
@@ -175,6 +204,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   devices; never larger ones. `newBlocking` does not take it.
 
 ### Changed
+- `AccountPurpose.Spending.seedFingerprint` and `AccountPurpose.Spending.zip32AccountIndex` are now
+  nullable and default to `null`, so a spending account whose signer cannot name its seed (a Ledger
+  device) can be imported with no ZIP 32 derivation. Pass both or neither; passing exactly one throws
+  `IllegalArgumentException`. Existing constructor calls compile and behave as before; code that reads
+  either property must now handle `null`.
 - `GiftCardRedeemer.new` is deprecated: it always runs the card wallet on `SdkSynchronizer`,
   whatever engine the app syncs with. Use `GiftCardRedeemers.new` from the incubator.
 - `GiftCardRedeemer.check` fails at once with `GiftCardException.SyncFailed`, carrying the
