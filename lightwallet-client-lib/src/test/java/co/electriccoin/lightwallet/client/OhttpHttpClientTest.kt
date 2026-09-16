@@ -162,9 +162,11 @@ class OhttpHttpClientTest {
         assertTrue("Trace ID must start with prefix", traceId1.startsWith("test-wallet-"))
         assertTrue("Trace ID must be ≤ 64 chars", traceId1.length <= 64)
         // Format: <prefix>-<uuid>-<seq> where uuid is 36 chars, seq is 6 digits
+        val traceIdPattern =
+            Regex("^[A-Za-z0-9][A-Za-z0-9._:-]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-\\d{6}$")
         assertTrue(
             "Trace ID must match format <prefix>-<uuid>-<seq>",
-            traceId1.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-\\d{6}$"))
+            traceId1.matches(traceIdPattern)
         )
         // Check second request - must have same session UUID but incremented seq
         val traceIdHeader2 = capturedHeaders[1].find { it.first == "X-Client-Trace-Id" }
@@ -234,9 +236,11 @@ class OhttpHttpClientTest {
         // Must start with alphanumeric
         assertTrue("Trace ID must start with alphanumeric", traceId.first().isLetterOrDigit())
         // Format: <prefix>-<uuid>-<seq>
+        val traceIdPattern =
+            Regex("^[A-Za-z0-9][A-Za-z0-9._:-]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-\\d{6}$")
         assertTrue(
             "Trace ID must match format",
-            traceId.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._:-]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-\\d{6}$"))
+            traceId.matches(traceIdPattern)
         )
         // The prefix should be "testwallet123" after sanitization (@ and # removed)
         assertTrue("Trace ID must start with sanitized prefix", traceId.startsWith("testwallet123-"))
