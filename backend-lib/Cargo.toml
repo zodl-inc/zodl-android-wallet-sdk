@@ -161,7 +161,15 @@ xz2 = { version = "0.1", features = ["static"] }
 # upstream librustzcash backend, so it keeps resolving against this crate's Ironwood family;
 # the Zakura forks are never pulled in. The 5.0.x line (round driver, batched submission) is a
 # separate API port and deliberately not adopted here.
-zcash_voting = { version = "=4.0.0-rc.1" }
+#
+# 4.0.0-rc.2 (adopted 2026-09-16): fixes store_vote taking a deferred SAVEPOINT and reading
+# before writing, which let a concurrent writer's INSERT hit an instant, non-retryable
+# SQLITE_BUSY regardless of any configured busy_timeout (SQLite skips the busy handler for
+# a lock upgrade inside an already-open transaction). This is what caused the "database is
+# locked" crash on many-bundle wallets with concurrent proving (MAX_CONCURRENT_PROOFS=2) --
+# reported upstream and fixed in valargroup/zcash_voting#358, verified end-to-end against a
+# real 13-bundle/37-proposal reproduction (481/481 vote commitments, zero SQLITE_BUSY).
+zcash_voting = { version = "=4.0.0-rc.2" }
 
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
