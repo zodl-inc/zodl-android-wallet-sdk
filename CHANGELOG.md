@@ -14,10 +14,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Shielded voting's delegation and vote proofs no longer hold the voting DB lock, so two bundles of a
   round can prove at once.
+- Shielded voting no longer holds the voting DB lock across a PIR handshake, and a panic inside a
+  proof or a PIR handshake no longer leaves the voting DB unable to prove for the rest of its life.
 - Shielded voting's PIR client is now connected once per open voting DB and reused by delegation
   precompute and proof generation for every bundle of a round, instead of being rebuilt - tokio
   runtime, TLS client, tier parameters and a full Tier-0 dataset download - on each of those calls.
-- Shielded voting now builds against `zcash_voting` 4.0.0-rc.1 (`voting-circuits` 0.12.0). The vote
+- Shielded voting now builds against `zcash_voting` 4.0.0-rc.2 (`voting-circuits` 0.12.0). The vote
   chain's circuit and verification key change with it: proposal ids may now range from 1 to 50 instead
   of 1 to 15, as required for the 37-question Retroactive Grants round, and a client on the previous
   circuit is rejected with `ConstraintSystemFailure` once the chain upgrades. The Rust API the SDK

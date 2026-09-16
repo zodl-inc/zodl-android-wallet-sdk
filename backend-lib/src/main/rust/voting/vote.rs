@@ -59,9 +59,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_bui
         // The proof below runs for minutes, so it holds only this bundle's
         // proof lock; other bundles of the round prove in parallel.
         let proof_lock = db.proof_lock(&round_id, bundle_index)?;
-        let _proof_guard = proof_lock
-            .lock()
-            .map_err(|_| anyhow!("voting bundle proof mutex poisoned"))?;
+        let _proof_guard = recover_lock(&proof_lock);
 
         // The pre-flight reads run under the shared access lock, which is
         // released again before proving starts.

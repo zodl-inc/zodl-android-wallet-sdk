@@ -52,6 +52,22 @@ struct CachedPirClient {
     client: Arc<voting::PirClientBlocking>,
 }
 
+/// Takes `mutex`, recovering a poisoned one instead of failing.
+///
+/// Every JNI entrypoint runs under `catch_unwind`, so a panic inside a proof
+/// or a PIR handshake is caught and turned into a Java exception - but it
+/// still poisons whatever mutex was held, for the life of the deduped handle.
+/// The mutexes taken through here guard either nothing at all (the per-bundle
+/// proof lock, whose value is `()`) or a cache that is rebuilt on demand (the
+/// PIR client), so a panic leaves no broken invariant behind them and the
+/// poison flag is noise: every later proof of that bundle would fail for a
+/// panic that had nothing to do with it.
+pub(super) fn recover_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl VotingDbHandle {
     fn open(path: &str, wallet_id: &str, network: voting::types::Network) -> anyhow::Result<Self> {
         let db = VotingDb::open(path).map_err(|e| anyhow!("VotingDb::open failed: {}", e))?;
@@ -143,10 +159,7 @@ impl VotingDbHandle {
         url: &str,
         layout: voting::config::PirLayout,
     ) -> anyhow::Result<Arc<voting::PirClientBlocking>> {
-        let mut cached = self
-            .pir_client
-            .lock()
-            .map_err(|_| anyhow!("voting DB PIR client mutex poisoned"))?;
+        let mut cached = recover_lock(&self.pir_client);
 
         if let Some(cached) = cached.as_ref()
             && cached.url == url
@@ -280,10 +293,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_clo
 ) {
     let res = catch_unwind(&mut env, |_| {
         if db_handle > 0 {
-            registry()
-                .lock()
-                .map_err(|_| anyhow!("voting DB registry mutex poisoned"))?
-                .remove(&db_handle);
+            // The last drop of the removed handle tears down the PIR client's
+            // tokio runtime and closes SQLite, neither of which may run while
+            // DB_REGISTRY is held: the removed value therefore outlives the
+            // guard and is dropped once the registry is free again.
+            let removed = {
+                let mut handles = registry()
+                    .lock()
+                    .map_err(|_| anyhow!("voting DB registry mutex poisoned"))?;
+                handles.remove(&db_handle)
+            };
+            drop(removed);
         }
         Ok(())
     });
@@ -338,6 +358,25 @@ mod tests {
         assert!(other_bundle.try_lock().is_ok());
         assert!(other_round.try_lock().is_ok());
         drop(guard);
+    }
+
+    #[test]
+    fn proof_lock_survives_a_panic_while_it_is_held() {
+        let db = VotingDbHandle::open(":memory:", "wallet-1", voting::types::Network::Testnet)
+            .expect("in-memory DB open");
+
+        let poisoner = db.proof_lock("round-1", 0).expect("proof lock to poison");
+        let panicking = std::thread::spawn(move || {
+            let _guard = poisoner.lock().expect("hold the proof lock");
+            panic!("a proof panicked while holding its bundle lock");
+        });
+        assert!(panicking.join().is_err());
+
+        let lock = db
+            .proof_lock("round-1", 0)
+            .expect("proof lock after the panic");
+        assert!(lock.lock().is_err(), "the lock really is poisoned");
+        drop(recover_lock(&lock));
     }
 
     #[test]

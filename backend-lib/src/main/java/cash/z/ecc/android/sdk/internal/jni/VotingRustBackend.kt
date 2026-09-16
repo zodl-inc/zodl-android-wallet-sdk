@@ -295,8 +295,17 @@ class VotingRustBackend private constructor() {
 
     @Suppress("TooManyFunctions", "LongParameterList")
     class VotingDb internal constructor(
-        private var dbHandle: Long?
+        initialHandle: Long
     ) {
+        /**
+         * The native handle, or `null` once [close] has released it.
+         *
+         * Volatile because [withHandleForProving] reads it without holding [accessMutex], so a
+         * concurrent [close] on another thread has to be visible to that read.
+         */
+        @Volatile
+        private var dbHandle: Long? = initialHandle
+
         private val accessMutex = Mutex()
 
         /**
