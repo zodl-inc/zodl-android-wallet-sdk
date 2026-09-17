@@ -1766,7 +1766,8 @@ class SlipstreamSynchronizer internal constructor(
             walletInitMode: WalletInitMode,
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
-            isExchangeRateEnabled: Boolean
+            isExchangeRateEnabled: Boolean,
+            ohttpClientTraceIdPrefix: String? = null
         ): CloseableSynchronizer {
             validateAlias(alias)
             val applicationContext = context.applicationContext
@@ -1784,6 +1785,7 @@ class SlipstreamSynchronizer internal constructor(
                         zcashNetwork = zcashNetwork,
                         isTorEnabled = isTorEnabled,
                         isExchangeRateEnabled = isExchangeRateEnabled,
+                        ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
                         key = key
                     )
                 }
@@ -1809,6 +1811,7 @@ class SlipstreamSynchronizer internal constructor(
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean,
+            ohttpClientTraceIdPrefix: String? = null,
             key: SlipstreamKey
         ): CloseableSynchronizer {
             SlipstreamNative.ensureLoaded(logLevel = "info")
@@ -1921,7 +1924,11 @@ class SlipstreamSynchronizer internal constructor(
                     context = applicationContext,
                     torClient = lazyTorClient.takeIf { isTorEnabled }
                 )
-            val walletClient = walletClientFactory.create(endpoint = lightWalletEndpoint)
+            val walletClient =
+                walletClientFactory.create(
+                    endpoint = lightWalletEndpoint,
+                    ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+                )
             val fastestServerFetcher =
                 FastestServerFetcher(typesafeBackend, zcashNetwork, walletClientFactory, sdkFlags)
 

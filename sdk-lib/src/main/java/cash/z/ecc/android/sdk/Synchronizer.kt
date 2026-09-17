@@ -1132,7 +1132,8 @@ interface Synchronizer {
             walletInitMode: WalletInitMode,
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
-            isExchangeRateEnabled: Boolean
+            isExchangeRateEnabled: Boolean,
+            ohttpClientTraceIdPrefix: String? = null
         ): CloseableSynchronizer {
             val applicationContext = context.applicationContext
             // Populates Twig's process/tag columns — without this every SDK log line renders a
@@ -1220,7 +1221,10 @@ interface Synchronizer {
                  */
                 val walletClientDeferred =
                     async(Dispatchers.Default) {
-                        walletClientFactory.create(endpoint = lightWalletEndpoint)
+                        walletClientFactory.create(
+                            endpoint = lightWalletEndpoint,
+                            ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+                        )
                     }
 
                 /**

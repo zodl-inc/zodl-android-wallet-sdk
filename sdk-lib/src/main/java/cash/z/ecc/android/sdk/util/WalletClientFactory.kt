@@ -26,10 +26,18 @@ class WalletClientFactory(
      *
      * @return an instance of [WalletClient] for [endpoint]
      */
-    suspend fun create(endpoint: LightWalletEndpoint): CombinedWalletClient =
+    suspend fun create(
+        endpoint: LightWalletEndpoint,
+        ohttpClientTraceIdPrefix: String? = null
+    ): CombinedWalletClient =
         CombinedWalletClientImpl.new(
             endpoint = endpoint,
-            lightWalletClient = LightWalletClient.new(context, endpoint),
+            lightWalletClient =
+                LightWalletClient.new(
+                    context,
+                    endpoint,
+                    ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+                ),
             isolatedTorClient = torClient?.let { holder -> LazyTorClient { holder.getOrCreate().isolatedTorClient() } },
         )
 }
