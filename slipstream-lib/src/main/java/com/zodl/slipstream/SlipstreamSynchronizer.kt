@@ -1592,9 +1592,7 @@ class SlipstreamSynchronizer internal constructor(
     @Suppress("TooGenericExceptionCaught")
     override suspend fun getTorClient(): cash.z.ecc.android.sdk.internal.model.TorClient {
         if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
-        val client =
-            lazyTorClient
-                ?: throw TorInitializationErrorException(NullPointerException("Tor has not been initialized during synchronizer setup"))
+        val client = lazyTorClient
         return try {
             client.getOrCreate().isolatedTorClient()
         } catch (e: CancellationException) {
