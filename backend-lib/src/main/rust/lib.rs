@@ -3135,11 +3135,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_createTor
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     tor_dir: JString<'local>,
+    client_trace_prefix: JString<'local>,
 ) -> jlong {
     let res = catch_unwind(&mut env, |env| {
         let tor_dir = path_from_jni(env, tor_dir)?;
+        let client_trace_prefix = if client_trace_prefix.is_null() {
+            None
+        } else {
+            Some(env.get_string(&client_trace_prefix)?.to_str()?.to_string())
+        };
 
-        let tor = crate::tor::TorRuntime::create(&tor_dir)?;
+        let tor = crate::tor::TorRuntime::create(&tor_dir, client_trace_prefix)?;
 
         Ok(Box::into_raw(Box::new(tor)).expose_provenance() as jlong)
     });

@@ -146,7 +146,7 @@ class TorClient private constructor(
         }
 
     companion object {
-        suspend fun new(torDir: File, backend: Backend): TorClient =
+        suspend fun new(torDir: File, backend: Backend, clientTracePrefix: String? = null): TorClient =
             withContext(Dispatchers.IO) {
                 RustBackend.loadLibrary()
 
@@ -156,7 +156,7 @@ class TorClient private constructor(
                     error("${torDir.path} directory does not exist and could not be created.")
                 }
 
-                TorClient(createTorRuntime(torDir.path), backend)
+                TorClient(createTorRuntime(torDir.path, clientTracePrefix), backend)
             }
 
         //
@@ -168,7 +168,7 @@ class TorClient private constructor(
          */
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun createTorRuntime(torDir: String): Long
+        private external fun createTorRuntime(torDir: String, clientTracePrefix: String?): Long
 
         @JvmStatic
         private external fun freeTorRuntime(nativeHandle: Long)

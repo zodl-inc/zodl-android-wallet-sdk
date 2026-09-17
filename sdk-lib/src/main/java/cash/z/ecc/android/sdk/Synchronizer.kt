@@ -1193,7 +1193,7 @@ interface Synchronizer {
                     if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
                         LazyTorClient {
                             val torDir = Files.getTorDir(applicationContext)
-                            TorClient.new(torDir, backendDeferred.await().second.backend)
+                            TorClient.new(torDir, backendDeferred.await().second.backend, ohttpClientTraceIdPrefix)
                         }
                     } else {
                         null

@@ -48,11 +48,13 @@ pub struct TorRuntime {
     tor_dir: PathBuf,
     #[cfg(feature = "slipstream")]
     ohttp_tor: SharedOhttpTor,
+    #[cfg(feature = "slipstream")]
+    client_trace_prefix: Option<String>,
 }
 
 impl TorRuntime {
     #[tracing::instrument]
-    pub(crate) fn create(tor_dir: &Path) -> anyhow::Result<Self> {
+    pub(crate) fn create(tor_dir: &Path, client_trace_prefix: Option<String>) -> anyhow::Result<Self> {
         let runtime = PreferredRuntime::create()?;
         let client = runtime.block_on(async {
             Client::create(
@@ -71,6 +73,8 @@ impl TorRuntime {
             tor_dir: tor_dir.to_path_buf(),
             #[cfg(feature = "slipstream")]
             ohttp_tor: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "slipstream")]
+            client_trace_prefix,
         })
     }
 
@@ -94,9 +98,10 @@ impl TorRuntime {
         }
         tracing::info!("bootstrapping arti client for OHTTP-over-Tor (FFI Tor runtime)");
         let tor_dir = self.tor_dir.clone();
+        let client_trace_prefix = self.client_trace_prefix.clone();
         let conn = self
             .runtime
-            .block_on(async { TorConn::bootstrap(&tor_dir, true, None).await })
+            .block_on(async { TorConn::bootstrap(&tor_dir, true, client_trace_prefix).await })
             .map_err(|e| anyhow!("OHTTP-over-Tor bootstrap: {e}"))?;
         *slot = Some(conn.clone());
         Ok(conn)
@@ -155,6 +160,8 @@ impl TorRuntime {
             tor_dir: self.tor_dir.clone(),
             #[cfg(feature = "slipstream")]
             ohttp_tor: Arc::clone(&self.ohttp_tor),
+            #[cfg(feature = "slipstream")]
+            client_trace_prefix: self.client_trace_prefix.clone(),
         }
     }
 
