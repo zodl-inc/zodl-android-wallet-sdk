@@ -54,7 +54,10 @@ pub struct TorRuntime {
 
 impl TorRuntime {
     #[tracing::instrument]
-    pub(crate) fn create(tor_dir: &Path, client_trace_prefix: Option<String>) -> anyhow::Result<Self> {
+    pub(crate) fn create(
+        tor_dir: &Path,
+        client_trace_prefix: Option<String>,
+    ) -> anyhow::Result<Self> {
         let runtime = PreferredRuntime::create()?;
         let client = runtime.block_on(async {
             Client::create(
