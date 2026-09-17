@@ -1901,7 +1901,7 @@ class SlipstreamSynchronizer internal constructor(
              */
             val lazyTorClient =
                 if (isTorEnabled || isExchangeRateEnabled) {
-                    LazyTorClient { TorClient.new(Files.getTorDir(applicationContext), backend) }
+                    LazyTorClient { TorClient.new(Files.getTorDir(applicationContext), backend, ohttpClientTraceIdPrefix) }
                 } else {
                     null
                 }
