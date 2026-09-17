@@ -41,7 +41,10 @@ use std::{
     time::Duration,
 };
 
-use arti_client::{DataStream, StreamPrefs, TorClient, config::{BoolOrAuto, TorClientConfigBuilder}};
+use arti_client::{
+    DataStream, StreamPrefs, TorClient,
+    config::{BoolOrAuto, TorClientConfigBuilder},
+};
 use hyper_util::rt::TokioIo;
 use tonic::transport::{ClientTlsConfig, Endpoint as TonicEndpoint, Uri};
 use tor_rtcompat::PreferredRuntime;
@@ -140,7 +143,8 @@ impl TorConn {
         dangerously_trust_everyone: bool,
         client_trace_prefix: Option<String>,
     ) -> Result<Self, SlipstreamError> {
-        let boot = |e: &dyn std::fmt::Display| SlipstreamError::Transport(format!("tor bootstrap: {e}"));
+        let boot =
+            |e: &dyn std::fmt::Display| SlipstreamError::Transport(format!("tor bootstrap: {e}"));
         let runtime = PreferredRuntime::current().map_err(|e| boot(&e))?;
         if !tokio::fs::try_exists(tor_dir).await.map_err(|e| boot(&e))? {
             return Err(SlipstreamError::Config(format!(
@@ -205,7 +209,10 @@ impl TorConn {
     /// OHTTP gateways are OHTTP-encapsulated with the relay leg dialled through Tor; other hosts
     /// are dialled directly over Tor. Public entry point for hosts outside the engine (the SDK's
     /// FFI Tor client) that must share this routing policy.
-    pub async fn connect_isolated(&self, endpoint: &Endpoint) -> Result<LwdClient, SlipstreamError> {
+    pub async fn connect_isolated(
+        &self,
+        endpoint: &Endpoint,
+    ) -> Result<LwdClient, SlipstreamError> {
         self.connect(TorMode::Isolated, endpoint).await
     }
 
@@ -238,7 +245,9 @@ impl TorConn {
             let client_trace_prefix = self.client_trace_prefix.clone();
             let attempt_fut = async {
                 match relay {
-                    Some(relay) => Self::connect_ohttp(client, endpoint, relay, client_trace_prefix).await,
+                    Some(relay) => {
+                        Self::connect_ohttp(client, endpoint, relay, client_trace_prefix).await
+                    }
                     None => Self::connect_direct_over_tor(client, endpoint).await,
                 }
             };
@@ -283,9 +292,13 @@ impl TorConn {
             relay,
             "lightwalletd via OHTTP (RFC 9458) over Tor — relay leg dialled through arti"
         );
-        let connector =
-            OhttpConnector::with_dialer(&endpoint.host, relay, Dialer::Tor(client), client_trace_prefix)
-                .map_err(|e| SlipstreamError::Transport(format!("ohttp connector: {e}")))?;
+        let connector = OhttpConnector::with_dialer(
+            &endpoint.host,
+            relay,
+            Dialer::Tor(client),
+            client_trace_prefix,
+        )
+        .map_err(|e| SlipstreamError::Transport(format!("ohttp connector: {e}")))?;
         connector
             .warm_up()
             .await
@@ -298,7 +311,9 @@ impl TorConn {
             .connect_timeout(Duration::from_secs(10))
             .connect_with_connector(connector)
             .await
-            .map_err(|e| SlipstreamError::Transport(format!("ohttp connect {}: {e}", endpoint.host)))?;
+            .map_err(|e| {
+                SlipstreamError::Transport(format!("ohttp connect {}: {e}", endpoint.host))
+            })?;
         Ok(LwdClient::new(channel))
     }
 
@@ -364,9 +379,15 @@ impl Service<Uri> for TorTcpConnector {
             let host = dst.host().ok_or("endpoint uri without host")?.to_string();
             let port = dst
                 .port_u16()
-                .unwrap_or(if dst.scheme_str() == Some("https") { 443 } else { 80 });
+                .unwrap_or(if dst.scheme_str() == Some("https") {
+                    443
+                } else {
+                    80
+                });
             tracing::debug!(host, port, "connecting through Tor");
-            let stream = client.connect_with_prefs((host.as_str(), port), &prefs).await?;
+            let stream = client
+                .connect_with_prefs((host.as_str(), port), &prefs)
+                .await?;
             Ok(TokioIo::new(stream))
         })
     }
@@ -505,8 +526,14 @@ mod tests {
         // bypass Tor — the device IP would otherwise reach the server during the block download.
         assert_eq!(tor_mode(ConnPurpose::BulkFetch), Some(TorMode::Default));
         assert_eq!(route(ConnPurpose::BulkFetch, false), Some(TorMode::Default));
-        assert_eq!(route(ConnPurpose::MetadataUnique, false), Some(TorMode::Isolated));
-        assert_eq!(route(ConnPurpose::MetadataDefault, false), Some(TorMode::Default));
+        assert_eq!(
+            route(ConnPurpose::MetadataUnique, false),
+            Some(TorMode::Isolated)
+        );
+        assert_eq!(
+            route(ConnPurpose::MetadataDefault, false),
+            Some(TorMode::Default)
+        );
     }
 
     #[test]
@@ -514,8 +541,14 @@ mod tests {
         // With Tor on and an OHTTP gateway endpoint, nothing may bypass Tor: bulk rides the
         // default circuit, metadata keeps its usual isolation.
         assert_eq!(route(ConnPurpose::BulkFetch, true), Some(TorMode::Default));
-        assert_eq!(route(ConnPurpose::MetadataUnique, true), Some(TorMode::Isolated));
-        assert_eq!(route(ConnPurpose::MetadataDefault, true), Some(TorMode::Default));
+        assert_eq!(
+            route(ConnPurpose::MetadataUnique, true),
+            Some(TorMode::Isolated)
+        );
+        assert_eq!(
+            route(ConnPurpose::MetadataDefault, true),
+            Some(TorMode::Default)
+        );
         assert!(crate::ohttp::relay_for("ohttp-gateway-testnet.example").is_some());
     }
 
@@ -535,7 +568,10 @@ mod tests {
         // Tor-on branch is covered by the constant + the ignored live test).
         assert_eq!(bulk_chunk_blocks(10_000, &gw, None), 10_000);
         assert_eq!(bulk_chunk_blocks(10_000, &plain, None), 10_000);
-        assert!(TOR_OHTTP_MAX_CHUNK_BLOCKS >= 100, "must satisfy EngineConfig's chunk_blocks >= 100");
+        assert!(
+            TOR_OHTTP_MAX_CHUNK_BLOCKS >= 100,
+            "must satisfy EngineConfig's chunk_blocks >= 100"
+        );
         assert!(TOR_OHTTP_MAX_CHUNK_BLOCKS < crate::config::EngineConfig::DEFAULT_CHUNK_BLOCKS);
     }
 

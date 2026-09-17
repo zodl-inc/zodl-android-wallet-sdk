@@ -34,6 +34,7 @@ use std::{
     io::Cursor,
     pin::Pin,
     sync::Arc,
+    sync::OnceLock,
     task::{Context, Poll},
     time::Duration,
 };
@@ -50,7 +51,9 @@ use hpke::{
     Deserializable, Kem, OpModeS, Serializable, aead::AesGcm128, kdf::HkdfSha256,
     kem::X25519HkdfSha256,
 };
-use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, header};
+use http::{
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, header,
+};
 use http_body::Frame;
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
 use hyper::body::Incoming;
@@ -87,6 +90,22 @@ const USER_AGENT: &str = "zodl-slipstream-ohttp/0.1";
 /// Hostname prefix that marks an endpoint as an OHTTP gateway (mirrors the Kotlin SDK).
 pub const GATEWAY_HOST_PREFIX: &str = "ohttp-gateway";
 
+/// Process-wide default client trace prefix for OHTTP connections (set once from JNI).
+static DEFAULT_CLIENT_TRACE_PREFIX: OnceLock<Option<String>> = OnceLock::new();
+
+/// Set the default client trace prefix for all OHTTP connections without an explicit prefix.
+/// Called from JNI when TorRuntime is created.
+pub fn set_default_client_trace_prefix(prefix: Option<String>) {
+    let _ = DEFAULT_CLIENT_TRACE_PREFIX.set(prefix);
+}
+
+/// Get the default client trace prefix.
+fn get_default_client_trace_prefix() -> Option<String> {
+    DEFAULT_CLIENT_TRACE_PREFIX
+        .get()
+        .and_then(|opt| opt.clone())
+}
+
 /// Relay URL for a given gateway host. One relay per gateway: mainnet and testnet gateways use
 /// different HPKE keys, and an RFC 9458 relay has a single fixed gateway target.
 pub fn relay_for(gateway_host: &str) -> Option<&'static str> {
@@ -110,6 +129,7 @@ const TOR_DIAL_TIMEOUT: Duration = Duration::from_secs(20);
 const TOR_DIAL_ATTEMPTS: u32 = 3;
 
 /// How the TCP leg towards the relay / gateway is opened.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 pub enum Dialer {
     /// The device's own network path (the relay sees the device IP, but only ciphertext).
@@ -137,7 +157,11 @@ impl Dialer {
                 // arti resolves `host` at the exit relay, so no DNS leaves the device either.
                 let mut last_err = String::new();
                 for attempt in 1..=TOR_DIAL_ATTEMPTS {
-                    let c = if attempt == 1 { client.clone() } else { client.isolated_client() };
+                    let c = if attempt == 1 {
+                        client.clone()
+                    } else {
+                        client.isolated_client()
+                    };
                     let started = std::time::Instant::now();
                     match tokio::time::timeout(TOR_DIAL_TIMEOUT, c.connect((host, port))).await {
                         Ok(Ok(stream)) => {
@@ -155,8 +179,16 @@ impl Dialer {
                             last_err = format!("tor connect {host}: {e}");
                         }
                         Err(_) => {
-                            tracing::warn!(host, attempt, timeout_secs = TOR_DIAL_TIMEOUT.as_secs(), "ohttp: tor dial timed out — retrying on a fresh circuit");
-                            last_err = format!("tor connect {host}: exceeded {}s", TOR_DIAL_TIMEOUT.as_secs());
+                            tracing::warn!(
+                                host,
+                                attempt,
+                                timeout_secs = TOR_DIAL_TIMEOUT.as_secs(),
+                                "ohttp: tor dial timed out — retrying on a fresh circuit"
+                            );
+                            last_err = format!(
+                                "tor connect {host}: exceeded {}s",
+                                TOR_DIAL_TIMEOUT.as_secs()
+                            );
                         }
                     }
                 }
@@ -175,7 +207,12 @@ pub struct OhttpConnector {
 impl OhttpConnector {
     /// Direct dialer: the relay sees the device IP.
     pub fn new(gateway_host: &str, relay_url: &str) -> Result<Self, String> {
-        Self::with_dialer(gateway_host, relay_url, Dialer::Direct, None)
+        Self::with_dialer(
+            gateway_host,
+            relay_url,
+            Dialer::Direct,
+            get_default_client_trace_prefix(),
+        )
     }
 
     /// Connector whose TCP legs (relay POSTs and the gateway key fetch) go through `dialer`.
@@ -186,7 +223,12 @@ impl OhttpConnector {
         client_trace_prefix: Option<String>,
     ) -> Result<Self, String> {
         Ok(Self {
-            client: Arc::new(OhttpClient::new(gateway_host, relay_url, dialer, client_trace_prefix)?),
+            client: Arc::new(OhttpClient::new(
+                gateway_host,
+                relay_url,
+                dialer,
+                client_trace_prefix.or_else(get_default_client_trace_prefix),
+            )?),
         })
     }
 
@@ -308,7 +350,10 @@ impl ResponseContext {
     fn decapsulate(&self, enc_response: &[u8]) -> Result<Vec<u8>, String> {
         let nonce_len = N_N.max(N_K);
         if enc_response.len() < nonce_len + N_T {
-            return Err(format!("OHTTP response too short ({} bytes)", enc_response.len()));
+            return Err(format!(
+                "OHTTP response too short ({} bytes)",
+                enc_response.len()
+            ));
         }
         let (response_nonce, ct) = enc_response.split_at(nonce_len);
         let mut salt = self.enc.clone();
@@ -317,7 +362,8 @@ impl ResponseContext {
         let mut key = [0u8; N_K];
         hk.expand(b"key", &mut key).map_err(|_| "hkdf expand key")?;
         let mut nonce = [0u8; N_N];
-        hk.expand(b"nonce", &mut nonce).map_err(|_| "hkdf expand nonce")?;
+        hk.expand(b"nonce", &mut nonce)
+            .map_err(|_| "hkdf expand nonce")?;
         Aes128Gcm::new_from_slice(&key)
             .map_err(|_| "aead key")?
             .decrypt(Nonce::from_slice(&nonce), Payload { msg: ct, aad: b"" })
@@ -408,7 +454,8 @@ impl OhttpClient {
         dialer: Dialer,
         client_trace_prefix: Option<String>,
     ) -> Result<Self, String> {
-        let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let roots =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
@@ -454,19 +501,20 @@ impl OhttpClient {
         let key = format!("{}:{}", target.host, target.port);
         {
             let pool = self.h2_pool.lock().await;
-            if let Some(s) = pool.get(&key) {
-                if !s.is_closed() {
-                    return Ok(Some(s.clone()));
-                }
+            if let Some(s) = pool.get(&key)
+                && !s.is_closed()
+            {
+                return Ok(Some(s.clone()));
             }
         }
         let (tls, is_h2) = self.tls_connect(target).await?;
         if !is_h2 {
             return Ok(None);
         }
-        let (sender, conn) = http2::handshake::<_, _, Full<Bytes>>(TokioExecutor::new(), TokioIo::new(tls))
-            .await
-            .map_err(|e| format!("h2 handshake {}: {e}", target.host))?;
+        let (sender, conn) =
+            http2::handshake::<_, _, Full<Bytes>>(TokioExecutor::new(), TokioIo::new(tls))
+                .await
+                .map_err(|e| format!("h2 handshake {}: {e}", target.host))?;
         let host = target.host.clone();
         tokio::spawn(async move {
             if let Err(e) = conn.await {
@@ -499,10 +547,10 @@ impl OhttpClient {
             req = req.header(header::CONTENT_TYPE, ct);
         }
         // Add client trace ID to relay POSTs only (not key config fetches)
-        if content_type == Some("message/ohttp-req") {
-            if let Some(ref trace) = self.client_trace {
-                req = req.header("X-Client-Trace-Id", trace.next());
-            }
+        if content_type == Some("message/ohttp-req")
+            && let Some(ref trace) = self.client_trace
+        {
+            req = req.header("X-Client-Trace-Id", trace.next());
         }
         req.body(Full::new(Bytes::from(body)))
             .map_err(|e| format!("build request: {e}"))
@@ -519,11 +567,15 @@ impl OhttpClient {
         body: Vec<u8>,
     ) -> Result<(StatusCode, Bytes), String> {
         for attempt in 0..2 {
-            let req = self.build_request(target, method.clone(), content_type, accept, body.clone())?;
+            let req =
+                self.build_request(target, method.clone(), content_type, accept, body.clone())?;
             let resp = match self.h2_sender(target).await? {
                 Some(mut sender) => {
                     if let Err(e) = sender.ready().await {
-                        self.h2_pool.lock().await.remove(&format!("{}:{}", target.host, target.port));
+                        self.h2_pool
+                            .lock()
+                            .await
+                            .remove(&format!("{}:{}", target.host, target.port));
                         if attempt == 0 {
                             tracing::debug!(err = %e, "ohttp: pooled h2 not ready; reconnecting");
                             continue;
@@ -533,7 +585,10 @@ impl OhttpClient {
                     match sender.send_request(req).await {
                         Ok(r) => r.map(|b| b.boxed()),
                         Err(e) => {
-                            self.h2_pool.lock().await.remove(&format!("{}:{}", target.host, target.port));
+                            self.h2_pool
+                                .lock()
+                                .await
+                                .remove(&format!("{}:{}", target.host, target.port));
                             if attempt == 0 {
                                 tracing::debug!(err = %e, "ohttp: h2 send failed; reconnecting");
                                 continue;
@@ -544,9 +599,10 @@ impl OhttpClient {
                 }
                 None => {
                     let (tls, _) = self.tls_connect(target).await?;
-                    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
-                        .await
-                        .map_err(|e| format!("http1 handshake: {e}"))?;
+                    let (mut sender, conn) =
+                        hyper::client::conn::http1::handshake(TokioIo::new(tls))
+                            .await
+                            .map_err(|e| format!("http1 handshake: {e}"))?;
                     tokio::spawn(async move {
                         let _ = conn.await;
                     });
@@ -570,13 +626,19 @@ impl OhttpClient {
     }
 
     async fn key_config(&self, refresh: bool) -> Result<KeyConfig, String> {
-        if !refresh {
-            if let Some(k) = self.key_config.lock().await.as_ref() {
-                return Ok(k.clone());
-            }
+        if !refresh
+            && let Some(k) = self.key_config.lock().await.as_ref()
+        {
+            return Ok(k.clone());
         }
         let (status, doc) = self
-            .https(&self.keys, Method::GET, None, "application/ohttp-keys", Vec::new())
+            .https(
+                &self.keys,
+                Method::GET,
+                None,
+                "application/ohttp-keys",
+                Vec::new(),
+            )
             .await?;
         if status != StatusCode::OK {
             return Err(format!("key config fetch: HTTP {status}"));
@@ -653,27 +715,25 @@ impl OhttpClient {
         }
 
         let started = std::time::Instant::now();
-        let response = match tokio::time::timeout(ROUND_TRIP_TIMEOUT, self.round_trip(&plaintext)).await {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
-                tracing::warn!(path = %path, err = %e, "ohttp: round trip failed");
-                return grpc_error(GRPC_UNAVAILABLE, &format!("ohttp: {e}"));
-            }
-            Err(_) => {
-                tracing::warn!(path = %path, "ohttp: round trip timed out");
-                return grpc_error(GRPC_UNAVAILABLE, "ohttp: round trip timed out");
-            }
-        };
+        let response =
+            match tokio::time::timeout(ROUND_TRIP_TIMEOUT, self.round_trip(&plaintext)).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    tracing::warn!(path = %path, err = %e, "ohttp: round trip failed");
+                    return grpc_error(GRPC_UNAVAILABLE, &format!("ohttp: {e}"));
+                }
+                Err(_) => {
+                    tracing::warn!(path = %path, "ohttp: round trip timed out");
+                    return grpc_error(GRPC_UNAVAILABLE, "ohttp: round trip timed out");
+                }
+            };
 
-        let msg = match bhttp::Message::read_bhttp::<_, Cursor<Vec<u8>>>(&mut Cursor::new(response)) {
+        let msg = match bhttp::Message::read_bhttp::<_, Cursor<Vec<u8>>>(&mut Cursor::new(response))
+        {
             Ok(m) => m,
             Err(e) => return grpc_error(GRPC_INTERNAL, &format!("bhttp decode: {e:?}")),
         };
-        let http_status = msg
-            .control()
-            .status()
-            .map(|s| s.code())
-            .unwrap_or(200);
+        let http_status = msg.control().status().map(|s| s.code()).unwrap_or(200);
         let mut headers = HeaderMap::new();
         let mut trailers = HeaderMap::new();
         for field in msg.header().iter() {
@@ -697,7 +757,10 @@ impl OhttpClient {
             );
         }
         if !headers.contains_key(header::CONTENT_TYPE) {
-            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/grpc"));
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/grpc"),
+            );
         }
         tracing::debug!(
             path = %path,
@@ -732,11 +795,20 @@ const GRPC_INTERNAL: &str = "13";
 fn grpc_error(code: &'static str, message: &str) -> Response<BoxBody<Bytes, Infallible>> {
     let mut resp = Response::new(Full::new(Bytes::new()).boxed());
     let h = resp.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/grpc"));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/grpc"),
+    );
     h.insert("grpc-status", HeaderValue::from_static(code));
     let msg: String = message
         .chars()
-        .map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '?' })
+        .map(|c| {
+            if c.is_ascii_graphic() || c == ' ' {
+                c
+            } else {
+                '?'
+            }
+        })
         .collect();
     if let Ok(v) = HeaderValue::from_str(&msg) {
         h.insert("grpc-message", v);
@@ -788,17 +860,31 @@ mod tests {
             tls: true,
         };
         let mut c = crate::grpc::connect(&ep).await.expect("connect via ohttp");
-        let info = crate::grpc::get_lightd_info(&mut c).await.expect("lightd info");
+        let info = crate::grpc::get_lightd_info(&mut c)
+            .await
+            .expect("lightd info");
         assert_eq!(info.chain_name, "test");
-        let h = crate::grpc::get_latest_block_height(&mut c).await.expect("height");
+        let h = crate::grpc::get_latest_block_height(&mut c)
+            .await
+            .expect("height");
         assert!(h > 4_000_000, "height {h}");
 
         let range = BlockRange {
-            start: Some(BlockId { height: 4_123_503, hash: vec![] }),
-            end: Some(BlockId { height: 4_123_507, hash: vec![] }),
+            start: Some(BlockId {
+                height: 4_123_503,
+                hash: vec![],
+            }),
+            end: Some(BlockId {
+                height: 4_123_507,
+                hash: vec![],
+            }),
             ..Default::default()
         };
-        let mut stream = c.get_block_range(range).await.expect("block range").into_inner();
+        let mut stream = c
+            .get_block_range(range)
+            .await
+            .expect("block range")
+            .into_inner();
         let mut n = 0;
         while let Some(block) = stream.message().await.expect("stream item") {
             assert!(block.height >= 4_123_503 && block.height <= 4_123_507);
@@ -835,11 +921,17 @@ mod tests {
         let _ = tracing_subscriber_init();
         let dir = tempfile::tempdir().expect("tempdir");
         let started = std::time::Instant::now();
-        let tor = tokio::time::timeout(Duration::from_secs(240), TorConn::bootstrap(dir.path(), true))
-            .await
-            .expect("tor bootstrap within 240s")
-            .expect("tor bootstrap");
-        eprintln!("tor bootstrapped in {:.1}s", started.elapsed().as_secs_f64());
+        let tor = tokio::time::timeout(
+            Duration::from_secs(240),
+            TorConn::bootstrap(dir.path(), true),
+        )
+        .await
+        .expect("tor bootstrap within 240s")
+        .expect("tor bootstrap");
+        eprintln!(
+            "tor bootstrapped in {:.1}s",
+            started.elapsed().as_secs_f64()
+        );
 
         let ep = crate::config::Endpoint {
             host: "ohttp-gateway-testnet.example".into(),
@@ -850,14 +942,24 @@ mod tests {
         // Metadata purposes: isolated / default circuit.
         for purpose in [ConnPurpose::MetadataDefault, ConnPurpose::MetadataUnique] {
             let t = std::time::Instant::now();
-            let mut c = tokio::time::timeout(Duration::from_secs(120), connect_via(&ep, Some(&tor), purpose))
+            let mut c = tokio::time::timeout(
+                Duration::from_secs(120),
+                connect_via(&ep, Some(&tor), purpose),
+            )
+            .await
+            .expect("connect within 120s")
+            .unwrap_or_else(|e| panic!("connect {purpose:?} via ohttp-over-tor: {e}"));
+            eprintln!(
+                "{purpose:?}: connected (warm) in {:.1}s",
+                t.elapsed().as_secs_f64()
+            );
+            let info = crate::grpc::get_lightd_info(&mut c)
                 .await
-                .expect("connect within 120s")
-                .unwrap_or_else(|e| panic!("connect {purpose:?} via ohttp-over-tor: {e}"));
-            eprintln!("{purpose:?}: connected (warm) in {:.1}s", t.elapsed().as_secs_f64());
-            let info = crate::grpc::get_lightd_info(&mut c).await.expect("lightd info");
+                .expect("lightd info");
             assert_eq!(info.chain_name, "test");
-            let h = crate::grpc::get_latest_block_height(&mut c).await.expect("height");
+            let h = crate::grpc::get_latest_block_height(&mut c)
+                .await
+                .expect("height");
             assert!(h > 4_000_000, "height {h}");
         }
 
@@ -870,11 +972,21 @@ mod tests {
         .expect("bulk connect within 120s")
         .expect("bulk connect via ohttp-over-tor");
         let range = BlockRange {
-            start: Some(BlockId { height: 4_123_503, hash: vec![] }),
-            end: Some(BlockId { height: 4_123_507, hash: vec![] }),
+            start: Some(BlockId {
+                height: 4_123_503,
+                hash: vec![],
+            }),
+            end: Some(BlockId {
+                height: 4_123_507,
+                hash: vec![],
+            }),
             ..Default::default()
         };
-        let mut stream = c.get_block_range(range).await.expect("block range").into_inner();
+        let mut stream = c
+            .get_block_range(range)
+            .await
+            .expect("block range")
+            .into_inner();
         let mut n = 0;
         while let Some(block) = stream.message().await.expect("stream item") {
             assert!(block.height >= 4_123_503 && block.height <= 4_123_507);
@@ -894,7 +1006,10 @@ mod tests {
             let h = t.await.expect("join").expect("burst call");
             assert!(h > 4_000_000);
         }
-        eprintln!("ohttp-over-tor: all RPCs ok in {:.1}s total", started.elapsed().as_secs_f64());
+        eprintln!(
+            "ohttp-over-tor: all RPCs ok in {:.1}s total",
+            started.elapsed().as_secs_f64()
+        );
     }
 
     /// `RUST_LOG`-driven logging for the live tests, so the engine's own `tracing::info!` lines

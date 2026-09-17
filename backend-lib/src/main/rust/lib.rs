@@ -3145,6 +3145,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_createTor
             Some(env.get_string(&client_trace_prefix)?.to_str()?.to_string())
         };
 
+        zodl_slipstream::ohttp::set_default_client_trace_prefix(client_trace_prefix.clone());
         let tor = crate::tor::TorRuntime::create(&tor_dir, client_trace_prefix)?;
 
         Ok(Box::into_raw(Box::new(tor)).expose_provenance() as jlong)

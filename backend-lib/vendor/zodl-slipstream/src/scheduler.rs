@@ -381,9 +381,10 @@ pub async fn run_to_completion(
         // Spawn the fetch task so it runs concurrently with scan_chunks below.
         // The tx is moved into the task; when the task finishes, tx is dropped, which
         // closes the channel and causes scan_chunks's rx.recv() loop to terminate.
-        let fetch_task = tokio::spawn(async move {
-            run_fetch(&endpoint, fetch_tor, plan, tx, fetch_progress).await
-        });
+        let fetch_task =
+            tokio::spawn(
+                async move { run_fetch(&endpoint, fetch_tor, plan, tx, fetch_progress).await },
+            );
 
         // scan_chunks runs in the current task using a SEPARATE grpc client so it
         // does not contend with the fetch workers' connections.

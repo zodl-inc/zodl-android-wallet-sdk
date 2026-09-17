@@ -199,7 +199,10 @@ pub async fn connect(endpoint: &Endpoint) -> Result<LwdClient, SlipstreamError> 
                 let source = std::error::Error::source(&e)
                     .map(|s| format!(" ({s})"))
                     .unwrap_or_default();
-                transport_err(&format!("ohttp connect {}", endpoint.host), format!("{e}{source}"))
+                transport_err(
+                    &format!("ohttp connect {}", endpoint.host),
+                    format!("{e}{source}"),
+                )
             })?;
         return Ok(CompactTxStreamerClient::new(channel));
     }
