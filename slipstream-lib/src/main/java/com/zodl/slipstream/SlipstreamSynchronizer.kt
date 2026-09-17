@@ -250,6 +250,13 @@ class SlipstreamSynchronizer internal constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /**
+     * Tracks whether Tor initialization has failed, used to report [Synchronizer.InitializationError.TOR_NOT_AVAILABLE].
+     * Set to true in catch blocks where [cash.z.ecc.android.sdk.exception.TorInitializationErrorException] is thrown.
+     */
+    @Volatile
+    private var torInitFailed = false
+
+    /**
      * Bumped by every writer of the `accounts` table - the preparation tail's `createAccount`,
      * [importAccountByUfvk], [deleteAccount] - so [accountsFlow] re-reads. A `MutableStateFlow`
      * rather than a replaying `MutableSharedFlow` because a state flow replays its current value to
@@ -397,6 +404,9 @@ class SlipstreamSynchronizer internal constructor(
      */
     override val latestBirthdayHeight: BlockHeight
         get() = startBirthday
+
+    override val initializationError: Synchronizer.InitializationError?
+        get() = if (torInitFailed && sdkFlags.isTorEnabled) Synchronizer.InitializationError.TOR_NOT_AVAILABLE else null
 
     override val broadcaster: Broadcaster get() = broadcasterImpl
 
@@ -1577,6 +1587,7 @@ class SlipstreamSynchronizer internal constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                torInitFailed = true
                 throw TorInitializationErrorException(e)
             }
         @Suppress("UNCHECKED_CAST")
@@ -1598,6 +1609,7 @@ class SlipstreamSynchronizer internal constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            torInitFailed = true
             throw TorInitializationErrorException(e)
         }
     }

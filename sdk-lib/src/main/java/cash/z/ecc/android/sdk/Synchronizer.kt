@@ -193,6 +193,16 @@ interface Synchronizer {
     val accountsFlow: Flow<List<Account>?>
 
     /**
+     * Emits error states of the synchronizer.
+     *
+     * Since Tor client creation is now lazy (see [InitializationError.TOR_NOT_AVAILABLE]), this is not
+     * currently produced at construction time; Tor bootstrap failures instead surface per-call, e.g. as
+     * [TorInitializationErrorException] from [getTorHttpClient] or as `Response.Failure.OverTor` from
+     * Tor-mode network calls.
+     */
+    val initializationError: InitializationError?
+
+    /**
      * Tells the wallet to track an account using a unified full viewing key.
      *
      * Returns details about the imported account, including the unique account identifier for
@@ -1037,6 +1047,22 @@ interface Synchronizer {
          * When set, a UI element may want to turn green. In this state, the balance can be trusted.
          */
         SYNCED
+    }
+
+    enum class InitializationError {
+        /**
+         * Indicates that tor is required but not available.
+         *
+         * Typically this means that [SdkFlags.isTorEnabled] is set to true but Tor instantiation
+         * failed.
+         *
+         * Tor client creation is lazy (deferred to first use, via `LazyTorClient`) rather than happening
+         * eagerly during [Synchronizer.Companion.new], so this error is no longer produced at
+         * construction time. Tor bootstrap failures now surface per-call instead, e.g. as
+         * [TorInitializationErrorException] from [getTorHttpClient] or as `Response.Failure.OverTor` from
+         * Tor-mode network calls. This case is kept for source/binary compatibility.
+         */
+        TOR_NOT_AVAILABLE,
     }
 
     companion object {
