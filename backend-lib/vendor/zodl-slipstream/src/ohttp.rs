@@ -626,9 +626,7 @@ impl OhttpClient {
     }
 
     async fn key_config(&self, refresh: bool) -> Result<KeyConfig, String> {
-        if !refresh
-            && let Some(k) = self.key_config.lock().await.as_ref()
-        {
+        if !refresh && let Some(k) = self.key_config.lock().await.as_ref() {
             return Ok(k.clone());
         }
         let (status, doc) = self
