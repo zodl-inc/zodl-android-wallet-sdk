@@ -929,7 +929,7 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_restoreAnchor<'local
 
         let anchor = runtime.block_on(async {
             let tor_conn = match &tor_dir_opt {
-                Some(dir) => match TorConn::bootstrap(dir, false).await {
+                Some(dir) => match TorConn::bootstrap(dir, false, None).await {
                     Ok(t) => Some(t),
                     // Requested-but-failed Tor resolves OFFLINE (never a de-anonymising
                     // direct retry) — matches the app's TOR_NOT_AVAILABLE posture.
