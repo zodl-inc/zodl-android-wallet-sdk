@@ -6,6 +6,39 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `VotingDbSession.hasCompleteWitnesses(roundId, bundleIndex, notes)` reports whether the witnesses
+  already cached for a bundle exactly cover its notes. Callers that persisted witnesses in an earlier
+  precompute pass can use it to skip regenerating them instead of paying for the work twice.
+
+### Changed
+- Shielded voting's delegation and vote proofs no longer hold the voting DB lock, so two bundles of a
+  round can prove at once.
+- Shielded voting no longer holds the voting DB lock across a PIR handshake, and a panic inside a
+  proof or a PIR handshake no longer leaves the voting DB unable to prove for the rest of its life.
+- Shielded voting's PIR client is now connected once per open voting DB and reused by delegation
+  precompute and proof generation for every bundle of a round, instead of being rebuilt - tokio
+  runtime, TLS client, tier parameters and a full Tier-0 dataset download - on each of those calls.
+- Shielded voting now builds against `zcash_voting` 4.0.0-rc.2 (`voting-circuits` 0.12.0). The vote
+  chain's circuit and verification key change with it: proposal ids may now range from 1 to 50 instead
+  of 1 to 15, as required for the 37-question Retroactive Grants round, and a client on the previous
+  circuit is rejected with `ConstraintSystemFailure` once the chain upgrades. The Rust API the SDK
+  wraps is unchanged; the crate's default backend is upstream librustzcash (`lrz`), so the native
+  library still links exactly one copy of each Zcash crate.
+
+## [3.2.1] - 2026-09-15
+
+### Changed
+
+- `Synchronizer.getTorHttpClient` on the Slipstream engine now always provides a Tor client, created lazily on
+  first use, even when neither Tor nor exchange rates are enabled. Callers such as the app's currency picker
+  no longer fail with `TorUnavailableException` when Tor is off; the legacy engine keeps the old gate.
+
+### Removed
+
+- `Synchronizer.initializationError` and `Synchronizer.InitializationError`. Tor client creation has been lazy
+  since it moved off the construction path, so the property was never non-null and nothing consumed it.
+
 ## [3.2.0] - 2026-09-08
 
 ### Added

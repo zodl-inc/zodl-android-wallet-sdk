@@ -196,6 +196,12 @@ internal class VotingDbSessionImpl(
         witnesses: List<VotingWitness>
     ) = db.storeWitnesses(roundId, bundleIndex, notes.map { it.toInternal() }, witnesses.map { it.toInternal() })
 
+    override suspend fun hasCompleteWitnesses(
+        roundId: String,
+        bundleIndex: Int,
+        notes: List<VotingNoteInfo>
+    ): Boolean = db.hasCompleteWitnesses(roundId, bundleIndex, notes.map { it.toInternal() })
+
     override suspend fun delegationPhases(roundId: String): List<VotingDelegationPhase> =
         db.delegationPhases(roundId).map { it.toPublic() }
 
