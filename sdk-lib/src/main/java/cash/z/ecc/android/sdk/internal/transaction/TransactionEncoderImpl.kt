@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.TypesafeBackend
 import cash.z.ecc.android.sdk.internal.ext.toProposalException
+import cash.z.ecc.android.sdk.internal.jni.ProposalAnchorNotFoundException
 import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 import cash.z.ecc.android.sdk.model.Account
@@ -16,6 +17,7 @@ import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Class responsible for encoding a transaction in a consistent way. This bridges the gap by
@@ -140,6 +142,7 @@ internal class TransactionEncoderImpl(
         }
 
     @Throws(
+        TransactionEncoderException.AnchorNotFoundException::class,
         TransactionEncoderException.TransactionNotCreatedException::class,
         TransactionEncoderException.TransactionNotFoundException::class,
     )
@@ -161,7 +164,9 @@ internal class TransactionEncoderImpl(
             }.onSuccess { result ->
                 Twig.info { "Result of createProposedTransactions: $result" }
             }.getOrElse {
-                throw TransactionEncoderException.TransactionNotCreatedException(it)
+                if (it is CancellationException) throw it
+                throw it.asAnchorNotFoundException()
+                    ?: TransactionEncoderException.TransactionNotCreatedException(it)
             }
 
         val txs =
@@ -187,7 +192,8 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating PCZT." }
         }.getOrElse {
-            throw PcztException.CreatePcztFromProposalException(it.message, it.cause)
+            if (it is CancellationException) throw it
+            throw PcztException.CreatePcztFromProposalException(it.message, it.asAnchorNotFoundException() ?: it.cause)
         }
 
     override suspend fun redactPcztForSigner(pczt: Pczt): Pczt =
@@ -198,6 +204,7 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while redacting PCZT for Signer." }
         }.getOrElse {
+            if (it is CancellationException) throw it
             throw PcztException.RedactPcztForSignerException(it.message, it.cause)
         }
 
@@ -209,6 +216,7 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while checking PCZT Sapling presence." }
         }.getOrElse {
+            if (it is CancellationException) throw it
             throw PcztException.PcztRequiresSaplingProofsException(it.message, it.cause)
         }
 
@@ -227,6 +235,7 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while adding proofs to PCZT." }
         }.getOrElse {
+            if (it is CancellationException) throw it
             throw PcztException.AddProofsToPcztException(it.message, it.cause)
         }
 
@@ -245,6 +254,7 @@ internal class TransactionEncoderImpl(
             }.onFailure {
                 Twig.error(it) { "Caught exception while extracting and storing transaction from PCZT." }
             }.getOrElse {
+                if (it is CancellationException) throw it
                 throw PcztException.ExtractAndStoreTxFromPcztException(it.message, it.cause)
             }
 
@@ -305,3 +315,13 @@ internal class TransactionEncoderImpl(
         return backend.getBranchIdForHeight(height)
     }
 }
+
+/**
+ * Returns the typed [TransactionEncoderException.AnchorNotFoundException] equivalent of this
+ * failure when the native layer reported that no anchor was computable at the height the
+ * proposal anchors to, and `null` for every other failure.
+ */
+private fun Throwable.asAnchorNotFoundException(): TransactionEncoderException.AnchorNotFoundException? =
+    (this as? ProposalAnchorNotFoundException)?.let {
+        TransactionEncoderException.AnchorNotFoundException(BlockHeight.new(it.anchorHeight), it)
+    }
