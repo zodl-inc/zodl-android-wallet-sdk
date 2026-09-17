@@ -25,6 +25,7 @@ private object DefaultEngineFactory : SynchronizerEngineFactory {
         walletInitMode: WalletInitMode,
         isTorEnabled: Boolean,
         isExchangeRateEnabled: Boolean,
+        ohttpClientTraceIdPrefix: String?,
     ): CloseableSynchronizer =
         Synchronizer.new(
             context = context,
@@ -34,7 +35,8 @@ private object DefaultEngineFactory : SynchronizerEngineFactory {
             setup = setup,
             walletInitMode = walletInitMode,
             isTorEnabled = isTorEnabled,
-            isExchangeRateEnabled = isExchangeRateEnabled
+            isExchangeRateEnabled = isExchangeRateEnabled,
+            ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
         )
 
     /**

@@ -25,6 +25,7 @@ private object SlipstreamEngineFactory : SynchronizerEngineFactory {
         walletInitMode: WalletInitMode,
         isTorEnabled: Boolean,
         isExchangeRateEnabled: Boolean,
+        ohttpClientTraceIdPrefix: String?,
     ): CloseableSynchronizer =
         SlipstreamSynchronizer.new(
             context = context,
@@ -34,7 +35,8 @@ private object SlipstreamEngineFactory : SynchronizerEngineFactory {
             setup = setup,
             walletInitMode = walletInitMode,
             isTorEnabled = isTorEnabled,
-            isExchangeRateEnabled = isExchangeRateEnabled
+            isExchangeRateEnabled = isExchangeRateEnabled,
+            ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
         )
 
     override suspend fun erase(
