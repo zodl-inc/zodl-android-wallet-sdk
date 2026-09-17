@@ -27,10 +27,15 @@ internal class OhttpTransport(
      * **Privacy warning:** a custom trace ID makes that wallet's requests linkable across relay
      * and gateway logs. DEBUG ONLY. Never set in release builds. Off by default.
      */
-    ohttpClientTraceIdPrefix: String? = null
+    ohttpClientTraceIdPrefix: String? = null,
+    /**
+     * Optional pre-cached key configuration for testing. When set, skips the initial HTTP GET to
+     * [keyConfigUrl]. Production code should leave this null.
+     */
+    initialKeyConfig: OhttpKeyConfig? = null
 ) {
     private val lock = Any()
-    private var cachedKeyConfig: OhttpKeyConfig? = null
+    private var cachedKeyConfig: OhttpKeyConfig? = initialKeyConfig
     private val clientTrace: OhttpClientTrace? = ohttpClientTraceIdPrefix?.let { OhttpClientTrace(it) }
 
     /** Fetches (or returns the cached) gateway key configuration. */

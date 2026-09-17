@@ -7,6 +7,20 @@ import org.junit.Test
 
 @Suppress("ktlint:standard:max-line-length", "ktlint:standard:chain-method-continuation")
 class OhttpHttpClientTest {
+    /**
+     * Creates a dummy OHTTP key config for testing. Uses a valid cipher suite (X25519 + HKDF-SHA256
+     * + AES-128-GCM) but a dummy public key. Since the tests abort before HPKE crypto runs, the
+     * invalid key doesn't matter.
+     */
+    private fun dummyKeyConfig(): co.electriccoin.lightwallet.client.internal.OhttpKeyConfig =
+        co.electriccoin.lightwallet.client.internal.OhttpKeyConfig(
+            keyId = 1,
+            kemId = 0x0020, // X25519
+            publicKey = ByteArray(32) { 1 }, // Dummy 32-byte key
+            kdfId = 0x0001, // HKDF-SHA256
+            aeadId = 0x0001 // AES-128-GCM
+        )
+
     @Test
     fun `canHandle returns true for static proxy mappings`() {
         val client = OhttpHttpClient.create()
@@ -88,7 +102,8 @@ class OhttpHttpClientTest {
                 relayUrl = "https://relay.zodl.com/relay",
                 keyConfigUrl = "https://gateway.zodl.com/ohttp-keys",
                 sender = mockSender,
-                ohttpClientTraceIdPrefix = null
+                ohttpClientTraceIdPrefix = null,
+                initialKeyConfig = dummyKeyConfig()
             )
         val exceptionThrown =
             runCatching {
@@ -133,7 +148,8 @@ class OhttpHttpClientTest {
                 relayUrl = "https://relay.zodl.com/relay",
                 keyConfigUrl = "https://gateway.zodl.com/ohttp-keys",
                 sender = mockSender,
-                ohttpClientTraceIdPrefix = "test-wallet"
+                ohttpClientTraceIdPrefix = "test-wallet",
+                initialKeyConfig = dummyKeyConfig()
             )
         // Make two requests to verify sequence counter increments
         repeat(2) {
@@ -208,7 +224,8 @@ class OhttpHttpClientTest {
                 relayUrl = "https://relay.zodl.com/relay",
                 keyConfigUrl = "https://gateway.zodl.com/ohttp-keys",
                 sender = mockSender,
-                ohttpClientTraceIdPrefix = "test@wallet#123"
+                ohttpClientTraceIdPrefix = "test@wallet#123",
+                initialKeyConfig = dummyKeyConfig()
             )
         val exceptionThrown =
             runCatching {
@@ -268,7 +285,8 @@ class OhttpHttpClientTest {
                 relayUrl = "https://relay.zodl.com/relay",
                 keyConfigUrl = "https://gateway.zodl.com/ohttp-keys",
                 sender = mockSender,
-                ohttpClientTraceIdPrefix = longPrefix
+                ohttpClientTraceIdPrefix = longPrefix,
+                initialKeyConfig = dummyKeyConfig()
             )
         val exceptionThrown =
             runCatching {
