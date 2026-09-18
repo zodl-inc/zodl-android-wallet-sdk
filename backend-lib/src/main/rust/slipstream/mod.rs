@@ -682,6 +682,30 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_version<'local>(
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+/// Set the default OHTTP client trace prefix (global, process-wide). This should be called
+/// before any OHTTP connections are made, typically during app initialization.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_setDefaultOhttpClientTracePrefix<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    prefix: JString<'local>,
+) {
+    let _ = catch_unwind(&mut env, |env| {
+        let prefix_opt = if prefix.is_null() {
+            None
+        } else {
+            Some(env.get_string(&prefix)?.to_str()?.to_string())
+        };
+
+        #[cfg(feature = "slipstream")]
+        slipstream_core::ohttp::set_default_client_trace_prefix(prefix_opt);
+
+        Ok(())
+    });
+}
+
 /// `open` (HOSTING.md §4 row 1): allocate the handle (runtime + atomics + event ring), run
 /// `data.db` migrations, install the read views, seed the snapshot from persisted state.
 /// Returns the handle pointer as a `jlong`, or throws on failure (never returns 0/-1 on

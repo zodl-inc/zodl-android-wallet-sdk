@@ -1879,6 +1879,10 @@ class SlipstreamSynchronizer internal constructor(
                 )
             val typesafeBackend = TypesafeBackendImpl(backend)
 
+            // Set the default OHTTP client trace prefix before engine operations so direct OHTTP
+            // connections (Tor OFF) can emit X-Client-Trace-Id without requiring TorClient creation.
+            SlipstreamNative.setDefaultOhttpClientTracePrefix(ohttpClientTraceIdPrefix)
+
             val engine =
                 SlipstreamEngine(
                     dbFile.absolutePath,
