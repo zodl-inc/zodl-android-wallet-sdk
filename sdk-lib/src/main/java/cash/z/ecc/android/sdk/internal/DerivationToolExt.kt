@@ -81,11 +81,20 @@ fun Derivation.derivePrivateUseMetadataKeyTypesafe(
     }
 }
 
+/**
+ * Deliberately not wrapped in [useAndClear]: the array returned by the JNI call is the derived key
+ * itself and is handed to the caller as-is, so there is no transient copy to wipe here. Ownership of
+ * the returned key material, including zeroing it, rests with the caller.
+ */
 fun Derivation.deriveArbitraryWalletKeyTypesafe(
     contextString: ByteArray,
     seed: ByteArray
 ): ByteArray = deriveArbitraryWalletKey(contextString, seed)
 
+/**
+ * Deliberately not wrapped in [useAndClear] for the same reason as [deriveArbitraryWalletKeyTypesafe]:
+ * the returned array is the caller-owned key, not a transient copy.
+ */
 fun Derivation.deriveArbitraryAccountKeyTypesafe(
     contextString: ByteArray,
     seed: ByteArray,
