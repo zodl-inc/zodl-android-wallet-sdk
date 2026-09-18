@@ -6,6 +6,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The JNI entry points `branchIdForHeight`, `putUtxo`, and the pool-migration entry points
+  `recordTransferResultNative`, `hasOverdueTransfersNative`, `nextDueTransferNative`, and
+  `nextStepNative` now reject negative or out-of-range block heights with an exception instead
+  of silently wrapping them to a `u32`, which could select an incorrect consensus branch id,
+  persist a bogus UTXO height, or misjudge migration transfer timing. The migration commit and
+  Keystone QR entry points' plan-handle and fragment-length parameters got the same treatment
+  (MOB-1694).
+
 ## [3.3.0] - 2026-09-16
 
 ### Added
@@ -159,15 +168,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All JNI entry points now convert caller-supplied numeric arguments (network ids, the UTXO
   output index, Tor dormant mode) with checked conversions instead of unchecked casts, so
   out-of-range values fail with an exception instead of silently wrapping (MOB-1764).
-
-### Fixed
-- The JNI entry points `branchIdForHeight`, `putUtxo`, and the pool-migration entry points
-  `recordTransferResultNative`, `hasOverdueTransfersNative`, `nextDueTransferNative`, and
-  `nextStepNative` now reject negative or out-of-range block heights with an exception instead
-  of silently wrapping them to a `u32`, which could select an incorrect consensus branch id,
-  persist a bogus UTXO height, or misjudge migration transfer timing. The migration commit and
-  Keystone QR entry points' plan-handle and fragment-length parameters got the same treatment
-  (MOB-1694).
 
 ## [3.1.0] - 2026-08-20
 
