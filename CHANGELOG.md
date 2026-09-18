@@ -6,6 +6,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Hardened key handling across the JNI boundary: on the Rust side, transit buffers carrying spending
+  and metadata key material are now zeroized on drop; on the Kotlin side, transient copies of that key
+  material created while crossing the JNI boundary are zeroed as soon as they are no longer needed.
+  Not covered: `DerivationTool.deriveArbitraryWalletKey` and `DerivationTool.deriveArbitraryAccountKey`
+  return the derived key itself as a plain `ByteArray`, so there is no SDK-side copy to wipe - that
+  array is caller-owned key material and the caller is responsible for zeroing it once done, as their
+  documentation now states. This is defense-in-depth and best-effort only - the JVM may retain
+  unreachable copies (GC compaction, JIT) that cannot be cleared from application code - and it makes
+  no changes to the public API (MOB-1689).
+
 ## [3.3.0] - 2026-09-16
 
 ### Added

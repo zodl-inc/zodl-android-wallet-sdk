@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.internal
 
+import cash.z.ecc.android.sdk.internal.ext.clearContents
 import cash.z.ecc.android.sdk.model.AccountMetadataKey
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
@@ -42,7 +43,15 @@ internal class TypesafeDerivationToolImpl(
         seed: ByteArray,
         network: ZcashNetwork,
         accountIndex: Zip32AccountIndex
-    ): AccountMetadataKey = AccountMetadataKey(derivation.deriveAccountMetadataKeyTypesafe(seed, network, accountIndex))
+    ): AccountMetadataKey {
+        val jniMetadataKey = derivation.deriveAccountMetadataKeyTypesafe(seed, network, accountIndex)
+        return try {
+            AccountMetadataKey(jniMetadataKey)
+        } finally {
+            jniMetadataKey.sk.clearContents()
+            jniMetadataKey.chainCode.clearContents()
+        }
+    }
 
     override suspend fun derivePrivateUseMetadataKey(
         accountMetadataKey: AccountMetadataKey,

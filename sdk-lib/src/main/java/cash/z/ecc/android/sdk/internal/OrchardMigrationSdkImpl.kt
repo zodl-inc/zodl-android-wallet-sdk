@@ -37,6 +37,7 @@ import cash.z.ecc.android.sdk.TransferProposal
 import cash.z.ecc.android.sdk.TransferResult
 import cash.z.ecc.android.sdk.UnsignedPreparationPczt
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
+import cash.z.ecc.android.sdk.internal.ext.clearContents
 import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
@@ -379,14 +380,19 @@ internal class OrchardMigrationSdkImpl(
             logged("submitNoteSplit.prepare") {
                 val dbDataPath = dbDataPath()
                 val account = account ?: noAccountAvailable()
+                val uskBytes = usk.copyBytes()
                 val signed =
-                    migrationBackend.signNoteSplit(
-                        dbDataPath,
-                        network,
-                        account,
-                        proposal.proposalHandle,
-                        usk.copyBytes(),
-                    )
+                    try {
+                        migrationBackend.signNoteSplit(
+                            dbDataPath,
+                            network,
+                            account,
+                            proposal.proposalHandle,
+                            uskBytes,
+                        )
+                    } finally {
+                        uskBytes.clearContents()
+                    }
                 PreparedBroadcast(
                     dbDataPath = dbDataPath,
                     account = account,
@@ -549,13 +555,18 @@ internal class OrchardMigrationSdkImpl(
         logged("signAndStoreMigrationSchedule") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            migrationBackend.signAndStoreMigrationSchedule(
-                dbDataPath,
-                network,
-                account,
-                schedule.proposalHandle,
-                usk.copyBytes(),
-            )
+            val uskBytes = usk.copyBytes()
+            try {
+                migrationBackend.signAndStoreMigrationSchedule(
+                    dbDataPath,
+                    network,
+                    account,
+                    schedule.proposalHandle,
+                    uskBytes,
+                )
+            } finally {
+                uskBytes.clearContents()
+            }
         }
 
     // ── Background execution ─────────────────────────────────────────────────
