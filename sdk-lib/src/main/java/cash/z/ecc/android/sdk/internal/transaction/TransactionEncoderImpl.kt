@@ -68,6 +68,7 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating proposal from URI String." }
         }.getOrElse {
+            if (it is CancellationException) throw it
             throw it.toProposalException(TransactionEncoderException::ProposalFromUriException)
         }
     }
@@ -86,6 +87,7 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating the migration proposal." }
         }.getOrElse {
+            if (it is CancellationException) throw it
             throw it.toProposalException(TransactionEncoderException::ProposalFromParametersException)
         }
     }
@@ -117,6 +119,7 @@ internal class TransactionEncoderImpl(
         }.onFailure {
             Twig.error(it) { "Caught exception while creating proposal." }
         }.getOrElse {
+            if (it is CancellationException) throw it
             throw it.toProposalException(TransactionEncoderException::ProposalFromParametersException)
         }
     }
@@ -138,6 +141,7 @@ internal class TransactionEncoderImpl(
         }.onSuccess { result ->
             Twig.info { "Result of proposeShielding: ${result?.toPrettyString()}" }
         }.getOrElse {
+            if (it is CancellationException) throw it
             throw it.toProposalException(TransactionEncoderException::ProposalShieldingException)
         }
 
