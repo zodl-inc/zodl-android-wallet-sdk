@@ -417,25 +417,21 @@ class VotingRustBackend private constructor() {
             }
 
         /**
-         * Drives `roundId`'s unconfirmed helper shares to confirmation with a
-         * `ShareTrackingDriver`, repeating passes on the cadence each pass itself computes until
-         * the round's shares are quiescent. Standalone and session-less: unlike
-         * [RoundSession.runRound], a separate call cannot cancel an in-flight
-         * [trackShares] run mid-pass — see `trackSharesNative`'s doc comment in
-         * `backend-lib/src/main/rust/voting/share_tracking_driver.rs`.
-         *
-         * [voteEndTimeSeconds] `< 0` decodes to "no vote-end boundary known yet".
+         * Opens a cancellable share-tracking session for [roundId]. See
+         * [ShareTrackingSession]'s doc comment for the cancel/close contract, and
+         * `openShareTrackingSessionNative`'s doc comment in
+         * `backend-lib/src/main/rust/voting/share_tracking_driver.rs` for why this
+         * replaces the old session-less `trackShares` call.
          */
         @Throws(RuntimeException::class)
-        suspend fun trackShares(
-            roundId: String,
-            torRuntime: Long,
-            helperUrls: List<String>,
-            voteEndTimeSeconds: Long
-        ): JniShareTrackingRunReport =
+        suspend fun openShareTrackingSession(roundId: String): ShareTrackingSession =
             withHandle { handle ->
-                trackSharesNative(handle, roundId, torRuntime, helperUrls.toTypedArray(), voteEndTimeSeconds)
-                    ?: error("trackShares returned null for roundId=$roundId")
+                openShareTrackingSessionNative(handle, roundId).let { sessionHandle ->
+                    check(sessionHandle != 0L) {
+                        "openShareTrackingSession failed for roundId=$roundId"
+                    }
+                    ShareTrackingSession(sessionHandle)
+                }
             }
 
         /**
@@ -609,6 +605,75 @@ class VotingRustBackend private constructor() {
                     val handle =
                         checkNotNull(sessionHandle) {
                             "Round session handle is closed"
+                        }
+                    inFlight++
+                    handle
+                }
+            try {
+                return withContext(Dispatchers.IO) {
+                    block(handle)
+                }
+            } finally {
+                accessMutex.withLock { inFlight-- }
+            }
+        }
+    }
+
+    /**
+     * One open share-tracking session: a round-scoped `ChainSubmissionControl`
+     * `cancel()` can target, giving `run()` the same real mid-run cancellability
+     * [RoundSession.runRound] already has -- see [VotingDb.openShareTrackingSession]'s
+     * doc comment.
+     */
+    class ShareTrackingSession internal constructor(
+        private var sessionHandle: Long?
+    ) {
+        // Identical concurrency contract to RoundSession -- see that class's
+        // accessMutex/inFlight doc comment for why cancel() must not be blocked
+        // behind an in-flight run() call.
+        private val accessMutex = Mutex()
+        private var inFlight = 0
+
+        suspend fun close() {
+            while (true) {
+                val handle =
+                    accessMutex.withLock {
+                        when {
+                            sessionHandle == null -> return
+                            inFlight > 0 -> null
+                            else -> sessionHandle.also { sessionHandle = null }
+                        }
+                    }
+                if (handle != null) {
+                    withContext(Dispatchers.IO) {
+                        closeShareTrackingSessionNative(handle)
+                    }
+                    return
+                }
+                yield()
+            }
+        }
+
+        @Throws(RuntimeException::class)
+        suspend fun cancel() =
+            withHandle { handle -> cancelShareTrackingSessionNative(handle) }
+
+        @Throws(RuntimeException::class)
+        suspend fun run(
+            torRuntime: Long,
+            helperUrls: List<String>,
+            voteEndTimeSeconds: Long
+        ): JniShareTrackingRunReport? =
+            withHandle { handle ->
+                runShareTrackingSessionNative(handle, torRuntime, helperUrls.toTypedArray(), voteEndTimeSeconds)
+            }
+
+        private suspend fun <T> withHandle(block: (Long) -> T): T {
+            val handle =
+                accessMutex.withLock {
+                    val handle =
+                        checkNotNull(sessionHandle) {
+                            "Share tracking session handle is closed"
                         }
                     inFlight++
                     handle
@@ -827,13 +892,24 @@ class VotingRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun trackSharesNative(
-            dbHandle: Long,
-            roundId: String,
+        private external fun openShareTrackingSessionNative(dbHandle: Long, roundId: String): Long
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun runShareTrackingSessionNative(
+            sessionHandle: Long,
             torRuntime: Long,
             helperUrls: Array<String>,
             voteEndTimeSeconds: Long
         ): JniShareTrackingRunReport?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun cancelShareTrackingSessionNative(sessionHandle: Long)
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun closeShareTrackingSessionNative(sessionHandle: Long)
 
         @JvmStatic
         @Throws(RuntimeException::class)
