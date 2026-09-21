@@ -534,6 +534,18 @@ data class VotingChainOutcome(
 )
 
 /**
+ * A run's proposal-completion tally, mirroring `zcash_voting::round_drive::RoundWorkTally` --
+ * measured against the run's *first* plan, so it holds steady as a stable "N of M" denominator
+ * even while the round-driver interleaves several bundles concurrently (unlike per-event
+ * `bundleIndex`/`proposalId`, which names whichever step happened to report last). Delivered on
+ * every `PlanRefreshed` event; `null` on every other [VotingRoundDriveProgress.kind].
+ */
+data class VotingRoundWorkTally(
+    val completedProposals: Int,
+    val totalProposals: Int
+)
+
+/**
  * One live observation from a [VotingRoundDriveProgressListener] callback, parsed from the
  * crate's own `zcash_voting::wire::RoundDriveEventView` -- its flattened, stable projection of
  * `RoundDriveEvent` for host consumption (see that type's doc comment for the full field set;
@@ -544,12 +556,15 @@ data class VotingChainOutcome(
  * except a bare chain/tree observation). [proofProgress] is the 0..1 proving fraction from a
  * `StepProgress` event's `Delegation`/`VoteCommit` payload, when the crate reported one --
  * `null` for every other kind, or when a `StepProgress` event's payload doesn't carry a
- * fraction (e.g. `TreeSynced`, `ShareOutcome`).
+ * fraction (e.g. `TreeSynced`, `ShareOutcome`). [tally] is the run's proposal-completion count,
+ * present only on `PlanRefreshed` events -- see [VotingRoundWorkTally]'s own doc comment for why
+ * this, not a per-event bundle/proposal id, is the right source for a stable "N of M" display.
  */
 data class VotingRoundDriveProgress(
     val kind: String,
     val step: VotingNextStep?,
-    val proofProgress: Float?
+    val proofProgress: Float?,
+    val tally: VotingRoundWorkTally?
 )
 
 /**

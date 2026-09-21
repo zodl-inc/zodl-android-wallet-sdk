@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.model.voting.VotingRoundDriveProgress
+import cash.z.ecc.android.sdk.model.voting.VotingRoundWorkTally
 import org.json.JSONObject
 
 /**
@@ -17,6 +18,14 @@ internal fun parseRoundDriveProgress(json: String): VotingRoundDriveProgress =
             kind = view.optString("kind"),
             step = view.optObjectOrNull("step")?.let(::parseNextStep),
             proofProgress =
-                view.optObjectOrNull("progress")?.optDoubleOrNull("proof_progress")?.toFloat()
+                view.optObjectOrNull("progress")?.optDoubleOrNull("proof_progress")?.toFloat(),
+            tally = view.optObjectOrNull("tally")?.let(::parseRoundWorkTally)
         )
     }
+
+/** Parses `RoundDriveEventView::tally`'s JSON object (a plain `RoundWorkTally` serde encoding). */
+private fun parseRoundWorkTally(json: JSONObject): VotingRoundWorkTally =
+    VotingRoundWorkTally(
+        completedProposals = json.optInt("completed_proposals"),
+        totalProposals = json.optInt("total_proposals")
+    )
