@@ -534,20 +534,33 @@ data class VotingChainOutcome(
 )
 
 /**
+ * One live observation from a [VotingRoundDriveProgressListener] callback, parsed from the
+ * crate's own `zcash_voting::wire::RoundDriveEventView` -- its flattened, stable projection of
+ * `RoundDriveEvent` for host consumption (see that type's doc comment for the full field set;
+ * only what's useful for showing "what's happening right now" is surfaced here).
+ *
+ * [kind] is the event's `RoundDriveEventKind` (e.g. `"step_progress"`, `"step_finished"`).
+ * [step] is the [VotingNextStep] the event belongs to, when the event names one (every kind
+ * except a bare chain/tree observation). [proofProgress] is the 0..1 proving fraction from a
+ * `StepProgress` event's `Delegation`/`VoteCommit` payload, when the crate reported one --
+ * `null` for every other kind, or when a `StepProgress` event's payload doesn't carry a
+ * fraction (e.g. `TreeSynced`, `ShareOutcome`).
+ */
+data class VotingRoundDriveProgress(
+    val kind: String,
+    val step: VotingNextStep?,
+    val proofProgress: Float?
+)
+
+/**
  * Callback for [cash.z.ecc.android.sdk.VotingRoundSession.run]'s optional progress parameter. A
  * `RoundDriver::run` pass can take on the order of a minute or more, so this exists to give a
- * caller something to show while it runs rather than looking stuck.
- *
- * [step] is a short label naming the crate's `RoundDriveEvent` variant that fired (e.g.
- * `"StepSelected"`, `"StepFinished"`); [detail] is that event's full debug text. Called from
- * whichever native thread the round-driver's concurrent bundle tasks happen to be running on --
- * an implementation must be safe to call from any thread and must not block.
+ * caller something to show while it runs rather than looking stuck. Called from whichever
+ * native thread the round-driver's concurrent bundle tasks happen to be running on -- an
+ * implementation must be safe to call from any thread and must not block.
  */
 fun interface VotingRoundDriveProgressListener {
-    fun onProgress(
-        step: String,
-        detail: String
-    )
+    fun onProgress(progress: VotingRoundDriveProgress)
 }
 
 /**

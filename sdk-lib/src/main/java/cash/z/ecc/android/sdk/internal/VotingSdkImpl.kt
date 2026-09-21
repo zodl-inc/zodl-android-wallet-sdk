@@ -253,7 +253,7 @@ internal class VotingRoundSessionImpl(
             torRuntime,
             delegationInputs?.toInternal(session.dbHandle),
             progressListener?.let { listener ->
-                RoundDriveProgressListener { step, detail -> listener.onProgress(step, detail) }
+                RoundDriveProgressListener { _, detail -> listener.onProgress(parseRoundDriveProgress(detail)) }
             }
         )?.toPublic()
 

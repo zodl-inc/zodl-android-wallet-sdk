@@ -304,13 +304,12 @@ fn round_drive_reporter_from_callback(
     let callback = env.new_global_ref(callback)?;
     Ok(Box::new(RoundDriveReporterBridge::new(
         move |event: RoundDriveEvent| {
-            let step = round_drive_event_step_name(&event);
-            let detail = format!("{event:?}");
+            let (step, detail) = round_drive_event_step_and_json(event);
             match vm.attach_current_thread() {
                 Ok(mut guard) => {
                     let env: &mut JNIEnv = &mut guard;
                     let (step_jstr, detail_jstr) =
-                        match (env.new_string(step), env.new_string(&detail)) {
+                        match (env.new_string(&step), env.new_string(&detail)) {
                             (Ok(s), Ok(d)) => (s, d),
                             _ => return,
                         };
@@ -332,21 +331,29 @@ fn round_drive_reporter_from_callback(
     )))
 }
 
-/// Short label for a [`RoundDriveEvent`] variant, for the `step` argument of
-/// `onRoundDriveProgress` -- the `detail` argument (a full `{:?}` dump) is
-/// where the exact `NextStep`/bundle-index/disposition fields live; this is
-/// only a quick-glance label a UI (or a logcat line) can group on.
-/// `RoundDriveEvent` is `#[non_exhaustive]`, hence the wildcard arm.
-fn round_drive_event_step_name(event: &RoundDriveEvent) -> &'static str {
-    match event {
-        RoundDriveEvent::PlanRefreshed { .. } => "PlanRefreshed",
-        RoundDriveEvent::StepSelected { .. } => "StepSelected",
-        RoundDriveEvent::StepProgress { .. } => "StepProgress",
-        RoundDriveEvent::StepFinished { .. } => "StepFinished",
-        RoundDriveEvent::StepFailed { .. } => "StepFailed",
-        RoundDriveEvent::AwaitingRepoll { .. } => "AwaitingRepoll",
-        RoundDriveEvent::BundleSkipped { .. } => "BundleSkipped",
-        _ => "Unknown",
+/// Splits a [`RoundDriveEvent`] into the `(step, detail)` pair `onRoundDriveProgress` carries.
+///
+/// `step` is the event's [`voting::wire::RoundDriveEventKind`] Debug name (e.g.
+/// `"StepProgress"`), a quick-glance label a UI (or a logcat line) can group on. `detail` is
+/// [`voting::wire::RoundDriveEventView`] -- the crate's own flattened, `Serialize`-derived
+/// host-boundary projection of the event (bundle_index, proposal_id, proof_progress, ...) --
+/// JSON-encoded, so a Kotlin listener can parse real structured fields instead of matching
+/// substrings out of a `{:?}` debug dump (which is not a stable format and was never meant to
+/// be parsed). Falls back to the previous `{:?}` dump only if the crate's own conversion fails
+/// (`RoundDriveEvent` is `#[non_exhaustive]`; a future variant this crate version's `TryFrom`
+/// doesn't yet cover would land here).
+fn round_drive_event_step_and_json(event: RoundDriveEvent) -> (String, String) {
+    let debug = format!("{event:?}");
+    match voting::wire::RoundDriveEventView::try_from(event) {
+        Ok(view) => {
+            let step = format!("{:?}", view.kind);
+            let detail = serde_json::to_string(&view).unwrap_or(debug);
+            (step, detail)
+        }
+        Err(e) => {
+            tracing::warn!("RoundDriveEventView::try_from failed: {e}");
+            ("Unknown".to_string(), debug)
+        }
     }
 }
 
