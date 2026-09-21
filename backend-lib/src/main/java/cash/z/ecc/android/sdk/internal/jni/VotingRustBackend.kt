@@ -20,6 +20,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import cash.z.ecc.android.sdk.internal.model.voting.RoundDriveProgressListener
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -576,9 +577,15 @@ class VotingRustBackend private constructor() {
             }
         }
 
+        /**
+         * Cancels an in-flight [runRound]. A safe no-op once [close] has already run — callers
+         * (e.g. `WorkManager.onStopped()`, on a different thread with no way to know whether
+         * [runRound]/[close] already completed) may call this unconditionally at any time.
+         */
         @Throws(RuntimeException::class)
-        suspend fun cancel() =
-            withHandle { handle -> cancelRoundSessionNative(handle) }
+        suspend fun cancel() {
+            withHandleIfOpen { handle -> cancelRoundSessionNative(handle) }
+        }
 
         @Throws(RuntimeException::class)
         suspend fun setOperationEpoch(operationEpoch: Long) =
@@ -640,12 +647,35 @@ class VotingRustBackend private constructor() {
                     inFlight++
                     handle
                 }
+            return runWithHandle(handle, block)
+        }
+
+        /**
+         * Like [withHandle], but returns `null` instead of throwing when the session handle is
+         * already closed — see [cancel]'s doc comment for why that asymmetry exists.
+         */
+        private suspend fun <T> withHandleIfOpen(block: (Long) -> T): T? {
+            val handle =
+                accessMutex.withLock {
+                    val handle = sessionHandle ?: return null
+                    inFlight++
+                    handle
+                }
+            return runWithHandle(handle, block)
+        }
+
+        private suspend fun <T> runWithHandle(handle: Long, block: (Long) -> T): T {
             try {
                 return withContext(Dispatchers.IO) {
                     block(handle)
                 }
             } finally {
-                accessMutex.withLock { inFlight-- }
+                // NonCancellable: withLock suspends when contended, and a suspension point in a
+                // finally on an already-cancelled coroutine throws CancellationException instead
+                // of running its body. Without this, a cancel() racing run()'s own
+                // cancellation-driven finally could leak inFlight, and close()'s drain loop would
+                // then spin forever.
+                withContext(NonCancellable) { accessMutex.withLock { inFlight-- } }
             }
         }
     }
@@ -685,9 +715,15 @@ class VotingRustBackend private constructor() {
             }
         }
 
+        /**
+         * Cancels an in-flight [run]. A safe no-op once [close] has already run — callers
+         * (e.g. `WorkManager.onStopped()`, on a different thread with no way to know whether
+         * [run]/[close] already completed) may call this unconditionally at any time.
+         */
         @Throws(RuntimeException::class)
-        suspend fun cancel() =
-            withHandle { handle -> cancelShareTrackingSessionNative(handle) }
+        suspend fun cancel() {
+            withHandleIfOpen { handle -> cancelShareTrackingSessionNative(handle) }
+        }
 
         @Throws(RuntimeException::class)
         suspend fun run(
@@ -709,12 +745,33 @@ class VotingRustBackend private constructor() {
                     inFlight++
                     handle
                 }
+            return runWithHandle(handle, block)
+        }
+
+        /**
+         * Like [withHandle], but returns `null` instead of throwing when the session handle is
+         * already closed — see [cancel]'s doc comment for why that asymmetry exists.
+         */
+        private suspend fun <T> withHandleIfOpen(block: (Long) -> T): T? {
+            val handle =
+                accessMutex.withLock {
+                    val handle = sessionHandle ?: return null
+                    inFlight++
+                    handle
+                }
+            return runWithHandle(handle, block)
+        }
+
+        private suspend fun <T> runWithHandle(handle: Long, block: (Long) -> T): T {
             try {
                 return withContext(Dispatchers.IO) {
                     block(handle)
                 }
             } finally {
-                accessMutex.withLock { inFlight-- }
+                // NonCancellable: see RoundSession.runWithHandle's comment -- a suspending
+                // withLock in a finally on an already-cancelled coroutine would be skipped,
+                // leaking inFlight and hanging close()'s drain loop forever.
+                withContext(NonCancellable) { accessMutex.withLock { inFlight-- } }
             }
         }
     }
