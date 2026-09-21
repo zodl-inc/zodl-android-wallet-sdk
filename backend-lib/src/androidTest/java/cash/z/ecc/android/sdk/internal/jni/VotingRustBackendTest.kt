@@ -25,10 +25,11 @@ import kotlin.time.Duration.Companion.minutes
  * boundary or asserts a [RuntimeException] rejection from the native side -- both prove the
  * JNI signature resolved and matched (no [UnsatisfiedLinkError]), which is this file's real
  * job now that Tasks 1-8 replaced most of the JNI export surface with the session-based
- * `openRoundSession`/`runRound`/`trackShares`/Keystone-batch API.
+ * `openRoundSession`/`runRound`/`openShareTrackingSession`/Keystone-batch API.
  *
  * A handful of tests need a live (but never network-reachable in these tests) Tor runtime
- * handle -- `openRoundSessionNative`/`runRoundNative`/`trackSharesNative` all take one. Rather
+ * handle -- `openRoundSessionNative`/`runRoundNative`/`runShareTrackingSessionNative` all take
+ * one. Rather
  * than duplicating `TorClient`'s JNI wiring, [torRuntimeHandleForTesting] reads `TorClient`'s
  * private `nativeHandle` field via reflection; this is test-only scaffolding, not a production
  * pattern.
@@ -479,32 +480,37 @@ class VotingRustBackendTest {
         }
 
     /**
-     * `trackSharesNative` bootstraps a real Tor circuit before it can even attempt (and fail
-     * to reach) the fake helper URL, which can legitimately take well past `runTest`'s default
-     * 60s timeout on a slow emulator -- the same reason [warm_proving_caches_smoke] needs an
-     * extended timeout. A generous 5-minute allowance still proves the JNI call resolves and
+     * `runShareTrackingSessionNative` bootstraps a real Tor circuit before it can even attempt
+     * (and fail to reach) the fake helper URL, which can legitimately take well past `runTest`'s
+     * default 60s timeout on a slow emulator -- the same reason [warm_proving_caches_smoke] needs
+     * an extended timeout. A generous 5-minute allowance still proves the JNI call resolves and
      * marshals correctly (a real report or a RuntimeException), without flaking on timing.
      */
     @Test
-    fun track_shares_reaches_native_boundary_without_a_reachable_helper() =
+    fun share_tracking_session_reaches_native_boundary_without_a_reachable_helper() =
         runTest(timeout = 5.minutes) {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             val torClient = newTorClientForTesting()
             try {
-                // No real helper fleet is reachable, and no shares are pending, so this either
-                // reports a NothingToTrack-style quiescence report or fails while trying to
-                // resolve the helper URL -- either outcome (a real report, or a RuntimeException)
-                // proves the JNI array/report marshaling and native round trip work; only
-                // UnsatisfiedLinkError would indicate a real signature mismatch.
-                runCatching {
-                    db.trackShares(
-                        roundId = ROUND_ID,
-                        torRuntime = torClient.torRuntimeHandleForTesting(),
-                        helperUrls = listOf("https://helper.example"),
-                        voteEndTimeSeconds = -1
-                    )
-                }.onFailure { error ->
-                    assertTrue(error is RuntimeException, "expected RuntimeException, got $error")
+                val session = db.openShareTrackingSession(ROUND_ID)
+                try {
+                    // No real helper fleet is reachable, and no shares are pending, so this either
+                    // reports a NothingToTrack-style quiescence report or fails while trying to
+                    // resolve the helper URL -- either outcome (a real report, or a
+                    // RuntimeException) proves the JNI array/report marshaling and native round
+                    // trip work; only UnsatisfiedLinkError would indicate a real signature
+                    // mismatch.
+                    runCatching {
+                        session.run(
+                            torRuntime = torClient.torRuntimeHandleForTesting(),
+                            helperUrls = listOf("https://helper.example"),
+                            voteEndTimeSeconds = -1
+                        )
+                    }.onFailure { error ->
+                        assertTrue(error is RuntimeException, "expected RuntimeException, got $error")
+                    }
+                } finally {
+                    session.close()
                 }
             } finally {
                 db.close()

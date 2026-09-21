@@ -17,6 +17,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniShareTrackingRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
+import cash.z.ecc.android.sdk.internal.model.voting.RoundDriveProgressListener
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -179,7 +180,7 @@ class TypesafeVotingBackendImplTest {
         }
 
     @Test
-    fun track_shares_forwards_arguments_and_returns_result() =
+    fun share_tracking_session_methods_forward_arguments_and_results() =
         runTest {
             val report =
                 JniShareTrackingRunReport(
@@ -192,23 +193,31 @@ class TypesafeVotingBackendImplTest {
                     unrecoverableJson = "[]",
                     failuresJson = "[]"
                 )
-            val dbBackend = RecordingVotingDbBackend(shareTrackingReport = report)
+            val sessionBackend = RecordingShareTrackingSessionBackend(runReport = report)
+            val dbBackend = RecordingVotingDbBackend(shareTrackingSessionBackend = sessionBackend)
             val backend = TypesafeVotingBackendImpl { RecordingVotingBackendBridge(dbBackend) }
             val db = backend.openVotingDb("/tmp/voting.db", "wallet-1", networkId = 1)
 
+            val session = db.openShareTrackingSession("round-1")
+            assertEquals("round-1", dbBackend.openShareTrackingSessionRoundId)
+
             val result =
-                db.trackShares(
-                    roundId = "round-1",
+                session.run(
                     torRuntime = 42L,
                     helperUrls = listOf("https://helper.example"),
                     voteEndTimeSeconds = -1
                 )
 
             assertEquals(report, result)
-            assertEquals("round-1", dbBackend.trackSharesRoundId)
-            assertEquals(42L, dbBackend.trackSharesTorRuntime)
-            assertEquals(listOf("https://helper.example"), dbBackend.trackSharesHelperUrls)
-            assertEquals(-1L, dbBackend.trackSharesVoteEndTimeSeconds)
+            assertEquals(42L, sessionBackend.runTorRuntime)
+            assertEquals(listOf("https://helper.example"), sessionBackend.runHelperUrls)
+            assertEquals(-1L, sessionBackend.runVoteEndTimeSeconds)
+
+            session.cancel()
+            assertEquals(1, sessionBackend.cancelCalls)
+
+            session.close()
+            assertEquals(1, sessionBackend.closeCalls)
         }
 
     @Test
@@ -475,17 +484,8 @@ class TypesafeVotingBackendImplTest {
         private val keystoneSignatureBatchResult: JniKeystoneSignatureBatchResult =
             JniKeystoneSignatureBatchResult(inserted = 0, alreadyPresent = 0),
         private val keystoneSignatureRecords: Array<JniKeystoneSignatureRecord> = emptyArray(),
-        private val shareTrackingReport: JniShareTrackingRunReport =
-            JniShareTrackingRunReport(
-                quiescenceKind = "nothing_to_track",
-                quiescenceDetailJson = null,
-                passes = 0,
-                confirmedJson = "[]",
-                resubmittedJson = "[]",
-                ambiguousJson = "[]",
-                unrecoverableJson = "[]",
-                failuresJson = "[]"
-            ),
+        private val shareTrackingSessionBackend: ShareTrackingSessionBackend =
+            RecordingShareTrackingSessionBackend(),
         private val roundSessionBackend: RoundSessionBackend = RecordingRoundSessionBackend()
     ) : VotingDbBackend {
         var precomputeRoundId: String? = null
@@ -496,10 +496,7 @@ class TypesafeVotingBackendImplTest {
         var storeKeystoneSignaturesRoundId: String? = null
         var storeKeystoneSignaturesSignatures: List<JniKeystoneSignatureInput>? = null
         var getKeystoneSignaturesRoundId: String? = null
-        var trackSharesRoundId: String? = null
-        var trackSharesTorRuntime: Long? = null
-        var trackSharesHelperUrls: List<String>? = null
-        var trackSharesVoteEndTimeSeconds: Long? = null
+        var openShareTrackingSessionRoundId: String? = null
         var openRoundSessionTorRuntime: Long? = null
         var openRoundSessionRoundId: String? = null
         var openRoundSessionProposalIds: IntArray? = null
@@ -580,17 +577,9 @@ class TypesafeVotingBackendImplTest {
             return keystoneSignatureRecords
         }
 
-        override suspend fun trackShares(
-            roundId: String,
-            torRuntime: Long,
-            helperUrls: List<String>,
-            voteEndTimeSeconds: Long
-        ): JniShareTrackingRunReport {
-            trackSharesRoundId = roundId
-            trackSharesTorRuntime = torRuntime
-            trackSharesHelperUrls = helperUrls
-            trackSharesVoteEndTimeSeconds = voteEndTimeSeconds
-            return shareTrackingReport
+        override suspend fun openShareTrackingSession(roundId: String): ShareTrackingSessionBackend {
+            openShareTrackingSessionRoundId = roundId
+            return shareTrackingSessionBackend
         }
 
         override suspend fun openRoundSession(
@@ -632,6 +621,7 @@ class TypesafeVotingBackendImplTest {
         var setBallotIntentsChoices: IntArray? = null
         var runRoundTorRuntime: Long? = null
         var runRoundDelegationInputs: JniDelegationInputs? = null
+        var runRoundProgressListener: RoundDriveProgressListener? = null
         var keystoneSigningRequestsBundleIndices: IntArray? = null
 
         override suspend fun close() {
@@ -659,16 +649,47 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun runRound(
             torRuntime: Long,
-            delegationInputs: JniDelegationInputs?
+            delegationInputs: JniDelegationInputs?,
+            progressListener: RoundDriveProgressListener?
         ): JniRoundRunReport? {
             runRoundTorRuntime = torRuntime
             runRoundDelegationInputs = delegationInputs
+            runRoundProgressListener = progressListener
             return roundRunReport
         }
 
         override suspend fun getKeystoneSigningRequests(bundleIndices: IntArray): Array<JniKeystoneSigningRequest> {
             keystoneSigningRequestsBundleIndices = bundleIndices
             return keystoneSigningRequests
+        }
+    }
+
+    private class RecordingShareTrackingSessionBackend(
+        private val runReport: JniShareTrackingRunReport? = null
+    ) : ShareTrackingSessionBackend {
+        var closeCalls = 0
+        var cancelCalls = 0
+        var runTorRuntime: Long? = null
+        var runHelperUrls: List<String>? = null
+        var runVoteEndTimeSeconds: Long? = null
+
+        override suspend fun close() {
+            closeCalls++
+        }
+
+        override suspend fun cancel() {
+            cancelCalls++
+        }
+
+        override suspend fun run(
+            torRuntime: Long,
+            helperUrls: List<String>,
+            voteEndTimeSeconds: Long
+        ): JniShareTrackingRunReport? {
+            runTorRuntime = torRuntime
+            runHelperUrls = helperUrls
+            runVoteEndTimeSeconds = voteEndTimeSeconds
+            return runReport
         }
     }
 }
