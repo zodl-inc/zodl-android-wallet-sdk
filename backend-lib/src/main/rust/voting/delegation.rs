@@ -238,6 +238,59 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+/// Extracts the ZIP-244 shielded sighash from finalized PCZT bytes via
+/// `zcash_voting::action::extract_pczt_sighash`.
+///
+/// Stateless: no `db_handle`/`session_handle`, just bytes in and the 32-byte
+/// sighash out. The Keystone signing flow needs it to pair a device-returned
+/// signature with the sighash that device signed, before handing both to
+/// `storeKeystoneSignaturesNative`.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_extractPcztSighashNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    pczt_bytes: JByteArray<'local>,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let bytes = java_bytes(env, &pczt_bytes, "pcztBytes")?;
+        let sighash = voting::action::extract_pczt_sighash(&bytes)
+            .map_err(|e| anyhow!("extract_pczt_sighash: {}", e))?;
+        Ok(env.byte_array_from_slice(&sighash)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+/// Extracts the 64-byte RedPallas spend-auth signature from a Keystone-signed
+/// PCZT via `zcash_voting::action::extract_spend_auth_sig`.
+///
+/// Stateless, like `extractPcztSighashNative` above. `action_index` is the
+/// caller's expected action; the crate function tries that index first and
+/// then falls back to scanning every action, which is unambiguous because a
+/// governance PCZT has exactly one signable action. That fallback lives in the
+/// crate on purpose -- this wrapper deliberately calls the current crate
+/// function directly rather than re-implementing the narrower index-only
+/// lookup the pre-`DelegationPipeline` revision of this file carried.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_extractSpendAuthSigNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    signed_pczt_bytes: JByteArray<'local>,
+    action_index: jint,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let bytes = java_bytes(env, &signed_pczt_bytes, "signedPcztBytes")?;
+        let action_index = jint_to_usize(action_index, "action_index")?;
+        let sig = voting::action::extract_spend_auth_sig(&bytes, action_index)
+            .map_err(|e| anyhow!("extract_spend_auth_sig: {}", e))?;
+        Ok(env.byte_array_from_slice(&sig)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
 fn require_bundle_notes_match(
     db: &VotingDb,
     round_id: &str,
@@ -325,6 +378,34 @@ mod tests {
             .expect("batch store replays idempotently");
         assert_eq!(result.inserted, 0);
         assert_eq!(result.already_present, 1);
+    }
+
+    /// Locks in the exact shape of the crate function
+    /// `extractPcztSighashNative` marshals for: `&[u8]` in, a fixed
+    /// `[u8; PROTOCOL_FIELD_BYTES]` out, `VotingError` (not `anyhow::Error`)
+    /// as the error type. If the crate ever widens the return to a `Vec<u8>`
+    /// or changes the array length, this stops compiling rather than silently
+    /// handing Kotlin a differently-sized sighash.
+    #[test]
+    fn extract_pczt_sighash_signature_is_stable() {
+        fn _assert_signature(
+            pczt_bytes: &[u8],
+        ) -> Result<[u8; PROTOCOL_FIELD_BYTES], voting::VotingError> {
+            voting::action::extract_pczt_sighash(pczt_bytes)
+        }
+    }
+
+    /// Same guard for `extractSpendAuthSigNative`: `&[u8]` plus a `usize`
+    /// action index in, a fixed `[u8; SPEND_AUTH_SIG_BYTES]` RedPallas
+    /// signature out, `VotingError` as the error type.
+    #[test]
+    fn extract_spend_auth_sig_signature_is_stable() {
+        fn _assert_signature(
+            signed_pczt_bytes: &[u8],
+            action_index: usize,
+        ) -> Result<[u8; SPEND_AUTH_SIG_BYTES], voting::VotingError> {
+            voting::action::extract_spend_auth_sig(signed_pczt_bytes, action_index)
+        }
     }
 
     /// Directly sets a bundle row's `pczt_sighash`/`rk` columns, the way a
