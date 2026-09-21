@@ -1,43 +1,32 @@
 //! Background share delivery/confirmation via `zcash_voting`'s
 //! [`voting::ShareTrackingDriver`].
 //!
-//! Supersedes the hand-rolled record/mark-confirmed/add-sent-servers cluster
-//! this task deletes from `recovery.rs` (`recordShareDelegationNative`,
-//! `getShareDelegationsNative`, `getUnconfirmedDelegationsNative`,
-//! `markShareConfirmedNative`, `addSentServersNative`) -- the crate's own
-//! driver now owns delivery scheduling, quorum confirmation, and retry
-//! internally, repeating passes on the cadence each pass itself computes
-//! until the round's shares are quiescent (see
-//! [`voting::ShareTrackingDriver::run`]'s own doc comment for the full
-//! quiescence/cancellation contract).
+//! **Production-completion correction (2026-09-21):** the original task
+//! doc comment below flagged `trackSharesNative`'s lack of a session handle
+//! as "not a correctness gap, only a cancellability gap" -- true, but the
+//! cancellability gap itself turned out to be a real production hang:
+//! `ShareTrackingDriver::run`'s `control: &ChainSubmissionControl` parameter
+//! is the *exact same type* `RoundDriver::run` takes (see
+//! `round_session.rs`'s `cancelRoundSessionNative`, which just calls
+//! `session.control.cancel()`), so this module always had everything it
+//! needed to support real cancellation -- it just never registered its
+//! `ChainSubmissionControl` anywhere a separate JNI call could reach. This
+//! task gives it the same open/run/cancel/close session shape
+//! `round_session.rs` already uses, reusing its own registry pattern
+//! (`db.rs`'s `DB_REGISTRY`/`next_handle`/`db_from_handle` pattern, same as
+//! `round_session.rs`'s `SESSION_REGISTRY`). No crate-side change was
+//! needed: `ChainSubmissionControl::cancel()` already works exactly as
+//! `runRoundNative`'s does.
 //!
-//! `ShareTrackingDriver::run`'s real signature --
-//! `run(&self, host: &dyn ShareTrackingHostSource, control:
-//! &ChainSubmissionControl, events: &dyn ShareTrackingReporter) ->
-//! ShareTrackingRunReport` -- was NOT what this plan's brief guessed before
-//! this task read `share_tracking_drive/mod.rs` in full: the brief only
-//! confirmed the constructor and that `.run()` is async, flagging its
-//! parameter list as unverified. It does mirror `RoundDriver::run`'s shape
-//! (a host-context source, a submission control, a synchronous reporter)
-//! about as closely as the brief guessed, just with its own
-//! `ShareTrackingHostSource`/`ShareTrackingHostContext`/
-//! `ShareTrackingReporter`/`ShareTrackingRunReport` types rather than the
-//! round driver's.
-//!
-//! `trackSharesNative` is a standalone, session-less JNI export: unlike
-//! `runRoundNative` (which drives a `RoundSessionHandle`'s persisted
-//! `ChainSubmissionControl` across calls, so `cancelRoundSessionNative` can
-//! interrupt an in-flight run), this call builds a fresh, process-local
-//! `ChainSubmissionControl` at operation epoch 0 for the lifetime of one
-//! `trackSharesNative` invocation and does not register it anywhere a
-//! separate JNI call could reach to cancel it mid-run. That is a real gap
-//! relative to `runRoundNative`'s cancellability -- see this task's report --
-//! but it does not create a *correctness* gap: `ShareTrackingDriver::run`'s
-//! own admission is database-backed (`ShareOperationScope`/`RoundKey`, one
-//! live run per round regardless of which control drives it), so two
-//! overlapping `trackSharesNative` calls for the same round still cannot
-//! double the round's helper traffic; only mid-run cancellation is
-//! unavailable here.
+//! Supersedes the hand-rolled record/mark-confirmed/add-sent-servers
+//! cluster this task deletes from `recovery.rs` (unchanged from the
+//! original note) -- the crate's own driver owns delivery scheduling,
+//! quorum confirmation, and retry internally, repeating passes on the
+//! cadence each pass itself computes until the round's shares are
+//! quiescent.
+
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::OnceLock;
 
 use super::db::db_from_handle;
 use super::helpers::*;
@@ -53,54 +42,107 @@ use voting::{
     ShareTrackingHostSourceBridge,
 };
 
-/// Drives `round_id`'s unconfirmed helper shares to confirmation with a
-/// [`ShareTrackingDriver`], per this module's doc comment.
-///
-/// Builds its own one-shot [`HelperClient`] over Task 1's Tor-backed
-/// [`ZodlVotingRoute`] transport -- the same construction
-/// `openRoundSessionNative` uses for its session's helper client, but built
-/// fresh here rather than shared from a session, since share tracking is not
-/// bound to a round session's lifecycle.
-///
-/// `vote_end_time_seconds < 0` decodes to `None` (no vote-end boundary known
-/// yet), the same sentinel convention `optional_seconds` already uses for
-/// `openRoundSessionNative`'s `ceremony_start_seconds`/`vote_end_time_seconds`.
-/// This parameter is a necessary addition beyond the task brief's literal
-/// "Produces" signature line (which listed only `db_handle`, `round_id`,
-/// `tor_runtime`, `helper_urls`): `ShareTrackingHostContext::vote_end_time_seconds`
-/// has nowhere else to come from, the same situation `openRoundSessionNative`'s
-/// own doc comment already called out for its analogous parameters.
+/// One open share-tracking session: a round-scoped [`ChainSubmissionControl`]
+/// a separate `cancelShareTrackingSessionNative` call can reach, plus the
+/// `round_id` `runShareTrackingSessionNative` drives passes against. Mirrors
+/// `round_session.rs`'s `RoundSessionHandle` shape exactly, minus the fields
+/// that are round-session-only (executor, delegation pipeline cache).
+pub(super) struct ShareTrackingSessionHandle {
+    db_handle: jlong,
+    round_id: String,
+    control: ChainSubmissionControl,
+}
+
+static NEXT_SHARE_TRACKING_SESSION_HANDLE: AtomicI64 = AtomicI64::new(1);
+static SHARE_TRACKING_SESSION_REGISTRY: OnceLock<Mutex<HashMap<jlong, Arc<ShareTrackingSessionHandle>>>> =
+    OnceLock::new();
+
+fn share_tracking_registry() -> &'static Mutex<HashMap<jlong, Arc<ShareTrackingSessionHandle>>> {
+    SHARE_TRACKING_SESSION_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn next_share_tracking_session_handle() -> anyhow::Result<jlong> {
+    NEXT_SHARE_TRACKING_SESSION_HANDLE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .map_err(|_| anyhow!("share tracking session handle space exhausted"))
+}
+
+fn share_tracking_session_from_handle(handle: jlong) -> anyhow::Result<Arc<ShareTrackingSessionHandle>> {
+    if handle <= 0 {
+        return Err(anyhow!(
+            "Share tracking session handle must be positive, got {handle}"
+        ));
+    }
+    share_tracking_registry()
+        .lock()
+        .map_err(|_| anyhow!("share tracking session registry mutex poisoned"))?
+        .get(&handle)
+        .cloned()
+        .ok_or_else(|| anyhow!("Share tracking session handle is closed or unknown: {handle}"))
+}
+
+/// Opens a share-tracking session for `round_id` against the voting DB at
+/// `db_handle`. Registers a fresh, unstarted [`ChainSubmissionControl`] at
+/// operation epoch 0 that `cancelShareTrackingSessionNative` can later
+/// target -- see this module's doc comment for why this alone closes the
+/// production hang.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_trackSharesNative<
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_openShareTrackingSessionNative<
     'local,
 >(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     db_handle: jlong,
     round_id: JString<'local>,
+) -> jlong {
+    let res = catch_unwind(&mut env, |env| {
+        // Validate the db handle resolves before registering the session,
+        // matching openRoundSessionNative's own up-front db_from_handle
+        // check.
+        let _ = db_from_handle(db_handle)?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+
+        let session = Arc::new(ShareTrackingSessionHandle {
+            db_handle,
+            round_id,
+            control: ChainSubmissionControl::new(0),
+        });
+
+        let handle = next_share_tracking_session_handle()?;
+        share_tracking_registry()
+            .lock()
+            .map_err(|_| anyhow!("share tracking session registry mutex poisoned"))?
+            .insert(handle, session);
+
+        Ok(handle)
+    });
+    unwrap_exc_or(&mut env, res, 0)
+}
+
+/// Drives `session_handle`'s round to share-tracking quiescence with a
+/// [`ShareTrackingDriver`]. See `trackSharesNative`'s old doc comment (now
+/// superseded) for the Tor-optional fallback this preserves unchanged.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_runShareTrackingSessionNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    session_handle: jlong,
     tor_runtime: jlong,
     helper_urls: JObjectArray<'local>,
     vote_end_time_seconds: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let round_id = java_string_to_rust(env, &round_id)?;
+        let session = share_tracking_session_from_handle(session_handle)?;
+        let db = db_from_handle(session.db_handle)?;
         let configured_helper_urls = java_string_array(env, &helper_urls, "helper_urls")?;
         let vote_end_time_seconds = optional_seconds(vote_end_time_seconds)?;
 
-        // SAFETY: `tor_runtime` is caller-supplied and must be a live handle
-        // for the duration of this call -- see `resolve_tor_runtime`'s doc
-        // comment in round_session.rs, which this export reuses unchanged.
-        //
-        // Resolved exactly once: `resolve_tor_runtime` hands back a `&mut
-        // TorRuntime`, and calling it a second time before this borrow's
-        // last use (inside the `Ok` arm's `block_on` below) would be a real
-        // aliasing bug, not just style.
+        // SAFETY: see resolve_tor_runtime's doc comment in round_session.rs.
         let resolved_tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) };
 
-        let control = ChainSubmissionControl::new(0);
         let database: &voting::storage::VotingDb = &db;
-
         let template = ShareTrackingHostContext {
             configured_helper_urls,
             now_seconds: unix_now_seconds(),
@@ -112,24 +154,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_tra
             ctx
         });
 
-        // Tor is a user preference, used when available -- a deliberate,
-        // permanent design decision (not a benchmark hack), matching the
-        // pre-4.0/4.0.0-rc.1 architecture's own settings-based Tor behavior
-        // and `runRoundNative`'s identical fallback in round_session.rs.
-        // When there is no live Tor runtime handle, route directly instead
-        // of failing share tracking outright, and drive the async work via
-        // `fallback_runtime`'s Tor-independent executor rather than the
-        // (absent) Tor runtime's.
         let report = match resolved_tor_runtime {
             Ok(tor_runtime) => {
                 let transport: Arc<dyn HelperTransport> = Arc::new(HyperTransport::with_route(
                     ZodlVotingRoute::new(tor_runtime),
                 ));
                 let client = HelperClient::new(transport, HelperHealth::default());
-                let driver = ShareTrackingDriver::new(database, &client, &round_id);
+                let driver = ShareTrackingDriver::new(database, &client, &session.round_id);
                 tor_runtime.runtime().block_on(async {
                     driver
-                        .run(&host, &control, &NoopShareTrackingReporter {})
+                        .run(&host, &session.control, &NoopShareTrackingReporter {})
                         .await
                 })
             }
@@ -137,10 +171,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_tra
                 let transport: Arc<dyn HelperTransport> =
                     Arc::new(HyperTransport::with_route(DirectRoute::new()));
                 let client = HelperClient::new(transport, HelperHealth::default());
-                let driver = ShareTrackingDriver::new(database, &client, &round_id);
+                let driver = ShareTrackingDriver::new(database, &client, &session.round_id);
                 fallback_runtime()?.block_on(async {
                     driver
-                        .run(&host, &control, &NoopShareTrackingReporter {})
+                        .run(&host, &session.control, &NoopShareTrackingReporter {})
                         .await
                 })
             }
@@ -151,18 +185,75 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_tra
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
 }
 
+/// Cancels an in-flight `runShareTrackingSessionNative` call on this session
+/// -- identical mechanism to `cancelRoundSessionNative`: sets a shared
+/// [`ChainSubmissionControl`] flag the run future polls internally, from
+/// whatever thread this JNI call happens on. This is what unblocks the
+/// `tor_runtime.block_on(...)` call in `runShareTrackingSessionNative` from
+/// outside it.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_cancelShareTrackingSessionNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    session_handle: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        let session = share_tracking_session_from_handle(session_handle)?;
+        session.control.cancel();
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+/// Removes a share-tracking session from the registry. No implicit
+/// cancellation: a caller with a `runShareTrackingSessionNative` call in
+/// flight must `cancelShareTrackingSessionNative` first if it wants that run
+/// to stop early -- identical contract to `closeRoundSessionNative`.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_closeShareTrackingSessionNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    session_handle: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        if session_handle > 0 {
+            share_tracking_registry()
+                .lock()
+                .map_err(|_| anyhow!("share tracking session registry mutex poisoned"))?
+                .remove(&session_handle);
+        }
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn share_tracking_session_from_handle_rejects_nonpositive_handles() {
+        assert!(share_tracking_session_from_handle(0).is_err());
+        assert!(share_tracking_session_from_handle(-1).is_err());
+    }
+
+    #[test]
+    fn share_tracking_session_from_handle_rejects_unknown_handle() {
+        assert!(share_tracking_session_from_handle(jlong::MAX).is_err());
+    }
+
+    #[test]
+    fn share_tracking_session_handles_are_send_and_sync() {
+        fn _assert_send_sync<T: Send + Sync>() {}
+        _assert_send_sync::<ShareTrackingSessionHandle>();
+    }
+
+    #[test]
     fn share_tracking_driver_constructor_signature_is_stable() {
-        // Locks in ShareTrackingDriver::new's real signature -- confirmed by
-        // reading share_tracking_drive/mod.rs directly rather than trusting
-        // the brief's unverified guess -- before trackSharesNative depends on
-        // it: `new(database: &VotingDb, client: &HelperClient, round_id:
-        // &str) -> Self`, with the policy defaulted (set via the separate
-        // `with_policy` builder, not a constructor parameter).
         fn _assert_signature<'a>(
             database: &'a voting::storage::VotingDb,
             client: &'a HelperClient,
@@ -174,12 +265,6 @@ mod tests {
 
     #[test]
     fn share_tracking_driver_run_signature_is_stable() {
-        // Locks in the one signature the brief explicitly flagged as
-        // unverified: `run(&self, host: &dyn ShareTrackingHostSource,
-        // control: &ChainSubmissionControl, events: &dyn
-        // ShareTrackingReporter) -> ShareTrackingRunReport` (async). Mirrors
-        // RoundDriver::run's (host, control, reporter) shape, just with the
-        // share-tracking-specific host/reporter trait objects.
         fn _assert_signature(
             driver: &ShareTrackingDriver<'_>,
             host: &dyn voting::ShareTrackingHostSource,
@@ -192,9 +277,6 @@ mod tests {
 
     #[test]
     fn share_tracking_host_context_round_trips_the_optional_vote_end() {
-        // trackSharesNative's sentinel decoding for vote_end_time_seconds
-        // (jlong < 0 => None) feeds straight into this field; this locks in
-        // that ShareTrackingHostContext still has exactly this shape.
         let ctx = ShareTrackingHostContext {
             configured_helper_urls: vec!["https://helper.example".to_string()],
             now_seconds: 1_700_000_000,
