@@ -61,10 +61,10 @@ pub(crate) fn java_nullable_string_to_rust(
 
 /// Copies `data` into a new Java byte array.
 ///
-/// If `data` is confidential material, the caller must own it in a `SecretVec`
-/// (or similarly zeroize-on-drop buffer) so that the transit copy is wiped when
-/// the caller's buffer is dropped; this function's `data.len()`-sized copy on the
-/// JVM heap is outside Rust's control regardless.
+/// This is a plain copy: the resulting JVM-heap array is outside Rust's control,
+/// and nothing here wipes `data`. When `data` borrows from a key struct, pass the
+/// borrow straight through rather than copying it into a `SecretVec` first; an
+/// extra zeroized copy does not shrink the exposure of the original buffer.
 pub(crate) fn rust_bytes_to_java<'a>(env: &JNIEnv<'a>, data: &[u8]) -> JNIResult<JByteArray<'a>> {
     // SAFETY: jbyte (i8) has the same size and alignment as u8, and a well-defined
     // twos-complement representation with no "trap representations".
