@@ -198,6 +198,37 @@ class VotingRustBackend private constructor() {
                 ?: error("extractNcRoot returned null")
         }
 
+    /**
+     * Extracts the 32-byte ZIP-244 shielded sighash from finalized PCZT bytes.
+     *
+     * Stateless: unlike most of this class's surface, this needs neither a [VotingDb] handle nor
+     * a [VotingDb.RoundSession] — just PCZT bytes in, sighash out. Used by the Keystone signing
+     * flow to recover the sighash the device signed over.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
+        withContext(Dispatchers.IO) {
+            extractPcztSighashNative(pcztBytes)
+                ?: error("extractPcztSighash returned null")
+        }
+
+    /**
+     * Extracts the 64-byte RedPallas spend-authorization signature from a Keystone-signed PCZT.
+     *
+     * Stateless, like [extractPcztSighash]. [actionIndex] is the caller's expected action; the
+     * Rust/crate side tries that index first and otherwise scans every action, which is
+     * unambiguous because a governance PCZT has exactly one signable action.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray =
+        withContext(Dispatchers.IO) {
+            extractSpendAuthSigNative(signedPcztBytes, actionIndex)
+                ?: error("extractSpendAuthSig returned null")
+        }
+
     @Throws(RuntimeException::class)
     suspend fun verifyWitness(witness: JniWitnessData): Boolean =
         withContext(Dispatchers.IO) {
@@ -758,6 +789,17 @@ class VotingRustBackend private constructor() {
         @JvmStatic
         @Throws(RuntimeException::class)
         private external fun extractNcRootNative(treeStateBytes: ByteArray): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun extractPcztSighashNative(pcztBytes: ByteArray): ByteArray?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun extractSpendAuthSigNative(
+            signedPcztBytes: ByteArray,
+            actionIndex: Int
+        ): ByteArray?
 
         @JvmStatic
         @Throws(RuntimeException::class)
