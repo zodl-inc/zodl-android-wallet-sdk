@@ -169,15 +169,10 @@ internal interface TypesafeVotingDb {
     suspend fun getKeystoneSignatures(roundId: String): List<JniKeystoneSignatureRecord>
 
     /**
-     * Drives [roundId]'s unconfirmed helper shares to confirmation, repeating passes until the
-     * round's shares are quiescent. See `VotingRustBackend.VotingDb.trackShares`'s doc comment.
+     * Opens a cancellable share-tracking session for [roundId]. See
+     * `VotingRustBackend.VotingDb.openShareTrackingSession`'s doc comment.
      */
-    suspend fun trackShares(
-        roundId: String,
-        torRuntime: Long,
-        helperUrls: List<String>,
-        voteEndTimeSeconds: Long
-    ): JniShareTrackingRunReport
+    suspend fun openShareTrackingSession(roundId: String): TypesafeShareTrackingSession
 
     /**
      * Opens a round session bound to [roundId]'s roster and hotkey. See
@@ -251,6 +246,22 @@ internal interface TypesafeRoundSession {
      * delegation pipeline is cached yet.
      */
     suspend fun getKeystoneSigningRequests(bundleIndices: IntArray): List<JniKeystoneSigningRequest>
+}
+
+/**
+ * A round's cancellable share-tracking session. See
+ * `VotingRustBackend.ShareTrackingSession`'s doc comment.
+ */
+internal interface TypesafeShareTrackingSession {
+    suspend fun close()
+
+    suspend fun cancel()
+
+    suspend fun run(
+        torRuntime: Long,
+        helperUrls: List<String>,
+        voteEndTimeSeconds: Long
+    ): JniShareTrackingRunReport?
 }
 
 /**

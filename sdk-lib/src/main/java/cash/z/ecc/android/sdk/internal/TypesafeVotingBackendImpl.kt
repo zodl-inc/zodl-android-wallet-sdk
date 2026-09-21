@@ -258,12 +258,7 @@ internal interface VotingDbBackend {
 
     suspend fun getKeystoneSignatures(roundId: String): Array<JniKeystoneSignatureRecord>
 
-    suspend fun trackShares(
-        roundId: String,
-        torRuntime: Long,
-        helperUrls: List<String>,
-        voteEndTimeSeconds: Long
-    ): JniShareTrackingRunReport
+    suspend fun openShareTrackingSession(roundId: String): ShareTrackingSessionBackend
 
     @Suppress("LongParameterList")
     suspend fun openRoundSession(
@@ -363,13 +358,8 @@ private class RustVotingDbBackend(
     override suspend fun getKeystoneSignatures(roundId: String): Array<JniKeystoneSignatureRecord> =
         votingDb.getKeystoneSignatures(roundId)
 
-    override suspend fun trackShares(
-        roundId: String,
-        torRuntime: Long,
-        helperUrls: List<String>,
-        voteEndTimeSeconds: Long
-    ): JniShareTrackingRunReport =
-        votingDb.trackShares(roundId, torRuntime, helperUrls, voteEndTimeSeconds)
+    override suspend fun openShareTrackingSession(roundId: String): ShareTrackingSessionBackend =
+        RustShareTrackingSessionBackend(votingDb.openShareTrackingSession(roundId))
 
     override suspend fun openRoundSession(
         torRuntime: Long,
@@ -454,6 +444,32 @@ private class RustRoundSessionBackend(
 
     override suspend fun getKeystoneSigningRequests(bundleIndices: IntArray): Array<JniKeystoneSigningRequest> =
         roundSession.getKeystoneSigningRequests(bundleIndices)
+}
+
+internal interface ShareTrackingSessionBackend {
+    suspend fun close()
+
+    suspend fun cancel()
+
+    suspend fun run(
+        torRuntime: Long,
+        helperUrls: List<String>,
+        voteEndTimeSeconds: Long
+    ): JniShareTrackingRunReport?
+}
+
+private class RustShareTrackingSessionBackend(
+    private val session: VotingRustBackend.ShareTrackingSession
+) : ShareTrackingSessionBackend {
+    override suspend fun close() = session.close()
+
+    override suspend fun cancel() = session.cancel()
+
+    override suspend fun run(
+        torRuntime: Long,
+        helperUrls: List<String>,
+        voteEndTimeSeconds: Long
+    ): JniShareTrackingRunReport? = session.run(torRuntime, helperUrls, voteEndTimeSeconds)
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -542,13 +558,8 @@ internal class TypesafeVotingDbImpl(
     override suspend fun getKeystoneSignatures(roundId: String): List<JniKeystoneSignatureRecord> =
         votingDb.getKeystoneSignatures(roundId).asList()
 
-    override suspend fun trackShares(
-        roundId: String,
-        torRuntime: Long,
-        helperUrls: List<String>,
-        voteEndTimeSeconds: Long
-    ): JniShareTrackingRunReport =
-        votingDb.trackShares(roundId, torRuntime, helperUrls, voteEndTimeSeconds)
+    override suspend fun openShareTrackingSession(roundId: String): TypesafeShareTrackingSession =
+        TypesafeShareTrackingSessionImpl(votingDb.openShareTrackingSession(roundId))
 
     override suspend fun openRoundSession(
         torRuntime: Long,
@@ -607,6 +618,20 @@ internal class TypesafeRoundSessionImpl(
 
     override suspend fun getKeystoneSigningRequests(bundleIndices: IntArray): List<JniKeystoneSigningRequest> =
         roundSession.getKeystoneSigningRequests(bundleIndices).asList()
+}
+
+internal class TypesafeShareTrackingSessionImpl(
+    private val session: ShareTrackingSessionBackend
+) : TypesafeShareTrackingSession {
+    override suspend fun close() = session.close()
+
+    override suspend fun cancel() = session.cancel()
+
+    override suspend fun run(
+        torRuntime: Long,
+        helperUrls: List<String>,
+        voteEndTimeSeconds: Long
+    ): JniShareTrackingRunReport? = session.run(torRuntime, helperUrls, voteEndTimeSeconds)
 }
 
 internal fun JniDelegationPirPrecomputeResult.toDelegationPirPrecomputeResult() =
