@@ -21,7 +21,7 @@ import kotlin.time.Duration.Companion.minutes
 
 /**
  * Exercises `VotingRustBackend`'s raw JNI surface against the round-driver session model
- * (voting-4.0.0 SDK port). Every test either round-trips real data through the native
+ * (voting-5.0.0 SDK port). Every test either round-trips real data through the native
  * boundary or asserts a [RuntimeException] rejection from the native side -- both prove the
  * JNI signature resolved and matched (no [UnsatisfiedLinkError]), which is this file's real
  * job now that Tasks 1-8 replaced most of the JNI export surface with the session-based

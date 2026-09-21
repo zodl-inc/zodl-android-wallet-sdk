@@ -37,7 +37,7 @@ class VotingModelsTest {
         assertFalse(text.contains("ufvk-fixture"))
     }
 
-    // Task 10 (voting-4.0.0 SDK port): the pre-4.0 mirror types this test used to redaction-test
+    // Task 10 (voting-5.0.0 SDK port): the pre-4.0 mirror types this test used to redaction-test
     // (VotingSharePayload/VotingEncryptedShare/VotingShareDelegationRecord) were deleted --
     // their backing native calls (buildSharePayloadsNative/recordShareDelegationNative) are gone.
     // The port's own sensitive carrier is VotingDelegationInputs (softwareSeed/keystoneSig/

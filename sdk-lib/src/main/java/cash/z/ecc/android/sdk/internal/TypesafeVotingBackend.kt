@@ -209,7 +209,7 @@ internal interface TypesafeRoundSession {
     /**
      * The raw JNI database handle of the [TypesafeVotingDb] this session was opened against.
      *
-     * Added by Task 10 (voting-4.0.0 SDK port) so a delegation-enabled [runRound] call's caller
+     * Added by Task 10 (voting-5.0.0 SDK port) so a delegation-enabled [runRound] call's caller
      * can build [JniDelegationInputs.dbHandle] without a second, independently-tracked
      * reference to the same database — `RoundSessionHandle` on the Rust side does not retain a
      * database reference of its own (see [JniDelegationInputs]'s doc comment), so the session's

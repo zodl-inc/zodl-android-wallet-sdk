@@ -58,7 +58,7 @@ private const val SCHEDULED_SHARE_SUBMIT_AT_ENTROPY_BYTES = 32
  *
  * This class's `external fun` surface mirrors the round-driver session model the Rust `voting`
  * module (`backend-lib/src/main/rust/voting.rs` and its `voting/` submodules) exports as of
- * the voting-4.0.0 SDK port:
+ * the voting-5.0.0 SDK port:
  * a `VotingDb` handle scopes wallet-level state (rounds, bundles, hotkeys, Keystone signatures,
  * vote-tree sync), and a [VotingDb.RoundSession] handle scopes one round's `RoundExecutor`/
  * `RoundDriver` session (plan, ballot intents, drive-to-quiescence, Keystone signing requests).

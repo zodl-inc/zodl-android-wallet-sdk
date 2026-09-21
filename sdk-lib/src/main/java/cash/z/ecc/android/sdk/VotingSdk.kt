@@ -30,7 +30,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingWitness
  * `RoundDriver` session (plan, ballot intents, drive-to-quiescence) is behind
  * [VotingDbSession.openRoundSession]'s [VotingRoundSession].
  *
- * This is the voting-4.0.0 SDK port's session/plan/run surface, replacing the pre-4.0
+ * This is the voting-5.0.0 SDK port's session/plan/run surface, replacing the pre-4.0
  * caller-drives-every-step interface (hand-rolled PCZT construction, per-share recovery
  * bookkeeping, ...) with one backed end-to-end by `zcash_voting`'s own `RoundExecutor`/
  * `RoundDriver`/`DelegationPipeline`/`ShareTrackingDriver` — see `VotingRoundSession.run`'s doc
@@ -67,7 +67,7 @@ interface VotingSdk {
      * history, not round state.
      *
      * A narrower re-addition of the pre-4.0 SDK port's deleted `getWalletNotesNative` (see
-     * this repo's `.superpowers/sdd/2026-09-11-voting-4.0.0-sdk-port/symbol-map.md` for the
+     * this repo's `.superpowers/sdd/2026-09-11-voting-5.0.0-sdk-port/symbol-map.md` for the
      * original deletion rationale): the *delegation* pipeline now selects its own notes
      * internally once a round is running (`DelegationPipeline::select_notes`), but
      * [computeBundleSetup]/[VotingDbSession.setupBundles] are an earlier, pre-round step that
@@ -298,7 +298,7 @@ interface VotingRoundSession {
      * bundle rows now that the round exists) → [run] (which can now genuinely plan and dispatch
      * delegation work).
      *
-     * **The `load_round_params` bug itself, fixed (voting-4.0.0 SDK port):** the native side
+     * **The `load_round_params` bug itself, fixed (voting-5.0.0 SDK port):** the native side
      * (`backend-lib/src/main/rust/voting/delegation_driver.rs`'s `delegation_step_inputs_from_jni`)
      * used to read the round's `VotingRoundParams` back from the `rounds` table via
      * `load_round_params` immediately when [delegationInputs] was non-null, unconditionally

@@ -60,7 +60,7 @@ impl RouteHttp for ZodlVotingRoute {
                                 .await
                                 .map(|agg| agg.to_bytes())
                                 .map_err(|e| {
-                                    TorError::from(io::Error::new(io::ErrorKind::Other, e))
+                                    TorError::from(io::Error::other(e))
                                 })
                         },
                         0,
@@ -81,7 +81,7 @@ impl RouteHttp for ZodlVotingRoute {
                                 .await
                                 .map(|agg| agg.to_bytes())
                                 .map_err(|e| {
-                                    TorError::from(io::Error::new(io::ErrorKind::Other, e))
+                                    TorError::from(io::Error::other(e))
                                 })
                         },
                         0,

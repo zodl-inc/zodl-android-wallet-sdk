@@ -36,7 +36,7 @@ fn require_fully_scanned_to_snapshot(
 /// need before any round/`DelegationPipeline` exists.
 ///
 /// A narrower re-addition of the pre-4.0 SDK port's deleted `getWalletNotesNative` (see this
-/// repo's `.superpowers/sdd/2026-09-11-voting-4.0.0-sdk-port/symbol-map.md`, `notes.rs:150` row,
+/// repo's `.superpowers/sdd/2026-09-11-voting-5.0.0-sdk-port/symbol-map.md`, `notes.rs:150` row,
 /// for the original deletion rationale): the *delegation* pipeline now selects its own notes
 /// internally once a round is running (`DelegationPipeline::select_notes`, via
 /// `SqliteWalletDbOpener` in `delegation_driver.rs`'s `build_pipeline`), but
@@ -450,16 +450,16 @@ mod tests {
         for seed_nonce in 1..10_000u64 {
             let mut seed = [0u8; PROTOCOL_FIELD_BYTES];
             seed[..8].copy_from_slice(&(seed_nonce + u64::from(note_tag) * 10_000).to_le_bytes());
-            if let Some(rseed) = Option::<RandomSeed>::from(RandomSeed::from_bytes(seed, &rho)) {
-                if let Some(note) = Option::<Note>::from(Note::from_parts(
+            if let Some(rseed) = Option::<RandomSeed>::from(RandomSeed::from_bytes(seed, &rho))
+                && let Some(note) = Option::<Note>::from(Note::from_parts(
                     recipient,
                     NoteValue::from_raw(value_zatoshi),
                     rho,
                     rseed,
                     NoteVersion::V3,
-                )) {
-                    return note;
-                }
+                ))
+            {
+                return note;
             }
         }
 

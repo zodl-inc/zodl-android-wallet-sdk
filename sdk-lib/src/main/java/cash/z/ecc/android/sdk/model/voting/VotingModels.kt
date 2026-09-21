@@ -138,7 +138,7 @@ data class VotingDelegationPirPrecomputeResult(
 )
 
 // ---------------------------------------------------------------------------------------------
-// Round-driver session model (voting-4.0.0 SDK port). Everything below mirrors
+// Round-driver session model (voting-5.0.0 SDK port). Everything below mirrors
 // `zcash_voting::session`/`zcash_voting::round_drive`/`zcash_voting::share_tracking` types,
 // parsed from Task 9's raw `Jni*` carriers (see `VotingSdkRoundPlanMappers.kt`/
 // `VotingSdkRoundRunReportMappers.kt`). Re-verified against the pinned crate revision

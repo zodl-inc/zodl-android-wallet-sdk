@@ -217,45 +217,10 @@ pub(super) fn ensure_round_from_jni(
 }
 
 /// Builds a [`DelegationStepInputs`] for `RoundHostContext::delegation`,
-/// scoped to one round/account/hotkey/signer/PIR fleet.
-///
-/// # Errors
-///
-/// Returns an error when the anchor tree state bytes do not decode, the
-/// round params are invalid, the hotkey's network disagrees with the anchor
-/// tree state's network, or the PIR fleet's endpoints/layout are invalid.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_delegation_step_inputs(
-    db: &VotingDbHandle,
-    wallet_db_path: &str,
-    account_uuid: &str,
-    anchor_tree_state: &[u8],
-    round_params: VotingRoundParams,
-    hotkey: Option<VotingHotkey>,
-    pir_endpoints: &[String],
-    pir_layout: PirLayout,
-    transport: Arc<dyn voting::Transport>,
-    signer: DelegationSigner,
-) -> anyhow::Result<DelegationStepInputs> {
-    let (step_inputs, _pipeline) = build_delegation_step_inputs_and_pipeline(
-        db,
-        wallet_db_path,
-        account_uuid,
-        anchor_tree_state,
-        round_params,
-        hotkey,
-        pir_endpoints,
-        pir_layout,
-        transport,
-        signer,
-    )?;
-    Ok(step_inputs)
-}
-
-/// Like [`build_delegation_step_inputs`], but also returns the concrete
+/// scoped to one round/account/hotkey/signer/PIR fleet, plus the concrete
 /// [`DelegationPipeline`] it built.
 ///
-/// `runRoundNative` needs this variant (not the brief-exact one above)
+/// `runRoundNative` needs the pipeline too (not just the step inputs)
 /// because `getKeystoneSigningRequestsNative` needs the *same* pipeline
 /// instance to call `keystone_request` on later in the same session, rather
 /// than constructing a second, redundant one from scratch (which would
@@ -264,6 +229,12 @@ pub(super) fn build_delegation_step_inputs(
 /// ran against). `round_session.rs` caches the returned pipeline on the
 /// session; `delegation.rs`'s `getKeystoneSigningRequestsNative` reads it
 /// back out.
+///
+/// # Errors
+///
+/// Returns an error when the anchor tree state bytes do not decode, the
+/// round params are invalid, the hotkey's network disagrees with the anchor
+/// tree state's network, or the PIR fleet's endpoints/layout are invalid.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_delegation_step_inputs_and_pipeline(
     db: &VotingDbHandle,
@@ -560,7 +531,7 @@ mod tests {
         };
 
         let signer = SeedSpendAuthSigner::new(SecretVec::new(seed.to_vec()));
-        let sig = signer.sign(request.clone()).expect("signing succeeds");
+        let sig = signer.sign(request).expect("signing succeeds");
         assert_ne!(sig, [0u8; 64]);
 
         let ask = orchard::keys::SpendAuthorizingKey::from(usk.orchard());

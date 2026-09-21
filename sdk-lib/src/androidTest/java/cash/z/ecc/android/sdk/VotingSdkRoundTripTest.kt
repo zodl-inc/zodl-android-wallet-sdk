@@ -22,7 +22,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
 /**
- * Instrumented round-trip test for the voting-4.0.0 SDK port's new public surface
+ * Instrumented round-trip test for the voting-5.0.0 SDK port's new public surface
  * ([VotingSdk]/[VotingDbSession]/[VotingRoundSession]) -- Task 10's own required deliverable.
  *
  * Exercises the real Rust backend end to end through the public API only (no raw
