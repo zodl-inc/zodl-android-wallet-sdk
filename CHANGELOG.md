@@ -15,6 +15,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Keystone QR entry points' plan-handle and fragment-length parameters got the same treatment
   (MOB-1694).
 
+### Security
+- Hardened key handling across the JNI boundary: on the Rust side, the metadata-key halves passed
+  into `derivePrivateUseMetadataKey` are now held in zeroize-on-drop buffers instead of plain
+  vectors; on the Kotlin side, transient copies of key material created while crossing the JNI
+  boundary are zeroed as soon as they are no longer needed. Not covered: the derived `zip32` key
+  structs on the Rust side are not wiped on drop until a `zip32` release carrying zcash/zip32#34
+  is picked up, and `DerivationTool.deriveArbitraryWalletKey` / `DerivationTool.deriveArbitraryAccountKey`
+  return the derived key itself as a plain `ByteArray`, so there is no SDK-side copy to wipe - that
+  array is caller-owned key material and the caller is responsible for zeroing it once done, as their
+  documentation now states. This is defense-in-depth and best-effort only - the JVM may retain
+  unreachable copies (GC compaction, JIT) that cannot be cleared from application code - and it makes
+  no changes to the public API (MOB-1689).
+
 ## [3.3.0] - 2026-09-16
 
 ### Added
