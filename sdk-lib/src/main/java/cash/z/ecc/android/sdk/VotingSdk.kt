@@ -208,24 +208,18 @@ interface VotingDbSession {
     suspend fun getKeystoneSignatures(roundId: String): List<VotingKeystoneSignatureRecord>
 
     /**
-     * Drives [roundId]'s unconfirmed helper shares to confirmation with a `ShareTrackingDriver`,
-     * repeating passes until the round's shares are quiescent. Standalone and session-less:
-     * unlike [VotingRoundSession.run], a separate call cannot cancel an in-flight [trackShares]
-     * run mid-pass.
+     * Opens a cancellable share-tracking session for [roundId]: repeated [VotingShareTrackingSession.run]
+     * calls drive the round's unconfirmed helper shares to confirmation with a `ShareTrackingDriver`
+     * until quiescent. Callers must [VotingShareTrackingSession.close] it when done.
      *
-     * [torRuntime] is the caller's raw native Tor-runtime handle (the same one an app's
-     * [cash.z.ecc.android.sdk.internal.model.TorClient] instance uses for its own HTTP
-     * dispatch) — this SDK exposes no public accessor for it today; resolving that for a real
-     * caller is the app-side companion plan's job, not this port's.
+     * Unlike the pre-production-completion `trackShares`, this is genuinely cancellable mid-run:
+     * [VotingShareTrackingSession.cancel] targets the same kind of `ChainSubmissionControl`
+     * [VotingRoundSession.cancel] does.
      *
-     * [voteEndTimeSeconds] `< 0` decodes to "no vote-end boundary known yet".
+     * [torRuntime] is the caller's raw native Tor-runtime handle -- see the old `trackShares`
+     * doc comment (superseded) for the same caveat.
      */
-    suspend fun trackShares(
-        roundId: String,
-        torRuntime: Long,
-        helperUrls: List<String>,
-        voteEndTimeSeconds: Long
-    ): VotingShareTrackingReport
+    suspend fun openShareTrackingSession(roundId: String): VotingShareTrackingSession
 
     /**
      * Opens a round session: binds a `RoundExecutor` to [roundId]'s roster and hotkey, wires its
@@ -233,8 +227,8 @@ interface VotingDbSession {
      * must [VotingRoundSession.close] it when done.
      *
      * [hotkeySecret] may be `null` before a hotkey is bound. [ceremonyStartSeconds]/
-     * [voteEndTimeSeconds] `null` decode to "not yet known". See [trackShares]'s doc comment for
-     * [torRuntime]'s caveat.
+     * [voteEndTimeSeconds] `null` decode to "not yet known". See [openShareTrackingSession]'s doc
+     * comment for [torRuntime]'s caveat.
      */
     @Suppress("LongParameterList")
     suspend fun openRoundSession(
@@ -322,4 +316,25 @@ interface VotingRoundSession {
      * pipeline is cached yet.
      */
     suspend fun getKeystoneSigningRequests(bundleIndices: List<Int>): List<VotingKeystoneSigningRequest>
+}
+
+/**
+ * A round's cancellable share-tracking session. Callers must [close] it when done.
+ */
+interface VotingShareTrackingSession {
+    suspend fun close()
+
+    /**
+     * Cancels an in-flight [run]. Has no implicit effect on its own -- a caller with a [run]
+     * call in flight must call this first if it wants that run to stop early; [close] alone
+     * does not cancel one.
+     */
+    suspend fun cancel()
+
+    /** [voteEndTimeSeconds] `< 0` decodes to "no vote-end boundary known yet". */
+    suspend fun run(
+        torRuntime: Long,
+        helperUrls: List<String>,
+        voteEndTimeSeconds: Long
+    ): VotingShareTrackingReport?
 }

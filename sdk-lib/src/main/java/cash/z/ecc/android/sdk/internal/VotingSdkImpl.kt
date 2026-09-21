@@ -3,6 +3,7 @@ package cash.z.ecc.android.sdk.internal
 import cash.z.ecc.android.sdk.VotingDbSession
 import cash.z.ecc.android.sdk.VotingRoundSession
 import cash.z.ecc.android.sdk.VotingSdk
+import cash.z.ecc.android.sdk.VotingShareTrackingSession
 import cash.z.ecc.android.sdk.internal.model.voting.RoundDriveProgressListener
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -180,12 +181,8 @@ internal class VotingDbSessionImpl(
     override suspend fun getKeystoneSignatures(roundId: String): List<VotingKeystoneSignatureRecord> =
         db.getKeystoneSignatures(roundId).map { it.toPublic() }
 
-    override suspend fun trackShares(
-        roundId: String,
-        torRuntime: Long,
-        helperUrls: List<String>,
-        voteEndTimeSeconds: Long
-    ): VotingShareTrackingReport = db.trackShares(roundId, torRuntime, helperUrls, voteEndTimeSeconds).toPublic()
+    override suspend fun openShareTrackingSession(roundId: String): VotingShareTrackingSession =
+        VotingShareTrackingSessionImpl(db.openShareTrackingSession(roundId))
 
     override suspend fun openRoundSession(
         torRuntime: Long,
@@ -259,4 +256,18 @@ internal class VotingRoundSessionImpl(
 
     override suspend fun getKeystoneSigningRequests(bundleIndices: List<Int>): List<VotingKeystoneSigningRequest> =
         session.getKeystoneSigningRequests(bundleIndices.toIntArray()).map { it.toPublic() }
+}
+
+private class VotingShareTrackingSessionImpl(
+    private val session: TypesafeShareTrackingSession
+) : VotingShareTrackingSession {
+    override suspend fun close() = session.close()
+
+    override suspend fun cancel() = session.cancel()
+
+    override suspend fun run(
+        torRuntime: Long,
+        helperUrls: List<String>,
+        voteEndTimeSeconds: Long
+    ): VotingShareTrackingReport? = session.run(torRuntime, helperUrls, voteEndTimeSeconds)?.toPublic()
 }
