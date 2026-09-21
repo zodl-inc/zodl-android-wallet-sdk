@@ -112,6 +112,29 @@ interface VotingSdk {
 
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
 
+    /**
+     * Extracts the 32-byte ZIP-244 shielded sighash from finalized PCZT bytes.
+     *
+     * Unlike most of this interface, this is a stateless byte-in/byte-out crypto helper: it needs
+     * neither a [VotingDbSession] nor a [VotingRoundSession]. The Keystone signing flow uses it to
+     * recover the sighash a hardware wallet signed over, after the signed PCZT is scanned back
+     * from the device, so the signature can be paired with its sighash before being stored.
+     *
+     * Throws if [pcztBytes] is not a parseable PCZT.
+     */
+    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray
+
+    /**
+     * Extracts the 64-byte RedPallas spend-authorization signature from a Keystone-signed PCZT.
+     *
+     * Stateless, like [extractPcztSighash]. [actionIndex] is the caller's expected action index;
+     * the backend tries it first and otherwise scans every action, which stays unambiguous because
+     * a governance PCZT has exactly one signable action.
+     *
+     * Throws if [signedPcztBytes] is not a parseable PCZT or carries no signed action.
+     */
+    suspend fun extractSpendAuthSig(signedPcztBytes: ByteArray, actionIndex: Int): ByteArray
+
     suspend fun verifyWitness(witness: VotingWitness): Boolean
 
     companion object {

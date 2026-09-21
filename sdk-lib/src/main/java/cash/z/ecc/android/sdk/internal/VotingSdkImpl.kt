@@ -107,6 +107,11 @@ internal class VotingSdkImpl(
 
     override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray = backend.extractNcRoot(treeStateBytes)
 
+    override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray = backend.extractPcztSighash(pcztBytes)
+
+    override suspend fun extractSpendAuthSig(signedPcztBytes: ByteArray, actionIndex: Int): ByteArray =
+        backend.extractSpendAuthSig(signedPcztBytes, actionIndex)
+
     override suspend fun verifyWitness(witness: VotingWitness): Boolean = backend.verifyWitness(witness.toInternal())
 }
 
