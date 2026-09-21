@@ -958,8 +958,9 @@ data class JniRoundRunReport(
 }
 
 /**
- * Typed JNI carrier for `zcash_voting::ShareTrackingRunReport`, `trackSharesNative`'s return
- * value: the terminal outcome of one `ShareTrackingDriver::run` pass.
+ * Typed JNI carrier for `zcash_voting::ShareTrackingRunReport`,
+ * `runShareTrackingSessionNative`'s return value: the terminal outcome of one
+ * `ShareTrackingDriver::run` pass.
  *
  * [quiescenceKind] is a stable discriminator string for the crate's (non-exhaustive)
  * `ShareTrackingQuiescence` enum; [quiescenceDetailJson] carries the variant-specific payload

@@ -73,7 +73,8 @@ class TorClient private constructor(
      *
      * Deliberately narrow: this exists only for handing this runtime off across a JNI boundary
      * to a *different* native subsystem that already accepts a raw runtime handle -- today,
-     * `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`/`trackShares`'s `torRuntime`
+     * `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`'s and
+     * `cash.z.ecc.android.sdk.VotingShareTrackingSession.run`'s `torRuntime`
      * parameter (see `Synchronizer.getVotingTorRuntimeHandle`, the sanctioned way for a caller
      * outside this module to reach this value). Do not use it to bypass this client's own
      * request dispatch ([httpGet]/[httpPost]/[createWalletClient]/...) -- those remain the only

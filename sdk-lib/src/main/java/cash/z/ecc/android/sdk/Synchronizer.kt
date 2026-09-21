@@ -900,8 +900,8 @@ interface Synchronizer {
     /**
      * Returns the raw native Tor-runtime handle backing this synchronizer's shared Tor client,
      * for callers that must hand it to a different native subsystem accepting a raw Tor runtime
-     * handle -- today, `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`/`trackShares`'s
-     * `torRuntime` parameter. Shares [getTorHttpClient]'s enable/init preconditions (same
+     * handle -- today, `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`'s and
+     * `cash.z.ecc.android.sdk.VotingShareTrackingSession.run`'s `torRuntime` parameter. Shares [getTorHttpClient]'s enable/init preconditions (same
      * exceptions, same underlying Tor client), but does not create a new isolated Tor client the
      * way [getTorHttpClient] does -- owning any such isolation for the voting round driver's
      * traffic is that driver's job, not this accessor's.

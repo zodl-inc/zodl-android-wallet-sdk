@@ -235,12 +235,12 @@ interface VotingDbSession {
      * calls drive the round's unconfirmed helper shares to confirmation with a `ShareTrackingDriver`
      * until quiescent. Callers must [VotingShareTrackingSession.close] it when done.
      *
-     * Unlike the pre-production-completion `trackShares`, this is genuinely cancellable mid-run:
-     * [VotingShareTrackingSession.cancel] targets the same kind of `ChainSubmissionControl`
-     * [VotingRoundSession.cancel] does.
+     * Unlike the pre-production-completion session-less share-tracking call this replaces, it is
+     * genuinely cancellable mid-run: [VotingShareTrackingSession.cancel] targets the same kind of
+     * `ChainSubmissionControl` [VotingRoundSession.cancel] does.
      *
-     * [torRuntime] is the caller's raw native Tor-runtime handle -- see the old `trackShares`
-     * doc comment (superseded) for the same caveat.
+     * The session binds no Tor runtime at open time — each [VotingShareTrackingSession.run] call
+     * takes its own; see that method's doc comment for the caveat on obtaining one.
      */
     suspend fun openShareTrackingSession(roundId: String): VotingShareTrackingSession
 
@@ -250,8 +250,13 @@ interface VotingDbSession {
      * must [VotingRoundSession.close] it when done.
      *
      * [hotkeySecret] may be `null` before a hotkey is bound. [ceremonyStartSeconds]/
-     * [voteEndTimeSeconds] `null` decode to "not yet known". See [openShareTrackingSession]'s doc
-     * comment for [torRuntime]'s caveat.
+     * [voteEndTimeSeconds] `null` decode to "not yet known".
+     *
+     * [torRuntime] is the caller's raw native Tor-runtime handle — the same one the
+     * synchronizer's shared Tor client uses for its own HTTP dispatch. Obtain it from
+     * [Synchronizer.getVotingTorRuntimeHandle], the one sanctioned accessor for it; this
+     * SDK exposes no other way to reach the value, and it stays valid only for as long as
+     * that synchronizer's Tor client is alive.
      */
     @Suppress("LongParameterList")
     suspend fun openRoundSession(
@@ -354,7 +359,17 @@ interface VotingShareTrackingSession {
      */
     suspend fun cancel()
 
-    /** [voteEndTimeSeconds] `< 0` decodes to "no vote-end boundary known yet". */
+    /**
+     * Drives one share-tracking pass with a `ShareTrackingDriver`.
+     *
+     * [voteEndTimeSeconds] `< 0` decodes to "no vote-end boundary known yet".
+     *
+     * [torRuntime] is the caller's raw native Tor-runtime handle — the same one the
+     * synchronizer's shared Tor client uses for its own HTTP dispatch. Obtain it from
+     * [Synchronizer.getVotingTorRuntimeHandle], the one sanctioned accessor for it; this
+     * SDK exposes no other way to reach the value, and it stays valid only for as long as
+     * that synchronizer's Tor client is alive.
+     */
     suspend fun run(
         torRuntime: Long,
         helperUrls: List<String>,

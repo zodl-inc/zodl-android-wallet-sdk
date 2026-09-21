@@ -647,7 +647,7 @@ sealed interface VotingShareTrackingQuiescence {
 }
 
 /**
- * The terminal outcome of one [cash.z.ecc.android.sdk.VotingDbSession.trackShares] pass --
+ * The terminal outcome of one [cash.z.ecc.android.sdk.VotingShareTrackingSession.run] pass --
  * mirrors `zcash_voting::share_tracking::ShareTrackingRunReport`. [failures] is a raw JSON
  * array string passthrough (`ShareTrackingRunReport::failures` has no crate `Serialize` this
  * SDK can rely on beyond what the JNI layer already serialized).
