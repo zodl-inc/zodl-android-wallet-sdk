@@ -156,6 +156,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_get
 /// pair. See that crate method's own doc comment for the idempotent-replay
 /// and signing-context-conflict semantics; this wrapper only marshals the
 /// JNI array in and the result out.
+///
+/// `store_keystone_signatures_batch` itself only checks byte lengths and
+/// that `sig`/`sighash`/`rk` match the persisted bundle columns -- it does
+/// NOT check that `sig` is a cryptographically valid RedPallas spend-auth
+/// signature over `sighash` under `rk`. The old hand-rolled PCZT path had
+/// its own `verify_delegation_submission_sig` for exactly this; restore the
+/// same check here so a malformed/forged (but correctly-sized) signature
+/// from a compromised or buggy Keystone device can't be persisted.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeKeystoneSignaturesNative<
     'local,
@@ -171,6 +179,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
         let _access_lock = db.access_lock()?;
         let round_id = java_string_to_rust(env, &round_id)?;
         let signatures = java_keystone_signature_input_array(env, &signatures, "signatures")?;
+        for signature in &signatures {
+            verify_keystone_signature(signature)
+                .map_err(|e| anyhow!("signatures[bundle {}]: {}", signature.bundle_index, e))?;
+        }
         let result = db
             .store_keystone_signatures_batch(&round_id, &signatures)
             .map_err(|e| anyhow!("store_keystone_signatures_batch: {}", e))?;
@@ -178,6 +190,29 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_sto
         make_jni_keystone_signature_batch_result(env, result)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
+}
+
+/// Verifies a Keystone-produced spend-auth signature against its claimed
+/// `rk`/`sighash`, mirroring the old `verify_delegation_submission_sig`
+/// (see git history of this file at the pre-`DelegationPipeline` revision).
+fn verify_keystone_signature(
+    signature: &voting::storage::KeystoneSignatureInput,
+) -> anyhow::Result<()> {
+    use orchard::primitives::redpallas::{Signature, SpendAuth, VerificationKey};
+
+    let rk = fixed_bytes::<PROTOCOL_FIELD_BYTES>(signature.rk.clone(), "rk")?;
+    let sighash = fixed_bytes::<PROTOCOL_FIELD_BYTES>(signature.sighash.clone(), "sighash")?;
+    let sig = fixed_bytes::<SPEND_AUTH_SIG_BYTES>(signature.sig.clone(), "sig")?;
+    let vk = VerificationKey::<SpendAuth>::try_from(rk)
+        .map_err(|_| anyhow!("rk is not a valid spend authorization verification key"))?;
+    if vk.is_identity() {
+        return Err(anyhow!(
+            "rk is not a valid spend authorization verification key"
+        ));
+    }
+
+    vk.verify(&sighash, &Signature::<SpendAuth>::from(sig))
+        .map_err(|_| anyhow!("sig does not verify against rk and sighash"))
 }
 
 /// Thin wrapper over `VotingDb::get_keystone_signatures`.

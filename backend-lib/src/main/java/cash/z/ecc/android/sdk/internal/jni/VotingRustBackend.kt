@@ -23,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.security.SecureRandom
 
 /**
@@ -483,15 +484,16 @@ class VotingRustBackend private constructor() {
                 }
             }
 
-        private suspend fun <T> withHandle(block: (Long) -> T): T {
-            val handle =
-                checkNotNull(dbHandle) {
-                    "Voting DB handle is closed"
+        private suspend fun <T> withHandle(block: (Long) -> T): T =
+            accessMutex.withLock {
+                val handle =
+                    checkNotNull(dbHandle) {
+                        "Voting DB handle is closed"
+                    }
+                withContext(SdkDispatchers.DATABASE_IO) {
+                    block(handle)
                 }
-            return withContext(SdkDispatchers.DATABASE_IO) {
-                block(handle)
             }
-        }
     }
 
     /**
@@ -511,7 +513,16 @@ class VotingRustBackend private constructor() {
         private var sessionHandle: Long?,
         val dbHandle: Long
     ) {
+        // [cancel] is meant to run concurrently with an in-flight [runRound] (that's the whole
+        // point -- see [close]'s doc comment), so unlike [VotingDb]'s accessMutex this can't
+        // just wrap the entire withHandle call: that would block cancel() behind runRound's own
+        // (potentially minute-plus) native call, defeating cancellation entirely. Instead,
+        // accessMutex only guards the sessionHandle field itself (snapshot-and-increment /
+        // decrement), and close() waits for inFlight to drain before nulling+freeing the handle,
+        // so a native call already holding a snapshotted handle can never run concurrently with
+        // closeRoundSessionNative freeing it.
         private val accessMutex = Mutex()
+        private var inFlight = 0
 
         /**
          * Removes this round session from the registry. No implicit chain cancellation: a
@@ -519,13 +530,22 @@ class VotingRustBackend private constructor() {
          * stop early.
          */
         suspend fun close() {
-            accessMutex.withLock {
-                sessionHandle?.let { handle ->
+            while (true) {
+                val handle =
+                    accessMutex.withLock {
+                        when {
+                            sessionHandle == null -> return
+                            inFlight > 0 -> null
+                            else -> sessionHandle.also { sessionHandle = null }
+                        }
+                    }
+                if (handle != null) {
                     withContext(Dispatchers.IO) {
                         closeRoundSessionNative(handle)
                     }
-                    sessionHandle = null
+                    return
                 }
+                yield()
             }
         }
 
@@ -585,11 +605,20 @@ class VotingRustBackend private constructor() {
 
         private suspend fun <T> withHandle(block: (Long) -> T): T {
             val handle =
-                checkNotNull(sessionHandle) {
-                    "Round session handle is closed"
+                accessMutex.withLock {
+                    val handle =
+                        checkNotNull(sessionHandle) {
+                            "Round session handle is closed"
+                        }
+                    inFlight++
+                    handle
                 }
-            return withContext(Dispatchers.IO) {
-                block(handle)
+            try {
+                return withContext(Dispatchers.IO) {
+                    block(handle)
+                }
+            } finally {
+                accessMutex.withLock { inFlight-- }
             }
         }
     }
