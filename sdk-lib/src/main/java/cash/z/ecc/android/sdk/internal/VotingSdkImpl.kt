@@ -258,7 +258,7 @@ internal class VotingRoundSessionImpl(
         session.getKeystoneSigningRequests(bundleIndices.toIntArray()).map { it.toPublic() }
 }
 
-private class VotingShareTrackingSessionImpl(
+internal class VotingShareTrackingSessionImpl(
     private val session: TypesafeShareTrackingSession
 ) : VotingShareTrackingSession {
     override suspend fun close() = session.close()

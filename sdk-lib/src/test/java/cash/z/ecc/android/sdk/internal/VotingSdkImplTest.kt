@@ -222,20 +222,46 @@ class VotingSdkImplTest {
         }
 
     @Test
-    fun trackShares_maps_report() =
+    fun openShareTrackingSession_run_maps_report() =
         runBlocking {
             val backend = mock(TypesafeVotingBackend::class.java)
             val votingDb = mock(TypesafeVotingDb::class.java)
+            val trackingSession = mock(TypesafeShareTrackingSession::class.java)
             `when`(backend.openVotingDb("path", "wallet-1", 0)).thenReturn(votingDb)
-            `when`(votingDb.trackShares("round-1", 7L, listOf("https://helper.example"), -1L)).thenReturn(
+            `when`(votingDb.openShareTrackingSession("round-1")).thenReturn(trackingSession)
+            `when`(trackingSession.run(7L, listOf("https://helper.example"), -1L)).thenReturn(
                 shareTrackingReportFixture()
             )
-            val session = VotingSdkImpl(backend).openDb("path", "wallet-1", 0)
+            val dbSession = VotingSdkImpl(backend).openDb("path", "wallet-1", 0)
 
-            val report = session.trackShares("round-1", 7L, listOf("https://helper.example"), -1L)
+            val session = dbSession.openShareTrackingSession("round-1")
+            val report = session.run(7L, listOf("https://helper.example"), -1L)
 
-            assertEquals(VotingShareTrackingQuiescence.AllConfirmed, report.quiescence)
-            assertEquals(2, report.passes)
+            assertEquals(VotingShareTrackingQuiescence.AllConfirmed, report?.quiescence)
+            assertEquals(2, report?.passes)
+        }
+
+    @Test
+    fun shareTrackingSession_run_returns_null_when_backend_returns_null() =
+        runBlocking {
+            val trackingSession = mock(TypesafeShareTrackingSession::class.java)
+            `when`(trackingSession.run(7L, listOf("https://helper.example"), -1L)).thenReturn(null)
+            val session = VotingShareTrackingSessionImpl(trackingSession)
+
+            assertNull(session.run(7L, listOf("https://helper.example"), -1L))
+        }
+
+    @Test
+    fun shareTrackingSession_close_and_cancel_forward_to_the_session() =
+        runBlocking {
+            val trackingSession = mock(TypesafeShareTrackingSession::class.java)
+            val session = VotingShareTrackingSessionImpl(trackingSession)
+
+            session.cancel()
+            session.close()
+
+            verify(trackingSession).cancel()
+            verify(trackingSession).close()
         }
 
     @Test
@@ -311,7 +337,7 @@ class VotingSdkImplTest {
         runBlocking {
             val roundSession = mock(TypesafeRoundSession::class.java)
             `when`(roundSession.dbHandle).thenReturn(42L)
-            `when`(roundSession.runRound(anyLong(), any())).thenReturn(roundRunReportFixture())
+            `when`(roundSession.runRound(anyLong(), any(), any())).thenReturn(roundRunReportFixture())
             val session = VotingRoundSessionImpl(roundSession, torRuntime = 5L)
 
             val delegationInputs =
@@ -338,7 +364,7 @@ class VotingSdkImplTest {
             val report = session.run(delegationInputs)
 
             val captor = ArgumentCaptor.forClass(JniDelegationInputs::class.java)
-            verify(roundSession).runRound(eq(5L), captor.capture())
+            verify(roundSession).runRound(eq(5L), captor.capture(), any())
             assertEquals(42L, captor.value.dbHandle)
             assertTrue(report?.quiescence is VotingRoundQuiescence.NeedsBallot)
         }
