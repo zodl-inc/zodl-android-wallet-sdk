@@ -63,6 +63,21 @@ internal interface TypesafeVotingBackend {
 
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
 
+    /**
+     * Extracts the 32-byte ZIP-244 shielded sighash from finalized PCZT bytes. Stateless — no
+     * [TypesafeVotingDb] or round session involved. See `VotingRustBackend.extractPcztSighash`.
+     */
+    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray
+
+    /**
+     * Extracts the 64-byte RedPallas spend-authorization signature from a Keystone-signed PCZT.
+     * Stateless, like [extractPcztSighash]. See `VotingRustBackend.extractSpendAuthSig`.
+     */
+    suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray
+
     suspend fun verifyWitness(witness: JniWitnessData): Boolean
 
     /**

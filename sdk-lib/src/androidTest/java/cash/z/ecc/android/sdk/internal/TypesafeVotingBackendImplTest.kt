@@ -448,6 +448,13 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray = unused()
 
+        override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray = unused()
+
+        override suspend fun extractSpendAuthSig(
+            signedPcztBytes: ByteArray,
+            actionIndex: Int
+        ): ByteArray = unused()
+
         override suspend fun verifyWitness(witness: JniWitnessData): Boolean = unused()
 
         override suspend fun getWalletNotes(

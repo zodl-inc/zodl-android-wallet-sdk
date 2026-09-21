@@ -83,6 +83,15 @@ internal class TypesafeVotingBackendImpl(
     override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
         rustBackend().extractNcRoot(treeStateBytes)
 
+    override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
+        rustBackend().extractPcztSighash(pcztBytes)
+
+    override suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray =
+        rustBackend().extractSpendAuthSig(signedPcztBytes, actionIndex)
+
     override suspend fun verifyWitness(witness: JniWitnessData): Boolean =
         rustBackend().verifyWitness(witness)
 
@@ -129,6 +138,13 @@ internal interface VotingBackendBridge {
     ): ByteArray
 
     suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray
+
+    suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray
+
+    suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray
 
     suspend fun verifyWitness(witness: JniWitnessData): Boolean
 
@@ -186,6 +202,15 @@ private class RustVotingBackendBridge(
 
     override suspend fun extractNcRoot(treeStateBytes: ByteArray): ByteArray =
         rustBackend.extractNcRoot(treeStateBytes)
+
+    override suspend fun extractPcztSighash(pcztBytes: ByteArray): ByteArray =
+        rustBackend.extractPcztSighash(pcztBytes)
+
+    override suspend fun extractSpendAuthSig(
+        signedPcztBytes: ByteArray,
+        actionIndex: Int
+    ): ByteArray =
+        rustBackend.extractSpendAuthSig(signedPcztBytes, actionIndex)
 
     override suspend fun verifyWitness(witness: JniWitnessData): Boolean =
         rustBackend.verifyWitness(witness)
