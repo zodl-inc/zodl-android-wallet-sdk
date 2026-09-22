@@ -39,7 +39,6 @@ internal object OhttpEndpoints {
             relayUrl.replace("/relay", "/ohttp-configs")
         }
     }
-    }
 }
 
 /**
