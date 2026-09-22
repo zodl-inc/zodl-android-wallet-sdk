@@ -149,7 +149,7 @@ internal class SerializingExecutor(
     }
 }
 
-@Suppress("TooManyFunctions", "LongParameterList") // gRPC ClientCall interface requires 15 methods + 8 constructor params needed
+@Suppress("TooManyFunctions", "LongParameterList") // gRPC ClientCall interface + cancel registry
 internal class OhttpClientCall<RequestT, ResponseT>(
     private val method: MethodDescriptor<RequestT, ResponseT>,
     private val callOptions: CallOptions,
