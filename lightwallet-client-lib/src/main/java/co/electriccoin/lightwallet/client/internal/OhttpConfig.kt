@@ -32,7 +32,13 @@ internal object OhttpEndpoints {
      */
     fun keyConfigUrlFor(gatewayHost: String): String {
         val relayUrl = relayUrlFor(gatewayHost)
-        return relayUrl.replace("/relay", "/ohttp-configs")
+        // Replace only the path suffix, not the hostname (relay-simulator stays relay-simulator)
+        return if (relayUrl.endsWith("/relay")) {
+            relayUrl.removeSuffix("/relay") + "/ohttp-configs"
+        } else {
+            relayUrl.replace("/relay", "/ohttp-configs")
+        }
+    }
     }
 }
 
@@ -150,4 +156,4 @@ internal const val PROXY_RELAY_URL = "https://relay-simulator.example/relay"
  * Key config URL for proxy gateway hosts — derived from [PROXY_RELAY_URL].
  * All proxy hosts share the mainnet relay→gateway pair's HPKE key.
  */
-internal val PROXY_KEY_CONFIG_URL = PROXY_RELAY_URL.replace("/relay", "/ohttp-configs")
+internal val PROXY_KEY_CONFIG_URL = PROXY_RELAY_URL.removeSuffix("/relay") + "/ohttp-configs"
