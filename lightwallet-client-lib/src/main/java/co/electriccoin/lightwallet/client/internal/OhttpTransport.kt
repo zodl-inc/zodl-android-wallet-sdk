@@ -121,9 +121,7 @@ internal class OhttpTransport(
         private val REQUEST_LABEL = "message/bhttp request".toByteArray(Charsets.US_ASCII)
         private val RESPONSE_LABEL = "message/bhttp response".toByteArray(Charsets.US_ASCII)
 
-        private const val CONNECT_TIMEOUT_MS = 15_000
         private const val KEY_FETCH_TIMEOUT_MS = 15_000
-        private const val READ_BUFFER_SIZE = 16 * 1024
     }
 }
 
