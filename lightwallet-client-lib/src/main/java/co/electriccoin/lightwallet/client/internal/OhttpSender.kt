@@ -17,6 +17,14 @@ interface OhttpSender {
      * @throws OhttpException on failure (network, HTTP error, timeout).
      */
     suspend fun post(url: String, body: ByteArray, headers: List<Pair<String, String>>, timeoutMs: Int): ByteArray
+
+    /**
+     * GETs [url] with the given [headers] and [timeoutMs], returning the response body.
+     * Used for fetching the gateway key configuration. With Tor enabled, this ensures the key
+     * config fetch also goes over Tor, preventing the client IP from being exposed to the gateway.
+     * @throws OhttpException on failure (network, HTTP error, timeout).
+     */
+    suspend fun get(url: String, headers: List<Pair<String, String>>, timeoutMs: Int): ByteArray
 }
 
 /**
@@ -46,6 +54,34 @@ class DirectOhttpSender : OhttpSender {
                         ?.take(ERROR_MESSAGE_MAX_LENGTH)
                 throw OhttpException(
                     "Relay/gateway returned HTTP $status${detail?.let { ": $it" } ?: ""}",
+                    status
+                )
+            }
+            return connection.inputStream.use { it.readFully() }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    override suspend fun get(
+        url: String,
+        headers: List<Pair<String, String>>,
+        timeoutMs: Int
+    ): ByteArray {
+        val connection = open(url, timeoutMs)
+        try {
+            connection.requestMethod = "GET"
+            headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
+
+            val status = connection.responseCode
+            if (status != HttpURLConnection.HTTP_OK) {
+                val detail =
+                    connection.errorStream
+                        ?.use { it.readFully() }
+                        ?.toString(Charsets.UTF_8)
+                        ?.take(ERROR_MESSAGE_MAX_LENGTH)
+                throw OhttpException(
+                    "GET request failed: HTTP $status${detail?.let { ": $it" } ?: ""}",
                     status
                 )
             }

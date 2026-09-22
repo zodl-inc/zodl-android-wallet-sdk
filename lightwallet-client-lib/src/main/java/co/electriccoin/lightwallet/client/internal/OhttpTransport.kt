@@ -1,10 +1,6 @@
 package co.electriccoin.lightwallet.client.internal
 
-import java.io.ByteArrayOutputStream
-import java.io.IOException
-import java.io.InputStream
 import java.net.HttpURLConnection
-import java.net.URI
 
 /**
  * OHTTP (RFC 9458) client transport: encapsulates a Binary HTTP request with HPKE, POSTs it to the
@@ -39,11 +35,12 @@ internal class OhttpTransport(
     private val clientTrace: OhttpClientTrace? = ohttpClientTraceIdPrefix?.let { OhttpClientTrace(it) }
 
     /** Fetches (or returns the cached) gateway key configuration. */
-    fun keyConfig(forceRefresh: Boolean = false): OhttpKeyConfig {
+    suspend fun keyConfig(forceRefresh: Boolean = false): OhttpKeyConfig {
         synchronized(lock) {
             if (!forceRefresh) cachedKeyConfig?.let { return it }
         }
-        val bytes = httpGet(keyConfigUrl, KEY_FETCH_TIMEOUT_MS)
+        val headers = listOf("Accept" to KEYS_MEDIA_TYPE)
+        val bytes = sender.get(keyConfigUrl, headers, KEY_FETCH_TIMEOUT_MS)
         val parsed = OhttpKeyConfig.parseSupported(bytes)
         logger("OHTTP key config fetched: key_id=${parsed.keyId}")
         synchronized(lock) { cachedKeyConfig = parsed }
@@ -114,43 +111,6 @@ internal class OhttpTransport(
                 throw OhttpException("OHTTP response authentication failed", cause = e)
             }
         return BinaryHttp.decodeResponse(decrypted)
-    }
-
-    // ---- HTTP ------------------------------------------------------------------------------------
-
-    private fun httpGet(url: String, timeoutMs: Int): ByteArray {
-        val connection = open(url, timeoutMs)
-        try {
-            connection.requestMethod = "GET"
-            connection.setRequestProperty("Accept", KEYS_MEDIA_TYPE)
-            val status = connection.responseCode
-            if (status != HttpURLConnection.HTTP_OK) {
-                throw OhttpException("Key config fetch failed: HTTP $status", status)
-            }
-            return connection.inputStream.use { it.readFully() }
-        } finally {
-            connection.disconnect()
-        }
-    }
-
-    private fun open(url: String, timeoutMs: Int): HttpURLConnection {
-        val connection = URI(url).toURL().openConnection() as HttpURLConnection
-        connection.connectTimeout = CONNECT_TIMEOUT_MS
-        connection.readTimeout = timeoutMs
-        connection.useCaches = false
-        connection.instanceFollowRedirects = false
-        return connection
-    }
-
-    private fun InputStream.readFully(): ByteArray {
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(READ_BUFFER_SIZE)
-        while (true) {
-            val n = read(buffer)
-            if (n < 0) break
-            out.write(buffer, 0, n)
-        }
-        return out.toByteArray()
     }
 
     companion object {
