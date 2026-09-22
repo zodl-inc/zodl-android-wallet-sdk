@@ -360,13 +360,18 @@ class OhttpHttpClientTest {
                     capturedGetHeaders.add(headers)
                     // Return a valid 43-byte OHTTP key config (keyId=1, KEM=X25519, KDF=HKDF-SHA256, AEAD=AES-128-GCM)
                     return byteArrayOf(
-                        0x00, 0x29,  // config length = 41
-                        0x01,  // key ID
-                        0x00, 0x20,  // KEM ID = X25519
-                        *ByteArray(32) { 1 },  // public key
-                        0x00, 0x04,  // suites length = 4
-                        0x00, 0x01,  // KDF ID = HKDF-SHA256
-                        0x00, 0x01  // AEAD ID = AES-128-GCM
+                        0x00,
+                        0x29, // config length = 41
+                        0x01, // key ID
+                        0x00,
+                        0x20, // KEM ID = X25519
+                        *ByteArray(32) { 1 }, // public key
+                        0x00,
+                        0x04, // suites length = 4
+                        0x00,
+                        0x01, // KDF ID = HKDF-SHA256
+                        0x00,
+                        0x01 // AEAD ID = AES-128-GCM
                     )
                 }
             }
@@ -412,13 +417,18 @@ class OhttpHttpClientTest {
                 ): ByteArray {
                     getCallCount++
                     return byteArrayOf(
-                        0x00, 0x29,  // config length = 41
-                        0x01,  // key ID
-                        0x00, 0x20,  // KEM ID = X25519
-                        *ByteArray(32) { 1 },  // public key
-                        0x00, 0x04,  // suites length = 4
-                        0x00, 0x01,  // KDF ID = HKDF-SHA256
-                        0x00, 0x01  // AEAD ID = AES-128-GCM
+                        0x00,
+                        0x29, // config length = 41
+                        0x01, // key ID
+                        0x00,
+                        0x20, // KEM ID = X25519
+                        *ByteArray(32) { 1 }, // public key
+                        0x00,
+                        0x04, // suites length = 4
+                        0x00,
+                        0x01, // KDF ID = HKDF-SHA256
+                        0x00,
+                        0x01 // AEAD ID = AES-128-GCM
                     )
                 }
             }
