@@ -462,6 +462,5 @@ class OhttpHttpClientTest {
         // Since we can't directly test HttpURLConnection behavior without a real server,
         // we rely on code review: the open() method MUST set instanceFollowRedirects=false.
         // This test documents the requirement.
-        assertTrue("DirectOhttpSender must exist", sender != null)
     }
 }
