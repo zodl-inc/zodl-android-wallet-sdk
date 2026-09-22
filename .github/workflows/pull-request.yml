@@ -205,7 +205,6 @@ jobs:
         with:
           cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
           cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
-        with:
           rust-cache: true
       - name: Android Lint
         # 120 minutes for cold-cache first run (seeds Rust cache: vendored zodl-slipstream +
@@ -256,7 +255,6 @@ jobs:
         with:
           cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
           cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
-        with:
           rust-cache: true
       - name: Test
         timeout-minutes: 15
@@ -287,7 +285,6 @@ jobs:
         with:
           cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
           cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
-        with:
           rust-cache: true
       - name: Clippy
         timeout-minutes: 15
@@ -373,7 +370,6 @@ jobs:
         with:
           cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
           cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
-        with:
           rust-cache: true
       - name: Compile with Slipstream disabled
         # 120 minutes for cold-cache first run (cross-compiles backend-lib Rust for one ABI,
@@ -402,7 +398,6 @@ jobs:
         with:
           cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
           cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
-        with:
           rust-cache: true
       # 120 minutes for cold-cache first run: this branch re-enables shielded voting, which
       # turns on orchard's `unstable-voting-circuits` and pulls the halo2 voting circuits
@@ -546,7 +541,6 @@ jobs:
         with:
           cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
           cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
-        with:
           rust-cache: true
       # The hosted runner's Android SDK does not include the emulator package,
       # which a Gradle Managed Device requires. AGP auto-installs the system
@@ -620,7 +614,6 @@ jobs:
         with:
           cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
           cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
-        with:
           rust-cache: true
       # A fake signing key to satisfy creating a "release" build
       - name: Export Signing Key
