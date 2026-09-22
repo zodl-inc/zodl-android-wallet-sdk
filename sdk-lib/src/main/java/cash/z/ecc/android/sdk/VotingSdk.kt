@@ -12,6 +12,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSignatureInput
 import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSignatureRecord
 import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSigningRequest
 import cash.z.ecc.android.sdk.model.voting.VotingNoteInfo
+import cash.z.ecc.android.sdk.model.voting.VotingPirPrecomputeResult
 import cash.z.ecc.android.sdk.model.voting.VotingProposalRosterEntry
 import cash.z.ecc.android.sdk.model.voting.VotingRoundDriveProgressListener
 import cash.z.ecc.android.sdk.model.voting.VotingRoundPlan
@@ -202,6 +203,23 @@ interface VotingDbSession {
         pirPolyLen: Int,
         notes: List<VotingNoteInfo>
     ): VotingDelegationPirPrecomputeResult
+
+    /**
+     * Warms the bundle- and round-independent PIR proof cache for [notes]' nullifiers, so a
+     * later [precomputeDelegationPir] call (or vote construction) finds proofs already cached
+     * instead of paying PIR latency synchronously during that later call. Unlike
+     * [precomputeDelegationPir], this is not scoped to a round or bundle -- callers can run it
+     * as a background pre-warming step whenever the app is idle with wallet notes available,
+     * rather than only right before a delegation bundle needs its proofs.
+     */
+    suspend fun precomputePirProofs(
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<VotingNoteInfo>
+    ): VotingPirPrecomputeResult
 
     suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
 

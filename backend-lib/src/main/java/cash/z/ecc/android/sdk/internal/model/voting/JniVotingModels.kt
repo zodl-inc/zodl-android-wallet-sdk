@@ -623,6 +623,36 @@ data class JniDelegationPirPrecomputeResult(
     val fetchedCount: Long
 )
 
+/**
+ * Typed JNI carrier for `zcash_voting::PirCachePrecomputeResult`, the bundle- and
+ * round-independent PIR proof cache warm-up result from `precomputePirProofsNative`. Distinct
+ * from [JniDelegationPirPrecomputeResult] (which is scoped to one delegation bundle and carries
+ * no served root): this call is not scoped to any round or bundle, and [servedRoot] is the
+ * 32-byte IMT root (little-endian) the connected PIR server served -- every proof this call
+ * counted as cached or fetched verifies under it.
+ */
+@Keep
+data class JniPirPrecomputeResult(
+    val cachedCount: Long,
+    val fetchedCount: Long,
+    val servedRoot: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniPirPrecomputeResult) return false
+        return cachedCount == other.cachedCount &&
+            fetchedCount == other.fetchedCount &&
+            servedRoot.contentEquals(other.servedRoot)
+    }
+
+    override fun hashCode(): Int {
+        var result = cachedCount.hashCode()
+        result = 31 * result + fetchedCount.hashCode()
+        result = 31 * result + servedRoot.contentHashCode()
+        return result
+    }
+}
+
 @Keep
 data class JniDelegationProofResult(
     val proof: ByteArray,

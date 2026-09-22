@@ -17,6 +17,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureInput
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSigningRequest
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
+import cash.z.ecc.android.sdk.internal.model.voting.JniPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPlan
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
@@ -268,6 +269,15 @@ internal interface VotingDbBackend {
         notes: List<JniNoteInfo>
     ): JniDelegationPirPrecomputeResult
 
+    suspend fun precomputePirProofs(
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<JniNoteInfo>
+    ): JniPirPrecomputeResult
+
     suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
 
     suspend fun resetTreeClient(roundId: String)
@@ -354,6 +364,23 @@ private class RustVotingDbBackend(
         votingDb.precomputeDelegationPir(
             roundId,
             bundleIndex,
+            pirServerUrl,
+            pirDepth,
+            pirTier0Layers,
+            pirTier1Layers,
+            pirPolyLen,
+            notes
+        )
+
+    override suspend fun precomputePirProofs(
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<JniNoteInfo>
+    ): JniPirPrecomputeResult =
+        votingDb.precomputePirProofs(
             pirServerUrl,
             pirDepth,
             pirTier0Layers,
@@ -562,6 +589,24 @@ internal class TypesafeVotingDbImpl(
                 notes.toJniNoteInfos()
             ).toDelegationPirPrecomputeResult()
 
+    override suspend fun precomputePirProofs(
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<VotingNoteInfo>
+    ): PirPrecomputeResult =
+        votingDb
+            .precomputePirProofs(
+                pirServerUrl,
+                pirDepth,
+                pirTier0Layers,
+                pirTier1Layers,
+                pirPolyLen,
+                notes.toJniNoteInfos()
+            ).toPirPrecomputeResult()
+
     override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long =
         votingDb.syncVoteTree(roundId, nodeUrl)
 
@@ -663,6 +708,13 @@ internal fun JniDelegationPirPrecomputeResult.toDelegationPirPrecomputeResult() 
     DelegationPirPrecomputeResult(
         cachedCount = cachedCount,
         fetchedCount = fetchedCount
+    )
+
+internal fun JniPirPrecomputeResult.toPirPrecomputeResult() =
+    PirPrecomputeResult(
+        cachedCount = cachedCount,
+        fetchedCount = fetchedCount,
+        servedRoot = servedRoot
     )
 
 private fun JniVotingHotkey.requireValid() {

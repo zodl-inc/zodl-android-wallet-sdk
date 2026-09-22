@@ -10,6 +10,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureInput
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSigningRequest
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
+import cash.z.ecc.android.sdk.internal.model.voting.JniPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPlan
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
@@ -97,6 +98,38 @@ class TypesafeVotingBackendImplTest {
             assertEquals(2, dbBackend.precomputeBundleIndex)
             assertEquals("https://pir.example", dbBackend.precomputePirServerUrl)
             assertEquals(listOf(jniNoteInfo()), dbBackend.precomputeNotes)
+        }
+
+    @Test
+    fun precompute_pir_proofs_forwards_arguments_and_maps_result() =
+        runTest {
+            val dbBackend =
+                RecordingVotingDbBackend(
+                    pirPrecomputeResult =
+                        JniPirPrecomputeResult(
+                            cachedCount = 3,
+                            fetchedCount = 4,
+                            servedRoot = byteArrayOf(0x11, 0x22)
+                        )
+                )
+            val backend = TypesafeVotingBackendImpl { RecordingVotingBackendBridge(dbBackend) }
+            val db = backend.openVotingDb("/tmp/voting.db", "wallet-1", networkId = 1)
+
+            val result =
+                db.precomputePirProofs(
+                    pirServerUrl = "https://pir.example",
+                    pirDepth = 1,
+                    pirTier0Layers = 1,
+                    pirTier1Layers = 1,
+                    pirPolyLen = 2048,
+                    notes = listOf(votingNoteInfo())
+                )
+
+            assertEquals(3L, result.cachedCount)
+            assertEquals(4L, result.fetchedCount)
+            assertContentEquals(byteArrayOf(0x11, 0x22), result.servedRoot)
+            assertEquals("https://pir.example", dbBackend.precomputePirProofsPirServerUrl)
+            assertEquals(listOf(jniNoteInfo()), dbBackend.precomputePirProofsNotes)
         }
 
     @Test
@@ -480,6 +513,8 @@ class TypesafeVotingBackendImplTest {
     private class RecordingVotingDbBackend(
         private val precomputeResult: JniDelegationPirPrecomputeResult =
             JniDelegationPirPrecomputeResult(cachedCount = 0, fetchedCount = 0),
+        private val pirPrecomputeResult: JniPirPrecomputeResult =
+            JniPirPrecomputeResult(cachedCount = 0, fetchedCount = 0, servedRoot = ByteArray(0)),
         private val hotkeyResult: JniVotingHotkey? = null,
         private val keystoneSignatureBatchResult: JniKeystoneSignatureBatchResult =
             JniKeystoneSignatureBatchResult(inserted = 0, alreadyPresent = 0),
@@ -492,6 +527,8 @@ class TypesafeVotingBackendImplTest {
         var precomputeBundleIndex: Int? = null
         var precomputePirServerUrl: String? = null
         var precomputeNotes: List<JniNoteInfo>? = null
+        var precomputePirProofsPirServerUrl: String? = null
+        var precomputePirProofsNotes: List<JniNoteInfo>? = null
         var generateHotkeyStoredSecret: ByteArray = ByteArray(0)
         var storeKeystoneSignaturesRoundId: String? = null
         var storeKeystoneSignaturesSignatures: List<JniKeystoneSignatureInput>? = null
@@ -553,6 +590,19 @@ class TypesafeVotingBackendImplTest {
             precomputePirServerUrl = pirServerUrl
             precomputeNotes = notes
             return precomputeResult
+        }
+
+        override suspend fun precomputePirProofs(
+            pirServerUrl: String,
+            pirDepth: Int,
+            pirTier0Layers: Int,
+            pirTier1Layers: Int,
+            pirPolyLen: Int,
+            notes: List<JniNoteInfo>
+        ): JniPirPrecomputeResult {
+            precomputePirProofsPirServerUrl = pirServerUrl
+            precomputePirProofsNotes = notes
+            return pirPrecomputeResult
         }
 
         override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long = unused()

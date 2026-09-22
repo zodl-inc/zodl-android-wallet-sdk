@@ -17,6 +17,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSignatureInput
 import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSignatureRecord
 import cash.z.ecc.android.sdk.model.voting.VotingKeystoneSigningRequest
 import cash.z.ecc.android.sdk.model.voting.VotingNoteInfo
+import cash.z.ecc.android.sdk.model.voting.VotingPirPrecomputeResult
 import cash.z.ecc.android.sdk.model.voting.VotingProposalRosterEntry
 import cash.z.ecc.android.sdk.model.voting.VotingRoundDriveProgressListener
 import cash.z.ecc.android.sdk.model.voting.VotingRoundPlan
@@ -161,6 +162,24 @@ internal class VotingDbSessionImpl(
             .precomputeDelegationPir(
                 roundId,
                 bundleIndex,
+                pirServerUrl,
+                pirDepth,
+                pirTier0Layers,
+                pirTier1Layers,
+                pirPolyLen,
+                notes.map { it.toInternal() }
+            ).toPublic()
+
+    override suspend fun precomputePirProofs(
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<VotingNoteInfo>
+    ): VotingPirPrecomputeResult =
+        db
+            .precomputePirProofs(
                 pirServerUrl,
                 pirDepth,
                 pirTier0Layers,

@@ -155,6 +155,22 @@ internal interface TypesafeVotingDb {
         notes: List<VotingNoteInfo>
     ): DelegationPirPrecomputeResult
 
+    /**
+     * Warms the bundle- and round-independent PIR proof cache for [notes]' nullifiers, so a
+     * later [precomputeDelegationPir] call (or vote construction) finds proofs already cached
+     * instead of paying PIR latency synchronously. Unlike [precomputeDelegationPir], not scoped
+     * to a round or bundle. See `precomputePirProofsNative`'s doc comment in
+     * `backend-lib/src/main/rust/voting/delegation.rs`.
+     */
+    suspend fun precomputePirProofs(
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<VotingNoteInfo>
+    ): PirPrecomputeResult
+
     suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
 
     suspend fun resetTreeClient(roundId: String)
@@ -345,3 +361,29 @@ internal data class DelegationPirPrecomputeResult(
     val cachedCount: Long,
     val fetchedCount: Long
 )
+
+/**
+ * The typesafe view of `zcash_voting::PirCachePrecomputeResult`, the bundle- and
+ * round-independent PIR proof cache warm-up result. Distinct from
+ * [DelegationPirPrecomputeResult] (bundle-scoped, no served root).
+ */
+internal data class PirPrecomputeResult(
+    val cachedCount: Long,
+    val fetchedCount: Long,
+    val servedRoot: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PirPrecomputeResult) return false
+        return cachedCount == other.cachedCount &&
+            fetchedCount == other.fetchedCount &&
+            servedRoot.contentEquals(other.servedRoot)
+    }
+
+    override fun hashCode(): Int {
+        var result = cachedCount.hashCode()
+        result = 31 * result + fetchedCount.hashCode()
+        result = 31 * result + servedRoot.contentHashCode()
+        return result
+    }
+}

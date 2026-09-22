@@ -15,6 +15,8 @@ const JNI_BUNDLE_SETUP_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniBundleSetupResult";
 const JNI_DELEGATION_PIR_PRECOMPUTE_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationPirPrecomputeResult";
+const JNI_PIR_PRECOMPUTE_RESULT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniPirPrecomputeResult";
 // `JniRoundPlan`/`JniRoundRunReport` have no Kotlin-side class yet (Task 5 of the
 // voting-5.0.0-sdk-port plan is Rust/JNI-export only; Task 9 designs the exact
 // Kotlin-facing shape and adds the matching class to JniVotingModels.kt). The
@@ -44,6 +46,8 @@ const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([B[BLjava/lang/String;)V";
 const JNI_BUNDLE_SETUP_RESULT_CTOR_SIG: &str = "(IJ[J)V";
 // Must match JniDelegationPirPrecomputeResult(Long, Long) in JniVotingModels.kt.
 const JNI_DELEGATION_PIR_PRECOMPUTE_RESULT_CTOR_SIG: &str = "(JJ)V";
+// Must match JniPirPrecomputeResult(Long, Long, ByteArray) in JniVotingModels.kt.
+const JNI_PIR_PRECOMPUTE_RESULT_CTOR_SIG: &str = "(JJ[B)V";
 // Task 6 (voting-5.0.0-sdk-port): batch Keystone signing surface replacing the
 // old buildGovernancePczt*/getDelegationSubmissionWithKeystoneSig*/
 // storeKeystoneSignatureNative pair. No Kotlin-side classes exist yet for
@@ -750,6 +754,35 @@ pub(super) fn make_jni_delegation_pir_precompute_result<'local>(
                 u64::from(result.fetched_count),
                 "fetched_count",
             )?),
+        ],
+    )?;
+    Ok(obj.into_raw())
+}
+
+/// Builds the Kotlin bundle- and round-independent PIR precompute JNI model from
+/// `zcash_voting::PirCachePrecomputeResult`. See `precomputePirProofsNative`'s doc comment
+/// in `delegation.rs` for why this is a distinct type from
+/// [`make_jni_delegation_pir_precompute_result`]'s `DelegationPirPrecomputeResult` above --
+/// this one additionally carries `served_root`.
+pub(super) fn make_jni_pir_precompute_result<'local>(
+    env: &mut JNIEnv<'local>,
+    result: voting::PirCachePrecomputeResult,
+) -> anyhow::Result<jobject> {
+    let class = env.find_class(JNI_PIR_PRECOMPUTE_RESULT)?;
+    let served_root = make_jni_bytes(env, &result.served_root)?;
+    let obj = env.new_object(
+        &class,
+        JNI_PIR_PRECOMPUTE_RESULT_CTOR_SIG,
+        &[
+            JValue::Long(u64_to_jlong(
+                u64::from(result.cached_count),
+                "cached_count",
+            )?),
+            JValue::Long(u64_to_jlong(
+                u64::from(result.fetched_count),
+                "fetched_count",
+            )?),
+            JValue::Object(&served_root),
         ],
     )?;
     Ok(obj.into_raw())

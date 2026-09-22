@@ -108,6 +108,65 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+/// Warms the bundle- and round-independent PIR proof cache via
+/// `zcash_voting::precompute::precompute_pir_proofs_with_report`, so a later
+/// `precomputeDelegationPirNative` call (or vote construction) can find its nullifier
+/// non-membership proofs already cached instead of paying PIR round-trip latency
+/// synchronously. Unlike `precomputeDelegationPirNative` above, this takes no
+/// `round_id`/`bundle_index` -- `PirCachePrecomputeResult`'s own doc comment in the crate
+/// describes the function it wraps as "the bundle- and round-independent PIR proof
+/// precompute". This is the intended entry point for background pre-warming while the
+/// app is otherwise idle, added because no JNI export reached either
+/// `precompute_pir_proofs`/`precompute_pir_proofs_with_report` before this.
+///
+/// Passes `None` for the crate's `options: Option<ObservabilityOptions>` parameter --
+/// `ObservationScope::new(None)` behaves identically to `ObservationScope::disabled()`
+/// (confirmed by reading `zcash_voting::observability::scope`), so this stays exactly as
+/// thin as calling the plain `precompute_pir_proofs` would have been, just via the
+/// `_with_report` entry point the task specified. Uses `voting::BundlePolicy::default()`
+/// for `bundle_policy`, matching this module's other default-policy call
+/// (`bundle_setup_from_notes` in `helpers.rs`, backing `computeBundleSetupNative`) --
+/// no Kotlin-facing knob exists yet for either parameter, and adding one is a distinct,
+/// larger task than this thin export.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_precomputePirProofsNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    pir_server_url: JString<'local>,
+    pir_depth: jint,
+    pir_tier0_layers: jint,
+    pir_tier1_layers: jint,
+    pir_poly_len: jint,
+    notes: JObjectArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let notes = java_note_info_array(env, &notes, "notes")?;
+        let pir_url = java_string_to_rust(env, &pir_server_url)?;
+        let pir_layout =
+            pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
+        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
+        let report = voting::precompute::precompute_pir_proofs_with_report(
+            &db,
+            &notes,
+            voting::BundlePolicy::default(),
+            db.network,
+            &pir_client,
+            None,
+        );
+        let result = report
+            .result
+            .map_err(|e| anyhow!("precompute_pir_proofs_with_report: {}", e))?;
+
+        make_jni_pir_precompute_result(env, result)
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
 /// Loops `DelegationPipeline::keystone_request` over `bundle_indices` against
 /// the pipeline a delegation-enabled `runRoundNative` call already built and
 /// cached on `session_handle` -- see `RoundSessionHandle::delegation_pipeline`

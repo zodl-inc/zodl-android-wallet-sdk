@@ -11,6 +11,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureInput
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSigningRequest
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
+import cash.z.ecc.android.sdk.internal.model.voting.JniPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPlan
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
@@ -405,6 +406,34 @@ class VotingRustBackend private constructor() {
                     pirPolyLen,
                     notes.toTypedArray()
                 ) ?: error("precomputeDelegationPir returned null")
+            }
+
+        /**
+         * Warms the bundle- and round-independent PIR proof cache for [notes]' nullifiers, so a
+         * later [precomputeDelegationPir] call (or vote construction) finds proofs already
+         * cached instead of paying PIR latency synchronously. Unlike [precomputeDelegationPir],
+         * this is not scoped to a round or bundle -- see `precomputePirProofsNative`'s doc
+         * comment in `backend-lib/src/main/rust/voting/delegation.rs`.
+         */
+        @Throws(RuntimeException::class)
+        suspend fun precomputePirProofs(
+            pirServerUrl: String,
+            pirDepth: Int,
+            pirTier0Layers: Int,
+            pirTier1Layers: Int,
+            pirPolyLen: Int,
+            notes: List<JniNoteInfo>
+        ): JniPirPrecomputeResult =
+            withHandle { handle ->
+                precomputePirProofsNative(
+                    handle,
+                    pirServerUrl,
+                    pirDepth,
+                    pirTier0Layers,
+                    pirTier1Layers,
+                    pirPolyLen,
+                    notes.toTypedArray()
+                ) ?: error("precomputePirProofs returned null")
             }
 
         @Throws(RuntimeException::class)
@@ -958,6 +987,18 @@ class VotingRustBackend private constructor() {
             pirPolyLen: Int,
             notes: Array<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun precomputePirProofsNative(
+            dbHandle: Long,
+            pirServerUrl: String,
+            pirDepth: Int,
+            pirTier0Layers: Int,
+            pirTier1Layers: Int,
+            pirPolyLen: Int,
+            notes: Array<JniNoteInfo>
+        ): JniPirPrecomputeResult?
 
         @JvmStatic
         @Throws(RuntimeException::class)

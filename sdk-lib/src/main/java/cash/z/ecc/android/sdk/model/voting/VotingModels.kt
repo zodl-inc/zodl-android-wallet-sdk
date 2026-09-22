@@ -137,6 +137,34 @@ data class VotingDelegationPirPrecomputeResult(
     val fetchedCount: Long
 )
 
+/**
+ * The bundle- and round-independent PIR proof cache warm-up result from
+ * [cash.z.ecc.android.sdk.VotingDbSession.precomputePirProofs]. [servedRoot] is the 32-byte IMT
+ * root (little-endian) the connected PIR server served -- every proof this call counted as
+ * cached or fetched verifies under it. Distinct from [VotingDelegationPirPrecomputeResult]
+ * (scoped to one delegation bundle, no served root).
+ */
+data class VotingPirPrecomputeResult(
+    val cachedCount: Long,
+    val fetchedCount: Long,
+    val servedRoot: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is VotingPirPrecomputeResult) return false
+        return cachedCount == other.cachedCount &&
+            fetchedCount == other.fetchedCount &&
+            servedRoot.contentEquals(other.servedRoot)
+    }
+
+    override fun hashCode(): Int {
+        var result = cachedCount.hashCode()
+        result = 31 * result + fetchedCount.hashCode()
+        result = 31 * result + servedRoot.contentHashCode()
+        return result
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Round-driver session model (voting-5.0.0 SDK port). Everything below mirrors
 // `zcash_voting::session`/`zcash_voting::round_drive`/`zcash_voting::share_tracking` types,

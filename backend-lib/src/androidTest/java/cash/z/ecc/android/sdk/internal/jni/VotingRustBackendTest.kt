@@ -415,6 +415,30 @@ class VotingRustBackendTest {
         }
 
     @Test
+    fun precompute_pir_proofs_rejects_malformed_pir_url() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
+            try {
+                // Unlike precomputeDelegationPir, this call is bundle- and round-independent --
+                // notes are passed directly, with no bundledNotes()/roundId/bundleIndex needed.
+                val notes = notes(noteCount = 6)
+
+                assertFailsWith<RuntimeException> {
+                    db.precomputePirProofs(
+                        pirServerUrl = "not-a-valid-url",
+                        pirDepth = 1,
+                        pirTier0Layers = 1,
+                        pirTier1Layers = 1,
+                        pirPolyLen = 2048,
+                        notes = notes
+                    )
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
     fun sync_vote_tree_and_reset_tree_client_reach_native_boundary() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)

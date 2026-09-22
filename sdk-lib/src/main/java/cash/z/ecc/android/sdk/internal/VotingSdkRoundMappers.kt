@@ -8,6 +8,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.model.voting.VotingBundleSetupResult
 import cash.z.ecc.android.sdk.model.voting.VotingDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.model.voting.VotingHotkey
+import cash.z.ecc.android.sdk.model.voting.VotingPirPrecomputeResult
 import cash.z.ecc.android.sdk.model.voting.VotingRoundPhase
 import cash.z.ecc.android.sdk.model.voting.VotingRoundState
 import cash.z.ecc.android.sdk.model.voting.VotingRoundSummary
@@ -64,4 +65,11 @@ internal fun DelegationPirPrecomputeResult.toPublic(): VotingDelegationPirPrecom
     VotingDelegationPirPrecomputeResult(
         cachedCount = cachedCount,
         fetchedCount = fetchedCount
+    )
+
+internal fun PirPrecomputeResult.toPublic(): VotingPirPrecomputeResult =
+    VotingPirPrecomputeResult(
+        cachedCount = cachedCount,
+        fetchedCount = fetchedCount,
+        servedRoot = servedRoot
     )
