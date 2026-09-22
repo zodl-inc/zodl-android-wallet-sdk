@@ -173,7 +173,9 @@ internal object Hpke {
     fun i2osp(value: Long, length: Int): ByteArray {
         val out = ByteArrayOutputStream(length)
         for (shift in (length - 1) downTo 0) {
-            out.write(((value ushr (shift * 8)) and 0xFF).toInt())
+            val shiftBits = shift * 8
+            val byte = if (shiftBits >= 64) 0 else ((value ushr shiftBits) and 0xFF).toInt()
+            out.write(byte)
         }
         return out.toByteArray()
     }

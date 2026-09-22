@@ -17,6 +17,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -38,12 +39,17 @@ internal class OhttpManagedChannel(
 ) : ManagedChannel() {
     private val shutdown = AtomicBoolean(false)
     private val activeCalls = AtomicInteger(0)
+    private val callRegistry = ConcurrentHashMap.newKeySet<OhttpClientCall<*, *>>()
 
     override fun <RequestT, ResponseT> newCall(
         methodDescriptor: MethodDescriptor<RequestT, ResponseT>,
         callOptions: CallOptions
-    ): ClientCall<RequestT, ResponseT> =
-        OhttpClientCall(methodDescriptor, callOptions, authority, transport, logger, activeCalls)
+    ): ClientCall<RequestT, ResponseT> {
+        check(!shutdown.get()) { "Channel is shut down" }
+        val call = OhttpClientCall(methodDescriptor, callOptions, authority, transport, logger, activeCalls, callRegistry)
+        callRegistry.add(call)
+        return call
+    }
 
     override fun authority(): String = authority
 
@@ -52,7 +58,11 @@ internal class OhttpManagedChannel(
         return this
     }
 
-    override fun shutdownNow(): ManagedChannel = shutdown()
+    override fun shutdownNow(): ManagedChannel {
+        shutdown.set(true)
+        callRegistry.forEach { it.cancel("Channel shut down", null) }
+        return this
+    }
 
     override fun isShutdown(): Boolean = shutdown.get()
 
@@ -145,7 +155,8 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     private val authority: String,
     private val transport: OhttpTransport,
     private val logger: (String) -> Unit,
-    private val activeCalls: AtomicInteger
+    private val activeCalls: AtomicInteger,
+    private val callRegistry: MutableSet<OhttpClientCall<*, *>>
 ) : ClientCall<RequestT, ResponseT>() {
     private val callbackExecutor = SerializingExecutor(callOptions.executor ?: OhttpManagedChannel.ioExecutor)
     private val requestBody = ByteArrayOutputStream()
@@ -159,6 +170,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     private var finalTrailers: Metadata? = null
     private var closed = false
     private var started = false
+    private var cancelled = false
 
     override fun start(responseListener: Listener<ResponseT>, headers: Metadata) {
         synchronized(lock) {
@@ -178,6 +190,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     }
 
     override fun cancel(message: String?, cause: Throwable?) {
+        synchronized(lock) { cancelled = true }
         finish(
             Status.CANCELLED.withDescription(message ?: "cancelled").withCause(cause),
             Metadata()
@@ -185,6 +198,9 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     }
 
     override fun halfClose() {
+        synchronized(lock) {
+            if (cancelled) return
+        }
         val expired = callOptions.deadline?.isExpired == true
         if (expired) {
             finish(Status.DEADLINE_EXCEEDED.withDescription("deadline expired"), Metadata())
@@ -367,6 +383,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             pending.clear()
             currentListener = listener ?: run {
                 activeCalls.decrementAndGet()
+                callRegistry.remove(this)
                 return
             }
         }
@@ -375,6 +392,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
                 currentListener.onClose(status, trailers)
             } finally {
                 activeCalls.decrementAndGet()
+                callRegistry.remove(this@OhttpClientCall)
             }
         }
     }

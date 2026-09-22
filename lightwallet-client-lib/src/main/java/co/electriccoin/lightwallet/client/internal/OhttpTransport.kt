@@ -32,7 +32,12 @@ internal class OhttpTransport(
 ) {
     private val lock = Any()
     private var cachedKeyConfig: OhttpKeyConfig? = initialKeyConfig
-    private val clientTrace: OhttpClientTrace? = ohttpClientTraceIdPrefix?.let { OhttpClientTrace(it) }
+    private val clientTrace: OhttpClientTrace? =
+        if (OhttpDebugFlags.allowTracePrefix) {
+            ohttpClientTraceIdPrefix?.let { OhttpClientTrace(it) }
+        } else {
+            null
+        }
 
     /** Fetches (or returns the cached) gateway key configuration. */
     suspend fun keyConfig(forceRefresh: Boolean = false): OhttpKeyConfig {
