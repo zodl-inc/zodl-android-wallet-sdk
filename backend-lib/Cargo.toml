@@ -188,7 +188,7 @@ ff = { version = "0.13" }
 # docs/slipstream/android/worklog/ARCHIVE-phases-0-9.md for the full writeup). The engine is
 # the published `zodl-slipstream` crate from crates.io, built against the same librustzcash
 # generation as the rest of this graph — verify with `cargo tree -d` after any bump.
-slipstream-core = { package = "zodl-slipstream", version = "0.1", optional = true }
+slipstream-core = { package = "zodl-slipstream", version = "0.3.0-alpha.1", optional = true }
 # The module's owned engine runtime (HOSTING.md §3.1) and the logcat logging layer it wires up.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 
