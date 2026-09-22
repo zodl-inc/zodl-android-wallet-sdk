@@ -345,7 +345,6 @@ class OhttpHttpClientTest {
         // Must still start with the prefix (truncated)
         assertTrue("Trace ID must start with truncated prefix", traceId.startsWith("a"))
     }
-}
 
     @Test
     fun `key config fetch uses sender GET`() {
