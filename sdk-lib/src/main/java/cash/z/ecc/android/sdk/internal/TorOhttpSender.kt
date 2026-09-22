@@ -32,4 +32,21 @@ class TorOhttpSender(
         }
         return response.body
     }
+
+    override suspend fun get(
+        url: String,
+        headers: List<Pair<String, String>>,
+        timeoutMs: Int
+    ): ByteArray {
+        val jniHeaders = headers.map { (key, value) -> JniHttpHeader(key, value) }
+        // Retry limit 0: consistent with post() — no additional retries at the Tor layer.
+        val response = torClient.httpGet(url, jniHeaders, retryLimit = 0)
+        if (response.status != HttpURLConnection.HTTP_OK) {
+            throw OhttpException(
+                "GET request failed: HTTP ${response.status} (Tor path)",
+                response.status
+            )
+        }
+        return response.body
+    }
 }
