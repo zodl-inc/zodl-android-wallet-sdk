@@ -198,7 +198,34 @@ xz2 = { version = "0.1", features = ["static"] }
 # are NOT adopting 5.0.0's new batching APIs here, only moving our existing round-executor
 # integration forward along its own architecture line to pick up the circuits-version fix; the
 # batch-vote complexity Roman warned about is opt-in surface we don't have to touch.
-zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "c2c99eb5e254cbbf778a96c0c911d6b898f45849", default-features = false, features = ["lrz"] }
+#
+# Re-pinned 2026-09-22 to the tagged release `v5.1.0` (`67edd7eb797f66163c93ec66861f96ef7cffc4ae`),
+# discovered live this session to be three releases ahead of our v5.0.0 pin. v5.0.0's own
+# CHANGELOG carries a known-issue notice ("rejects vote-chain configurations containing more than
+# eight endpoints. Use 5.0.1 instead.") that this pin was shipping with unnoticed. Picks up three
+# fixes on the way to 5.1.0: v5.0.1 raises that endpoint limit to 100; v5.0.2 fixes a WAL-writer
+# race in `store_vote` (was failing immediately with "database is locked" instead of honoring the
+# configured busy timeout under concurrent vote-commitment persistence) and, more importantly, a
+# network-triggerable panic in vote-tree sync -- over-capacity leaves / non-increasing checkpoints
+# from a vote-tree endpoint now return typed sync errors instead of panicking the wallet, believed
+# to be the fix for a High-severity crate-panic finding from an earlier security review of this
+# integration -- plus a vote-chain replica-failover hardening fix during exact commitment-tree
+# recovery; v5.1.0 itself adds only one purely additive, opt-in feature (Ledger hardware-wallet
+# output review via `DelegationPipeline::with_ledger_output_review()`) which this codebase does not
+# use (Keystone, not Ledger). Content-verified this session: our pinned rev's `zcash_voting/src`
+# tree is byte-identical to the commit where the v5.1.0 line's history diverges from our
+# release-branch's history (`git diff --stat` empty) -- the two lines diverged only in git
+# topology (separate release-branch vs. mainline commits, standard backport-PR mechanics), not in
+# file content at that point; `git merge-base --is-ancestor` fails in both directions from our pin
+# to v5.1.0 in a plain local clone, which is expected given that topology and is not a red flag on
+# its own. The diff from v5.0.2 (a confirmed linear descendant of our pin) to v5.1.0 touches
+# exactly action.rs, delegate.rs, delegation_pipeline/mod.rs, delegation_pipeline/proving.rs,
+# storage/operations.rs, and one new test file -- consistent with the CHANGELOG's Ledger-review
+# description, no unexplained scope. No breaking-changes section is listed in the CHANGELOG for
+# 5.0.1, 5.0.2, or 5.1.0 (unlike 5.0.0's own breaking-changes list relative to 4.x, which this SDK
+# already adapted to). This bump adopts no new API surface -- it exists purely to pick up the
+# three fixes above and stay current.
+zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "67edd7eb797f66163c93ec66861f96ef7cffc4ae", default-features = false, features = ["lrz"] }
 
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
