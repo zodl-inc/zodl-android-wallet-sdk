@@ -30,6 +30,14 @@ class OhttpHttpClientTest {
     }
 
     @Test
+    fun `canHandle returns true for zodl OHTTP gateway aliases`() {
+        val client = OhttpHttpClient.create()
+        assertTrue(client.canHandle("https://near.zodl.com/v0/tokens"))
+        assertTrue(client.canHandle("https://cmc.zodl.com/v1/cryptocurrency/quotes/latest"))
+        assertTrue(client.canHandle("https://vote.zodl.com/prod/dynamic-voting-config.json"))
+    }
+
+    @Test
     fun `canHandle returns true for allowlisted suffixes`() {
         val client = OhttpHttpClient.create()
         assertTrue(client.canHandle("https://voting-prod.valargroup.org/shielded-vote/v1/rounds"))

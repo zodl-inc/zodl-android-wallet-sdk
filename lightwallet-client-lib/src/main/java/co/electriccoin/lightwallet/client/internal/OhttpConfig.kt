@@ -104,12 +104,19 @@ internal class OhttpKeyConfig(
  */
 internal val OHTTP_PROXY_ALLOWED_SUFFIXES = listOf(".valargroup.org", ".valargroup.dev", "chaindefuser.com")
 
-/** Maps a real external-service hostname to the zodl OHTTP proxy hostname. */
+/**
+ * Maps a real external-service hostname to the zodl OHTTP proxy hostname.
+ * Pass-through entries (near.zodl.com, cmc.zodl.com, vote.zodl.com) allow the app to use
+ * the zodl aliases directly instead of the original hostnames.
+ */
 internal fun proxyGatewayHostFor(originalHost: String): String? =
     when (originalHost) {
         "1click.chaindefuser.com" -> "near.zodl.com"
         "pro-api.coinmarketcap.com" -> "cmc.zodl.com"
         "voting.valargroup.dev" -> "vote.zodl.com"
+        "near.zodl.com" -> "near.zodl.com"
+        "cmc.zodl.com" -> "cmc.zodl.com"
+        "vote.zodl.com" -> "vote.zodl.com"
         else -> null
     }
 
