@@ -24,7 +24,8 @@ internal fun parseRoundDriveProgress(json: String): VotingRoundDriveProgress =
             // draft's own identity, distinct from the outer `step` field's fixed id. See
             // VotingRoundDriveProgress's own doc comment.
             voteCommitProposalId = progress?.optIntOrNull("proposal_id"),
-            voteCommitStage = progress?.optStringOrNull("vote_commit_stage")
+            voteCommitStage = progress?.optStringOrNull("vote_commit_stage"),
+            voteCarryingBundleIndexes = view.optObjectOrNull("plan")?.let(::parseVoteCarryingBundleIndexes)
         )
     }
 
@@ -34,3 +35,36 @@ private fun parseRoundWorkTally(json: JSONObject): VotingRoundWorkTally =
         completedProposals = json.optInt("completed_proposals"),
         totalProposals = json.optInt("total_proposals")
     )
+
+private val VOTE_NEXT_STEP_KINDS =
+    setOf(
+        "cast_vote",
+        "advance_vote",
+        "advance_vote_batch",
+        "submit_shares"
+    )
+
+/**
+ * Every bundle index `RoundPlanView::next_steps` still owes a vote-family step for, unioned with
+ * every bundle index `RoundPlanView::recovered_vote_work` names -- mirrors Vizor Wallet's
+ * `voteCarryingBundleIndexes` (`voting_resume_plan.dart`). Reuses [parseNextStep] for
+ * `next_steps` rather than re-deriving its own `kind` classification, matching
+ * `VotingNextStep.bundleIndex`'s own already-established mapping.
+ */
+private fun parseVoteCarryingBundleIndexes(plan: JSONObject): List<Int> {
+    val indexes = sortedSetOf<Int>()
+    plan.optArrayOrNull("next_steps")?.let { steps ->
+        for (index in 0 until steps.length()) {
+            val stepJson = steps.getJSONObject(index)
+            if (stepJson.optString("kind") in VOTE_NEXT_STEP_KINDS) {
+                indexes += parseNextStep(stepJson).bundleIndex
+            }
+        }
+    }
+    plan.optArrayOrNull("recovered_vote_work")?.let { works ->
+        for (index in 0 until works.length()) {
+            indexes += works.getJSONObject(index).optInt("bundle_index")
+        }
+    }
+    return indexes.toList()
+}

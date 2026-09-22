@@ -641,6 +641,17 @@ data class VotingRoundWorkTally(
  * (`round_session.rs::runRoundNative`'s doc comment), so these arrive one draft's full stage
  * sequence at a time, not interleaved. Both are `null` for every `RoundStepProgressKind` other
  * than `VoteCommit`.
+ *
+ * [voteCarryingBundleIndexes] is populated only on a `PlanRefreshed` event (`null` otherwise):
+ * every bundle index this round's *current* plan still owes a vote-family `NextStep` for
+ * (`CastVote`/`AdvanceVote`/`AdvanceVoteBatch`/`SubmitShares`), plus every bundle index named by
+ * `recovered_vote_work`. A proposal a round casts in several bundles is only truly finished once
+ * every one of them is -- not once the fastest reports done -- and a bundle that finished
+ * casting drops out of this list on the next refresh (the plan stops owing it work), so a host
+ * tallying "how many bundles carry this ballot" must union this across refreshes with whatever
+ * bundle indices it has itself observed reporting vote progress. Mirrors Vizor Wallet's own
+ * `voteCarryingBundleIndexes`/`votingBallotCarryingBundleCount`
+ * (`voting_resume_plan.dart`/`voting_progress_presentation.dart`) for the identical problem.
  */
 data class VotingRoundDriveProgress(
     val kind: String,
@@ -648,7 +659,8 @@ data class VotingRoundDriveProgress(
     val proofProgress: Float?,
     val tally: VotingRoundWorkTally?,
     val voteCommitProposalId: Int?,
-    val voteCommitStage: String?
+    val voteCommitStage: String?,
+    val voteCarryingBundleIndexes: List<Int>?
 )
 
 /**
