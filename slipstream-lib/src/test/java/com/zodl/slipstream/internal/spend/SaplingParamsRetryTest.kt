@@ -63,7 +63,6 @@ class SaplingParamsRetryTest {
 
             assertEquals(1, callCount)
         }
-}
 
     @Test
     fun `BASE_URL points to GitHub zcash-sapling-params repo`() {

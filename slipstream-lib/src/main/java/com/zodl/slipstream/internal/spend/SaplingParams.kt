@@ -21,6 +21,7 @@ internal data class SaplingParamPaths(
 /** Downloads sapling-spend/output.params (SHA-1s below) into the caller's dir; needed by the create/addProofsToPczt paths. */
 internal object SaplingParams {
     private const val BASE_URL = "https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/main/"
+
     // Matches CLOUD_PARAM_DIR_URL in sdk-lib/.../SaplingParamTool.kt (files and hashes are identical)
     private const val SPEND_FILE_NAME = "sapling-spend.params"
     private const val OUTPUT_FILE_NAME = "sapling-output.params"

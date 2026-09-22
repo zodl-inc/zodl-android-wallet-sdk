@@ -478,7 +478,6 @@ class OhttpHttpClientTest {
         // we rely on code review: the open() method MUST set instanceFollowRedirects=false.
         // This test documents the requirement.
     }
-}
 
     @Test
     fun `keyConfigUrlFor derives from relay URL for testnet gateway`() {
@@ -497,3 +496,4 @@ class OhttpHttpClientTest {
         val keyUrl = co.electriccoin.lightwallet.client.internal.PROXY_KEY_CONFIG_URL
         org.junit.Assert.assertEquals("https://relay-simulator.example/ohttp-configs", keyUrl)
     }
+}
