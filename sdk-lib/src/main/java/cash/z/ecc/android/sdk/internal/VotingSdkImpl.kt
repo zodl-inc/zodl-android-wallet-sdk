@@ -25,6 +25,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingRoundRunReport
 import cash.z.ecc.android.sdk.model.voting.VotingRoundState
 import cash.z.ecc.android.sdk.model.voting.VotingRoundSummary
 import cash.z.ecc.android.sdk.model.voting.VotingShareTrackingReport
+import cash.z.ecc.android.sdk.model.voting.VotingSnapshotBundlePrecomputeReport
 import cash.z.ecc.android.sdk.model.voting.VotingWitness
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -180,6 +181,26 @@ internal class VotingDbSessionImpl(
     ): VotingPirPrecomputeResult =
         db
             .precomputePirProofs(
+                pirServerUrl,
+                pirDepth,
+                pirTier0Layers,
+                pirTier1Layers,
+                pirPolyLen,
+                notes.map { it.toInternal() }
+            ).toPublic()
+
+    override suspend fun precomputeSnapshotBundles(
+        roundId: String,
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<VotingNoteInfo>
+    ): VotingSnapshotBundlePrecomputeReport =
+        db
+            .precomputeSnapshotBundles(
+                roundId,
                 pirServerUrl,
                 pirDepth,
                 pirTier0Layers,

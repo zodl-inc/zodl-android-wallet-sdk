@@ -17,6 +17,11 @@ const JNI_DELEGATION_PIR_PRECOMPUTE_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniDelegationPirPrecomputeResult";
 const JNI_PIR_PRECOMPUTE_RESULT: &str =
     "cash/z/ecc/android/sdk/internal/model/voting/JniPirPrecomputeResult";
+const JNI_BUNDLE_LAYOUT: &str = "cash/z/ecc/android/sdk/internal/model/voting/JniBundleLayout";
+const JNI_PIR_PRECOMPUTE_REPORT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniPirPrecomputeReport";
+const JNI_SNAPSHOT_BUNDLE_PRECOMPUTE_REPORT: &str =
+    "cash/z/ecc/android/sdk/internal/model/voting/JniSnapshotBundlePrecomputeReport";
 // `JniRoundPlan`/`JniRoundRunReport` have no Kotlin-side class yet (Task 5 of the
 // voting-5.0.0-sdk-port plan is Rust/JNI-export only; Task 9 designs the exact
 // Kotlin-facing shape and adds the matching class to JniVotingModels.kt). The
@@ -48,6 +53,22 @@ const JNI_BUNDLE_SETUP_RESULT_CTOR_SIG: &str = "(IJ[J)V";
 const JNI_DELEGATION_PIR_PRECOMPUTE_RESULT_CTOR_SIG: &str = "(JJ)V";
 // Must match JniPirPrecomputeResult(Long, Long, ByteArray) in JniVotingModels.kt.
 const JNI_PIR_PRECOMPUTE_RESULT_CTOR_SIG: &str = "(JJ[B)V";
+// Must match JniBundleLayout(Int, Long, Int, Int, Int, Long, Int, Int, Long) in
+// JniVotingModels.kt, one parameter per zcash_voting::round::BundleLayout field in
+// declaration order (bundle_count, eligible_weight, dropped_count,
+// privacy_trim_dropped_bundles, privacy_trim_dropped_notes,
+// privacy_trim_dropped_value_zatoshi, skipped_suffix_bundles, skipped_suffix_notes,
+// skipped_suffix_value_zatoshi).
+const JNI_BUNDLE_LAYOUT_CTOR_SIG: &str = "(IJIIIJIIJ)V";
+// Must match JniPirPrecomputeReport(Long, Long) in JniVotingModels.kt, mirroring
+// zcash_voting::precompute::PirPrecomputeReport { cached, fetched } -- the per-bundle PIR
+// warmup count inside a SnapshotBundlePrecomputeReport. Distinct from
+// JniPirPrecomputeResult above (that one wraps the round-independent PirCachePrecomputeResult
+// and additionally carries served_root).
+const JNI_PIR_PRECOMPUTE_REPORT_CTOR_SIG: &str = "(JJ)V";
+// Must match JniSnapshotBundlePrecomputeReport(JniBundleLayout, Array<JniPirPrecomputeReport>)
+// in JniVotingModels.kt.
+const JNI_SNAPSHOT_BUNDLE_PRECOMPUTE_REPORT_CTOR_SIG: &str = "(Lcash/z/ecc/android/sdk/internal/model/voting/JniBundleLayout;[Lcash/z/ecc/android/sdk/internal/model/voting/JniPirPrecomputeReport;)V";
 // Task 6 (voting-5.0.0-sdk-port): batch Keystone signing surface replacing the
 // old buildGovernancePczt*/getDelegationSubmissionWithKeystoneSig*/
 // storeKeystoneSignatureNative pair. No Kotlin-side classes exist yet for
@@ -784,6 +805,110 @@ pub(super) fn make_jni_pir_precompute_result<'local>(
             )?),
             JValue::Object(&served_root),
         ],
+    )?;
+    Ok(obj.into_raw())
+}
+
+/// Builds the Kotlin bundle layout JNI model from `zcash_voting::round::BundleLayout`, with
+/// width-checked Java primitives for every field (all are u32/u64 in the crate).
+fn make_jni_bundle_layout<'local>(
+    env: &mut JNIEnv<'local>,
+    layout: voting::round::BundleLayout,
+) -> anyhow::Result<JObject<'local>> {
+    let class = env.find_class(JNI_BUNDLE_LAYOUT)?;
+    Ok(env.new_object(
+        &class,
+        JNI_BUNDLE_LAYOUT_CTOR_SIG,
+        &[
+            JValue::Int(u32_to_jint(layout.bundle_count, "bundle_count")?),
+            JValue::Long(u64_to_jlong(layout.eligible_weight, "eligible_weight")?),
+            JValue::Int(u32_to_jint(layout.dropped_count, "dropped_count")?),
+            JValue::Int(u32_to_jint(
+                layout.privacy_trim_dropped_bundles,
+                "privacy_trim_dropped_bundles",
+            )?),
+            JValue::Int(u32_to_jint(
+                layout.privacy_trim_dropped_notes,
+                "privacy_trim_dropped_notes",
+            )?),
+            JValue::Long(u64_to_jlong(
+                layout.privacy_trim_dropped_value_zatoshi,
+                "privacy_trim_dropped_value_zatoshi",
+            )?),
+            JValue::Int(u32_to_jint(
+                layout.skipped_suffix_bundles,
+                "skipped_suffix_bundles",
+            )?),
+            JValue::Int(u32_to_jint(
+                layout.skipped_suffix_notes,
+                "skipped_suffix_notes",
+            )?),
+            JValue::Long(u64_to_jlong(
+                layout.skipped_suffix_value_zatoshi,
+                "skipped_suffix_value_zatoshi",
+            )?),
+        ],
+    )?)
+}
+
+/// Builds one bundle's PIR-warmup JNI model from `zcash_voting::precompute::PirPrecomputeReport`.
+fn make_jni_pir_precompute_report<'local>(
+    env: &mut JNIEnv<'local>,
+    report: voting::precompute::PirPrecomputeReport,
+) -> anyhow::Result<JObject<'local>> {
+    let class = env.find_class(JNI_PIR_PRECOMPUTE_REPORT)?;
+    Ok(env.new_object(
+        &class,
+        JNI_PIR_PRECOMPUTE_REPORT_CTOR_SIG,
+        &[
+            JValue::Long(u64_to_jlong(u64::from(report.cached), "cached")?),
+            JValue::Long(u64_to_jlong(u64::from(report.fetched), "fetched")?),
+        ],
+    )?)
+}
+
+/// Builds the `Array<JniPirPrecomputeReport>` for `SnapshotBundlePrecomputeReport::bundles`, in
+/// bundle-index order. Mirrors `make_jni_note_info_array`/`make_jni_witness_data_array`'s
+/// manual-loop shape (rather than `rust_vec_to_java` in `utils.rs`, whose closure returns a
+/// `jni::errors::Result` and would need an extra error-type bridge to fit this module's
+/// `anyhow::Result` helpers).
+fn make_jni_pir_precompute_report_array<'local>(
+    env: &mut JNIEnv<'local>,
+    reports: Vec<voting::precompute::PirPrecomputeReport>,
+) -> anyhow::Result<JObjectArray<'local>> {
+    let len = usize_to_jint(reports.len(), "bundles length")?;
+    let class = env.find_class(JNI_PIR_PRECOMPUTE_REPORT)?;
+    let mut reports = reports.into_iter().enumerate();
+    if let Some((_, first)) = reports.next() {
+        let first = make_jni_pir_precompute_report(env, first)?;
+        let array = env.new_object_array(len, &class, &first)?;
+        env.delete_local_ref(first)?;
+        for (index, report) in reports {
+            let report = make_jni_pir_precompute_report(env, report)?;
+            env.set_object_array_element(&array, usize_to_jint(index, "bundles index")?, &report)?;
+            env.delete_local_ref(report)?;
+        }
+        Ok(array)
+    } else {
+        env.new_object_array(0, &class, JObject::null())
+            .map_err(anyhow::Error::from)
+    }
+}
+
+/// Builds the top-level Kotlin JNI model for
+/// `zcash_voting::precompute::SnapshotBundlePrecomputeReport` -- the persisted (or validated)
+/// bundle layout plus one PIR-warmup report per bundle, in bundle-index order.
+pub(super) fn make_jni_snapshot_bundle_precompute_report<'local>(
+    env: &mut JNIEnv<'local>,
+    report: voting::precompute::SnapshotBundlePrecomputeReport,
+) -> anyhow::Result<jobject> {
+    let class = env.find_class(JNI_SNAPSHOT_BUNDLE_PRECOMPUTE_REPORT)?;
+    let layout = make_jni_bundle_layout(env, report.layout)?;
+    let bundles = JObject::from(make_jni_pir_precompute_report_array(env, report.bundles)?);
+    let obj = env.new_object(
+        &class,
+        JNI_SNAPSHOT_BUNDLE_PRECOMPUTE_REPORT_CTOR_SIG,
+        &[JValue::Object(&layout), JValue::Object(&bundles)],
     )?;
     Ok(obj.into_raw())
 }

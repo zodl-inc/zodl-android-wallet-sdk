@@ -171,6 +171,24 @@ internal interface TypesafeVotingDb {
         notes: List<VotingNoteInfo>
     ): PirPrecomputeResult
 
+    /**
+     * Persists (or validates) [roundId]'s canonical bundle plan for [notes] and warms PIR for
+     * every bundle in that plan -- the whole-round counterpart to [precomputeDelegationPir]
+     * above, which only handles one already-persisted bundle at a time. See
+     * `precomputeSnapshotBundlesNative`'s doc comment in
+     * `backend-lib/src/main/rust/voting/delegation.rs` for exactly what this does and how it
+     * relates to [precomputeDelegationPir]/[precomputePirProofs].
+     */
+    suspend fun precomputeSnapshotBundles(
+        roundId: String,
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<VotingNoteInfo>
+    ): SnapshotBundlePrecomputeReport
+
     suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
 
     suspend fun resetTreeClient(roundId: String)
@@ -387,3 +405,41 @@ internal data class PirPrecomputeResult(
         return result
     }
 }
+
+/**
+ * The typesafe view of `zcash_voting::round::BundleLayout`, the persisted (or validated)
+ * canonical bundle plan for a round's snapshot note set.
+ */
+internal data class BundleLayout(
+    val bundleCount: Int,
+    val eligibleWeightZatoshi: Long,
+    val droppedCount: Int,
+    val privacyTrimDroppedBundles: Int,
+    val privacyTrimDroppedNotes: Int,
+    val privacyTrimDroppedValueZatoshi: Long,
+    val skippedSuffixBundles: Int,
+    val skippedSuffixNotes: Int,
+    val skippedSuffixValueZatoshi: Long
+)
+
+/**
+ * The typesafe view of one bundle's entry in [SnapshotBundlePrecomputeReport.bundles] -- i.e.
+ * `zcash_voting::precompute::PirPrecomputeReport { cached, fetched }`. Distinct from
+ * [PirPrecomputeResult] (round-independent, carries a served root) and
+ * [DelegationPirPrecomputeResult] (same shape, but a standalone per-bundle result rather than
+ * one entry inside this report).
+ */
+internal data class PirPrecomputeReport(
+    val cachedCount: Long,
+    val fetchedCount: Long
+)
+
+/**
+ * The typesafe view of `zcash_voting::precompute::SnapshotBundlePrecomputeReport`, the result
+ * of [TypesafeVotingDb.precomputeSnapshotBundles]: the round's persisted bundle [layout] plus
+ * one PIR warm-up report per bundle in [bundles], in bundle-index order.
+ */
+internal data class SnapshotBundlePrecomputeReport(
+    val layout: BundleLayout,
+    val bundles: List<PirPrecomputeReport>
+)

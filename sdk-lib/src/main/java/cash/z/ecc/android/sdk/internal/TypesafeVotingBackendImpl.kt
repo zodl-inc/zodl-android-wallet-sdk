@@ -9,6 +9,7 @@ package cash.z.ecc.android.sdk.internal
 import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_RAW_ADDRESS_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_STORED_SECRET_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.VotingRustBackend
+import cash.z.ecc.android.sdk.internal.model.voting.JniBundleLayout
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationInputs
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
@@ -17,12 +18,14 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureInput
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSigningRequest
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
+import cash.z.ecc.android.sdk.internal.model.voting.JniPirPrecomputeReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPlan
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniShareTrackingRunReport
+import cash.z.ecc.android.sdk.internal.model.voting.JniSnapshotBundlePrecomputeReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import cash.z.ecc.android.sdk.internal.model.voting.RoundDriveProgressListener
@@ -278,6 +281,16 @@ internal interface VotingDbBackend {
         notes: List<JniNoteInfo>
     ): JniPirPrecomputeResult
 
+    suspend fun precomputeSnapshotBundles(
+        roundId: String,
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<JniNoteInfo>
+    ): JniSnapshotBundlePrecomputeReport
+
     suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
 
     suspend fun resetTreeClient(roundId: String)
@@ -381,6 +394,25 @@ private class RustVotingDbBackend(
         notes: List<JniNoteInfo>
     ): JniPirPrecomputeResult =
         votingDb.precomputePirProofs(
+            pirServerUrl,
+            pirDepth,
+            pirTier0Layers,
+            pirTier1Layers,
+            pirPolyLen,
+            notes
+        )
+
+    override suspend fun precomputeSnapshotBundles(
+        roundId: String,
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<JniNoteInfo>
+    ): JniSnapshotBundlePrecomputeReport =
+        votingDb.precomputeSnapshotBundles(
+            roundId,
             pirServerUrl,
             pirDepth,
             pirTier0Layers,
@@ -607,6 +639,26 @@ internal class TypesafeVotingDbImpl(
                 notes.toJniNoteInfos()
             ).toPirPrecomputeResult()
 
+    override suspend fun precomputeSnapshotBundles(
+        roundId: String,
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<VotingNoteInfo>
+    ): SnapshotBundlePrecomputeReport =
+        votingDb
+            .precomputeSnapshotBundles(
+                roundId,
+                pirServerUrl,
+                pirDepth,
+                pirTier0Layers,
+                pirTier1Layers,
+                pirPolyLen,
+                notes.toJniNoteInfos()
+            ).toSnapshotBundlePrecomputeReport()
+
     override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long =
         votingDb.syncVoteTree(roundId, nodeUrl)
 
@@ -715,6 +767,31 @@ internal fun JniPirPrecomputeResult.toPirPrecomputeResult() =
         cachedCount = cachedCount,
         fetchedCount = fetchedCount,
         servedRoot = servedRoot
+    )
+
+internal fun JniBundleLayout.toBundleLayout() =
+    BundleLayout(
+        bundleCount = bundleCount,
+        eligibleWeightZatoshi = eligibleWeightZatoshi,
+        droppedCount = droppedCount,
+        privacyTrimDroppedBundles = privacyTrimDroppedBundles,
+        privacyTrimDroppedNotes = privacyTrimDroppedNotes,
+        privacyTrimDroppedValueZatoshi = privacyTrimDroppedValueZatoshi,
+        skippedSuffixBundles = skippedSuffixBundles,
+        skippedSuffixNotes = skippedSuffixNotes,
+        skippedSuffixValueZatoshi = skippedSuffixValueZatoshi
+    )
+
+internal fun JniPirPrecomputeReport.toPirPrecomputeReport() =
+    PirPrecomputeReport(
+        cachedCount = cachedCount,
+        fetchedCount = fetchedCount
+    )
+
+internal fun JniSnapshotBundlePrecomputeReport.toSnapshotBundlePrecomputeReport() =
+    SnapshotBundlePrecomputeReport(
+        layout = layout.toBundleLayout(),
+        bundles = bundles.map { it.toPirPrecomputeReport() }
     )
 
 private fun JniVotingHotkey.requireValid() {

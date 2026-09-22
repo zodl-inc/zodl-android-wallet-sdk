@@ -165,6 +165,47 @@ data class VotingPirPrecomputeResult(
     }
 }
 
+/**
+ * The persisted (or validated) canonical bundle plan for a round's snapshot note set --
+ * [cash.z.ecc.android.sdk.VotingDbSession.precomputeSnapshotBundles]'s [VotingSnapshotBundlePrecomputeReport.layout],
+ * mirroring `zcash_voting::round::BundleLayout`. [eligibleWeightZatoshi] and the other
+ * `*ValueZatoshi`/weight fields mirror the crate struct's own zatoshi-suffixed field names.
+ */
+data class VotingBundleLayout(
+    val bundleCount: Int,
+    val eligibleWeightZatoshi: Long,
+    val droppedCount: Int,
+    val privacyTrimDroppedBundles: Int,
+    val privacyTrimDroppedNotes: Int,
+    val privacyTrimDroppedValueZatoshi: Long,
+    val skippedSuffixBundles: Int,
+    val skippedSuffixNotes: Int,
+    val skippedSuffixValueZatoshi: Long
+)
+
+/**
+ * One bundle's PIR warm-up counts inside a [VotingSnapshotBundlePrecomputeReport], mirroring
+ * `zcash_voting::precompute::PirPrecomputeReport { cached, fetched }`. Distinct from
+ * [VotingPirPrecomputeResult] (round-independent, carries a served root) and
+ * [VotingDelegationPirPrecomputeResult] (same shape, but a standalone per-bundle
+ * [cash.z.ecc.android.sdk.VotingDbSession.precomputeDelegationPir] result rather than one entry
+ * inside this report).
+ */
+data class VotingPirPrecomputeReport(
+    val cachedCount: Long,
+    val fetchedCount: Long
+)
+
+/**
+ * The result of [cash.z.ecc.android.sdk.VotingDbSession.precomputeSnapshotBundles]: the round's
+ * persisted bundle [layout] plus one PIR warm-up report per bundle in [bundles], in
+ * bundle-index order. Mirrors `zcash_voting::precompute::SnapshotBundlePrecomputeReport`.
+ */
+data class VotingSnapshotBundlePrecomputeReport(
+    val layout: VotingBundleLayout,
+    val bundles: List<VotingPirPrecomputeReport>
+)
+
 // ---------------------------------------------------------------------------------------------
 // Round-driver session model (voting-5.0.0 SDK port). Everything below mirrors
 // `zcash_voting::session`/`zcash_voting::round_drive`/`zcash_voting::share_tracking` types,

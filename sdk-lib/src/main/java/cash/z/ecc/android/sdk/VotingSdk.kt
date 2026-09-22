@@ -20,6 +20,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingRoundRunReport
 import cash.z.ecc.android.sdk.model.voting.VotingRoundState
 import cash.z.ecc.android.sdk.model.voting.VotingRoundSummary
 import cash.z.ecc.android.sdk.model.voting.VotingShareTrackingReport
+import cash.z.ecc.android.sdk.model.voting.VotingSnapshotBundlePrecomputeReport
 import cash.z.ecc.android.sdk.model.voting.VotingWitness
 
 /**
@@ -220,6 +221,26 @@ interface VotingDbSession {
         pirPolyLen: Int,
         notes: List<VotingNoteInfo>
     ): VotingPirPrecomputeResult
+
+    /**
+     * Persists (or validates) [roundId]'s canonical bundle plan for [notes] and warms PIR for
+     * every bundle in that plan -- the whole-round entry point for background pre-warming,
+     * complementing [precomputePirProofs] (round-independent cache warm-up with no bundle
+     * layout) and [precomputeDelegationPir] (one already-persisted bundle at a time). Callers
+     * that want a round's bundles precomputed end to end -- layout plus every bundle's PIR
+     * proofs -- should call this once with the round's full snapshot note set, rather than
+     * persisting bundles separately and calling [precomputeDelegationPir] once per bundle
+     * index.
+     */
+    suspend fun precomputeSnapshotBundles(
+        roundId: String,
+        pirServerUrl: String,
+        pirDepth: Int,
+        pirTier0Layers: Int,
+        pirTier1Layers: Int,
+        pirPolyLen: Int,
+        notes: List<VotingNoteInfo>
+    ): VotingSnapshotBundlePrecomputeReport
 
     suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
 

@@ -8,10 +8,13 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.model.voting.VotingBundleSetupResult
 import cash.z.ecc.android.sdk.model.voting.VotingDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.model.voting.VotingHotkey
+import cash.z.ecc.android.sdk.model.voting.VotingBundleLayout
+import cash.z.ecc.android.sdk.model.voting.VotingPirPrecomputeReport
 import cash.z.ecc.android.sdk.model.voting.VotingPirPrecomputeResult
 import cash.z.ecc.android.sdk.model.voting.VotingRoundPhase
 import cash.z.ecc.android.sdk.model.voting.VotingRoundState
 import cash.z.ecc.android.sdk.model.voting.VotingRoundSummary
+import cash.z.ecc.android.sdk.model.voting.VotingSnapshotBundlePrecomputeReport
 
 // Round/hotkey mappers split out of the pre-4.0 VotingSdkMappers.kt (now VotingSdkNoteMappers.kt,
 // VotingSdkVoteMappers.kt, VotingSdkDelegationMappers.kt, VotingSdkRoundPlanMappers.kt,
@@ -72,4 +75,29 @@ internal fun PirPrecomputeResult.toPublic(): VotingPirPrecomputeResult =
         cachedCount = cachedCount,
         fetchedCount = fetchedCount,
         servedRoot = servedRoot
+    )
+
+internal fun BundleLayout.toPublic(): VotingBundleLayout =
+    VotingBundleLayout(
+        bundleCount = bundleCount,
+        eligibleWeightZatoshi = eligibleWeightZatoshi,
+        droppedCount = droppedCount,
+        privacyTrimDroppedBundles = privacyTrimDroppedBundles,
+        privacyTrimDroppedNotes = privacyTrimDroppedNotes,
+        privacyTrimDroppedValueZatoshi = privacyTrimDroppedValueZatoshi,
+        skippedSuffixBundles = skippedSuffixBundles,
+        skippedSuffixNotes = skippedSuffixNotes,
+        skippedSuffixValueZatoshi = skippedSuffixValueZatoshi
+    )
+
+internal fun PirPrecomputeReport.toPublic(): VotingPirPrecomputeReport =
+    VotingPirPrecomputeReport(
+        cachedCount = cachedCount,
+        fetchedCount = fetchedCount
+    )
+
+internal fun SnapshotBundlePrecomputeReport.toPublic(): VotingSnapshotBundlePrecomputeReport =
+    VotingSnapshotBundlePrecomputeReport(
+        layout = layout.toPublic(),
+        bundles = bundles.map { it.toPublic() }
     )

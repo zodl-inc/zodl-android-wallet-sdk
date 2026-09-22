@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_RAW_ADDRESS_BYTES_SIZE
 import cash.z.ecc.android.sdk.internal.jni.JNI_HOTKEY_STORED_SECRET_BYTES_SIZE
+import cash.z.ecc.android.sdk.internal.model.voting.JniBundleLayout
 import cash.z.ecc.android.sdk.internal.model.voting.JniBundleSetupResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationInputs
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationPirPrecomputeResult
@@ -10,12 +11,14 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureInput
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureRecord
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSigningRequest
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
+import cash.z.ecc.android.sdk.internal.model.voting.JniPirPrecomputeReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniPirPrecomputeResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPlan
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniShareTrackingRunReport
+import cash.z.ecc.android.sdk.internal.model.voting.JniSnapshotBundlePrecomputeReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import cash.z.ecc.android.sdk.internal.model.voting.RoundDriveProgressListener
@@ -130,6 +133,58 @@ class TypesafeVotingBackendImplTest {
             assertContentEquals(byteArrayOf(0x11, 0x22), result.servedRoot)
             assertEquals("https://pir.example", dbBackend.precomputePirProofsPirServerUrl)
             assertEquals(listOf(jniNoteInfo()), dbBackend.precomputePirProofsNotes)
+        }
+
+    @Test
+    fun precompute_snapshot_bundles_forwards_arguments_and_maps_result() =
+        runTest {
+            val dbBackend =
+                RecordingVotingDbBackend(
+                    snapshotBundlePrecomputeReport =
+                        JniSnapshotBundlePrecomputeReport(
+                            layout =
+                                JniBundleLayout(
+                                    bundleCount = 2,
+                                    eligibleWeightZatoshi = 1_000_000L,
+                                    droppedCount = 1,
+                                    privacyTrimDroppedBundles = 0,
+                                    privacyTrimDroppedNotes = 0,
+                                    privacyTrimDroppedValueZatoshi = 0L,
+                                    skippedSuffixBundles = 0,
+                                    skippedSuffixNotes = 0,
+                                    skippedSuffixValueZatoshi = 0L
+                                ),
+                            bundles =
+                                arrayOf(
+                                    JniPirPrecomputeReport(cachedCount = 1, fetchedCount = 2),
+                                    JniPirPrecomputeReport(cachedCount = 3, fetchedCount = 4)
+                                )
+                        )
+                )
+            val backend = TypesafeVotingBackendImpl { RecordingVotingBackendBridge(dbBackend) }
+            val db = backend.openVotingDb("/tmp/voting.db", "wallet-1", networkId = 1)
+
+            val result =
+                db.precomputeSnapshotBundles(
+                    roundId = "round-1",
+                    pirServerUrl = "https://pir.example",
+                    pirDepth = 1,
+                    pirTier0Layers = 1,
+                    pirTier1Layers = 1,
+                    pirPolyLen = 2048,
+                    notes = listOf(votingNoteInfo())
+                )
+
+            assertEquals(2, result.layout.bundleCount)
+            assertEquals(1_000_000L, result.layout.eligibleWeightZatoshi)
+            assertEquals(1, result.layout.droppedCount)
+            assertEquals(
+                listOf(1L to 2L, 3L to 4L),
+                result.bundles.map { it.cachedCount to it.fetchedCount }
+            )
+            assertEquals("round-1", dbBackend.precomputeSnapshotBundlesRoundId)
+            assertEquals("https://pir.example", dbBackend.precomputeSnapshotBundlesPirServerUrl)
+            assertEquals(listOf(jniNoteInfo()), dbBackend.precomputeSnapshotBundlesNotes)
         }
 
     @Test
@@ -515,6 +570,22 @@ class TypesafeVotingBackendImplTest {
             JniDelegationPirPrecomputeResult(cachedCount = 0, fetchedCount = 0),
         private val pirPrecomputeResult: JniPirPrecomputeResult =
             JniPirPrecomputeResult(cachedCount = 0, fetchedCount = 0, servedRoot = ByteArray(0)),
+        private val snapshotBundlePrecomputeReport: JniSnapshotBundlePrecomputeReport =
+            JniSnapshotBundlePrecomputeReport(
+                layout =
+                    JniBundleLayout(
+                        bundleCount = 0,
+                        eligibleWeightZatoshi = 0,
+                        droppedCount = 0,
+                        privacyTrimDroppedBundles = 0,
+                        privacyTrimDroppedNotes = 0,
+                        privacyTrimDroppedValueZatoshi = 0,
+                        skippedSuffixBundles = 0,
+                        skippedSuffixNotes = 0,
+                        skippedSuffixValueZatoshi = 0
+                    ),
+                bundles = emptyArray()
+            ),
         private val hotkeyResult: JniVotingHotkey? = null,
         private val keystoneSignatureBatchResult: JniKeystoneSignatureBatchResult =
             JniKeystoneSignatureBatchResult(inserted = 0, alreadyPresent = 0),
@@ -529,6 +600,9 @@ class TypesafeVotingBackendImplTest {
         var precomputeNotes: List<JniNoteInfo>? = null
         var precomputePirProofsPirServerUrl: String? = null
         var precomputePirProofsNotes: List<JniNoteInfo>? = null
+        var precomputeSnapshotBundlesRoundId: String? = null
+        var precomputeSnapshotBundlesPirServerUrl: String? = null
+        var precomputeSnapshotBundlesNotes: List<JniNoteInfo>? = null
         var generateHotkeyStoredSecret: ByteArray = ByteArray(0)
         var storeKeystoneSignaturesRoundId: String? = null
         var storeKeystoneSignaturesSignatures: List<JniKeystoneSignatureInput>? = null
@@ -603,6 +677,21 @@ class TypesafeVotingBackendImplTest {
             precomputePirProofsPirServerUrl = pirServerUrl
             precomputePirProofsNotes = notes
             return pirPrecomputeResult
+        }
+
+        override suspend fun precomputeSnapshotBundles(
+            roundId: String,
+            pirServerUrl: String,
+            pirDepth: Int,
+            pirTier0Layers: Int,
+            pirTier1Layers: Int,
+            pirPolyLen: Int,
+            notes: List<JniNoteInfo>
+        ): JniSnapshotBundlePrecomputeReport {
+            precomputeSnapshotBundlesRoundId = roundId
+            precomputeSnapshotBundlesPirServerUrl = pirServerUrl
+            precomputeSnapshotBundlesNotes = notes
+            return snapshotBundlePrecomputeReport
         }
 
         override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long = unused()

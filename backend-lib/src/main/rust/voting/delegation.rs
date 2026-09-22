@@ -167,6 +167,66 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+/// Persists the canonical bundle plan for `round_id`'s snapshot note set and warms PIR for
+/// every bundle in that plan, via `zcash_voting::precompute::precompute_snapshot_bundles_with_report`.
+///
+/// Unlike `precomputeDelegationPirNative` above (one already-persisted bundle at a time, and
+/// only after its bundle row exists), this is the whole-round entry point: it first calls the
+/// crate's `ensure_bundles_with_policy` internally to persist (or validate, if already
+/// persisted -- bundle rows are first-write-wins) the bundle layout for every bundle `notes`
+/// chunks into, then loops the exact same per-bundle PIR-warmup step
+/// `precomputeDelegationPirNative` wraps (`VotingDb::precompute_delegation_pir`, via the crate's
+/// internal `observe_delegation_pir`) across every bundle in that layout. So a caller that
+/// wants a round's bundles precomputed end to end (layout + every bundle's PIR proofs) should
+/// call this once with the round's full snapshot note set, rather than persisting bundles via
+/// `setupBundlesNative` and then calling `precomputeDelegationPirNative` once per bundle index.
+///
+/// Passes `None` for `options` and `voting::BundlePolicy::default()` for `bundle_policy`, same
+/// reasoning as `precomputePirProofsNative` above -- no Kotlin-facing knob exists yet for
+/// either, and this stays exactly as thin as calling the plain `precompute_snapshot_bundles`
+/// would have been.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_precomputeSnapshotBundlesNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_handle: jlong,
+    round_id: JString<'local>,
+    pir_server_url: JString<'local>,
+    pir_depth: jint,
+    pir_tier0_layers: jint,
+    pir_tier1_layers: jint,
+    pir_poly_len: jint,
+    notes: JObjectArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let db = db_from_handle(db_handle)?;
+        let _access_lock = db.access_lock()?;
+        let round_id = java_string_to_rust(env, &round_id)?;
+        let notes = java_note_info_array(env, &notes, "notes")?;
+        let pir_url = java_string_to_rust(env, &pir_server_url)?;
+        let pir_layout =
+            pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
+        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
+        let report = voting::precompute::precompute_snapshot_bundles_with_report(
+            &db,
+            &round_id,
+            &notes,
+            voting::BundlePolicy::default(),
+            &pir_client,
+            db.network,
+            None,
+        );
+        let result = report
+            .result
+            .map_err(|e| anyhow!("precompute_snapshot_bundles_with_report: {}", e))?;
+
+        make_jni_snapshot_bundle_precompute_report(env, result)
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
 /// Loops `DelegationPipeline::keystone_request` over `bundle_indices` against
 /// the pipeline a delegation-enabled `runRoundNative` call already built and
 /// cached on `session_handle` -- see `RoundSessionHandle::delegation_pipeline`

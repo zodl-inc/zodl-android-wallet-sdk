@@ -653,6 +653,61 @@ data class JniPirPrecomputeResult(
     }
 }
 
+/**
+ * Typed JNI carrier for `zcash_voting::round::BundleLayout`, the persisted (or validated)
+ * canonical bundle plan for a round's snapshot note set. [eligibleWeightZatoshi] and the other
+ * `*ValueZatoshi`/weight fields mirror the crate struct's own `#[serde(rename = ...)]`
+ * "zatoshi"-suffixed names.
+ */
+@Keep
+data class JniBundleLayout(
+    val bundleCount: Int,
+    val eligibleWeightZatoshi: Long,
+    val droppedCount: Int,
+    val privacyTrimDroppedBundles: Int,
+    val privacyTrimDroppedNotes: Int,
+    val privacyTrimDroppedValueZatoshi: Long,
+    val skippedSuffixBundles: Int,
+    val skippedSuffixNotes: Int,
+    val skippedSuffixValueZatoshi: Long
+)
+
+/**
+ * Typed JNI carrier for one bundle's entry in `zcash_voting::precompute::SnapshotBundlePrecomputeReport::bundles`
+ * -- i.e. `zcash_voting::precompute::PirPrecomputeReport { cached, fetched }`. Distinct from
+ * [JniPirPrecomputeResult] (round-independent, carries a served root) and
+ * [JniDelegationPirPrecomputeResult] (same shape, but a standalone per-bundle
+ * `precomputeDelegationPirNative` result rather than one entry inside this report).
+ */
+@Keep
+data class JniPirPrecomputeReport(
+    val cachedCount: Long,
+    val fetchedCount: Long
+)
+
+/**
+ * Typed JNI carrier for `zcash_voting::precompute::SnapshotBundlePrecomputeReport`, the result
+ * of `precomputeSnapshotBundlesNative`: the round's persisted bundle [layout] plus one PIR
+ * warm-up report per bundle in [bundles], in bundle-index order.
+ */
+@Keep
+data class JniSnapshotBundlePrecomputeReport(
+    val layout: JniBundleLayout,
+    val bundles: Array<JniPirPrecomputeReport>
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniSnapshotBundlePrecomputeReport) return false
+        return layout == other.layout && bundles.contentEquals(other.bundles)
+    }
+
+    override fun hashCode(): Int {
+        var result = layout.hashCode()
+        result = 31 * result + bundles.contentHashCode()
+        return result
+    }
+}
+
 @Keep
 data class JniDelegationProofResult(
     val proof: ByteArray,

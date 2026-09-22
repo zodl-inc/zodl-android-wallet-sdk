@@ -17,6 +17,7 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundRunReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniShareTrackingRunReport
+import cash.z.ecc.android.sdk.internal.model.voting.JniSnapshotBundlePrecomputeReport
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import cash.z.ecc.android.sdk.internal.model.voting.RoundDriveProgressListener
@@ -434,6 +435,37 @@ class VotingRustBackend private constructor() {
                     pirPolyLen,
                     notes.toTypedArray()
                 ) ?: error("precomputePirProofs returned null")
+            }
+
+        /**
+         * Persists (or validates) [roundId]'s canonical bundle plan for [notes] and warms PIR
+         * for every bundle in that plan -- the whole-round counterpart to [precomputeDelegationPir]
+         * above, which only handles one already-persisted bundle at a time. See
+         * `precomputeSnapshotBundlesNative`'s doc comment in
+         * `backend-lib/src/main/rust/voting/delegation.rs` for exactly what this does and how it
+         * relates to [precomputeDelegationPir]/[precomputePirProofs].
+         */
+        @Throws(RuntimeException::class)
+        suspend fun precomputeSnapshotBundles(
+            roundId: String,
+            pirServerUrl: String,
+            pirDepth: Int,
+            pirTier0Layers: Int,
+            pirTier1Layers: Int,
+            pirPolyLen: Int,
+            notes: List<JniNoteInfo>
+        ): JniSnapshotBundlePrecomputeReport =
+            withHandle { handle ->
+                precomputeSnapshotBundlesNative(
+                    handle,
+                    roundId,
+                    pirServerUrl,
+                    pirDepth,
+                    pirTier0Layers,
+                    pirTier1Layers,
+                    pirPolyLen,
+                    notes.toTypedArray()
+                ) ?: error("precomputeSnapshotBundles returned null")
             }
 
         @Throws(RuntimeException::class)
@@ -999,6 +1031,19 @@ class VotingRustBackend private constructor() {
             pirPolyLen: Int,
             notes: Array<JniNoteInfo>
         ): JniPirPrecomputeResult?
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun precomputeSnapshotBundlesNative(
+            dbHandle: Long,
+            roundId: String,
+            pirServerUrl: String,
+            pirDepth: Int,
+            pirTier0Layers: Int,
+            pirTier1Layers: Int,
+            pirPolyLen: Int,
+            notes: Array<JniNoteInfo>
+        ): JniSnapshotBundlePrecomputeReport?
 
         @JvmStatic
         @Throws(RuntimeException::class)
