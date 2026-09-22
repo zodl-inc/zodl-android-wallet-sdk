@@ -46,7 +46,8 @@ internal class OhttpManagedChannel(
         callOptions: CallOptions
     ): ClientCall<RequestT, ResponseT> {
         check(!shutdown.get()) { "Channel is shut down" }
-        val call = OhttpClientCall(methodDescriptor, callOptions, authority, transport, logger, activeCalls, callRegistry)
+        val call =
+            OhttpClientCall(methodDescriptor, callOptions, authority, transport, logger, activeCalls, callRegistry)
         callRegistry.add(call)
         return call
     }
@@ -148,7 +149,7 @@ internal class SerializingExecutor(
     }
 }
 
-@Suppress("TooManyFunctions") // gRPC ClientCall interface requires 15 methods
+@Suppress("TooManyFunctions", "LongParameterList") // gRPC ClientCall interface requires 15 methods + 8 constructor params needed
 internal class OhttpClientCall<RequestT, ResponseT>(
     private val method: MethodDescriptor<RequestT, ResponseT>,
     private val callOptions: CallOptions,
