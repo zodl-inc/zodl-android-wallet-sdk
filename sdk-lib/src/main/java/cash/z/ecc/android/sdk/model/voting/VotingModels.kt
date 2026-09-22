@@ -622,18 +622,33 @@ data class VotingRoundWorkTally(
  *
  * [kind] is the event's `RoundDriveEventKind` (e.g. `"step_progress"`, `"step_finished"`).
  * [step] is the [VotingNextStep] the event belongs to, when the event names one (every kind
- * except a bare chain/tree observation). [proofProgress] is the 0..1 proving fraction from a
+ * except a bare chain/tree observation) -- for a `CastVote` step this names whichever proposal
+ * the crate happened to SELECT the whole bundle-casting step with, fixed for that step's entire
+ * `step_selected`..`step_finished` lifetime (the crate casts every draft of a bundle as one
+ * unit -- see `zcash_voting::vote_work::cast_vote::run_cast_vote`'s own doc comment -- so this is
+ * NOT which draft is currently proving). [proofProgress] is the 0..1 proving fraction from a
  * `StepProgress` event's `Delegation`/`VoteCommit` payload, when the crate reported one --
  * `null` for every other kind, or when a `StepProgress` event's payload doesn't carry a
  * fraction (e.g. `TreeSynced`, `ShareOutcome`). [tally] is the run's proposal-completion count,
  * present only on `PlanRefreshed` events -- see [VotingRoundWorkTally]'s own doc comment for why
- * this, not a per-event bundle/proposal id, is the right source for a stable "N of M" display.
+ * this, not [step]'s own bundle/proposal id, is the right source for a stable "N of M" display.
+ *
+ * [voteCommitProposalId]/[voteCommitStage], in contrast to [step]'s fixed id, ARE the real,
+ * currently-processing draft's identity: the crate's `VoteCommit` progress payload carries its
+ * own `proposal_id` per internal proving stage (`ProofStarting`/`ProofProgress`/
+ * `SharePayloadsBuilding`/`Signing` -- `zcash_voting::vote::VoteCommitStage`), because
+ * `RoundHostContext::max_proof_concurrency` is fixed to `1` on this SDK
+ * (`round_session.rs::runRoundNative`'s doc comment), so these arrive one draft's full stage
+ * sequence at a time, not interleaved. Both are `null` for every `RoundStepProgressKind` other
+ * than `VoteCommit`.
  */
 data class VotingRoundDriveProgress(
     val kind: String,
     val step: VotingNextStep?,
     val proofProgress: Float?,
-    val tally: VotingRoundWorkTally?
+    val tally: VotingRoundWorkTally?,
+    val voteCommitProposalId: Int?,
+    val voteCommitStage: String?
 )
 
 /**

@@ -14,12 +14,17 @@ import org.json.JSONObject
  */
 internal fun parseRoundDriveProgress(json: String): VotingRoundDriveProgress =
     JSONObject(json).let { view ->
+        val progress = view.optObjectOrNull("progress")
         VotingRoundDriveProgress(
             kind = view.optString("kind"),
             step = view.optObjectOrNull("step")?.let(::parseNextStep),
-            proofProgress =
-                view.optObjectOrNull("progress")?.optDoubleOrNull("proof_progress")?.toFloat(),
-            tally = view.optObjectOrNull("tally")?.let(::parseRoundWorkTally)
+            proofProgress = progress?.optDoubleOrNull("proof_progress")?.toFloat(),
+            tally = view.optObjectOrNull("tally")?.let(::parseRoundWorkTally),
+            // Only populated for a `VoteCommit` progress payload -- the real, currently-proving
+            // draft's own identity, distinct from the outer `step` field's fixed id. See
+            // VotingRoundDriveProgress's own doc comment.
+            voteCommitProposalId = progress?.optIntOrNull("proposal_id"),
+            voteCommitStage = progress?.optStringOrNull("vote_commit_stage")
         )
     }
 
