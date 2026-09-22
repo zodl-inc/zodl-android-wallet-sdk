@@ -74,6 +74,9 @@ jobs:
         id: setup
         timeout-minutes: 10
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Check properties
         timeout-minutes: 4
         run: |
@@ -115,6 +118,9 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Detekt
         timeout-minutes: 4
         run: |
@@ -154,6 +160,9 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Ktlint
         timeout-minutes: 4
         run: |
@@ -193,6 +202,9 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
         with:
           rust-cache: true
       - name: Android Lint
@@ -242,6 +254,9 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
+        with:
           rust-cache: true
       - name: Test
         timeout-minutes: 15
@@ -269,6 +284,9 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
         with:
           rust-cache: true
       - name: Clippy
@@ -298,6 +316,9 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Rustfmt
         timeout-minutes: 5
         run: |
@@ -350,6 +371,9 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
+        with:
           rust-cache: true
       - name: Compile with Slipstream disabled
         # 120 minutes for cold-cache first run (cross-compiles backend-lib Rust for one ABI,
@@ -375,6 +399,9 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
         with:
           rust-cache: true
       # 120 minutes for cold-cache first run: this branch re-enables shielded voting, which
@@ -517,6 +544,9 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
+        with:
           rust-cache: true
       # The hosted runner's Android SDK does not include the emulator package,
       # which a Gradle Managed Device requires. AGP auto-installs the system
@@ -588,6 +618,9 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
+        with:
           rust-cache: true
       # A fake signing key to satisfy creating a "release" build
       - name: Export Signing Key
@@ -648,6 +681,9 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Authenticate to Google Cloud for Firebase Test Lab
         id: auth_test_lab
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093

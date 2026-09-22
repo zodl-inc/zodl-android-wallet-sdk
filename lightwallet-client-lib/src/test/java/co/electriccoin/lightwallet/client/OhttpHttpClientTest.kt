@@ -349,9 +349,7 @@ class OhttpHttpClientTest {
                     body: ByteArray,
                     headers: List<Pair<String, String>>,
                     timeoutMs: Int
-                ): ByteArray {
-                    throw NotImplementedError("POST not used in this test")
-                }
+                ): ByteArray = throw NotImplementedError("POST not used in this test")
 
                 override suspend fun get(
                     url: String,
@@ -362,12 +360,16 @@ class OhttpHttpClientTest {
                     capturedGetHeaders.add(headers)
                     // Return a valid 43-byte OHTTP key config (keyId=1, KEM=X25519, KDF=HKDF-SHA256, AEAD=AES-128-GCM)
                     return byteArrayOf(
-                        0x01, // keyId
-                        0x00, 0x20, // kemId (X25519)
-                        *ByteArray(32) { 1 }, // 32-byte public key
-                        0x00, 0x01, // kdfId (HKDF-SHA256)
-                        0x00, 0x01, // aeadId (AES-128-GCM)
-                        0x00, 0x00 // no cipher suites
+                        0x01,
+                        0x00,
+                        0x20,
+                        *ByteArray(32) { 1 },
+                        0x00,
+                        0x01,
+                        0x00,
+                        0x01,
+                        0x00,
+                        0x00
                     )
                 }
             }
