@@ -8,7 +8,8 @@ package co.electriccoin.lightwallet.client.internal
  *
  *   app ──HPKE-encrypted──▶ relay (sees IP, not content) ──▶ gateway (sees content, not IP) ──▶ lightwalletd
  *
- * The gateway's HPKE key configuration is fetched from `https://<gateway-host>/ohttp-configs`.
+ * The gateway's HPKE key configuration is fetched through the relay at `https://<relay-host>/ohttp-configs`
+ * (the relay passes it through from the gateway).
  */
 internal object OhttpEndpoints {
     private const val GATEWAY_HOST_PREFIX = "ohttp-gateway"
@@ -25,7 +26,14 @@ internal object OhttpEndpoints {
         relayByGatewayHost[gatewayHost]
             ?: throw IllegalArgumentException("No OHTTP relay configured for gateway host $gatewayHost")
 
-    fun keyConfigUrlFor(gatewayHost: String): String = "https://$gatewayHost/ohttp-configs"
+    /**
+     * Returns the key config URL for a gateway, derived from its relay URL.
+     * The relay proxies `/ohttp-configs` to the gateway's key endpoint.
+     */
+    fun keyConfigUrlFor(gatewayHost: String): String {
+        val relayUrl = relayUrlFor(gatewayHost)
+        return relayUrl.replace("/relay", "/ohttp-configs")
+    }
 }
 
 /**
@@ -138,5 +146,8 @@ internal fun isOhttpProxyAllowedHost(host: String): Boolean {
 /** Relay URL for proxy gateway hosts — all share the mainnet relay. */
 internal const val PROXY_RELAY_URL = "https://relay-simulator.example/relay"
 
-/** Key config URL for proxy gateway hosts — all share the mainnet gateway's HPKE key. */
-internal const val PROXY_KEY_CONFIG_URL = "https://ohttp-gateway.example/ohttp-configs"
+/**
+ * Key config URL for proxy gateway hosts — derived from [PROXY_RELAY_URL].
+ * All proxy hosts share the mainnet relay→gateway pair's HPKE key.
+ */
+internal val PROXY_KEY_CONFIG_URL = PROXY_RELAY_URL.replace("/relay", "/ohttp-configs")
