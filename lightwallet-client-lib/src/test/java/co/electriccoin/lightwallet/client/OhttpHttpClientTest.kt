@@ -144,6 +144,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `client trace ID header is present and well-formed when prefix set`() {
+        co.electriccoin.lightwallet.client.internal.OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
             object : co.electriccoin.lightwallet.client.internal.OhttpSender {
@@ -226,6 +227,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `client trace ID sanitises invalid characters`() {
+        co.electriccoin.lightwallet.client.internal.OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
             object : co.electriccoin.lightwallet.client.internal.OhttpSender {
@@ -291,6 +293,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `client trace ID truncates to 64 chars`() {
+        co.electriccoin.lightwallet.client.internal.OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
             object : co.electriccoin.lightwallet.client.internal.OhttpSender {
