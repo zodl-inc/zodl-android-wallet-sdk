@@ -20,7 +20,8 @@ internal data class SaplingParamPaths(
 
 /** Downloads sapling-spend/output.params (SHA-1s below) into the caller's dir; needed by the create/addProofsToPczt paths. */
 internal object SaplingParams {
-    private const val BASE_URL = "https://download.z.cash/downloads/"
+    private const val BASE_URL = "https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/main/"
+    // Matches CLOUD_PARAM_DIR_URL in sdk-lib/.../SaplingParamTool.kt (files and hashes are identical)
     private const val SPEND_FILE_NAME = "sapling-spend.params"
     private const val OUTPUT_FILE_NAME = "sapling-output.params"
     private const val SPEND_SHA1 = "a15ab54c2888880e53c823a3063820c728444126"
@@ -31,7 +32,7 @@ internal object SaplingParams {
     private const val READ_TIMEOUT_MS = 30_000
 
     // MOB-1744: a single stalled attempt (SocketTimeoutException) or a transient DNS hiccup
-    // (UnknownHostException resolving download.z.cash) used to fail the whole 50MB spend-params
+    // (UnknownHostException resolving GitHub) used to fail the whole 50MB spend-params
     // download outright, on the synchronous path a broadcast blocks on. Retry a few times with
     // backoff before surfacing the error to the caller.
     private const val MAX_DOWNLOAD_ATTEMPTS = 3
