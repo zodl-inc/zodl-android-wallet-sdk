@@ -611,7 +611,8 @@ data class VotingChainOutcome(
  */
 data class VotingRoundWorkTally(
     val completedProposals: Int,
-    val totalProposals: Int
+    val totalProposals: Int,
+    val remainingObligations: Int
 )
 
 /**

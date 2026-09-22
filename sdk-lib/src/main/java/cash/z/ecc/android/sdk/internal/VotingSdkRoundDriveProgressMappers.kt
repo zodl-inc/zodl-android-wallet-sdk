@@ -33,7 +33,8 @@ internal fun parseRoundDriveProgress(json: String): VotingRoundDriveProgress =
 private fun parseRoundWorkTally(json: JSONObject): VotingRoundWorkTally =
     VotingRoundWorkTally(
         completedProposals = json.optInt("completed_proposals"),
-        totalProposals = json.optInt("total_proposals")
+        totalProposals = json.optInt("total_proposals"),
+        remainingObligations = json.optInt("remaining_obligations")
     )
 
 private val VOTE_NEXT_STEP_KINDS =
