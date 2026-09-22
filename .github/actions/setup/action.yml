@@ -56,23 +56,23 @@ runs:
         ANDROID_SDK_ROOT=${ANDROID_ROOT}/sdk
         SDKMANAGER=${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager
         echo "y" | $SDKMANAGER "ndk;27.0.12077973"
-      - name: Authorize cargo against the private slipstream repositories
-        if: inputs.cargo-app-id != '' && inputs.cargo-app-private-key != ''
-        id: slipstream-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
-        with:
-          app-id: ${{ inputs.cargo-app-id }}
-          private-key: ${{ inputs.cargo-app-private-key }}
-          owner: zodl-inc
-          repositories: slipstream,slipstream-internal
-      - name: Point cargo git fetches at the App token
-        if: steps.slipstream-token.outputs.token != ''
-        shell: bash
-        env:
-          SLIPSTREAM_TOKEN: ${{ steps.slipstream-token.outputs.token }}
-        run: |
-          git config --global url."https://x-access-token:${SLIPSTREAM_TOKEN}@github.com/zodl-inc/".insteadOf "https://github.com/zodl-inc/"
-          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
+    - name: Authorize cargo against the private slipstream repositories
+      if: inputs.cargo-app-id != '' && inputs.cargo-app-private-key != ''
+      id: slipstream-token
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+      with:
+        app-id: ${{ inputs.cargo-app-id }}
+        private-key: ${{ inputs.cargo-app-private-key }}
+        owner: zodl-inc
+        repositories: slipstream,slipstream-internal
+    - name: Point cargo git fetches at the App token
+      if: steps.slipstream-token.outputs.token != ''
+      shell: bash
+      env:
+        SLIPSTREAM_TOKEN: ${{ steps.slipstream-token.outputs.token }}
+      run: |
+        git config --global url."https://x-access-token:${SLIPSTREAM_TOKEN}@github.com/zodl-inc/".insteadOf "https://github.com/zodl-inc/"
+        echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
     - name: Setup Rust
       shell: bash
       # Use the channel pinned in rust-toolchain.toml (the single source of truth) rather than a
