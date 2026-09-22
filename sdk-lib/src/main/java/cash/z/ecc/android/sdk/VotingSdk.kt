@@ -220,8 +220,25 @@ interface VotingDbSession {
      * [precomputeDelegationPir], this is not scoped to a round or bundle -- callers can run it
      * as a background pre-warming step whenever the app is idle with wallet notes available,
      * rather than only right before a delegation bundle needs its proofs.
+     *
+     * [torRuntime] is the caller's raw native Tor-runtime handle, same contract as
+     * [openRoundSession]'s own [torRuntime] parameter: obtain it from
+     * [Synchronizer.getVotingTorRuntimeHandle], and pass `0` when no live Tor runtime is
+     * available (Tor disabled) rather than failing the call -- this routes real Tor traffic
+     * when available and falls back to plain HTTP otherwise, never failing closed. This matters
+     * here specifically because, unlike [openRoundSession], this call is meant to be triggered
+     * from background/browse-time code (e.g. on screen entry) rather than only on explicit vote
+     * submission, so its PIR network requests must not default to a non-Tor transport.
+     *
+     * Holds this session's shared native database lock for the full duration of this call,
+     * including all PIR network round-trips. Other operations on the same database (round state
+     * reads, [setupBundles], [close], ...) queue behind it for as long as this call is in
+     * flight, non-cancellably once started. Callers that trigger this from background/browse-time
+     * code should be prepared to cancel or coordinate with it before opening a round session for
+     * real submission.
      */
     suspend fun precomputePirProofs(
+        torRuntime: Long,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -239,8 +256,22 @@ interface VotingDbSession {
      * proofs -- should call this once with the round's full snapshot note set, rather than
      * persisting bundles separately and calling [precomputeDelegationPir] once per bundle
      * index.
+     *
+     * Preconditions and side effects a caller must understand before wiring this in:
+     * - [roundId]'s round must already exist -- call [ensureRound] first. Calling this before
+     *   the round has been bootstrapped throws.
+     * - This PERSISTS [notes]' bundle plan as a side effect, it does not just warm a cache: the
+     *   first call for a given [roundId] fixes that note set as the round's canonical,
+     *   first-write-wins bundle layout. A later call for the same [roundId] with a *different*
+     *   note set (for example after new notes synced in) does not silently update that plan --
+     *   it fails hard instead. Treat this as committing state, not as a repeatable warm-up.
+     *
+     * [torRuntime] and the shared-database-lock contract are the same as [precomputePirProofs]
+     * above -- see that doc comment, including why this being wired to fire on background/browse
+     * -time code (not just explicit vote submission) makes both of those points matter here.
      */
     suspend fun precomputeSnapshotBundles(
+        torRuntime: Long,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,

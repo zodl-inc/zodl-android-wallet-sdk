@@ -437,6 +437,7 @@ class VotingRustBackendTest {
 
                 assertFailsWith<RuntimeException> {
                     db.precomputePirProofs(
+                        torRuntime = 0,
                         pirServerUrl = "not-a-valid-url",
                         pirDepth = 1,
                         pirTier0Layers = 1,
@@ -463,6 +464,7 @@ class VotingRustBackendTest {
 
                 assertFailsWith<RuntimeException> {
                     db.precomputeSnapshotBundles(
+                        torRuntime = 0,
                         roundId = ROUND_ID,
                         pirServerUrl = "not-a-valid-url",
                         pirDepth = 1,

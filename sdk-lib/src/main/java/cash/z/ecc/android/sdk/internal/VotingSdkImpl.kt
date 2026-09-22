@@ -177,6 +177,7 @@ internal class VotingDbSessionImpl(
             ).toPublic()
 
     override suspend fun precomputePirProofs(
+        torRuntime: Long,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -186,6 +187,7 @@ internal class VotingDbSessionImpl(
     ): VotingPirPrecomputeResult =
         db
             .precomputePirProofs(
+                torRuntime,
                 pirServerUrl,
                 pirDepth,
                 pirTier0Layers,
@@ -195,6 +197,7 @@ internal class VotingDbSessionImpl(
             ).toPublic()
 
     override suspend fun precomputeSnapshotBundles(
+        torRuntime: Long,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -205,6 +208,7 @@ internal class VotingDbSessionImpl(
     ): VotingSnapshotBundlePrecomputeReport =
         db
             .precomputeSnapshotBundles(
+                torRuntime,
                 roundId,
                 pirServerUrl,
                 pirDepth,

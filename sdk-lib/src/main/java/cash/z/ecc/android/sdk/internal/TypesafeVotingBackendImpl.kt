@@ -273,6 +273,7 @@ internal interface VotingDbBackend {
     ): JniDelegationPirPrecomputeResult
 
     suspend fun precomputePirProofs(
+        torRuntime: Long,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -282,6 +283,7 @@ internal interface VotingDbBackend {
     ): JniPirPrecomputeResult
 
     suspend fun precomputeSnapshotBundles(
+        torRuntime: Long,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -386,6 +388,7 @@ private class RustVotingDbBackend(
         )
 
     override suspend fun precomputePirProofs(
+        torRuntime: Long,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -394,6 +397,7 @@ private class RustVotingDbBackend(
         notes: List<JniNoteInfo>
     ): JniPirPrecomputeResult =
         votingDb.precomputePirProofs(
+            torRuntime,
             pirServerUrl,
             pirDepth,
             pirTier0Layers,
@@ -403,6 +407,7 @@ private class RustVotingDbBackend(
         )
 
     override suspend fun precomputeSnapshotBundles(
+        torRuntime: Long,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -412,6 +417,7 @@ private class RustVotingDbBackend(
         notes: List<JniNoteInfo>
     ): JniSnapshotBundlePrecomputeReport =
         votingDb.precomputeSnapshotBundles(
+            torRuntime,
             roundId,
             pirServerUrl,
             pirDepth,
@@ -622,6 +628,7 @@ internal class TypesafeVotingDbImpl(
             ).toDelegationPirPrecomputeResult()
 
     override suspend fun precomputePirProofs(
+        torRuntime: Long,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -631,6 +638,7 @@ internal class TypesafeVotingDbImpl(
     ): PirPrecomputeResult =
         votingDb
             .precomputePirProofs(
+                torRuntime,
                 pirServerUrl,
                 pirDepth,
                 pirTier0Layers,
@@ -640,6 +648,7 @@ internal class TypesafeVotingDbImpl(
             ).toPirPrecomputeResult()
 
     override suspend fun precomputeSnapshotBundles(
+        torRuntime: Long,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -650,6 +659,7 @@ internal class TypesafeVotingDbImpl(
     ): SnapshotBundlePrecomputeReport =
         votingDb
             .precomputeSnapshotBundles(
+                torRuntime,
                 roundId,
                 pirServerUrl,
                 pirDepth,

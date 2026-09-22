@@ -120,6 +120,7 @@ class TypesafeVotingBackendImplTest {
 
             val result =
                 db.precomputePirProofs(
+                    torRuntime = 0,
                     pirServerUrl = "https://pir.example",
                     pirDepth = 1,
                     pirTier0Layers = 1,
@@ -133,6 +134,7 @@ class TypesafeVotingBackendImplTest {
             assertContentEquals(byteArrayOf(0x11, 0x22), result.servedRoot)
             assertEquals("https://pir.example", dbBackend.precomputePirProofsPirServerUrl)
             assertEquals(listOf(jniNoteInfo()), dbBackend.precomputePirProofsNotes)
+            assertEquals(0L, dbBackend.precomputePirProofsTorRuntime)
         }
 
     @Test
@@ -166,6 +168,7 @@ class TypesafeVotingBackendImplTest {
 
             val result =
                 db.precomputeSnapshotBundles(
+                    torRuntime = 0,
                     roundId = "round-1",
                     pirServerUrl = "https://pir.example",
                     pirDepth = 1,
@@ -185,6 +188,7 @@ class TypesafeVotingBackendImplTest {
             assertEquals("round-1", dbBackend.precomputeSnapshotBundlesRoundId)
             assertEquals("https://pir.example", dbBackend.precomputeSnapshotBundlesPirServerUrl)
             assertEquals(listOf(jniNoteInfo()), dbBackend.precomputeSnapshotBundlesNotes)
+            assertEquals(0L, dbBackend.precomputeSnapshotBundlesTorRuntime)
         }
 
     @Test
@@ -598,8 +602,10 @@ class TypesafeVotingBackendImplTest {
         var precomputeBundleIndex: Int? = null
         var precomputePirServerUrl: String? = null
         var precomputeNotes: List<JniNoteInfo>? = null
+        var precomputePirProofsTorRuntime: Long? = null
         var precomputePirProofsPirServerUrl: String? = null
         var precomputePirProofsNotes: List<JniNoteInfo>? = null
+        var precomputeSnapshotBundlesTorRuntime: Long? = null
         var precomputeSnapshotBundlesRoundId: String? = null
         var precomputeSnapshotBundlesPirServerUrl: String? = null
         var precomputeSnapshotBundlesNotes: List<JniNoteInfo>? = null
@@ -667,6 +673,7 @@ class TypesafeVotingBackendImplTest {
         }
 
         override suspend fun precomputePirProofs(
+            torRuntime: Long,
             pirServerUrl: String,
             pirDepth: Int,
             pirTier0Layers: Int,
@@ -674,12 +681,14 @@ class TypesafeVotingBackendImplTest {
             pirPolyLen: Int,
             notes: List<JniNoteInfo>
         ): JniPirPrecomputeResult {
+            precomputePirProofsTorRuntime = torRuntime
             precomputePirProofsPirServerUrl = pirServerUrl
             precomputePirProofsNotes = notes
             return pirPrecomputeResult
         }
 
         override suspend fun precomputeSnapshotBundles(
+            torRuntime: Long,
             roundId: String,
             pirServerUrl: String,
             pirDepth: Int,
@@ -688,6 +697,7 @@ class TypesafeVotingBackendImplTest {
             pirPolyLen: Int,
             notes: List<JniNoteInfo>
         ): JniSnapshotBundlePrecomputeReport {
+            precomputeSnapshotBundlesTorRuntime = torRuntime
             precomputeSnapshotBundlesRoundId = roundId
             precomputeSnapshotBundlesPirServerUrl = pirServerUrl
             precomputeSnapshotBundlesNotes = notes

@@ -118,9 +118,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_war
         // separate `configureVotingNative` entry point, whether by not having been
         // wired up yet on the app side or by omission) still gets the intended
         // `max_active_heavy_jobs: 1` policy rather than silently defaulting to
-        // full-parallelism proving -- this matters even more now that the actual
-        // warm-up runs on its own spawned thread rather than inline here, so it
-        // could otherwise race a later `configureVotingNative` call.
+        // full-parallelism proving. Still correct defensive ordering now that the
+        // actual warm-up runs on its own spawned thread rather than inline here,
+        // even though it no longer guards against a *divergent* outcome: both this
+        // call and a later `configureVotingNative` call configure the byte-identical
+        // `configure_default_voting_proving_policy()`, and `AlreadyConfigured` is
+        // tolerated either way, so whichever of the two runs first, the process ends
+        // up with the same policy. The only thing a race here could cost is one
+        // redundant, harmless `AlreadyConfigured`-swallowed call.
         configure_default_voting_proving_policy()?;
         voting::start_proving_cache_warmup();
         Ok(())

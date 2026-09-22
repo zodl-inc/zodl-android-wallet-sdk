@@ -5,10 +5,10 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
+import cash.z.ecc.android.sdk.model.voting.VotingBundleLayout
 import cash.z.ecc.android.sdk.model.voting.VotingBundleSetupResult
 import cash.z.ecc.android.sdk.model.voting.VotingDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.model.voting.VotingHotkey
-import cash.z.ecc.android.sdk.model.voting.VotingBundleLayout
 import cash.z.ecc.android.sdk.model.voting.VotingPirPrecomputeReport
 import cash.z.ecc.android.sdk.model.voting.VotingPirPrecomputeResult
 import cash.z.ecc.android.sdk.model.voting.VotingRoundPhase

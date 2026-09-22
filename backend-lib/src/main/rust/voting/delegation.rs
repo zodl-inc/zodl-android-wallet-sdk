@@ -2,12 +2,36 @@ use super::db::*;
 use super::helpers::*;
 use super::*;
 
+/// Connects a PIR client routed over `tor_runtime`'s resolved
+/// [`super::round_session::SessionRoute`] -- real Tor when a live runtime is
+/// handed in, plain HTTP as the explicit fallback otherwise (`0`, or any
+/// resolution failure). Same Tor-preference policy `openRoundSessionNative`
+/// applies to a round session's chain/helper traffic, via the exact same
+/// `resolve_session_route` helper -- see that function's doc comment in
+/// `round_session.rs`. Without this, every PIR fetch through this helper
+/// used the crate's default DIRECT transport (`HyperTransport::new()`)
+/// unconditionally, correlating the caller's IP with holding
+/// voting-eligible notes on every PIR round-trip, not just when a user
+/// explicitly submits a vote.
+///
+/// `precomputeDelegationPirNative` below has no `tor_runtime` JNI parameter
+/// of its own -- it stays unwired from the app per the Task 2 ledger ruling
+/// -- and passes `0` here, preserving its pre-existing Direct-only behavior
+/// unchanged. `precomputePirProofsNative`/`precomputeSnapshotBundlesNative`
+/// further down are the two exports this routes for real, each with their
+/// own `tor_runtime: jlong` JNI parameter.
 fn connect_pir_client(
     pir_url: &str,
     pir_layout: voting::config::PirLayout,
+    tor_runtime: jlong,
 ) -> anyhow::Result<voting::PirClientBlocking> {
-    voting::connect_pir_blocking(pir_layout, pir_url, Arc::new(voting::HyperTransport::new()))
-        .map_err(|e| anyhow!("connect to PIR server failed: {}", e))
+    let route = super::round_session::resolve_session_route(tor_runtime);
+    voting::connect_pir_blocking(
+        pir_layout,
+        pir_url,
+        Arc::new(voting::HyperTransport::with_route(route)),
+    )
+    .map_err(|e| anyhow!("connect to PIR server failed: {}", e))
 }
 
 fn pir_layout_from_jni(
@@ -92,7 +116,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_layout =
             pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
-        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
+        // `0`: this export has no `tor_runtime` JNI parameter of its own --
+        // see `connect_pir_client`'s doc comment.
+        let pir_client = connect_pir_client(&pir_url, pir_layout, 0)?;
         let result = db
             .precompute_delegation_pir(
                 &round_id,
@@ -128,6 +154,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
 /// (`bundle_setup_from_notes` in `helpers.rs`, backing `computeBundleSetupNative`) --
 /// no Kotlin-facing knob exists yet for either parameter, and adding one is a distinct,
 /// larger task than this thin export.
+///
+/// `tor_runtime: jlong` -- resolved via `super::round_session::resolve_session_route`,
+/// same as `openRoundSessionNative`'s own `tor_runtime` parameter: real Tor routing when
+/// it points at a live runtime, plain HTTP as the explicit fallback otherwise (`0` when
+/// the caller has no live Tor runtime, e.g. Tor disabled). Added because this export is
+/// wired (app repo) to fire automatically on mere screen entry (Poll List / Proposal
+/// Detail / Review), not just on explicit vote submission -- routing its PIR network
+/// requests through Tor by default (when available) avoids correlating the caller's IP
+/// with holding voting-eligible notes just from browsing.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_precomputePirProofsNative<
     'local,
@@ -135,6 +170,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     db_handle: jlong,
+    tor_runtime: jlong,
     pir_server_url: JString<'local>,
     pir_depth: jint,
     pir_tier0_layers: jint,
@@ -149,7 +185,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_layout =
             pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
-        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
+        let pir_client = connect_pir_client(&pir_url, pir_layout, tor_runtime)?;
         let report = voting::precompute::precompute_pir_proofs_with_report(
             &db,
             &notes,
@@ -185,6 +221,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
 /// reasoning as `precomputePirProofsNative` above -- no Kotlin-facing knob exists yet for
 /// either, and this stays exactly as thin as calling the plain `precompute_snapshot_bundles`
 /// would have been.
+///
+/// `tor_runtime: jlong` -- same parameter, same `resolve_session_route` resolution, and same
+/// rationale as `precomputePirProofsNative`'s own `tor_runtime` doc above: this export is also
+/// wired (app repo) to fire on mere screen entry, so its PIR fetches must not default to a
+/// non-Tor transport.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_precomputeSnapshotBundlesNative<
     'local,
@@ -192,6 +233,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     db_handle: jlong,
+    tor_runtime: jlong,
     round_id: JString<'local>,
     pir_server_url: JString<'local>,
     pir_depth: jint,
@@ -208,7 +250,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_layout =
             pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
-        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
+        let pir_client = connect_pir_client(&pir_url, pir_layout, tor_runtime)?;
         let report = voting::precompute::precompute_snapshot_bundles_with_report(
             &db,
             &round_id,

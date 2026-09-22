@@ -415,9 +415,24 @@ class VotingRustBackend private constructor() {
          * cached instead of paying PIR latency synchronously. Unlike [precomputeDelegationPir],
          * this is not scoped to a round or bundle -- see `precomputePirProofsNative`'s doc
          * comment in `backend-lib/src/main/rust/voting/delegation.rs`.
+         *
+         * [torRuntime] is resolved the same way [openRoundSession]'s own `torRuntime` parameter
+         * is: real Tor routing when it points at a live runtime, plain HTTP as the explicit
+         * fallback otherwise (`0` when the caller has no live Tor runtime). This call is wired
+         * to fire on mere screen entry (not just explicit vote submission), so its PIR network
+         * requests must default to Tor when available rather than always going direct.
+         *
+         * Holds this session's shared native database lock for the full duration of this call,
+         * including all PIR network round-trips -- see [VotingDb.withHandle]/[VotingDbHandle]'s
+         * `access_lock`. Other operations against the same database (round state reads,
+         * [setupBundles], [close], ...) queue behind it for as long as this call is in flight,
+         * non-cancellably once started. Callers that trigger this from background/browse-time
+         * code should be prepared to cancel or coordinate with it before opening a round session
+         * for real submission.
          */
         @Throws(RuntimeException::class)
         suspend fun precomputePirProofs(
+            torRuntime: Long,
             pirServerUrl: String,
             pirDepth: Int,
             pirTier0Layers: Int,
@@ -428,6 +443,7 @@ class VotingRustBackend private constructor() {
             withHandle { handle ->
                 precomputePirProofsNative(
                     handle,
+                    torRuntime,
                     pirServerUrl,
                     pirDepth,
                     pirTier0Layers,
@@ -444,9 +460,24 @@ class VotingRustBackend private constructor() {
          * `precomputeSnapshotBundlesNative`'s doc comment in
          * `backend-lib/src/main/rust/voting/delegation.rs` for exactly what this does and how it
          * relates to [precomputeDelegationPir]/[precomputePirProofs].
+         *
+         * Preconditions and side effects a caller must know before wiring this in, both traced
+         * against the vendored crate source (`precompute_snapshot_bundles_with_report` ->
+         * `observe_precompute_snapshot_bundles`):
+         * - [roundId]'s round row must already exist (`require_round_network`) -- calling this
+         *   before the round has been bootstrapped (see [ensureRound]) throws.
+         * - This PERSISTS [notes]' bundle plan as a side effect (`ensure_bundles_with_policy`):
+         *   the first call's note set becomes the round's canonical, first-write-wins bundle
+         *   layout. A later call for the same [roundId] with a *different* note set (e.g. after
+         *   new notes synced in) does not silently update that plan -- it fails hard. This is
+         *   not a pure cache-warming call; treat it as committing state.
+         *
+         * [torRuntime] and the shared-database-lock contract are the same as [precomputePirProofs]
+         * above -- see that doc comment.
          */
         @Throws(RuntimeException::class)
         suspend fun precomputeSnapshotBundles(
+            torRuntime: Long,
             roundId: String,
             pirServerUrl: String,
             pirDepth: Int,
@@ -458,6 +489,7 @@ class VotingRustBackend private constructor() {
             withHandle { handle ->
                 precomputeSnapshotBundlesNative(
                     handle,
+                    torRuntime,
                     roundId,
                     pirServerUrl,
                     pirDepth,
@@ -1024,6 +1056,7 @@ class VotingRustBackend private constructor() {
         @Throws(RuntimeException::class)
         private external fun precomputePirProofsNative(
             dbHandle: Long,
+            torRuntime: Long,
             pirServerUrl: String,
             pirDepth: Int,
             pirTier0Layers: Int,
@@ -1036,6 +1069,7 @@ class VotingRustBackend private constructor() {
         @Throws(RuntimeException::class)
         private external fun precomputeSnapshotBundlesNative(
             dbHandle: Long,
+            torRuntime: Long,
             roundId: String,
             pirServerUrl: String,
             pirDepth: Int,

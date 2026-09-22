@@ -48,7 +48,7 @@ use crate::tor::TorRuntime;
 /// [`SessionTransport`] a trait object -- keeps it a concrete type, so the
 /// crate's blanket `ChainTransport`/`HelperTransport`/PIR `Transport` impls
 /// for `HyperTransport<R: RouteHttp>` apply without any further casting.
-enum SessionRoute {
+pub(super) enum SessionRoute {
     Tor(ZodlVotingRoute),
     Direct(DirectRoute),
 }
@@ -206,6 +206,35 @@ pub(super) unsafe fn resolve_tor_runtime<'a>(
 ) -> anyhow::Result<&'a mut TorRuntime> {
     let ptr = std::ptr::with_exposed_provenance_mut::<TorRuntime>(tor_runtime as usize);
     unsafe { ptr.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))
+}
+
+/// Resolves a `tor_runtime: jlong` JNI parameter into a [`SessionRoute`]: real
+/// Tor routing (`SessionRoute::Tor`) when it points at a live runtime,
+/// `SessionRoute::Direct` as the explicit fallback otherwise -- Tor is a
+/// preference in this codebase, never a hard requirement (see this module's
+/// own doc comment and `openRoundSessionNative`'s use of this same policy
+/// below). Factored out so `delegation.rs`'s PIR-fetching exports
+/// (`precomputePirProofsNative`/`precomputeSnapshotBundlesNative`) can apply
+/// the exact same Tor-preference policy to their own `tor_runtime: jlong`
+/// parameters as `openRoundSessionNative` applies to chain/helper traffic --
+/// see `connect_pir_client` in `delegation.rs`.
+///
+/// # Safety
+///
+/// Same contract as [`resolve_tor_runtime`], since this just calls it: the
+/// only value it is sound to pass without a live Tor runtime is `0` (decodes
+/// to `SessionRoute::Direct`, matching `SubmitVotesUseCase.kt`'s
+/// `getVotingTorRuntimeHandle()` convention). Any other value must be a live
+/// pointer previously returned by `TorClient_createTorRuntime` and not yet
+/// freed by `TorClient_freeTorRuntime` -- `resolve_tor_runtime` only
+/// null-checks, it does not (and cannot) validate an arbitrary non-null
+/// `jlong`, so passing a bogus non-zero handle here is undefined behavior,
+/// not a safe way to force the `Direct` fallback.
+pub(super) fn resolve_session_route(tor_runtime: jlong) -> SessionRoute {
+    match unsafe { resolve_tor_runtime(tor_runtime) } {
+        Ok(tor_runtime) => SessionRoute::Tor(ZodlVotingRoute::new(tor_runtime)),
+        Err(_) => SessionRoute::Direct(DirectRoute::new()),
+    }
 }
 
 // A Tor-independent async executor, built once and reused, for
@@ -438,10 +467,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
         // whole session open. When Tor *is* enabled and available, real Tor
         // routing (`SessionRoute::Tor`) is what actually carries this
         // session's chain/helper traffic for its whole lifetime.
-        let route = match unsafe { resolve_tor_runtime(tor_runtime) } {
-            Ok(tor_runtime) => SessionRoute::Tor(ZodlVotingRoute::new(tor_runtime)),
-            Err(_) => SessionRoute::Direct(DirectRoute::new()),
-        };
+        let route = resolve_session_route(tor_runtime);
         let transport: SessionTransport = Arc::new(HyperTransport::with_route(route));
         let helper_client = HelperClient::new(
             Arc::clone(&transport) as Arc<dyn HelperTransport>,
@@ -766,5 +792,21 @@ mod tests {
         // A handle that was never issued by next_session_handle() (which
         // starts at 1 and only increments) must not resolve.
         assert!(session_from_handle(jlong::MAX).is_err());
+    }
+
+    #[test]
+    fn resolve_session_route_falls_back_to_direct_for_zero_handle() {
+        // `0` is the only value it is sound to pass here without a live Tor
+        // runtime (see the function's own Safety doc) -- what callers pass
+        // when Tor is disabled, per `SubmitVotesUseCase.kt`'s
+        // `getVotingTorRuntimeHandle()`. Must degrade to `SessionRoute::Direct`
+        // rather than panicking or erroring the whole call. This is the same
+        // fallback `delegation.rs`'s new `precomputePirProofsNative`/
+        // `precomputeSnapshotBundlesNative` exports rely on when no Tor
+        // runtime is available.
+        assert!(matches!(
+            resolve_session_route(0),
+            SessionRoute::Direct(_)
+        ));
     }
 }
