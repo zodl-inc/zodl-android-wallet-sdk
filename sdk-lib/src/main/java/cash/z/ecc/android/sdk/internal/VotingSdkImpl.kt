@@ -54,10 +54,15 @@ internal class VotingSdkImpl(
     @Volatile
     private var cachedIsAvailable: Boolean? = null
 
-    // Probing availability warms the (expensive) Halo2 proving caches as a side effect, so the
-    // result is computed at most once per process and cached here rather than on every call.
-    // Any failure -- not just UnsatisfiedLinkError -- means unavailable: NativeLibraryLoader
-    // wraps a failed System.loadLibrary in AssertionError, not UnsatisfiedLinkError, so a
+    // Probing availability starts the crate's background Halo2 proving-cache warm-up as a side
+    // effect (fire-and-forget: `warmProvingCaches` returns as soon as the crate has spawned its
+    // own warm-up thread, or immediately if a warm-up was already started elsewhere in the
+    // process -- the crate deduplicates internally). The result is still cached here rather than
+    // re-probed on every call: once the native boundary is known to resolve it will keep
+    // resolving for the rest of the process, so there is no reason to keep paying a JNI round
+    // trip for `isAvailable()`'s own documented memoization contract. Any failure -- not just
+    // UnsatisfiedLinkError -- means unavailable: NativeLibraryLoader wraps a failed
+    // System.loadLibrary in AssertionError, not UnsatisfiedLinkError, so a
     // `!is UnsatisfiedLinkError` check would previously report "available" for exactly the
     // missing-native-library case this gate exists to catch.
     override suspend fun isAvailable(): Boolean =

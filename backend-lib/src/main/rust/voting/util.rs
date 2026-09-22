@@ -106,17 +106,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_war
     _: JClass<'local>,
 ) {
     let res = catch_unwind(&mut env, |_env| {
-        // Defensive ordering: `warm_proving_caches` triggers the crate's lazy
-        // `proving_runtime::runtime()` init on first use, which permanently fixes
-        // the process policy to whatever was current at that moment
+        // Defensive ordering: `start_proving_cache_warmup` spawns a background
+        // thread (deduplicated by the crate itself via an internal OnceCell guard
+        // -- a second call anywhere in the process is a no-op) that calls
+        // `warm_proving_caches`, which triggers the crate's lazy
+        // `proving_runtime::runtime()` init on first use. That init permanently
+        // fixes the process policy to whatever was current at that moment
         // (`ProvingPolicy::default()` if `configureVotingNative` was never called
-        // first). Configuring here too means a caller that only ever calls
-        // `warmProvingCachesNative` (skipping the new `configureVotingNative`
-        // entry point, whether by not having been wired up yet on the app side or
-        // by omission) still gets the intended `max_active_heavy_jobs: 1` policy
-        // rather than silently defaulting to full-parallelism proving.
+        // first). Configuring here too, before starting the warm-up, means a
+        // caller that only ever calls `warmProvingCachesNative` (skipping the
+        // separate `configureVotingNative` entry point, whether by not having been
+        // wired up yet on the app side or by omission) still gets the intended
+        // `max_active_heavy_jobs: 1` policy rather than silently defaulting to
+        // full-parallelism proving -- this matters even more now that the actual
+        // warm-up runs on its own spawned thread rather than inline here, so it
+        // could otherwise race a later `configureVotingNative` call.
         configure_default_voting_proving_policy()?;
-        voting::warm_proving_caches();
+        voting::start_proving_cache_warmup();
         Ok(())
     });
     unwrap_exc_or(&mut env, res, ())

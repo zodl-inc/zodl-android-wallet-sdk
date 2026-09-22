@@ -138,12 +138,24 @@ class VotingRustBackendTest {
 
     @Test
     fun warm_proving_caches_smoke() =
-        // Warming the proving caches builds the zk proving keys, which is
-        // CPU-heavy. On the in-runner managed-device emulator (slower than the
-        // former emulator.wtf hardware) it exceeds runTest's default 60s
-        // timeout, so allow more time.
-        runTest(timeout = 5.minutes) {
+        // warmProvingCachesNative now calls the crate's start_proving_cache_warmup, which only
+        // spawns the crate's own background thread and returns immediately -- unlike the old
+        // synchronous warm_proving_caches (which built the zk proving keys inline and needed a
+        // 5-minute runTest timeout on a slow emulator), this call itself is cheap and fits well
+        // within runTest's default timeout regardless of how long the actual, now-backgrounded,
+        // key generation takes.
+        runTest {
             VotingRustBackend.new().warmProvingCaches()
+        }
+
+    @Test
+    fun warm_proving_caches_is_idempotent() =
+        // start_proving_cache_warmup's own doc comment: "Later calls are no-ops." -- mirrors
+        // configure_voting_is_idempotent's shape for the sibling one-time-setup native call.
+        runTest {
+            val backend = VotingRustBackend.new()
+            backend.warmProvingCaches()
+            backend.warmProvingCaches()
         }
 
     @Test
@@ -533,9 +545,9 @@ class VotingRustBackendTest {
     /**
      * `runShareTrackingSessionNative` bootstraps a real Tor circuit before it can even attempt
      * (and fail to reach) the fake helper URL, which can legitimately take well past `runTest`'s
-     * default 60s timeout on a slow emulator -- the same reason [warm_proving_caches_smoke] needs
-     * an extended timeout. A generous 5-minute allowance still proves the JNI call resolves and
-     * marshals correctly (a real report or a RuntimeException), without flaking on timing.
+     * default 60s timeout on a slow emulator. A generous 5-minute allowance still proves the JNI
+     * call resolves and marshals correctly (a real report or a RuntimeException), without
+     * flaking on timing.
      */
     @Test
     fun share_tracking_session_reaches_native_boundary_without_a_reachable_helper() =

@@ -48,9 +48,9 @@ interface VotingSdk {
      * if the whole native library failed to load, an [AssertionError]) crash instead of a
      * graceful no-op. The implementation memoizes its result after the first call for the
      * lifetime of this [VotingSdk] instance, so repeated calls are cheap; only the first call
-     * pays the cost of warming the native proving caches (its implementation calls
-     * [warmProvingCaches]) or of a failed native-library probe. Does not open a database or
-     * touch the network.
+     * actually probes the native boundary (its implementation calls [warmProvingCaches], which
+     * as a side effect starts the crate's own background proving-cache warm-up). Does not open a
+     * database or touch the network.
      */
     suspend fun isAvailable(): Boolean
 
@@ -82,6 +82,14 @@ interface VotingSdk {
         accountUuid: AccountUuid
     ): List<VotingNoteInfo>
 
+    /**
+     * Starts the crate's process-lifetime Halo2 proving-key warm-up on the crate's own
+     * background thread and returns as soon as that thread has been spawned (or immediately, if
+     * a warm-up has already been started elsewhere in the process) -- it does not wait for the
+     * warm-up itself to finish. The crate deduplicates internally (an internal `OnceCell`-style
+     * guard), so calling this more than once, from anywhere, is always a cheap no-op after the
+     * first call actually starts the background thread.
+     */
     suspend fun warmProvingCaches()
 
     /**
