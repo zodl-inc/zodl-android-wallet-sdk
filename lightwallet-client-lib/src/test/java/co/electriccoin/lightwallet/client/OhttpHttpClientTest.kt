@@ -101,9 +101,7 @@ class OhttpHttpClientTest {
                     url: String,
                     headers: List<Pair<String, String>>,
                     timeoutMs: Int
-                ): ByteArray {
-                    throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
-                }
+                ): ByteArray = throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
             }
         val transport =
             co.electriccoin.lightwallet.client.internal.OhttpTransport(
@@ -155,9 +153,7 @@ class OhttpHttpClientTest {
                     url: String,
                     headers: List<Pair<String, String>>,
                     timeoutMs: Int
-                ): ByteArray {
-                    throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
-                }
+                ): ByteArray = throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
             }
         val transport =
             co.electriccoin.lightwallet.client.internal.OhttpTransport(
@@ -239,9 +235,7 @@ class OhttpHttpClientTest {
                     url: String,
                     headers: List<Pair<String, String>>,
                     timeoutMs: Int
-                ): ByteArray {
-                    throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
-                }
+                ): ByteArray = throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
             }
         val transport =
             co.electriccoin.lightwallet.client.internal.OhttpTransport(
@@ -306,9 +300,7 @@ class OhttpHttpClientTest {
                     url: String,
                     headers: List<Pair<String, String>>,
                     timeoutMs: Int
-                ): ByteArray {
-                    throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
-                }
+                ): ByteArray = throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
             }
         // Long prefix: 60 'a' + 1 '-' + 36 UUID + 1 '-' + 6 digits = 104 chars → truncated to 64
         val longPrefix = "a".repeat(60)
