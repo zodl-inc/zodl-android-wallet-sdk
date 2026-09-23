@@ -1,6 +1,6 @@
 package co.electriccoin.lightwallet.client.internal
-import kotlin.test.fail
 
+import kotlin.test.fail
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
