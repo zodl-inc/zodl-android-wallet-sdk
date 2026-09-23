@@ -2,6 +2,7 @@ package co.electriccoin.lightwallet.client
 
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
