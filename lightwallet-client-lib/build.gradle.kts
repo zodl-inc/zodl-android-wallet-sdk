@@ -133,6 +133,7 @@ dependencies {
 
     // OHTTP (RFC 9458): HPKE (RFC 9180) via BouncyCastle lightweight API
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Tests
     testImplementation(libs.kotlin.reflect)
