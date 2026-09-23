@@ -24,7 +24,8 @@ class OhttpSignedConfigTest {
     private val testConfigsBase64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKg=="
     private val testNotBefore = 1700000000L
     private val testNotAfter = 1700021600L // 6 hours validity
-    private val testSignature = "eaavjMihe2EGm3giQq5NArYVD+G1A5AxVzQxXwvGz8C8qKRIEXl/T0TpOZe2bL+OkNmSAIX95uYgA4zGQGXbCg=="
+    private val testSignature =
+        "eaavjMihe2EGm3giQq5NArYVD+G1A5AxVzQxXwvGz8C8qKRIEXl/T0TpOZe2bL+OkNmSAIX95uYgA4zGQGXbCg=="
 
     // Valid test envelope (from test vector)
     private val validEnvelope =

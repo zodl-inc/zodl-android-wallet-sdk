@@ -48,7 +48,7 @@ internal class OhttpTransport(
 
     /** Fetches (or returns the cached) gateway key configuration. */
     suspend fun keyConfig(forceRefresh: Boolean = false): OhttpKeyConfig {
-        val nowSeconds = System.currentTimeMillis() / 1000L
+        val nowSeconds = System.currentTimeMillis() / MILLIS_PER_SECOND
         synchronized(lock) {
             if (!forceRefresh) {
                 val cached = cachedKeyConfig
@@ -158,6 +158,7 @@ internal class OhttpTransport(
     companion object {
         const val REQUEST_MEDIA_TYPE = "message/ohttp-req"
         const val RESPONSE_MEDIA_TYPE = "message/ohttp-res"
+        private const val MILLIS_PER_SECOND = 1000L
 
         private val REQUEST_LABEL = "message/bhttp request".toByteArray(Charsets.US_ASCII)
         private val RESPONSE_LABEL = "message/bhttp response".toByteArray(Charsets.US_ASCII)

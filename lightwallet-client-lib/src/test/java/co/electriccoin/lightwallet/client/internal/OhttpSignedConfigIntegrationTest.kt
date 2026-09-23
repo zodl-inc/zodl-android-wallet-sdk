@@ -12,8 +12,7 @@ import kotlin.test.assertFailsWith
  * fetch → verify → parse → cache.
  */
 class OhttpSignedConfigIntegrationTest {
-    // Real testnet public key and key_id from OhttpSignedConfigVerifier
-    private val testnetPublicKey = "REDACTED-SIGNING-PUBKEY-TESTNET"
+    // Real testnet key_id from OhttpSignedConfigVerifier
     private val testnetKeyId = "a3620fb6"
 
     // Valid test envelope (signature must be real for testnet key, or we stub verification)
