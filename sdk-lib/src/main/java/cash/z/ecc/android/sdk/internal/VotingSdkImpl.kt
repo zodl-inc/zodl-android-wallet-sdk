@@ -300,13 +300,14 @@ internal class VotingRoundSessionImpl(
         delegationInputs: VotingDelegationInputs?,
         progressListener: VotingRoundDriveProgressListener?
     ): VotingRoundRunReport? =
-        session.runRound(
-            torRuntime,
-            delegationInputs?.toInternal(session.dbHandle),
-            progressListener?.let { listener ->
-                RoundDriveProgressListener { _, detail -> listener.onProgress(parseRoundDriveProgress(detail)) }
-            }
-        )?.toPublic()
+        session
+            .runRound(
+                torRuntime,
+                delegationInputs?.toInternal(session.dbHandle),
+                progressListener?.let { listener ->
+                    RoundDriveProgressListener { _, detail -> listener.onProgress(parseRoundDriveProgress(detail)) }
+                }
+            )?.toPublic()
 
     override suspend fun getKeystoneSigningRequests(bundleIndices: List<Int>): List<VotingKeystoneSigningRequest> =
         session.getKeystoneSigningRequests(bundleIndices.toIntArray()).map { it.toPublic() }

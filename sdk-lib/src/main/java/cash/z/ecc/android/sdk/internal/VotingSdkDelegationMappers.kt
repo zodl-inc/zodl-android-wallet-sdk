@@ -63,6 +63,21 @@ internal fun JniKeystoneSignatureBatchResult.toPublic(): VotingKeystoneSignature
  * [TypesafeRoundSession.dbHandle]) rather than carried on [VotingDelegationInputs] itself --
  * see that public type's doc comment for why callers never need to know about JNI database
  * handles directly.
+ *
+ * [hotkeySecret]/[softwareSeed] are defensively [ByteArray.copyOf]'d here rather than passed
+ * through by reference: `VotingRustBackend.RoundSession.runRound()` zeroizes these arrays in a
+ * `finally` block immediately after its native call returns (see that function's own doc
+ * comment) -- correct for a `JniDelegationInputs` used exactly once, but callers of the PUBLIC
+ * [VotingDelegationInputs] this maps from build it once and may legitimately reuse the SAME
+ * instance across more than one `run()` call on the same [VotingRoundSession] (the app's
+ * bundle-failure auto-retry does exactly this, and so does its Keystone
+ * `ensureDelegationPipeline` -> `runToCompletion` path). Without this copy, a second `run()`
+ * call would decode an all-zero "secret" at the JNI boundary -- still a length-valid ZIP-32
+ * seed, so it derives a different but well-formed hotkey rather than failing to parse, which is
+ * exactly what produced a live "delegation driver delegates to a different voting hotkey than
+ * the round binding" error tonight. Copying here, at the boundary into the JNI-facing type,
+ * means the zeroization on the other side only ever clears an SDK-private copy, never anything
+ * the caller might still be holding onto.
  */
 internal fun VotingDelegationInputs.toInternal(dbHandle: Long): JniDelegationInputs =
     JniDelegationInputs(
@@ -70,14 +85,14 @@ internal fun VotingDelegationInputs.toInternal(dbHandle: Long): JniDelegationInp
         walletDbPath = walletDbPath,
         accountUuid = accountUuid,
         anchorTreeStateBytes = anchorTreeStateBytes,
-        hotkeySecret = hotkeySecret,
+        hotkeySecret = hotkeySecret?.copyOf(),
         pirEndpoints = pirEndpoints.toTypedArray(),
         pirDepth = pirDepth,
         pirTier0Layers = pirTier0Layers,
         pirTier1Layers = pirTier1Layers,
         pirPolyLen = pirPolyLen,
         keystone = keystone,
-        softwareSeed = softwareSeed,
+        softwareSeed = softwareSeed?.copyOf(),
         keystoneSig = keystoneSig,
         keystoneSighash = keystoneSighash,
         snapshotHeight = snapshotHeight,
