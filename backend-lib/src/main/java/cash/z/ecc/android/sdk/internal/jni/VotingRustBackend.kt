@@ -709,6 +709,10 @@ class VotingRustBackend private constructor() {
          * `RoundDriver` emits over the course of this (potentially ~minute-plus) run — see
          * [RoundDriveProgressListener]'s doc comment. `null` is fine; the round still drives to
          * quiescence exactly the same either way.
+         *
+         * [JniDelegationInputs.softwareSeed] and [JniDelegationInputs.hotkeySecret] are zeroized
+         * in `finally` once this call returns (success or failure) -- this is their sole
+         * legitimate use on the Kotlin side, so nothing after this point needs them plaintext.
          */
         @Throws(RuntimeException::class)
         suspend fun runRound(
@@ -716,7 +720,12 @@ class VotingRustBackend private constructor() {
             delegationInputs: JniDelegationInputs?,
             progressListener: RoundDriveProgressListener? = null
         ): JniRoundRunReport? =
-            withHandle { handle -> runRoundNative(handle, torRuntime, delegationInputs, progressListener) }
+            try {
+                withHandle { handle -> runRoundNative(handle, torRuntime, delegationInputs, progressListener) }
+            } finally {
+                delegationInputs?.softwareSeed?.fill(0)
+                delegationInputs?.hotkeySecret?.fill(0)
+            }
 
         /**
          * Loops `DelegationPipeline::keystone_request` over [bundleIndices] against the
