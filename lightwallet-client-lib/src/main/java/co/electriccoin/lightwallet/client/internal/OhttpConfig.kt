@@ -60,7 +60,9 @@ internal class OhttpKeyConfig(
     val aeadId: Int,
 ) {
     /** `hdr = key_id || kem_id || kdf_id || aead_id` (RFC 9458 §4.3). */
-    fun header(): ByteArray = byteArrayOf(keyId.toByte()) + Hpke.i2osp(kemId, 2) + Hpke.i2osp(kdfId, 2) + Hpke.i2osp(aeadId, 2)
+    fun header(): ByteArray =
+        byteArrayOf(keyId.toByte()) + Hpke.i2osp(kemId, 2) +
+            Hpke.i2osp(kdfId, 2) + Hpke.i2osp(aeadId, 2)
 
     companion object {
         /**

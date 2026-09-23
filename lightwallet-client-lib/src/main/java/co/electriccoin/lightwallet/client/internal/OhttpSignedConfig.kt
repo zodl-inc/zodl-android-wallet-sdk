@@ -83,6 +83,19 @@ class KeyConfigVerificationFailedException(
 object OhttpSignedConfigFetcher {
     private const val TAG = "OhttpSignedConfig"
 
+    // Protocol constants
+    private const val ENVELOPE_VERSION = 1
+    private const val MILLIS_PER_SECOND = 1000L
+    private const val NULL_BYTE_SIZE = 1
+    private const val LONG_BYTES = 8
+    private const val KEY_ID_BYTES = 4
+    private const val HEX_CHARS_PER_BYTE = 2
+    private const val HEX_RADIX = 16
+
+    // HTTP timeouts
+    private const val HTTP_CONNECT_TIMEOUT_SECONDS = 10L
+    private const val HTTP_READ_TIMEOUT_SECONDS = 10L
+
     // Embedded signing public keys (32 bytes raw Ed25519 public keys)
     private val MAINNET_PUBLIC_KEY =
         hexToBytes(
@@ -104,8 +117,8 @@ object OhttpSignedConfigFetcher {
     private val httpClient =
         OkHttpClient
             .Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(HTTP_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .readTimeout(HTTP_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .build()
 
     /**
@@ -128,7 +141,11 @@ object OhttpSignedConfigFetcher {
             Log.d(TAG, "Fetching signed configs from: $signedUrl")
             val envelope = fetchEnvelope(signedUrl)
             return verifyAndExtract(envelope, network)
-        } catch (e: Exception) {
+            // fail-closed: any verification error must disable OHTTP
+        } catch (
+            @Suppress("TooGenericExceptionCaught")
+            e: Exception,
+        ) {
             Log.e(TAG, "Signed config verification failed", e)
             if (allowUnsignedFallback) {
                 Log.w(TAG, "Falling back to unsigned configs (DEBUG MODE)")
@@ -203,12 +220,13 @@ object OhttpSignedConfigFetcher {
      * 4. Signature is valid (Ed25519)
      * 5. Current time within [not_before - tolerance, not_after + tolerance]
      */
+    @Suppress("ThrowsCount") // sequential envelope validation
     private fun verifyAndExtract(
         envelope: SignedOhttpConfigEnvelope,
         expectedNetwork: String,
     ): VerifiedOhttpConfig {
         // 1. Check protocol version
-        if (envelope.v != 1) {
+        if (envelope.v != ENVELOPE_VERSION) {
             throw KeyConfigVerificationFailedException(
                 "Unsupported protocol version: ${envelope.v}",
             )
@@ -255,7 +273,7 @@ object OhttpSignedConfigFetcher {
         }
 
         // 5. Check time validity
-        val nowSeconds = System.currentTimeMillis() / 1000
+        val nowSeconds = System.currentTimeMillis() / MILLIS_PER_SECOND
         val minValid = envelope.notBefore - TIME_TOLERANCE_SECONDS
         val maxValid = envelope.notAfter + TIME_TOLERANCE_SECONDS
 
@@ -273,7 +291,8 @@ object OhttpSignedConfigFetcher {
     }
 
     /**
-     * Builds the message that was signed: "zodl-ohttp-configs-v1" || 0x00 || network || 0x00 || not_before || not_after || configs
+     * Builds the message that was signed:
+     * "zodl-ohttp-configs-v1" || 0x00 || network || 0x00 || not_before || not_after || configs
      */
     private fun buildSignedMessage(
         network: String,
@@ -284,11 +303,10 @@ object OhttpSignedConfigFetcher {
         val prefix = "zodl-ohttp-configs-v1".toByteArray(Charsets.US_ASCII)
         val networkBytes = network.toByteArray(Charsets.US_ASCII)
 
-        val buffer =
-            ByteBuffer
-                .allocate(
-                    prefix.size + 1 + networkBytes.size + 1 + 8 + 8 + configBytes.size,
-                ).order(ByteOrder.BIG_ENDIAN)
+        val totalSize =
+            prefix.size + NULL_BYTE_SIZE + networkBytes.size + NULL_BYTE_SIZE +
+                LONG_BYTES + LONG_BYTES + configBytes.size
+        val buffer = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN)
 
         buffer.put(prefix)
         buffer.put(0x00.toByte())
@@ -315,7 +333,11 @@ object OhttpSignedConfigFetcher {
             signer.init(false, publicKeyParams)
             signer.update(message, 0, message.size)
             signer.verifySignature(signature)
-        } catch (e: Exception) {
+            // fail-closed: any crypto error must reject signature
+        } catch (
+            @Suppress("TooGenericExceptionCaught")
+            e: Exception,
+        ) {
             Log.e(TAG, "Ed25519 verification error", e)
             false
         }
@@ -360,11 +382,11 @@ object OhttpSignedConfigFetcher {
     fun computeKeyId(publicKey: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-256")
         val hash = digest.digest(publicKey)
-        return hash.take(4).joinToString("") { "%02x".format(it) }
+        return hash.take(KEY_ID_BYTES).joinToString("") { "%02x".format(it) }
     }
 
     private fun hexToBytes(hex: String): ByteArray {
-        require(hex.length % 2 == 0) { "Hex string must have even length" }
-        return hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        require(hex.length % HEX_CHARS_PER_BYTE == 0) { "Hex string must have even length" }
+        return hex.chunked(HEX_CHARS_PER_BYTE).map { it.toInt(HEX_RADIX).toByte() }.toByteArray()
     }
 }
