@@ -14,6 +14,13 @@ package co.electriccoin.lightwallet.client.internal
 internal object OhttpEndpoints {
     private const val GATEWAY_HOST_PREFIX = "ohttp-gateway"
 
+    fun networkFor(gatewayHost: String): String =
+        when (gatewayHost) {
+            "ohttp-gateway-testnet.example" -> "testnet"
+            "ohttp-gateway.example" -> "mainnet"
+            else -> "mainnet"
+        }
+    private const val GATEWAY_HOST_PREFIX = "ohttp-gateway"
     private val relayByGatewayHost: Map<String, String> =
         mapOf(
             "ohttp-gateway-testnet.example" to "https://relay-simulator-testnet.example/relay",
