@@ -23,6 +23,7 @@ import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.PcztException
 import cash.z.ecc.android.sdk.exception.RustLayerException
 import cash.z.ecc.android.sdk.exception.TorInitializationErrorException
+import cash.z.ecc.android.sdk.exception.TorUnavailableException
 import cash.z.ecc.android.sdk.ext.ConsensusBranchId
 import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.internal.Backend
@@ -1589,11 +1590,8 @@ class SlipstreamSynchronizer internal constructor(
     @Suppress("TooGenericExceptionCaught")
     override suspend fun getVotingTorRuntimeHandle(): Long {
         if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
-        val client =
-            lazyTorClient
-                ?: throw TorInitializationErrorException(NullPointerException("Tor has not been initialized during synchronizer setup"))
         return try {
-            client.getOrCreate().rawRuntimeHandle()
+            lazyTorClient.getOrCreate().rawRuntimeHandle()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
