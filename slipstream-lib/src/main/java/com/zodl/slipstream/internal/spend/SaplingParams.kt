@@ -18,15 +18,15 @@ internal data class SaplingParamPaths(
     val outputFile: File
 )
 
-/** Downloads sapling-spend/output.params (SHA-1s below) into the caller's dir; needed by the create/addProofsToPczt paths. */
+/** Downloads sapling-spend/output.params (SHA-256s below) into the caller's dir; needed by the create/addProofsToPczt paths. */
 internal object SaplingParams {
     private const val BASE_URL = "https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/main/"
 
-    // Matches CLOUD_PARAM_DIR_URL in sdk-lib/.../SaplingParamTool.kt (files and hashes are identical)
+    // Matches CLOUD_PARAM_DIR_URL in sdk-lib/.../SaplingParamTool.kt (files are identical; SHA-256 hashes from SaplingParamTool constants)
     private const val SPEND_FILE_NAME = "sapling-spend.params"
     private const val OUTPUT_FILE_NAME = "sapling-output.params"
-    private const val SPEND_SHA1 = "a15ab54c2888880e53c823a3063820c728444126"
-    private const val OUTPUT_SHA1 = "0ebc5a1ef3653948e1c46cf7a16071eac4b7e352"
+    private const val SPEND_SHA256 = "8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13"
+    private const val OUTPUT_SHA256 = "2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4"
     private const val SPEND_MAX_SIZE_BYTES = 50L * 1024 * 1024
     private const val OUTPUT_MAX_SIZE_BYTES = 5L * 1024 * 1024
     private const val CONNECT_TIMEOUT_MS = 30_000
@@ -44,22 +44,22 @@ internal object SaplingParams {
             destinationDir.mkdirs()
             val spendFile = File(destinationDir, SPEND_FILE_NAME)
             val outputFile = File(destinationDir, OUTPUT_FILE_NAME)
-            ensureFile(spendFile, SPEND_SHA1, SPEND_MAX_SIZE_BYTES)
-            ensureFile(outputFile, OUTPUT_SHA1, OUTPUT_MAX_SIZE_BYTES)
+            ensureFile(spendFile, SPEND_SHA256, SPEND_MAX_SIZE_BYTES)
+            ensureFile(outputFile, OUTPUT_SHA256, OUTPUT_MAX_SIZE_BYTES)
             SaplingParamPaths(spendFile, outputFile)
         }
 
     private suspend fun ensureFile(
         file: File,
-        expectedSha1: String,
+        expectedSha256: String,
         maxSizeBytes: Long
     ) {
-        if (file.exists() && file.length() in 1..maxSizeBytes && sha1Of(file).equals(expectedSha1, ignoreCase = true)) {
+        if (file.exists() && file.length() in 1..maxSizeBytes && sha256Of(file).equals(expectedSha256, ignoreCase = true)) {
             return
         }
         retryOnIOException { download(file, maxSizeBytes) }
-        check(sha1Of(file).equals(expectedSha1, ignoreCase = true)) {
-            "SHA-1 mismatch downloading ${file.name}: expected $expectedSha1"
+        check(sha256Of(file).equals(expectedSha256, ignoreCase = true)) {
+            "SHA-256 mismatch downloading ${file.name}: expected $expectedSha256"
         }
     }
 
@@ -120,8 +120,8 @@ internal object SaplingParams {
         }
     }
 
-    private fun sha1Of(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-1")
+    private fun sha256Of(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
             var read = input.read(buffer)
