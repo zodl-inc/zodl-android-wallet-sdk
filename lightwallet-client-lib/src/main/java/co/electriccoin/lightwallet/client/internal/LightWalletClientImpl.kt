@@ -54,7 +54,7 @@ internal class LightWalletClientImpl(
     private val channelFactory: ChannelFactory,
     private val lightWalletEndpoint: LightWalletEndpoint,
     private val singleRequestTimeout: Duration = 10.seconds,
-    private val streamingRequestTimeout: Duration = 90.seconds
+    private val streamingRequestTimeout: Duration = 90.seconds,
 ) : LightWalletClient {
     private var channel = channelFactory.newChannel(lightWalletEndpoint)
 
@@ -183,7 +183,7 @@ internal class LightWalletClientImpl(
 
     override suspend fun fetchUtxos(
         tAddresses: List<String>,
-        startHeight: BlockHeightUnsafe
+        startHeight: BlockHeightUnsafe,
     ): Flow<Response<GetAddressUtxosReplyUnsafe>> {
         require(tAddresses.isNotEmpty() && tAddresses.all { it.isNotBlank() }) {
             "${Constants.ILLEGAL_ARGUMENT_EXCEPTION_MESSAGE_EMPTY} array of addresses contains invalid item." // NON-NLS
@@ -219,7 +219,7 @@ internal class LightWalletClientImpl(
 
     override fun getTAddressTransactions(
         tAddress: String,
-        blockHeightRange: ClosedRange<BlockHeightUnsafe>
+        blockHeightRange: ClosedRange<BlockHeightUnsafe>,
     ): Flow<Response<RawTransactionUnsafe>> {
         require(!blockHeightRange.isEmpty() && tAddress.isNotBlank()) {
             "${Constants.ILLEGAL_ARGUMENT_EXCEPTION_MESSAGE_EMPTY} range: $blockHeightRange, address: " +
@@ -255,7 +255,7 @@ internal class LightWalletClientImpl(
     override fun getSubtreeRoots(
         startIndex: UInt,
         shieldedProtocol: ShieldedProtocolEnum,
-        maxEntries: UInt
+        maxEntries: UInt,
     ): Flow<Response<SubtreeRootUnsafe>> {
         val getSubtreeRootsArgBuilder = Service.GetSubtreeRootsArg.newBuilder()
         getSubtreeRootsArgBuilder.startIndex = startIndex.toInt()
@@ -307,7 +307,7 @@ internal class LightWalletClientImpl(
                                 .getMempoolStream(Service.Empty.newBuilder().build())
                                 .map {
                                     Response.Success(RawTransactionUnsafe.new(it))
-                                }
+                                },
                         )
                     }.retryWhen { cause, _ ->
                         // handle EOF
@@ -380,9 +380,7 @@ private fun ClosedRange<BlockHeightUnsafe>.toBlockRange(): Service.BlockRange =
  * Unlike the standard [catch] operator, this function will only catch subtypes of [Exception].
  * It will re-throw any [Throwable] that is not an [Exception], such as [Error].
  */
-private inline fun <T> Flow<T>.catchExceptions(
-    crossinline action: suspend FlowCollector<T>.(cause: Exception) -> Unit
-): Flow<T> =
+private inline fun <T> Flow<T>.catchExceptions(crossinline action: suspend FlowCollector<T>.(cause: Exception) -> Unit): Flow<T> =
     catch { cause ->
         if (cause is Exception) {
             action(cause)

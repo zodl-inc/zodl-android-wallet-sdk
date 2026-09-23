@@ -52,24 +52,32 @@ internal object Hpke {
         val enc: ByteArray,
         private val key: ByteArray,
         private val baseNonce: ByteArray,
-        private val exporterSecret: ByteArray
+        private val exporterSecret: ByteArray,
     ) {
         private var sequence: Long = 0
 
         /** RFC 9180 §5.2 `ContextS.Seal(aad, pt)`. */
-        fun seal(aad: ByteArray, plaintext: ByteArray): ByteArray {
+        fun seal(
+            aad: ByteArray,
+            plaintext: ByteArray,
+        ): ByteArray {
             val nonce = computeNonce(baseNonce, sequence)
             sequence++
             return aesGcmSeal(key, nonce, aad, plaintext)
         }
 
         /** RFC 9180 §5.3 `Context.Export(exporter_context, L)`. */
-        fun export(exporterContext: ByteArray, length: Int): ByteArray =
-            labeledExpand(HPKE_SUITE_ID, exporterSecret, "sec", exporterContext, length)
+        fun export(
+            exporterContext: ByteArray,
+            length: Int,
+        ): ByteArray = labeledExpand(HPKE_SUITE_ID, exporterSecret, "sec", exporterContext, length)
     }
 
     /** RFC 9180 §5.1.1 `SetupBaseS(pkR, info)`. */
-    fun setupBaseS(recipientPublicKey: ByteArray, info: ByteArray): SenderContext {
+    fun setupBaseS(
+        recipientPublicKey: ByteArray,
+        info: ByteArray,
+    ): SenderContext {
         require(recipientPublicKey.size == N_PK) { "Recipient public key must be $N_PK bytes" }
 
         // DHKEM(X25519).Encap(pkR) — RFC 9180 §4.1
@@ -103,7 +111,10 @@ internal object Hpke {
     // ---- HKDF primitives (RFC 5869) -------------------------------------------------------------
 
     /** `Extract(salt, ikm)` = HMAC-SHA256(salt, ikm). */
-    fun hkdfExtract(salt: ByteArray, ikm: ByteArray): ByteArray {
+    fun hkdfExtract(
+        salt: ByteArray,
+        ikm: ByteArray,
+    ): ByteArray {
         val mac = HMac(SHA256Digest())
         mac.init(KeyParameter(if (salt.isEmpty()) ByteArray(N_H) else salt))
         mac.update(ikm, 0, ikm.size)
@@ -113,7 +124,11 @@ internal object Hpke {
     }
 
     /** `Expand(prk, info, L)`. */
-    fun hkdfExpand(prk: ByteArray, info: ByteArray, length: Int): ByteArray {
+    fun hkdfExpand(
+        prk: ByteArray,
+        info: ByteArray,
+        length: Int,
+    ): ByteArray {
         val hkdf = HKDFBytesGenerator(SHA256Digest())
         hkdf.init(HKDFParameters.skipExtractParameters(prk, info))
         val out = ByteArray(length)
@@ -121,25 +136,34 @@ internal object Hpke {
         return out
     }
 
-    private fun labeledExtract(suiteId: ByteArray, salt: ByteArray, label: String, ikm: ByteArray): ByteArray =
-        hkdfExtract(salt, VERSION_LABEL + suiteId + label.toByteArray(Charsets.US_ASCII) + ikm)
+    private fun labeledExtract(
+        suiteId: ByteArray,
+        salt: ByteArray,
+        label: String,
+        ikm: ByteArray,
+    ): ByteArray = hkdfExtract(salt, VERSION_LABEL + suiteId + label.toByteArray(Charsets.US_ASCII) + ikm)
 
     private fun labeledExpand(
         suiteId: ByteArray,
         prk: ByteArray,
         label: String,
         info: ByteArray,
-        length: Int
+        length: Int,
     ): ByteArray =
         hkdfExpand(
             prk,
             i2osp(length, 2) + VERSION_LABEL + suiteId + label.toByteArray(Charsets.US_ASCII) + info,
-            length
+            length,
         )
 
     // ---- AEAD ------------------------------------------------------------------------------------
 
-    fun aesGcmSeal(key: ByteArray, nonce: ByteArray, aad: ByteArray, plaintext: ByteArray): ByteArray {
+    fun aesGcmSeal(
+        key: ByteArray,
+        nonce: ByteArray,
+        aad: ByteArray,
+        plaintext: ByteArray,
+    ): ByteArray {
         val cipher = GCMBlockCipher.newInstance(AESEngine.newInstance())
         cipher.init(true, AEADParameters(KeyParameter(key), N_T_BITS, nonce, aad))
         val out = ByteArray(cipher.getOutputSize(plaintext.size))
@@ -148,7 +172,12 @@ internal object Hpke {
         return out
     }
 
-    fun aesGcmOpen(key: ByteArray, nonce: ByteArray, aad: ByteArray, ciphertext: ByteArray): ByteArray {
+    fun aesGcmOpen(
+        key: ByteArray,
+        nonce: ByteArray,
+        aad: ByteArray,
+        ciphertext: ByteArray,
+    ): ByteArray {
         val cipher = GCMBlockCipher.newInstance(AESEngine.newInstance())
         cipher.init(false, AEADParameters(KeyParameter(key), N_T_BITS, nonce, aad))
         val out = ByteArray(cipher.getOutputSize(ciphertext.size))
@@ -157,7 +186,10 @@ internal object Hpke {
         return out
     }
 
-    private fun computeNonce(baseNonce: ByteArray, sequence: Long): ByteArray {
+    private fun computeNonce(
+        baseNonce: ByteArray,
+        sequence: Long,
+    ): ByteArray {
         val nonce = baseNonce.copyOf()
         val seq = i2osp(sequence, N_N)
         for (i in nonce.indices) {
@@ -166,11 +198,17 @@ internal object Hpke {
         return nonce
     }
 
-    fun i2osp(value: Int, length: Int): ByteArray = i2osp(value.toLong(), length)
+    fun i2osp(
+        value: Int,
+        length: Int,
+    ): ByteArray = i2osp(value.toLong(), length)
 
     /** Integer-to-octet-string primitive (RFC 9180 §4). */
     @Suppress("MagicNumber") // Bit shifts are part of the byte-packing algorithm
-    fun i2osp(value: Long, length: Int): ByteArray {
+    fun i2osp(
+        value: Long,
+        length: Int,
+    ): ByteArray {
         val out = ByteArrayOutputStream(length)
         for (shift in (length - 1) downTo 0) {
             val shiftBits = shift * 8

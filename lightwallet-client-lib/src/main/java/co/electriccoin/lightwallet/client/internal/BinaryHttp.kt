@@ -24,14 +24,14 @@ internal object BinaryHttp {
         val authority: String,
         val path: String,
         val headers: List<Pair<String, String>>,
-        val body: ByteArray
+        val body: ByteArray,
     )
 
     class Response(
         val status: Int,
         val headers: List<Pair<String, String>>,
         val body: ByteArray,
-        val trailers: List<Pair<String, String>>
+        val trailers: List<Pair<String, String>>,
     ) {
         /** Case-insensitive lookup across headers then trailers. */
         fun field(name: String): String? =
@@ -94,7 +94,10 @@ internal object BinaryHttp {
         return Response(status, headers, body.toByteArray(), trailers)
     }
 
-    private fun writeKnownLengthFieldSection(out: ByteArrayOutputStream, fields: List<Pair<String, String>>) {
+    private fun writeKnownLengthFieldSection(
+        out: ByteArrayOutputStream,
+        fields: List<Pair<String, String>>,
+    ) {
         val section = ByteArrayOutputStream()
         for ((name, value) in fields) {
             writeLengthPrefixed(section, name.lowercase().toByteArray(Charsets.US_ASCII))
@@ -126,7 +129,10 @@ internal object BinaryHttp {
         return fields
     }
 
-    private fun writeLengthPrefixed(out: ByteArrayOutputStream, bytes: ByteArray) {
+    private fun writeLengthPrefixed(
+        out: ByteArrayOutputStream,
+        bytes: ByteArray,
+    ) {
         writeVarint(out, bytes.size.toLong())
         out.write(bytes)
     }
@@ -136,7 +142,10 @@ internal object BinaryHttp {
      * Bit patterns and shifts are mandated by the RFC; naming each one hurts readability.
      */
     @Suppress("MagicNumber")
-    fun writeVarint(out: ByteArrayOutputStream, value: Long) {
+    fun writeVarint(
+        out: ByteArrayOutputStream,
+        value: Long,
+    ) {
         require(value >= 0) { "varint must be non-negative" }
         when {
             value < (1L shl 6) -> {
@@ -174,7 +183,7 @@ internal object BinaryHttp {
      */
     @Suppress("MagicNumber")
     class Reader(
-        private val bytes: ByteArray
+        private val bytes: ByteArray,
     ) {
         private var pos = 0
 

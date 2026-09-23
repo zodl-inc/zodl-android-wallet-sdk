@@ -9,6 +9,7 @@ import java.net.HttpURLConnection
  * Pure JVM (`HttpURLConnection`) so that the whole OHTTP path can be exercised from a plain unit
  * test against the real gateway before it is wired into gRPC.
  */
+@Suppress("LongParameterList") // Network config + test/debug overrides
 internal class OhttpTransport(
     private val relayUrl: String,
     private val network: String,

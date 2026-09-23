@@ -23,7 +23,7 @@ interface LightWalletClient : WalletClient {
             lightWalletEndpoint: LightWalletEndpoint,
             singleRequestTimeout: Duration = 10.seconds,
             streamingRequestTimeout: Duration = 90.seconds,
-            ohttpClientTraceIdPrefix: String? = null
+            ohttpClientTraceIdPrefix: String? = null,
         ): LightWalletClient =
             LightWalletClientImpl(
                 // Endpoints that are ZODL OHTTP gateways are reached through an OHTTP relay
@@ -32,14 +32,14 @@ interface LightWalletClient : WalletClient {
                     if (OhttpEndpoints.isOhttpGateway(lightWalletEndpoint.host)) {
                         OhttpChannelFactory(
                             OhttpEndpoints.relayUrlFor(lightWalletEndpoint.host),
-                            ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+                            ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
                         )
                     } else {
                         AndroidChannelFactory(context)
                     },
                 lightWalletEndpoint = lightWalletEndpoint,
                 singleRequestTimeout = singleRequestTimeout,
-                streamingRequestTimeout = streamingRequestTimeout
+                streamingRequestTimeout = streamingRequestTimeout,
             )
     }
 }

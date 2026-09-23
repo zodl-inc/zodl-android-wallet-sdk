@@ -27,7 +27,7 @@ internal object SingleCompactBlockFixture {
         saplingOutputsCount: UInt = DEFAULT_SAPLING_OUTPUT_COUNT,
         orchardOutputsCount: UInt = DEFAULT_ORCHARD_OUTPUT_COUNT,
         ironwoodOutputsCount: UInt = DEFAULT_IRONWOOD_OUTPUT_COUNT,
-        blockBytes: ByteArray = heightToFixtureData(DEFAULT_BLOCK_BYTES)
+        blockBytes: ByteArray = heightToFixtureData(DEFAULT_BLOCK_BYTES),
     ): CompactBlockUnsafe =
         CompactBlockUnsafe(
             height = height,
@@ -36,7 +36,7 @@ internal object SingleCompactBlockFixture {
             saplingOutputsCount = saplingOutputsCount,
             orchardOutputsCount = orchardOutputsCount,
             ironwoodOutputsCount = ironwoodOutputsCount,
-            compactBlockBytes = blockBytes
+            compactBlockBytes = blockBytes,
         )
 }
 

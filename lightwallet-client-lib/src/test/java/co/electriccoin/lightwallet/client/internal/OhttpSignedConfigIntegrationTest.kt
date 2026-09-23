@@ -32,16 +32,16 @@ class OhttpSignedConfigIntegrationTest {
         val sig = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
         return """
-        {
-            "v": 1,
-            "network": "$network",
-            "configs": "$configs",
-            "not_before": $notBefore,
-            "not_after": $notAfter,
-            "key_id": "$testnetKeyId",
-            "sig": "$sig"
-        }
-        """.trimIndent()
+            {
+                "v": 1,
+                "network": "$network",
+                "configs": "$configs",
+                "not_before": $notBefore,
+                "not_after": $notAfter,
+                "key_id": "$testnetKeyId",
+                "sig": "$sig"
+            }
+            """.trimIndent()
     }
 
     @Test

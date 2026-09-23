@@ -145,7 +145,9 @@ internal object OhttpSignedConfigVerifier {
         val (publicKey, expectedKeyId) =
             when (expectedNetwork) {
                 "mainnet" -> MAINNET_PUBLIC_KEY to MAINNET_KEY_ID
+
                 "testnet" -> TESTNET_PUBLIC_KEY to TESTNET_KEY_ID
+
                 else -> throw KeyConfigVerificationFailedException(
                     "Unknown network: $expectedNetwork",
                 )
@@ -232,6 +234,7 @@ internal object OhttpSignedConfigVerifier {
     /**
      * Verifies an Ed25519 signature using BouncyCastle.
      */
+    @Suppress("SwallowedException") // Signature verification failure returns false, caller throws
     private fun verifyEd25519Signature(
         publicKey: ByteArray,
         message: ByteArray,

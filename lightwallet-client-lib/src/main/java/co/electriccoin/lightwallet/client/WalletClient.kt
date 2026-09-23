@@ -27,7 +27,7 @@ interface WalletClient :
      */
     suspend fun fetchUtxos(
         tAddresses: List<String>,
-        startHeight: BlockHeightUnsafe
+        startHeight: BlockHeightUnsafe,
     ): Flow<Response<GetAddressUtxosReplyUnsafe>>
 
     /**
@@ -51,7 +51,7 @@ interface WalletClient :
      */
     fun getTAddressTransactions(
         tAddress: String,
-        blockHeightRange: ClosedRange<BlockHeightUnsafe>
+        blockHeightRange: ClosedRange<BlockHeightUnsafe>,
     ): Flow<Response<RawTransactionUnsafe>>
 
     /**
@@ -68,7 +68,7 @@ interface WalletClient :
     fun getSubtreeRoots(
         startIndex: UInt,
         shieldedProtocol: ShieldedProtocolEnum,
-        maxEntries: UInt
+        maxEntries: UInt,
     ): Flow<Response<SubtreeRootUnsafe>>
 
     /**

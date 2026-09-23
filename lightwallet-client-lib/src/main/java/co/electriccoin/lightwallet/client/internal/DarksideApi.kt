@@ -22,12 +22,12 @@ import kotlin.time.Duration.Companion.seconds
  */
 class DarksideApi private constructor(
     private val channel: ManagedChannel,
-    private val singleRequestTimeout: Duration = 10.seconds
+    private val singleRequestTimeout: Duration = 10.seconds,
 ) {
     companion object {
         internal fun new(
             channelFactory: ChannelFactory,
-            lightWalletEndpoint: LightWalletEndpoint
+            lightWalletEndpoint: LightWalletEndpoint,
         ) = DarksideApi(channelFactory.newChannel(lightWalletEndpoint))
     }
 
@@ -39,7 +39,7 @@ class DarksideApi private constructor(
         saplingActivationHeight: BlockHeightUnsafe,
         // Canopy
         branchId: String = "e9ff75a6",
-        chainName: String = "darksidemainnet"
+        chainName: String = "darksidemainnet",
     ) = apply {
         Darkside.DarksideMetaState
             .newBuilder()
@@ -59,21 +59,21 @@ class DarksideApi private constructor(
 
     fun stageTransactions(
         url: String,
-        targetHeight: BlockHeightUnsafe
+        targetHeight: BlockHeightUnsafe,
     ) = apply {
         createStub().stageTransactions(
             DarksideTransactionsURL
                 .newBuilder()
                 .setHeight(targetHeight.value.toInt())
                 .setUrl(url)
-                .build()
+                .build(),
         )
     }
 
     fun stageEmptyBlocks(
         startHeight: BlockHeightUnsafe,
         count: Int = 10,
-        nonce: Int = Random.nextInt()
+        nonce: Int = Random.nextInt(),
     ) = apply {
         createStub().stageBlocksCreate(
             Darkside.DarksideEmptyBlocks
@@ -81,13 +81,13 @@ class DarksideApi private constructor(
                 .setHeight(startHeight.value.toInt())
                 .setCount(count)
                 .setNonce(nonce)
-                .build()
+                .build(),
         )
     }
 
     fun stageTransactions(
         txs: Iterator<Service.RawTransaction>?,
-        tipHeight: BlockHeightUnsafe
+        tipHeight: BlockHeightUnsafe,
     ) {
         if (txs == null) {
             return
@@ -102,7 +102,7 @@ class DarksideApi private constructor(
                         .newBuilderForType()
                         .setData(it.data)
                         .setHeight(tipHeight.value)
-                        .build()
+                        .build(),
                 )
             }
             onCompleted()
@@ -204,5 +204,5 @@ private fun BlockHeightUnsafe.toHeight() =
 
 fun DarksideApi.Companion.new(
     context: Context,
-    lightWalletEndpoint: LightWalletEndpoint
+    lightWalletEndpoint: LightWalletEndpoint,
 ) = DarksideApi.new(AndroidChannelFactory(context), lightWalletEndpoint)

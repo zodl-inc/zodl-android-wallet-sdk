@@ -10,7 +10,7 @@ internal interface ChannelFactory {
 }
 
 internal class AndroidChannelFactory(
-    context: android.content.Context
+    context: android.content.Context,
 ) : ChannelFactory {
     private val context = context.applicationContext
 

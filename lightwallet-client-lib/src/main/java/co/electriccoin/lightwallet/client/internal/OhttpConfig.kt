@@ -158,8 +158,3 @@ internal fun isOhttpProxyAllowedHost(host: String): Boolean {
 
 /** Relay URL for proxy gateway hosts — all share the mainnet relay. */
 internal const val PROXY_RELAY_URL = "https://relay-simulator.example/relay"
-
-/**
- * Key config URL for proxy gateway hosts — derived from [PROXY_RELAY_URL].
- * All proxy hosts share the mainnet relay→gateway pair's HPKE key.
- */

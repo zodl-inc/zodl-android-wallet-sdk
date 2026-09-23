@@ -25,7 +25,7 @@ import java.nio.channels.Channels
 import kotlin.time.Duration.Companion.milliseconds
 
 internal class SaplingParamTool(
-    val properties: SaplingParamToolProperties
+    val properties: SaplingParamToolProperties,
 ) {
     /**
      * Optional provider for a Tor HTTP client. When set, Sapling parameter downloads will be routed
@@ -108,15 +108,15 @@ internal class SaplingParamTool(
                                 paramsDirectory,
                                 SPEND_PARAM_FILE_NAME,
                                 SPEND_PARAM_FILE_MAX_BYTES_SIZE,
-                                SPEND_PARAM_FILE_SHA256_HASH
+                                SPEND_PARAM_FILE_SHA256_HASH,
                             ),
                             SaplingParameters(
                                 paramsDirectory,
                                 OUTPUT_PARAM_FILE_NAME,
                                 OUTPUT_PARAM_FILE_MAX_BYTES_SIZE,
-                                OUTPUT_PARAM_FILE_SHA256_HASH
-                            )
-                        )
+                                OUTPUT_PARAM_FILE_SHA256_HASH,
+                            ),
+                        ),
                 )
             return SaplingParamTool(toolProperties)
         }
@@ -171,7 +171,7 @@ internal class SaplingParamTool(
          */
         private suspend fun isFileHashValid(
             parametersFile: File,
-            fileHash: String
+            fileHash: String,
         ): Boolean =
             try {
                 fileHash == parametersFile.getSha256Hash()
@@ -190,7 +190,7 @@ internal class SaplingParamTool(
          */
         private suspend fun renameParametersFile(
             fromParamFile: File,
-            toParamFile: File
+            toParamFile: File,
         ): Boolean {
             return runCatching {
                 return@runCatching fromParamFile.renameToSuspend(toParamFile)
@@ -218,7 +218,7 @@ internal class SaplingParamTool(
     @Throws(
         TransactionEncoderException.ValidateParamsException::class,
         TransactionEncoderException.FetchParamsException::class,
-        TransactionEncoderException.MissingParamsException::class
+        TransactionEncoderException.MissingParamsException::class,
     )
     internal suspend fun ensureParams(destinationDir: File) {
         properties.saplingParams
@@ -265,7 +265,7 @@ internal class SaplingParamTool(
      */
     @Throws(
         TransactionEncoderException.ValidateParamsException::class,
-        TransactionEncoderException.FetchParamsException::class
+        TransactionEncoderException.FetchParamsException::class,
     )
     internal suspend fun fetchParams(paramsToFetch: SaplingParameters) {
         fetchParamsMutex.withLock {
@@ -281,7 +281,7 @@ internal class SaplingParamTool(
             val temporaryFile =
                 File(
                     paramsToFetch.destinationDirectory,
-                    "$TEMPORARY_FILE_NAME_PREFIX${paramsToFetch.fileName}"
+                    "$TEMPORARY_FILE_NAME_PREFIX${paramsToFetch.fileName}",
                 )
 
             withContext(Dispatchers.IO) {
@@ -292,8 +292,8 @@ internal class SaplingParamTool(
                             exception =
                                 TransactionEncoderException.FetchParamsException(
                                     paramsToFetch,
-                                    "Error while fetching ${paramsToFetch.fileName}, caused by $exception."
-                                )
+                                    "Error while fetching ${paramsToFetch.fileName}, caused by $exception.",
+                                ),
                         )
                     }.onSuccess {
                         validateAndStore(paramsToFetch, temporaryFile, resultFile)
@@ -317,7 +317,7 @@ internal class SaplingParamTool(
     private suspend fun downloadToFile(
         url: URL,
         temporaryFile: File,
-        maxSizeBytes: Long
+        maxSizeBytes: Long,
     ): Result<Unit> =
         runCatching {
             val torProvider = torHttpClientProvider
@@ -356,7 +356,7 @@ internal class SaplingParamTool(
     private suspend fun validateAndStore(
         paramsToFetch: SaplingParameters,
         temporaryFile: File,
-        resultFile: File
+        resultFile: File,
     ) {
         Twig.debug {
             "Fetch and write of the temporary ${temporaryFile.name} succeeded. Validating and moving it to the " +
@@ -368,8 +368,8 @@ internal class SaplingParamTool(
                 exception =
                     TransactionEncoderException.ValidateParamsException(
                         paramsToFetch,
-                        "Failed while validating fetched param file: ${paramsToFetch.fileName}."
-                    )
+                        "Failed while validating fetched param file: ${paramsToFetch.fileName}.",
+                    ),
             )
         }
         if (!renameParametersFile(temporaryFile, resultFile)) {
@@ -379,8 +379,8 @@ internal class SaplingParamTool(
                 exception =
                     TransactionEncoderException.ValidateParamsException(
                         paramsToFetch,
-                        "Failed while renaming result param file: ${paramsToFetch.fileName}."
-                    )
+                        "Failed while renaming result param file: ${paramsToFetch.fileName}.",
+                    ),
             )
         }
     }
@@ -388,7 +388,7 @@ internal class SaplingParamTool(
     @Throws(TransactionEncoderException.FetchParamsException::class)
     private suspend fun finalizeAndReportError(
         vararg files: File,
-        exception: TransactionEncoderException
+        exception: TransactionEncoderException,
     ) {
         files.forEach {
             it.deleteSuspend()
@@ -402,7 +402,7 @@ internal class SaplingParamTool(
     internal suspend fun validate(destinationDir: File): Boolean =
         arrayOf(
             SPEND_PARAM_FILE_NAME,
-            OUTPUT_PARAM_FILE_NAME
+            OUTPUT_PARAM_FILE_NAME,
         ).all { paramFileName ->
             File(destinationDir, paramFileName).existsSuspend()
         }.also {
@@ -417,7 +417,7 @@ internal data class SaplingParameters(
     val destinationDirectory: File,
     val fileName: String,
     val fileMaxSizeBytes: Long,
-    val fileHash: String
+    val fileHash: String,
 )
 
 /**
@@ -426,5 +426,5 @@ internal data class SaplingParameters(
 internal data class SaplingParamToolProperties(
     val saplingParams: List<SaplingParameters>,
     val paramsDirectory: File,
-    val paramsLegacyDirectory: File
+    val paramsLegacyDirectory: File,
 )

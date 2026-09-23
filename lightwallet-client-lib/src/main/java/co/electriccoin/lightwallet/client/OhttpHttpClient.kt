@@ -22,18 +22,18 @@ class OhttpHttpClient private constructor(
      * `X-Client-Trace-Id: <prefix>-<sessionUuid>-<seq>`. See OhttpTransport.ohttpClientTraceIdPrefix
      * for details.
      */
-    private val ohttpClientTraceIdPrefix: String? = null
+    private val ohttpClientTraceIdPrefix: String? = null,
 ) {
     data class Request(
         val url: String,
         val method: String = "GET",
         val headers: List<Pair<String, String>> = emptyList(),
-        val body: ByteArray = ByteArray(0)
+        val body: ByteArray = ByteArray(0),
     )
 
     data class Response(
         val status: Int,
-        val body: ByteArray
+        val body: ByteArray,
     )
 
     companion object {
@@ -54,7 +54,7 @@ class OhttpHttpClient private constructor(
          */
         fun create(
             sender: OhttpSender = DirectOhttpSender(),
-            ohttpClientTraceIdPrefix: String? = null
+            ohttpClientTraceIdPrefix: String? = null,
         ): OhttpHttpClient = OhttpHttpClient(sender, ohttpClientTraceIdPrefix)
     }
 
@@ -73,7 +73,7 @@ class OhttpHttpClient private constructor(
         val allowlisted = isOhttpProxyAllowedHost(host)
         Log.i(
             Constants.LOG_TAG,
-            "OHTTP canHandle host=$host mapped=$mapped allowlisted=$allowlisted suffixes=$OHTTP_PROXY_ALLOWED_SUFFIXES"
+            "OHTTP canHandle host=$host mapped=$mapped allowlisted=$allowlisted suffixes=$OHTTP_PROXY_ALLOWED_SUFFIXES",
         )
         return mapped || allowlisted
     }
@@ -102,7 +102,7 @@ class OhttpHttpClient private constructor(
                 PROXY_RELAY_URL,
                 PROXY_NETWORK,
                 sender,
-                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
             )
         val pathQ =
             uri.rawPath
@@ -116,18 +116,18 @@ class OhttpHttpClient private constructor(
                 authority = innerAuthority,
                 path = pathQ,
                 headers = filteredHeaders,
-                body = request.body
+                body = request.body,
             )
         val mode = if (proxyHost != null) "mapped" else "allowlist"
         val senderType = if (sender is DirectOhttpSender) "direct" else "Tor"
         Log.i(
             Constants.LOG_TAG,
-            "OHTTP proxy ${request.method} host=$originalHost authority=$innerAuthority mode=$mode sender=$senderType"
+            "OHTTP proxy ${request.method} host=$originalHost authority=$innerAuthority mode=$mode sender=$senderType",
         )
         val bRes = withContext(Dispatchers.IO) { transport.roundTrip(bReq, DEFAULT_TIMEOUT_MS) }
         Log.i(
             Constants.LOG_TAG,
-            "OHTTP proxy ${request.method} host=$originalHost -> http=${bRes.status} (${bRes.body.size} bytes)"
+            "OHTTP proxy ${request.method} host=$originalHost -> http=${bRes.status} (${bRes.body.size} bytes)",
         )
         return Response(status = bRes.status, body = bRes.body)
     }
