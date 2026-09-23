@@ -58,6 +58,7 @@ class OhttpSignedConfigIntegrationTest {
 
             // This will fail signature verification with dummy sig, so we can't test the full path
             // without real signatures. For now, we verify the URL derivation and fetch happened.
+            @Suppress("SwallowedException") // Test expects exception, verifies URL was called
             try {
                 transport.keyConfig()
             } catch (e: KeyConfigVerificationFailedException) {
@@ -175,6 +176,7 @@ class OhttpSignedConfigIntegrationTest {
                     sender = sender,
                 )
 
+            @Suppress("SwallowedException") // Test expects exception, verifies signed endpoint was used
             try {
                 transport.keyConfig()
             } catch (e: KeyConfigVerificationFailedException) {
