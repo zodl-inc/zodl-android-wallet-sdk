@@ -1,4 +1,5 @@
 package co.electriccoin.lightwallet.client.internal
+import kotlin.test.fail
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -60,7 +61,7 @@ class OhttpSignedConfigTest {
     fun `verifyAndExtract rejects wrong protocol version`() {
         val badEnvelope = validEnvelope.replace("\"v\": 1", "\"v\": 2")
 
-        assertThrows(KeyConfigVerificationFailedException::class.java) {
+        assertThrows<KeyConfigVerificationFailedException> {
             // This would fail parsing in real code, but conceptually tests version check
             parseTestEnvelope(badEnvelope)
         }
@@ -70,7 +71,7 @@ class OhttpSignedConfigTest {
     fun `verifyAndExtract rejects network mismatch`() {
         val envelope = parseTestEnvelope(validEnvelope)
 
-        assertThrows(KeyConfigVerificationFailedException::class.java) {
+        assertThrows<KeyConfigVerificationFailedException> {
             // Would fail in verifyAndExtract when network != expected
             require(envelope.network != "mainnet") { "Network should be testnet" }
         }

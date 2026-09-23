@@ -21,7 +21,6 @@ internal object OhttpEndpoints {
             else -> "mainnet"
         }
 
-    private const val GATEWAY_HOST_PREFIX = "ohttp-gateway"
     private val relayByGatewayHost: Map<String, String> =
         mapOf(
             "ohttp-gateway-testnet.example" to "https://relay-simulator-testnet.example/relay",
