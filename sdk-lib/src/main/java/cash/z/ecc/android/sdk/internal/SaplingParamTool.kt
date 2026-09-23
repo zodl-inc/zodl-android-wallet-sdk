@@ -71,12 +71,12 @@ internal class SaplingParamTool(
         private const val TEMPORARY_FILE_NAME_PREFIX = "_"
 
         /**
-         * File SHA-256 hash for the sapling spend params
+         * SHA-256 hash for sapling spend params
          */
         internal const val SPEND_PARAM_FILE_SHA256_HASH = "8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13"
 
         /**
-         * File SHA-256 hash for the sapling output params
+         * SHA-256 hash for sapling output params
          */
         internal const val OUTPUT_PARAM_FILE_SHA256_HASH = "2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4"
 

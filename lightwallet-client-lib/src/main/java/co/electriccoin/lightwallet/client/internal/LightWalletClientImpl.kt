@@ -380,7 +380,9 @@ private fun ClosedRange<BlockHeightUnsafe>.toBlockRange(): Service.BlockRange =
  * Unlike the standard [catch] operator, this function will only catch subtypes of [Exception].
  * It will re-throw any [Throwable] that is not an [Exception], such as [Error].
  */
-private inline fun <T> Flow<T>.catchExceptions(crossinline action: suspend FlowCollector<T>.(cause: Exception) -> Unit): Flow<T> =
+private inline fun <T> Flow<T>.catchExceptions(
+    crossinline action: suspend FlowCollector<T>.(cause: Exception) -> Unit
+): Flow<T> =
     catch { cause ->
         if (cause is Exception) {
             action(cause)

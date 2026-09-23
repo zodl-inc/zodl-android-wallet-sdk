@@ -1,9 +1,11 @@
 package co.electriccoin.lightwallet.client.internal
 
 import android.util.Base64
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
-import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
@@ -23,13 +25,18 @@ import java.security.MessageDigest
  * @property keyId First 8 hex chars of SHA-256(signing public key)
  * @property signature Base64-encoded Ed25519 signature
  */
+@Serializable
 internal data class SignedOhttpConfigEnvelope(
     val v: Int,
     val network: String,
     val configs: String,
+    @SerialName("not_before")
     val notBefore: Long,
+    @SerialName("not_after")
     val notAfter: Long,
+    @SerialName("key_id")
     val keyId: String,
+    @SerialName("sig")
     val signature: String,
 )
 
@@ -75,40 +82,52 @@ internal object OhttpSignedConfigVerifier {
     // Time tolerance (±60 seconds for clock skew)
     private const val TIME_TOLERANCE_SECONDS = 60L
 
+    private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * Clock interface for time dependency injection (testing).
+     */
+    interface Clock {
+        fun currentTimeSeconds(): Long
+    }
+
+    /**
+     * Default clock using system time.
+     */
+    private object SystemClock : Clock {
+        override fun currentTimeSeconds(): Long = System.currentTimeMillis() / MILLIS_PER_SECOND
+    }
+
     /**
      * Parses and verifies a signed OHTTP config envelope.
      *
      * @param envelopeJson JSON string from `/ohttp-configs/signed`
      * @param expectedNetwork Network identifier ("mainnet" or "testnet")
+     * @param clock Clock for time validation (defaults to system clock)
      * @return Parsed [OhttpKeyConfig] ready for use, along with expiry timestamp
      * @throws KeyConfigVerificationFailedException if verification fails
      */
     fun verifyAndParse(
         envelopeJson: String,
         expectedNetwork: String,
+        clock: Clock = SystemClock,
     ): Pair<OhttpKeyConfig, Long> {
         val envelope = parseEnvelope(envelopeJson)
-        verifyEnvelope(envelope, expectedNetwork)
+        verifyEnvelope(envelope, expectedNetwork, clock)
         val configBytes = Base64.decode(envelope.configs, Base64.NO_WRAP)
         val keyConfig = OhttpKeyConfig.parseSupported(configBytes)
         return keyConfig to envelope.notAfter
     }
 
     /**
-     * Parses JSON envelope into typed structure.
+     * Parses JSON envelope into typed structure using kotlinx.serialization.
      */
-    private fun parseEnvelope(json: String): SignedOhttpConfigEnvelope {
-        val obj = JSONObject(json)
-        return SignedOhttpConfigEnvelope(
-            v = obj.getInt("v"),
-            network = obj.getString("network"),
-            configs = obj.getString("configs"),
-            notBefore = obj.getLong("not_before"),
-            notAfter = obj.getLong("not_after"),
-            keyId = obj.getString("key_id"),
-            signature = obj.getString("sig"),
-        )
-    }
+    private fun parseEnvelope(jsonString: String): SignedOhttpConfigEnvelope =
+        try {
+            json.decodeFromString<SignedOhttpConfigEnvelope>(jsonString)
+        } catch (e: Exception) {
+            throw KeyConfigVerificationFailedException("Failed to parse envelope JSON", e)
+        }
 
     /**
      * Verifies the envelope signature and validity.
@@ -126,6 +145,7 @@ internal object OhttpSignedConfigVerifier {
     private fun verifyEnvelope(
         envelope: SignedOhttpConfigEnvelope,
         expectedNetwork: String,
+        clock: Clock,
     ) {
         // 1. Check protocol version
         if (envelope.v != ENVELOPE_VERSION) {
@@ -167,7 +187,7 @@ internal object OhttpSignedConfigVerifier {
             )
         }
 
-        val nowSeconds = System.currentTimeMillis() / MILLIS_PER_SECOND
+        val nowSeconds = clock.currentTimeSeconds()
 
         // 7. Check not_after ≤ now + 24 hours
         if (envelope.notAfter > nowSeconds + MAX_VALIDITY_SECONDS) {
@@ -206,7 +226,7 @@ internal object OhttpSignedConfigVerifier {
      * Builds the message that was signed:
      * "zodl-ohttp-configs-v1" || 0x00 || network || 0x00 || not_before || not_after || configs
      */
-    private fun buildSignedMessage(
+    fun buildSignedMessage(
         network: String,
         notBefore: Long,
         notAfter: Long,
@@ -235,7 +255,7 @@ internal object OhttpSignedConfigVerifier {
      * Verifies an Ed25519 signature using BouncyCastle.
      */
     @Suppress("SwallowedException") // Signature verification failure returns false, caller throws
-    private fun verifyEd25519Signature(
+    fun verifyEd25519Signature(
         publicKey: ByteArray,
         message: ByteArray,
         signature: ByteArray,
@@ -262,7 +282,21 @@ internal object OhttpSignedConfigVerifier {
         return hash.take(KEY_ID_BYTES).joinToString("") { "%02x".format(it) }
     }
 
-    private fun hexToBytes(hex: String): ByteArray {
+    /**
+     * Signs a message with an Ed25519 private key using BouncyCastle (for test vector generation).
+     */
+    fun signMessage(
+        privateKey: ByteArray,
+        message: ByteArray,
+    ): ByteArray {
+        val signer = Ed25519Signer()
+        val privateKeyParams = org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters(privateKey, 0)
+        signer.init(true, privateKeyParams)
+        signer.update(message, 0, message.size)
+        return signer.generateSignature()
+    }
+
+    fun hexToBytes(hex: String): ByteArray {
         require(hex.length % HEX_CHARS_PER_BYTE == 0) { "Hex string must have even length" }
         return hex.chunked(HEX_CHARS_PER_BYTE).map { it.toInt(HEX_RADIX).toByte() }.toByteArray()
     }
