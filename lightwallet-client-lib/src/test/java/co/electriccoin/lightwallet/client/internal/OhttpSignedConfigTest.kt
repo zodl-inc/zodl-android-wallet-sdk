@@ -170,14 +170,3 @@ class OhttpSignedConfigTest {
         }
     }
 }
-EOF
-
-# Create final tarball v4
-tar czf /tmp/sdk-fixes-v4.tar.gz -C . \
-  lightwallet-client-lib/build.gradle.kts \
-  lightwallet-client-lib/src/main/java/co/electriccoin/lightwallet/client/internal/OhttpSignedConfig.kt \
-  lightwallet-client-lib/src/test/java/co/electriccoin/lightwallet/client/internal/OhttpSignedConfigTest.kt \
-  sdk-lib/src/main/java/cash/z/ecc/android/sdk/internal/SaplingParamTool.kt \
-  lightwallet-client-lib/src/main/java/co/electriccoin/lightwallet/client/internal/LightWalletClientImpl.kt
-
-ls -lh /tmp/sdk-fixes-v4.tar.gz
