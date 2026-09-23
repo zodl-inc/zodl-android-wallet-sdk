@@ -46,8 +46,19 @@ class OhttpSignedConfigTest {
     }
 
     @Test
+    fun `verifyAndParse accepts valid signed envelope`() {
+        val (envelope, _) = generateValidEnvelope("testnet", 1700000000L, 1700021600L)
+        val clock = FixedClock(1700010000)
+        val (keyConfig, expiry) = OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock)
+        assertNotNull(keyConfig)
+        assertEquals(1700021600L, expiry)
+    }
+
+    @Test
     fun `verifyAndParse rejects wrong protocol version`() {
-        val envelope = """{"v": 2, "network": "testnet", "configs": "AAAA", "not_before": 1700000000, "not_after": 1700021600, "key_id": "a3620fb6", "sig": "AAAA"}"""
+        val envelope = """{"v": 2, "network": "testnet", "configs": "AAAA",""" +
+            """ "not_before": 1700000000, "not_after": 1700021600,""" +
+            """ "key_id": "a3620fb6", "sig": "AAAA"}"""
         val clock = FixedClock(1700010000)
         assertThrows<KeyConfigVerificationFailedException> {
             OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock)
@@ -56,7 +67,9 @@ class OhttpSignedConfigTest {
 
     @Test
     fun `verifyAndParse rejects network mismatch`() {
-        val envelope = """{"v": 1, "network": "testnet", "configs": "AAAA", "not_before": 1700000000, "not_after": 1700021600, "key_id": "ba8a2dbd", "sig": "AAAA"}"""
+        val envelope = """{"v": 1, "network": "testnet", "configs": "AAAA",""" +
+            """ "not_before": 1700000000, "not_after": 1700021600,""" +
+            """ "key_id": "ba8a2dbd", "sig": "AAAA"}"""
         val clock = FixedClock(1700010000)
         assertThrows<KeyConfigVerificationFailedException> {
             OhttpSignedConfigVerifier.verifyAndParse(envelope, "mainnet", clock)
@@ -65,7 +78,9 @@ class OhttpSignedConfigTest {
 
     @Test
     fun `verifyAndParse rejects expired configs`() {
-        val envelope = """{"v": 1, "network": "testnet", "configs": "AAAA", "not_before": 1700000000, "not_after": 1700021600, "key_id": "a3620fb6", "sig": "AAAA"}"""
+        val envelope = """{"v": 1, "network": "testnet", "configs": "AAAA",""" +
+            """ "not_before": 1700000000, "not_after": 1700021600,""" +
+            """ "key_id": "a3620fb6", "sig": "AAAA"}"""
         val clock = FixedClock(1700021800) // After notAfter + tolerance
         assertThrows<KeyConfigVerificationFailedException> {
             OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock)
@@ -75,7 +90,9 @@ class OhttpSignedConfigTest {
     @Test
     fun `verifyAndParse rejects configs with validity period over 24 hours`() {
         val longNotAfter = 1700000000L + 90000 // 25 hours
-        val envelope = """{"v": 1, "network": "testnet", "configs": "AAAA", "not_before": 1700000000, "not_after": $longNotAfter, "key_id": "a3620fb6", "sig": "AAAA"}"""
+        val envelope = """{"v": 1, "network": "testnet", "configs": "AAAA",""" +
+            """ "not_before": 1700000000, "not_after": $longNotAfter,""" +
+            """ "key_id": "a3620fb6", "sig": "AAAA"}"""
         val clock = FixedClock(1700010000)
         assertThrows<KeyConfigVerificationFailedException> {
             OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock)
@@ -83,13 +100,60 @@ class OhttpSignedConfigTest {
     }
 
     @Test
-    fun `verifyAndParse rejects invalid signature`() {
-        // Valid format but wrong signature - will fail signature check
-        val envelope = """{"v": 1, "network": "testnet", "configs": "AAAA", "not_before": 1700000000, "not_after": 1700021600, "key_id": "a3620fb6", "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="}"""
+    fun `verifyAndParse rejects tampered signature`() {
+        val (envelope, _) = generateValidEnvelope("testnet", 1700000000L, 1700021600L)
+        // Tamper with signature by replacing last char
+        val tamperedEnvelope = envelope.replace(Regex("\"sig\":\"[^\"]+\""), "\"sig\":\"TAMPERED=\"")
         val clock = FixedClock(1700010000)
         assertThrows<KeyConfigVerificationFailedException> {
-            OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock)
+            OhttpSignedConfigVerifier.verifyAndParse(tamperedEnvelope, "testnet", clock)
         }
+    }
+
+    /**
+     * Helper to generate a validly-signed envelope for testing.
+     * Returns pair of (JSON string, public key bytes).
+     */
+    private fun generateValidEnvelope(
+        network: String,
+        notBefore: Long,
+        notAfter: Long,
+    ): Pair<String, ByteArray> {
+        // Generate fresh Ed25519 keypair
+        val keyPairGenerator = Ed25519KeyPairGenerator()
+        keyPairGenerator.init(Ed25519KeyGenerationParameters(SecureRandom()))
+        val keyPair = keyPairGenerator.generateKeyPair()
+        val privateKey = keyPair.private as Ed25519PrivateKeyParameters
+        val publicKey = keyPair.public as Ed25519PublicKeyParameters
+
+        // Create test config bytes
+        val configBytes = byteArrayOf(0x01, 0x02, 0x03, 0x04)
+        val configsBase64 = Base64.encodeToString(configBytes, Base64.NO_WRAP)
+
+        // Compute key ID
+        val keyId = OhttpSignedConfigVerifier.computeKeyId(publicKey.encoded)
+
+        // Build signed message
+        val message = OhttpSignedConfigVerifier.buildSignedMessage(
+            network = network,
+            notBefore = notBefore,
+            notAfter = notAfter,
+            configBytes = configBytes,
+        )
+
+        // Sign with Ed25519
+        val signer = org.bouncycastle.crypto.signers.Ed25519Signer()
+        signer.init(true, privateKey)
+        signer.update(message, 0, message.size)
+        val signature = signer.generateSignature()
+        val signatureBase64 = Base64.encodeToString(signature, Base64.NO_WRAP)
+
+        // Build JSON
+        val json = """{"v": 1, "network": "$network", "configs": "$configsBase64",""" +
+            """ "not_before": $notBefore, "not_after": $notAfter,""" +
+            """ "key_id": "$keyId", "sig": "$signatureBase64"}"""
+
+        return json to publicKey.encoded
     }
 
     private inline fun <reified T : Throwable> assertThrows(crossinline block: () -> Unit) {
