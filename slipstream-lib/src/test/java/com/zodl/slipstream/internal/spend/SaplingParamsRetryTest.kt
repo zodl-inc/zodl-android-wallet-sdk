@@ -67,7 +67,11 @@ class SaplingParamsRetryTest {
     @Test
     fun `BASE_URL points to GitHub zcash-sapling-params repo`() {
         // Ensures params are fetched from our controlled GitHub repo, matching SaplingParamTool.CLOUD_PARAM_DIR_URL
-        val baseUrl = SaplingParams::class.java.getDeclaredField("BASE_URL").apply { isAccessible = true }.get(null) as String
+        val baseUrl =
+            SaplingParams::class.java
+                .getDeclaredField("BASE_URL")
+                .apply { isAccessible = true }
+                .get(null) as String
         assertEquals("https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/main/", baseUrl)
     }
 }
