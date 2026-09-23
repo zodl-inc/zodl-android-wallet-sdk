@@ -1,45 +1,47 @@
 package co.electriccoin.lightwallet.client.internal
 
-import android.util.Base64
-import org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator
-import org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters
-import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
-import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
+import co.electriccoin.lightwallet.client.internal.SignedEnvelopeTestVectors.ONE_DAY_SECONDS
+import co.electriccoin.lightwallet.client.internal.SignedEnvelopeTestVectors.ONE_HOUR_SECONDS
+import co.electriccoin.lightwallet.client.internal.SignedEnvelopeTestVectors.signedEnvelope
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.security.SecureRandom
-import kotlin.test.fail
+import kotlin.test.assertFailsWith
 
 /**
- * Unit tests for signed OHTTP config verification.
- *
- * Tests the individual components (parsing, key ID computation, message building)
- * without requiring production private keys.
+ * Unit tests for [OhttpSignedConfigVerifier]: a pure function over (envelope, network, clock,
+ * trusted key). Envelopes are generated inside each test with a fresh Ed25519 key and verified
+ * against a fixed clock, so no production private key is needed.
  */
 class OhttpSignedConfigTest {
-    private class FixedClock(private val fixedTimeSeconds: Long) : OhttpSignedConfigVerifier.Clock {
+    private class FixedClock(
+        private val fixedTimeSeconds: Long,
+    ) : OhttpSignedConfigVerifier.Clock {
         override fun currentTimeSeconds(): Long = fixedTimeSeconds
     }
+
+    private val key = TestSigningKey()
+    private val notBefore = 1_700_000_000L
+    private val notAfter = notBefore + 6 * ONE_HOUR_SECONDS
+    private val clock = FixedClock(notBefore + ONE_HOUR_SECONDS)
 
     @Test
     fun `computeKeyId produces correct first 8 hex chars of SHA-256`() {
         val testKey = OhttpSignedConfigVerifier.hexToBytes("deadbeef")
         val keyId = OhttpSignedConfigVerifier.computeKeyId(testKey)
-        // SHA-256("deadbeef") = 5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953
+        // SHA-256(deadbeef) = 5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953
         assertEquals("5f78c332", keyId)
     }
 
     @Test
     fun `buildSignedMessage format is correct`() {
-        val message = OhttpSignedConfigVerifier.buildSignedMessage(
-            network = "testnet",
-            notBefore = 1700000000L,
-            notAfter = 2000000000L,
-            configBytes = byteArrayOf(0x01, 0x02, 0x03),
-        )
-        // Should start with "zodl-ohttp-configs-v1\0"
+        val message =
+            OhttpSignedConfigVerifier.buildSignedMessage(
+                network = "testnet",
+                notBefore = notBefore,
+                notAfter = notAfter,
+                configBytes = byteArrayOf(0x01, 0x02, 0x03),
+            )
         val prefix = "zodl-ohttp-configs-v1".toByteArray(Charsets.US_ASCII)
         assertTrue(message.take(prefix.size).toByteArray().contentEquals(prefix))
         assertEquals(0x00.toByte(), message[prefix.size])
@@ -47,126 +49,107 @@ class OhttpSignedConfigTest {
 
     @Test
     fun `verifyAndParse accepts valid signed envelope`() {
-        val (envelope, _) = generateValidEnvelope("testnet", 1700000000L, 1700021600L)
-        val clock = FixedClock(1700010000)
-        val (keyConfig, expiry) = OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock)
-        assertNotNull(keyConfig)
-        assertEquals(1700021600L, expiry)
-    }
-
-    @Test
-    fun `verifyAndParse rejects wrong protocol version`() {
-        val envelope = """{"v": 2, "network": "testnet", "configs": "AAAA",""" +
-            """ "not_before": 1700000000, "not_after": 1700021600,""" +
-            """ "key_id": "a3620fb6", "sig": "AAAA"}"""
-        val clock = FixedClock(1700010000)
-        assertThrows<KeyConfigVerificationFailedException> {
-            OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock)
-        }
-    }
-
-    @Test
-    fun `verifyAndParse rejects network mismatch`() {
-        val envelope = """{"v": 1, "network": "testnet", "configs": "AAAA",""" +
-            """ "not_before": 1700000000, "not_after": 1700021600,""" +
-            """ "key_id": "ba8a2dbd", "sig": "AAAA"}"""
-        val clock = FixedClock(1700010000)
-        assertThrows<KeyConfigVerificationFailedException> {
-            OhttpSignedConfigVerifier.verifyAndParse(envelope, "mainnet", clock)
-        }
-    }
-
-    @Test
-    fun `verifyAndParse rejects expired configs`() {
-        val envelope = """{"v": 1, "network": "testnet", "configs": "AAAA",""" +
-            """ "not_before": 1700000000, "not_after": 1700021600,""" +
-            """ "key_id": "a3620fb6", "sig": "AAAA"}"""
-        val clock = FixedClock(1700021800) // After notAfter + tolerance
-        assertThrows<KeyConfigVerificationFailedException> {
-            OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock)
-        }
-    }
-
-    @Test
-    fun `verifyAndParse rejects configs with validity period over 24 hours`() {
-        val longNotAfter = 1700000000L + 90000 // 25 hours
-        val envelope = """{"v": 1, "network": "testnet", "configs": "AAAA",""" +
-            """ "not_before": 1700000000, "not_after": $longNotAfter,""" +
-            """ "key_id": "a3620fb6", "sig": "AAAA"}"""
-        val clock = FixedClock(1700010000)
-        assertThrows<KeyConfigVerificationFailedException> {
-            OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock)
-        }
+        val envelope = signedEnvelope(key, notBefore, notAfter)
+        val (keyConfig, expiry) =
+            OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock, key.publicKey)
+        assertEquals(1, keyConfig.keyId)
+        assertEquals(Hpke.KEM_ID, keyConfig.kemId)
+        assertEquals(notAfter, expiry)
     }
 
     @Test
     fun `verifyAndParse rejects tampered signature`() {
-        val (envelope, _) = generateValidEnvelope("testnet", 1700000000L, 1700021600L)
-        // Tamper with signature by replacing last char
-        val tamperedEnvelope = envelope.replace(Regex("\"sig\":\"[^\"]+\""), "\"sig\":\"TAMPERED=\"")
-        val clock = FixedClock(1700010000)
-        assertThrows<KeyConfigVerificationFailedException> {
-            OhttpSignedConfigVerifier.verifyAndParse(tamperedEnvelope, "testnet", clock)
+        val envelope = signedEnvelope(key, notBefore, notAfter, tamperSignature = true)
+        val e =
+            assertFailsWith<KeyConfigVerificationFailedException> {
+                OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock, key.publicKey)
+            }
+        assertTrue(e.message!!.contains("signature"))
+    }
+
+    @Test
+    fun `verifyAndParse rejects wrong network`() {
+        val envelope = signedEnvelope(key, notBefore, notAfter, network = "mainnet")
+        val e =
+            assertFailsWith<KeyConfigVerificationFailedException> {
+                OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock, key.publicKey)
+            }
+        assertTrue(e.message!!.contains("Network mismatch"))
+    }
+
+    @Test
+    fun `verifyAndParse rejects expired configs`() {
+        val envelope = signedEnvelope(key, notBefore, notAfter)
+        val afterExpiry = FixedClock(notAfter + 200) // beyond not_after + 60 s tolerance
+        val e =
+            assertFailsWith<KeyConfigVerificationFailedException> {
+                OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", afterExpiry, key.publicKey)
+            }
+        assertTrue(e.message!!.contains("not valid at current time"))
+    }
+
+    @Test
+    fun `verifyAndParse rejects configs with validity period over 24 hours`() {
+        val envelope = signedEnvelope(key, notBefore, notBefore + ONE_DAY_SECONDS + ONE_HOUR_SECONDS)
+        val e =
+            assertFailsWith<KeyConfigVerificationFailedException> {
+                OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock, key.publicKey)
+            }
+        assertTrue(e.message!!.contains("Validity period too long"))
+    }
+
+    @Test
+    fun `verifyAndParse rejects not_after more than 24 hours ahead of now`() {
+        val farNotAfter = clock.currentTimeSeconds() + ONE_DAY_SECONDS + ONE_HOUR_SECONDS
+        val envelope = signedEnvelope(key, farNotAfter - ONE_HOUR_SECONDS, farNotAfter)
+        val e =
+            assertFailsWith<KeyConfigVerificationFailedException> {
+                OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock, key.publicKey)
+            }
+        assertTrue(e.message!!.contains("too far in future"))
+    }
+
+    @Test
+    fun `verifyAndParse rejects wrong protocol version`() {
+        val envelope = signedEnvelope(key, notBefore, notAfter, version = 2)
+        assertFailsWith<KeyConfigVerificationFailedException> {
+            OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock, key.publicKey)
         }
     }
 
-    /**
-     * Helper to generate a validly-signed envelope for testing.
-     * Returns pair of (JSON string, public key bytes).
-     */
-    private fun generateValidEnvelope(
-        network: String,
-        notBefore: Long,
-        notAfter: Long,
-    ): Pair<String, ByteArray> {
-        // Generate fresh Ed25519 keypair
-        val keyPairGenerator = Ed25519KeyPairGenerator()
-        keyPairGenerator.init(Ed25519KeyGenerationParameters(SecureRandom()))
-        val keyPair = keyPairGenerator.generateKeyPair()
-        val privateKey = keyPair.private as Ed25519PrivateKeyParameters
-        val publicKey = keyPair.public as Ed25519PublicKeyParameters
-
-        // Create test config bytes
-        val configBytes = byteArrayOf(0x01, 0x02, 0x03, 0x04)
-        val configsBase64 = Base64.encodeToString(configBytes, Base64.NO_WRAP)
-
-        // Compute key ID
-        val keyId = OhttpSignedConfigVerifier.computeKeyId(publicKey.encoded)
-
-        // Build signed message
-        val message = OhttpSignedConfigVerifier.buildSignedMessage(
-            network = network,
-            notBefore = notBefore,
-            notAfter = notAfter,
-            configBytes = configBytes,
-        )
-
-        // Sign with Ed25519
-        val signer = org.bouncycastle.crypto.signers.Ed25519Signer()
-        signer.init(true, privateKey)
-        signer.update(message, 0, message.size)
-        val signature = signer.generateSignature()
-        val signatureBase64 = Base64.encodeToString(signature, Base64.NO_WRAP)
-
-        // Build JSON
-        val json = """{"v": 1, "network": "$network", "configs": "$configsBase64",""" +
-            """ "not_before": $notBefore, "not_after": $notAfter,""" +
-            """ "key_id": "$keyId", "sig": "$signatureBase64"}"""
-
-        return json to publicKey.encoded
+    @Test
+    fun `verifyAndParse rejects key_id that does not match the trusted key`() {
+        val envelope = signedEnvelope(key, notBefore, notAfter, keyId = "00000000")
+        val e =
+            assertFailsWith<KeyConfigVerificationFailedException> {
+                OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock, key.publicKey)
+            }
+        assertTrue(e.message!!.contains("Key ID mismatch"))
     }
 
-    private inline fun <reified T : Throwable> assertThrows(crossinline block: () -> Unit) {
-        try {
-            block()
-            fail("Expected ${T::class.java.simpleName} to be thrown")
-        } catch (e: Throwable) {
-            if (e !is T) {
-                throw AssertionError(
-                    "Expected ${T::class.java.simpleName} but got ${e::class.java.simpleName}",
-                    e,
-                )
+    @Test
+    fun `verifyAndParse defaults to the embedded production key`() {
+        // Without an injected key the verifier must only trust the embedded ZODL testnet key.
+        val envelope = signedEnvelope(key, notBefore, notAfter)
+        val e =
+            assertFailsWith<KeyConfigVerificationFailedException> {
+                OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock)
             }
+        assertTrue(e.message!!.contains("Key ID mismatch: expected a3620fb6"))
+    }
+
+    @Test
+    fun `verifyAndParse rejects malformed base64 as a verification failure`() {
+        val envelope = signedEnvelope(key, notBefore, notAfter, signatureOverride = "!!not-base64!!")
+        assertFailsWith<KeyConfigVerificationFailedException> {
+            OhttpSignedConfigVerifier.verifyAndParse(envelope, "testnet", clock, key.publicKey)
+        }
+    }
+
+    @Test
+    fun `verifyAndParse rejects malformed JSON as a verification failure`() {
+        assertFailsWith<KeyConfigVerificationFailedException> {
+            OhttpSignedConfigVerifier.verifyAndParse("{not json", "testnet", clock, key.publicKey)
         }
     }
 }

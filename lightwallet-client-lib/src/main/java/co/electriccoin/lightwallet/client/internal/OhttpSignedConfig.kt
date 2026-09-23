@@ -1,14 +1,15 @@
 package co.electriccoin.lightwallet.client.internal
 
-import android.util.Base64
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
+import java.util.Base64
 
 /**
  * Signed OHTTP configuration envelope (RFC 9458 key configs with Ed25519 signature).
@@ -104,6 +105,8 @@ internal object OhttpSignedConfigVerifier {
      * @param envelopeJson JSON string from `/ohttp-configs/signed`
      * @param expectedNetwork Network identifier ("mainnet" or "testnet")
      * @param clock Clock for time validation (defaults to system clock)
+     * @param trustedPublicKey Raw 32-byte Ed25519 public key to trust instead of the embedded
+     *   production key for [expectedNetwork]. Tests only; production callers leave this null.
      * @return Parsed [OhttpKeyConfig] ready for use, along with expiry timestamp
      * @throws KeyConfigVerificationFailedException if verification fails
      */
@@ -111,13 +114,32 @@ internal object OhttpSignedConfigVerifier {
         envelopeJson: String,
         expectedNetwork: String,
         clock: Clock = SystemClock,
+        trustedPublicKey: ByteArray? = null,
     ): Pair<OhttpKeyConfig, Long> {
         val envelope = parseEnvelope(envelopeJson)
-        verifyEnvelope(envelope, expectedNetwork, clock)
-        val configBytes = Base64.decode(envelope.configs, Base64.NO_WRAP)
-        val keyConfig = OhttpKeyConfig.parseSupported(configBytes)
+        verifyEnvelope(envelope, expectedNetwork, clock, trustedPublicKey)
+        val configBytes = decodeBase64("configs", envelope.configs)
+        val keyConfig =
+            try {
+                OhttpKeyConfig.parseSupported(configBytes)
+            } catch (e: IllegalArgumentException) {
+                throw KeyConfigVerificationFailedException("Invalid OHTTP key configuration", e)
+            }
         return keyConfig to envelope.notAfter
     }
+
+    /**
+     * Decodes a base64 envelope field, converting malformed input into a verification failure.
+     */
+    private fun decodeBase64(
+        field: String,
+        value: String,
+    ): ByteArray =
+        try {
+            Base64.getDecoder().decode(value)
+        } catch (e: IllegalArgumentException) {
+            throw KeyConfigVerificationFailedException("Invalid base64 in envelope field '$field'", e)
+        }
 
     /**
      * Parses JSON envelope into typed structure using kotlinx.serialization.
@@ -125,7 +147,9 @@ internal object OhttpSignedConfigVerifier {
     private fun parseEnvelope(jsonString: String): SignedOhttpConfigEnvelope =
         try {
             json.decodeFromString<SignedOhttpConfigEnvelope>(jsonString)
-        } catch (e: Exception) {
+        } catch (e: SerializationException) {
+            throw KeyConfigVerificationFailedException("Failed to parse envelope JSON", e)
+        } catch (e: IllegalArgumentException) {
             throw KeyConfigVerificationFailedException("Failed to parse envelope JSON", e)
         }
 
@@ -146,6 +170,7 @@ internal object OhttpSignedConfigVerifier {
         envelope: SignedOhttpConfigEnvelope,
         expectedNetwork: String,
         clock: Clock,
+        trustedPublicKey: ByteArray?,
     ) {
         // 1. Check protocol version
         if (envelope.v != ENVELOPE_VERSION) {
@@ -162,16 +187,7 @@ internal object OhttpSignedConfigVerifier {
         }
 
         // 3. Select public key and verify key ID
-        val (publicKey, expectedKeyId) =
-            when (expectedNetwork) {
-                "mainnet" -> MAINNET_PUBLIC_KEY to MAINNET_KEY_ID
-
-                "testnet" -> TESTNET_PUBLIC_KEY to TESTNET_KEY_ID
-
-                else -> throw KeyConfigVerificationFailedException(
-                    "Unknown network: $expectedNetwork",
-                )
-            }
+        val (publicKey, expectedKeyId) = selectSigningKey(expectedNetwork, trustedPublicKey)
 
         if (envelope.keyId != expectedKeyId) {
             throw KeyConfigVerificationFailedException(
@@ -179,26 +195,12 @@ internal object OhttpSignedConfigVerifier {
             )
         }
 
-        // 6. Check validity period ≤ 24 hours
-        val validityPeriod = envelope.notAfter - envelope.notBefore
-        if (validityPeriod > MAX_VALIDITY_SECONDS) {
-            throw KeyConfigVerificationFailedException(
-                "Validity period too long: ${validityPeriod}s (max $MAX_VALIDITY_SECONDS)",
-            )
-        }
-
-        val nowSeconds = clock.currentTimeSeconds()
-
-        // 7. Check not_after ≤ now + 24 hours
-        if (envelope.notAfter > nowSeconds + MAX_VALIDITY_SECONDS) {
-            throw KeyConfigVerificationFailedException(
-                "not_after too far in future: ${envelope.notAfter} > ${nowSeconds + MAX_VALIDITY_SECONDS}",
-            )
-        }
+        // 5-7. Validity window: period ≤ 24 h, not_after ≤ now + 24 h, now within window
+        checkValidity(envelope, clock.currentTimeSeconds())
 
         // 4. Verify Ed25519 signature
-        val configBytes = Base64.decode(envelope.configs, Base64.NO_WRAP)
-        val signatureBytes = Base64.decode(envelope.signature, Base64.NO_WRAP)
+        val configBytes = decodeBase64("configs", envelope.configs)
+        val signatureBytes = decodeBase64("sig", envelope.signature)
         val message =
             buildSignedMessage(
                 envelope.network,
@@ -210,15 +212,62 @@ internal object OhttpSignedConfigVerifier {
         if (!verifyEd25519Signature(publicKey, message, signatureBytes)) {
             throw KeyConfigVerificationFailedException("Invalid Ed25519 signature")
         }
+    }
 
-        // 5. Check time validity
+    /**
+     * Returns the Ed25519 public key to trust and its key ID: the injected [trustedPublicKey]
+     * (tests) or the embedded production key for [expectedNetwork].
+     */
+    private fun selectSigningKey(
+        expectedNetwork: String,
+        trustedPublicKey: ByteArray?,
+    ): Pair<ByteArray, String> =
+        if (trustedPublicKey != null) {
+            trustedPublicKey to computeKeyId(trustedPublicKey)
+        } else {
+            when (expectedNetwork) {
+                "mainnet" -> MAINNET_PUBLIC_KEY to MAINNET_KEY_ID
+
+                "testnet" -> TESTNET_PUBLIC_KEY to TESTNET_KEY_ID
+
+                else -> throw KeyConfigVerificationFailedException(
+                    "Unknown network: $expectedNetwork",
+                )
+            }
+        }
+
+    /**
+     * Validity checks: period ≤ 24 hours, not_after ≤ now + 24 hours, and now within
+     * [not_before - tolerance, not_after + tolerance].
+     */
+    private fun checkValidity(
+        envelope: SignedOhttpConfigEnvelope,
+        nowSeconds: Long,
+    ) {
+        val validityPeriod = envelope.notAfter - envelope.notBefore
+        val latestAllowed = nowSeconds + MAX_VALIDITY_SECONDS
         val minValid = envelope.notBefore - TIME_TOLERANCE_SECONDS
         val maxValid = envelope.notAfter + TIME_TOLERANCE_SECONDS
+        val failure =
+            when {
+                validityPeriod > MAX_VALIDITY_SECONDS -> {
+                    "Validity period too long: ${validityPeriod}s (max $MAX_VALIDITY_SECONDS)"
+                }
 
-        if (nowSeconds < minValid || nowSeconds > maxValid) {
-            throw KeyConfigVerificationFailedException(
-                "Config not valid at current time: now=$nowSeconds, valid=[$minValid, $maxValid]",
-            )
+                envelope.notAfter > latestAllowed -> {
+                    "not_after too far in future: ${envelope.notAfter} > $latestAllowed"
+                }
+
+                nowSeconds < minValid || nowSeconds > maxValid -> {
+                    "Config not valid at current time: now=$nowSeconds, valid=[$minValid, $maxValid]"
+                }
+
+                else -> {
+                    null
+                }
+            }
+        if (failure != null) {
+            throw KeyConfigVerificationFailedException(failure)
         }
     }
 
@@ -280,20 +329,6 @@ internal object OhttpSignedConfigVerifier {
         val digest = MessageDigest.getInstance("SHA-256")
         val hash = digest.digest(publicKey)
         return hash.take(KEY_ID_BYTES).joinToString("") { "%02x".format(it) }
-    }
-
-    /**
-     * Signs a message with an Ed25519 private key using BouncyCastle (for test vector generation).
-     */
-    fun signMessage(
-        privateKey: ByteArray,
-        message: ByteArray,
-    ): ByteArray {
-        val signer = Ed25519Signer()
-        val privateKeyParams = org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters(privateKey, 0)
-        signer.init(true, privateKeyParams)
-        signer.update(message, 0, message.size)
-        return signer.generateSignature()
     }
 
     fun hexToBytes(hex: String): ByteArray {

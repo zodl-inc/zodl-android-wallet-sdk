@@ -35,6 +35,12 @@ internal class OhttpTransport(
      * [initialKeyConfig] is set. Production code should leave this null.
      */
     initialExpirySeconds: Long? = null,
+    /**
+     * Optional Ed25519 public key that replaces the embedded ZODL signing key when verifying the
+     * signed key configuration, so tests can sign envelopes with a fresh key. Production code
+     * must leave this null.
+     */
+    private val trustedSigningKey: ByteArray? = null,
 ) {
     private val lock = Any()
     private var cachedKeyConfig: OhttpKeyConfig? = initialKeyConfig
@@ -53,7 +59,8 @@ internal class OhttpTransport(
             if (!forceRefresh) {
                 val cached = cachedKeyConfig
                 val expiry = cachedExpiry
-                if (cached != null && expiry != null && nowSeconds < expiry) {
+                // A pre-seeded config without an expiry (test-only) never expires.
+                if (cached != null && (expiry == null || nowSeconds < expiry)) {
                     return cached
                 }
             }
@@ -66,7 +73,8 @@ internal class OhttpTransport(
         val json = jsonBytes.toString(Charsets.UTF_8)
 
         // Verify and parse
-        val (parsed, expiry) = OhttpSignedConfigVerifier.verifyAndParse(json, network)
+        val (parsed, expiry) =
+            OhttpSignedConfigVerifier.verifyAndParse(json, network, trustedPublicKey = trustedSigningKey)
         logger("OHTTP signed key config verified: key_id=${parsed.keyId}, network=$network, valid_until=$expiry")
 
         synchronized(lock) {

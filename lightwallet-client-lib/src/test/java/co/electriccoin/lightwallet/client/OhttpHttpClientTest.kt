@@ -1,5 +1,7 @@
 package co.electriccoin.lightwallet.client
 
+import co.electriccoin.lightwallet.client.internal.SignedEnvelopeTestVectors
+import co.electriccoin.lightwallet.client.internal.TestSigningKey
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -352,6 +354,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `key config fetch uses sender GET from signed endpoint`() {
+        val signingKey = TestSigningKey()
         val capturedGetUrls = mutableListOf<String>()
         val capturedGetHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
@@ -370,24 +373,15 @@ class OhttpHttpClientTest {
                 ): ByteArray {
                     capturedGetUrls.add(url)
                     capturedGetHeaders.add(headers)
-                    // Return a valid signed envelope with current timestamp for validity
+                    // Envelope signed in-test with a fresh key; the transport trusts that key below.
                     val nowSeconds = System.currentTimeMillis() / 1000
-                    val notBefore = nowSeconds - 3600 // 1 hour ago
-                    val notAfter = nowSeconds + 3600 // 1 hour from now
-                    // Test vector from zodl-inc/ohttp repo (testnet key)
-                    val validEnvelope =
-                        """
-                        {
-                            "v": 1,
-                            "network": "testnet",
-                            "configs": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKg==",
-                            "not_before": $notBefore,
-                            "not_after": $notAfter,
-                            "key_id": "1325b850",
-                            "sig": "eaavjMihe2EGm3giQq5NArYVD+G1A5AxVzQxXwvGz8C8qKRIEXl/T0TpOZe2bL+OkNmSAIX95uYgA4zGQGXbCg=="
-                        }
-                        """.trimIndent()
-                    return validEnvelope.toByteArray(Charsets.UTF_8)
+                    val envelope =
+                        SignedEnvelopeTestVectors.signedEnvelope(
+                            key = signingKey,
+                            notBefore = nowSeconds - 3600,
+                            notAfter = nowSeconds + 3600,
+                        )
+                    return envelope.toByteArray(Charsets.UTF_8)
                 }
             }
         val transport =
@@ -395,6 +389,7 @@ class OhttpHttpClientTest {
                 relayUrl = "https://relay.zodl.com/relay",
                 network = "testnet",
                 sender = mockSender,
+                trustedSigningKey = signingKey.publicKey,
             )
         kotlinx.coroutines.runBlocking {
             val keyConfig = transport.keyConfig()
@@ -405,11 +400,13 @@ class OhttpHttpClientTest {
             )
             assertTrue("GET headers must include Accept", capturedGetHeaders.first().any { it.first == "Accept" })
             assertNotNull("keyConfig must parse successfully", keyConfig)
+            assertTrue("keyConfig must carry the signed key_id", keyConfig.keyId == 1)
         }
     }
 
     @Test
     fun `key config refresh on 400 uses sender GET`() {
+        val signingKey = TestSigningKey()
         var getCallCount = 0
         var postCallCount = 0
         val mockSender =
@@ -431,20 +428,15 @@ class OhttpHttpClientTest {
                     timeoutMs: Int,
                 ): ByteArray {
                     getCallCount++
-                    return byteArrayOf(
-                        0x00,
-                        0x29, // config length = 41
-                        0x01, // key ID
-                        0x00,
-                        0x20, // KEM ID = X25519
-                        *ByteArray(32) { 1 }, // public key
-                        0x00,
-                        0x04, // suites length = 4
-                        0x00,
-                        0x01, // KDF ID = HKDF-SHA256
-                        0x00,
-                        0x01, // AEAD ID = AES-128-GCM
-                    )
+                    // Each GET returns a freshly signed envelope (initial fetch, then refresh).
+                    val nowSeconds = System.currentTimeMillis() / 1000
+                    val envelope =
+                        SignedEnvelopeTestVectors.signedEnvelope(
+                            key = signingKey,
+                            notBefore = nowSeconds - 3600,
+                            notAfter = nowSeconds + 3600,
+                        )
+                    return envelope.toByteArray(Charsets.UTF_8)
                 }
             }
         val transport =
@@ -452,6 +444,7 @@ class OhttpHttpClientTest {
                 relayUrl = "https://relay.zodl.com/relay",
                 network = "testnet",
                 sender = mockSender,
+                trustedSigningKey = signingKey.publicKey,
             )
         val exceptionThrown =
             runCatching {

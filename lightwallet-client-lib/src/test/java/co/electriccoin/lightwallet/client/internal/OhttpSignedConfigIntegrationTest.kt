@@ -1,195 +1,120 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.internal.SignedEnvelopeTestVectors.ONE_DAY_SECONDS
+import co.electriccoin.lightwallet.client.internal.SignedEnvelopeTestVectors.ONE_HOUR_SECONDS
+import co.electriccoin.lightwallet.client.internal.SignedEnvelopeTestVectors.signedEnvelope
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import kotlin.test.assertFailsWith
 
 /**
- * Integration tests for signed OHTTP config verification through the production keyConfig() path.
+ * Integration tests for signed OHTTP config verification through the production
+ * [OhttpTransport.keyConfig] path: fetch from `/ohttp-configs/signed` → verify → parse → cache.
  *
- * These tests use a fake sender to inject test envelopes and verify the whole flow:
- * fetch → verify → parse → cache.
+ * A fake [OhttpSender] injects envelopes signed in-test with a fresh Ed25519 key, and that key is
+ * passed to the transport as the trusted signing key.
  */
 class OhttpSignedConfigIntegrationTest {
-    // Real testnet key_id from OhttpSignedConfigVerifier
-    private val testnetKeyId = "a3620fb6"
+    private val key = TestSigningKey()
+    private val now = System.currentTimeMillis() / 1000
+    private val notBefore = now - ONE_HOUR_SECONDS
+    private val notAfter = now + ONE_HOUR_SECONDS
 
-    // Valid test envelope (signature must be real for testnet key, or we stub verification)
-    // For this test, we'll generate a plausible envelope structure and rely on the verifier's
-    // actual logic. In a real scenario, you'd need to sign this with the actual private key.
-    // For testing purposes, we'll use a minimal valid structure.
-
-    private fun validEnvelope(
+    private fun transport(
+        sender: FakeSender,
         network: String = "testnet",
-        notBefore: Long = System.currentTimeMillis() / 1000 - 60,
-        notAfter: Long = System.currentTimeMillis() / 1000 + 3600,
-    ): String {
-        // Base64 of a minimal RFC 9458 key config (1 byte key_id=0x01, then dummy data)
-        val configs = "AQAgBCA="
-        // Dummy signature (64 bytes base64) - in production this must be valid
-        val sig = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    ) = OhttpTransport(
+        relayUrl = "https://relay.test/relay",
+        network = network,
+        sender = sender,
+        trustedSigningKey = key.publicKey,
+    )
 
-        return """
-            {
-                "v": 1,
-                "network": "$network",
-                "configs": "$configs",
-                "not_before": $notBefore,
-                "not_after": $notAfter,
-                "key_id": "$testnetKeyId",
-                "sig": "$sig"
-            }
-            """.trimIndent()
+    private fun sender(envelope: String) = FakeSender(getResponses = listOf(envelope.toByteArray(Charsets.UTF_8)))
+
+    @Test
+    fun `keyConfig with valid envelope succeeds`() {
+        val sender = sender(signedEnvelope(key, notBefore, notAfter))
+
+        val keyConfig = runBlocking { transport(sender).keyConfig() }
+
+        assertEquals(1, keyConfig.keyId)
+        assertEquals(1, sender.getCalls.size)
+        assertEquals("https://relay.test/ohttp-configs/signed", sender.getCalls[0].first)
     }
 
     @Test
-    fun `keyConfig with valid envelope succeeds`() =
-        runBlocking {
-            val envelope = validEnvelope()
-            val sender = FakeSender(getResponses = listOf(envelope.toByteArray(Charsets.UTF_8)))
+    fun `keyConfig rejects tampered signature`() {
+        val sender = sender(signedEnvelope(key, notBefore, notAfter, tamperSignature = true))
 
-            val transport =
-                OhttpTransport(
-                    relayUrl = "https://relay.test/relay",
-                    network = "testnet",
-                    sender = sender,
-                )
-
-            // This will fail signature verification with dummy sig, so we can't test the full path
-            // without real signatures. For now, we verify the URL derivation and fetch happened.
-            @Suppress("SwallowedException") // Test expects exception, verifies URL was called
-            try {
-                transport.keyConfig()
-            } catch (e: KeyConfigVerificationFailedException) {
-                // Expected with dummy signature
-            }
-
-            // Verify the sender was called with /ohttp-configs/signed
-            assertEquals(1, sender.getCalls.size)
-            assertEquals("https://relay.test/ohttp-configs/signed", sender.getCalls[0].first)
+        assertFailsWith<KeyConfigVerificationFailedException> {
+            runBlocking { transport(sender).keyConfig() }
         }
+    }
 
     @Test
-    fun `keyConfig rejects tampered signature`() =
-        runBlocking {
-            val envelope = validEnvelope().replace("\"sig\": \"", "\"sig\": \"X")
-            val sender = FakeSender(getResponses = listOf(envelope.toByteArray(Charsets.UTF_8)))
+    fun `keyConfig rejects wrong network`() {
+        val sender = sender(signedEnvelope(key, notBefore, notAfter, network = "mainnet"))
 
-            val transport =
-                OhttpTransport(
-                    relayUrl = "https://relay.test/relay",
-                    network = "testnet",
-                    sender = sender,
-                )
-
-            assertFailsWith<KeyConfigVerificationFailedException> {
-                transport.keyConfig()
-            }
+        assertFailsWith<KeyConfigVerificationFailedException> {
+            runBlocking { transport(sender, network = "testnet").keyConfig() }
         }
+    }
 
     @Test
-    fun `keyConfig rejects wrong network`() =
-        runBlocking {
-            val envelope = validEnvelope(network = "mainnet")
-            val sender = FakeSender(getResponses = listOf(envelope.toByteArray(Charsets.UTF_8)))
+    fun `keyConfig rejects expired envelope`() {
+        val sender = sender(signedEnvelope(key, now - 2 * ONE_HOUR_SECONDS, now - ONE_HOUR_SECONDS))
 
-            val transport =
-                OhttpTransport(
-                    relayUrl = "https://relay.test/relay",
-                    network = "testnet",
-                    sender = sender,
-                )
-
-            assertFailsWith<KeyConfigVerificationFailedException> {
-                transport.keyConfig()
-            }
+        assertFailsWith<KeyConfigVerificationFailedException> {
+            runBlocking { transport(sender).keyConfig() }
         }
+    }
 
     @Test
-    fun `keyConfig rejects expired envelope`() =
-        runBlocking {
-            val nowSeconds = System.currentTimeMillis() / 1000
-            val envelope = validEnvelope(notBefore = nowSeconds - 1000, notAfter = nowSeconds - 500)
-            val sender = FakeSender(getResponses = listOf(envelope.toByteArray(Charsets.UTF_8)))
+    fun `keyConfig rejects validity period exceeding 24 hours`() {
+        val sender = sender(signedEnvelope(key, notBefore, notBefore + ONE_DAY_SECONDS + ONE_HOUR_SECONDS))
 
-            val transport =
-                OhttpTransport(
-                    relayUrl = "https://relay.test/relay",
-                    network = "testnet",
-                    sender = sender,
-                )
-
-            assertFailsWith<KeyConfigVerificationFailedException> {
-                transport.keyConfig()
-            }
+        assertFailsWith<KeyConfigVerificationFailedException> {
+            runBlocking { transport(sender).keyConfig() }
         }
+    }
 
     @Test
-    fun `keyConfig rejects validity period exceeding 24 hours`() =
-        runBlocking {
-            val nowSeconds = System.currentTimeMillis() / 1000
-            val envelope = validEnvelope(notBefore = nowSeconds - 60, notAfter = nowSeconds + 86400 + 1)
-            val sender = FakeSender(getResponses = listOf(envelope.toByteArray(Charsets.UTF_8)))
+    fun `keyConfig rejects not_after too far in future`() {
+        val farNotAfter = now + ONE_DAY_SECONDS + ONE_HOUR_SECONDS
+        val sender = sender(signedEnvelope(key, farNotAfter - ONE_HOUR_SECONDS, farNotAfter))
 
-            val transport =
-                OhttpTransport(
-                    relayUrl = "https://relay.test/relay",
-                    network = "testnet",
-                    sender = sender,
-                )
-
-            assertFailsWith<KeyConfigVerificationFailedException> {
-                transport.keyConfig()
-            }
+        assertFailsWith<KeyConfigVerificationFailedException> {
+            runBlocking { transport(sender).keyConfig() }
         }
+    }
 
     @Test
-    fun `keyConfig rejects not_after too far in future`() =
-        runBlocking {
-            val nowSeconds = System.currentTimeMillis() / 1000
-            val envelope = validEnvelope(notBefore = nowSeconds + 86400 + 1, notAfter = nowSeconds + 86400 + 100)
-            val sender = FakeSender(getResponses = listOf(envelope.toByteArray(Charsets.UTF_8)))
+    fun `keyConfig fetches from signed endpoint not unsigned`() {
+        val sender = sender(signedEnvelope(key, notBefore, notAfter))
 
-            val transport =
-                OhttpTransport(
-                    relayUrl = "https://relay.test/relay",
-                    network = "testnet",
-                    sender = sender,
-                )
+        runBlocking { transport(sender).keyConfig() }
 
-            assertFailsWith<KeyConfigVerificationFailedException> {
-                transport.keyConfig()
-            }
-        }
+        // Exactly one GET, to /ohttp-configs/signed; none to the unsigned /ohttp-configs.
+        assertEquals(1, sender.getCalls.size)
+        assertEquals("https://relay.test/ohttp-configs/signed", sender.getCalls[0].first)
+        assertEquals(0, sender.getCalls.count { it.first.endsWith("/ohttp-configs") })
+        assertEquals(0, sender.postCalls.size)
+    }
 
     @Test
-    fun `keyConfig fetches from signed endpoint not unsigned`() =
+    fun `keyConfig caches verified config until expiry`() {
+        val sender = sender(signedEnvelope(key, notBefore, notAfter))
+        val transport = transport(sender)
+
         runBlocking {
-            val envelope = validEnvelope()
-            val sender = FakeSender(getResponses = listOf(envelope.toByteArray(Charsets.UTF_8)))
-
-            val transport =
-                OhttpTransport(
-                    relayUrl = "https://relay.test/relay",
-                    network = "testnet",
-                    sender = sender,
-                )
-
-            @Suppress("SwallowedException") // Test expects exception, verifies signed endpoint was used
-            try {
-                transport.keyConfig()
-            } catch (e: KeyConfigVerificationFailedException) {
-                // Expected with dummy signature
-            }
-
-            // Assert that sender saw exactly one GET to /ohttp-configs/signed
-            assertEquals(1, sender.getCalls.size)
-            assertEquals("https://relay.test/ohttp-configs/signed", sender.getCalls[0].first)
-
-            // Assert no GET to /ohttp-configs (unsigned)
-            assertEquals(0, sender.getCalls.count { it.first.endsWith("/ohttp-configs") })
+            transport.keyConfig()
+            transport.keyConfig()
         }
+
+        assertEquals(1, sender.getCalls.size)
+    }
 
     /**
      * Fake sender that returns canned responses and records calls.
