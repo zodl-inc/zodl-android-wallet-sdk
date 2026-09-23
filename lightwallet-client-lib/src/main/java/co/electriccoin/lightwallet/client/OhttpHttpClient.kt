@@ -7,7 +7,6 @@ import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.OHTTP_PROXY_ALLOWED_SUFFIXES
 import co.electriccoin.lightwallet.client.internal.OhttpSender
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
-import co.electriccoin.lightwallet.client.internal.PROXY_KEY_CONFIG_URL
 import co.electriccoin.lightwallet.client.internal.PROXY_RELAY_URL
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import co.electriccoin.lightwallet.client.internal.proxyGatewayHostFor
@@ -39,6 +38,7 @@ class OhttpHttpClient private constructor(
 
     companion object {
         private const val DEFAULT_TIMEOUT_MS = 30_000
+        private const val PROXY_NETWORK = "mainnet" // All proxy hosts use mainnet relay
 
         /**
          * Creates an OHTTP client for external API requests (NEAR, CMC, voting).
@@ -100,7 +100,7 @@ class OhttpHttpClient private constructor(
         val transport =
             OhttpTransport(
                 PROXY_RELAY_URL,
-                PROXY_KEY_CONFIG_URL,
+                PROXY_NETWORK,
                 sender,
                 ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
             )

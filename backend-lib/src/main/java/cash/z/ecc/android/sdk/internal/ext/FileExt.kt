@@ -62,3 +62,26 @@ suspend fun File.getSha1Hash(): String {
         }
     }
 }
+
+/**
+ * Computes the SHA-256 hash of this file.
+ *
+ * @return Hex string of the SHA-256 digest (64 lowercase hex chars)
+ */
+suspend fun File.getSha256Hash(): String {
+    return withContext(Dispatchers.IO) {
+        val messageDigest = MessageDigest.getInstance("SHA-256")
+        inputStreamSuspend().use { fis ->
+            DigestInputStream(fis, messageDigest).use { dis ->
+                val buffer = ByteArray(BUFFER_SIZE_BYTES_SIZE)
+                while (dis.read(buffer) >= 0) {
+                    // reading the whole buffered stream, which results in update on the message digest
+                }
+                return@withContext messageDigest.digest().joinToString(
+                    separator = "",
+                    transform = { "%02x".format(it) }
+                )
+            }
+        }
+    }
+}

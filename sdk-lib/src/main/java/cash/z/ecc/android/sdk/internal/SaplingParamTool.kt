@@ -6,7 +6,7 @@ import cash.z.ecc.android.sdk.internal.ext.deleteRecursivelySuspend
 import cash.z.ecc.android.sdk.internal.ext.deleteSuspend
 import cash.z.ecc.android.sdk.internal.ext.existsSuspend
 import cash.z.ecc.android.sdk.internal.ext.getCacheDirSuspend
-import cash.z.ecc.android.sdk.internal.ext.getSha1Hash
+import cash.z.ecc.android.sdk.internal.ext.getSha256Hash
 import cash.z.ecc.android.sdk.internal.ext.mkdirsSuspend
 import cash.z.ecc.android.sdk.internal.ext.renameToSuspend
 import io.ktor.client.HttpClient
@@ -71,14 +71,14 @@ internal class SaplingParamTool(
         private const val TEMPORARY_FILE_NAME_PREFIX = "_"
 
         /**
-         * File SHA1 hash for the sapling spend params
+         * File SHA-256 hash for the sapling spend params
          */
-        internal const val SPEND_PARAM_FILE_SHA1_HASH = "a15ab54c2888880e53c823a3063820c728444126"
+        internal const val SPEND_PARAM_FILE_SHA256_HASH = "8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13"
 
         /**
-         * File SHA1 hash for the sapling output params
+         * File SHA-256 hash for the sapling output params
          */
-        internal const val OUTPUT_PARAM_FILE_SHA1_HASH = "0ebc5a1ef3653948e1c46cf7a16071eac4b7e352"
+        internal const val OUTPUT_PARAM_FILE_SHA256_HASH = "2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4"
 
         /**
          * The URL for Sapling parameter files, hosted on GitHub
@@ -108,13 +108,13 @@ internal class SaplingParamTool(
                                 paramsDirectory,
                                 SPEND_PARAM_FILE_NAME,
                                 SPEND_PARAM_FILE_MAX_BYTES_SIZE,
-                                SPEND_PARAM_FILE_SHA1_HASH
+                                SPEND_PARAM_FILE_SHA256_HASH
                             ),
                             SaplingParameters(
                                 paramsDirectory,
                                 OUTPUT_PARAM_FILE_NAME,
                                 OUTPUT_PARAM_FILE_MAX_BYTES_SIZE,
-                                OUTPUT_PARAM_FILE_SHA1_HASH
+                                OUTPUT_PARAM_FILE_SHA256_HASH
                             )
                         )
                 )
@@ -162,9 +162,9 @@ internal class SaplingParamTool(
         }
 
         /**
-         * Compares the input file parameter SHA1 hash with the given input hash.
+         * Compares the input file parameter SHA-256 hash with the given input hash.
          *
-         * @param parametersFile file of which SHA1 hash will be checked
+         * @param parametersFile file of which SHA-256 hash will be checked
          * @param fileHash hash to compare with
          *
          * @return true in case of hashes are the same, false otherwise
@@ -174,7 +174,7 @@ internal class SaplingParamTool(
             fileHash: String
         ): Boolean =
             try {
-                fileHash == parametersFile.getSha1Hash()
+                fileHash == parametersFile.getSha256Hash()
             } catch (e: IOException) {
                 Twig.debug { "Failed in comparing file's hashes with: ${e.message}, caused by: ${e.cause}." }
                 false

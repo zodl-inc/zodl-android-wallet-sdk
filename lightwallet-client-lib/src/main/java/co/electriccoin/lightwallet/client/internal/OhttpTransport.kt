@@ -11,7 +11,7 @@ import java.net.HttpURLConnection
  */
 internal class OhttpTransport(
     private val relayUrl: String,
-    private val keyConfigUrl: String,
+    private val network: String,
     private val sender: OhttpSender = DirectOhttpSender(),
     private val logger: (String) -> Unit = {},
     /**
@@ -25,13 +25,19 @@ internal class OhttpTransport(
      */
     ohttpClientTraceIdPrefix: String? = null,
     /**
-     * Optional pre-cached key configuration for testing. When set, skips the initial HTTP GET to
-     * [keyConfigUrl]. Production code should leave this null.
+     * Optional pre-cached key configuration for testing. When set, skips the initial HTTP GET.
+     * Production code should leave this null.
      */
     initialKeyConfig: OhttpKeyConfig? = null,
+    /**
+     * Optional pre-cached key configuration expiry timestamp (seconds). Only used when
+     * [initialKeyConfig] is set. Production code should leave this null.
+     */
+    initialExpirySeconds: Long? = null,
 ) {
     private val lock = Any()
     private var cachedKeyConfig: OhttpKeyConfig? = initialKeyConfig
+    private var cachedExpiry: Long? = initialExpirySeconds
     private val clientTrace: OhttpClientTrace? =
         if (OhttpDebugFlags.allowTracePrefix) {
             ohttpClientTraceIdPrefix?.let { OhttpClientTrace(it) }
@@ -41,14 +47,31 @@ internal class OhttpTransport(
 
     /** Fetches (or returns the cached) gateway key configuration. */
     suspend fun keyConfig(forceRefresh: Boolean = false): OhttpKeyConfig {
+        val nowSeconds = System.currentTimeMillis() / 1000L
         synchronized(lock) {
-            if (!forceRefresh) cachedKeyConfig?.let { return it }
+            if (!forceRefresh) {
+                val cached = cachedKeyConfig
+                val expiry = cachedExpiry
+                if (cached != null && expiry != null && nowSeconds < expiry) {
+                    return cached
+                }
+            }
         }
-        val headers = listOf("Accept" to KEYS_MEDIA_TYPE)
-        val bytes = sender.get(keyConfigUrl, headers, KEY_FETCH_TIMEOUT_MS)
-        val parsed = OhttpKeyConfig.parseSupported(bytes)
-        logger("OHTTP key config fetched: key_id=${parsed.keyId}")
-        synchronized(lock) { cachedKeyConfig = parsed }
+
+        // Derive signed config URL from relay URL
+        val signedUrl = deriveSignedConfigUrl(relayUrl)
+        val headers = listOf("Accept" to "application/json")
+        val jsonBytes = sender.get(signedUrl, headers, KEY_FETCH_TIMEOUT_MS)
+        val json = jsonBytes.toString(Charsets.UTF_8)
+
+        // Verify and parse
+        val (parsed, expiry) = OhttpSignedConfigVerifier.verifyAndParse(json, network)
+        logger("OHTTP signed key config verified: key_id=${parsed.keyId}, network=$network, valid_until=$expiry")
+
+        synchronized(lock) {
+            cachedKeyConfig = parsed
+            cachedExpiry = expiry
+        }
         return parsed
     }
 
@@ -121,10 +144,19 @@ internal class OhttpTransport(
         return BinaryHttp.decodeResponse(decrypted)
     }
 
+    private fun deriveSignedConfigUrl(relayUrl: String): String {
+        val base = relayUrl.trimEnd('/')
+        return if (base.endsWith("/relay")) {
+            base.removeSuffix("/relay") + "/ohttp-configs/signed"
+        } else {
+            // Fallback: just append /ohttp-configs/signed
+            "$base/ohttp-configs/signed"
+        }
+    }
+
     companion object {
         const val REQUEST_MEDIA_TYPE = "message/ohttp-req"
         const val RESPONSE_MEDIA_TYPE = "message/ohttp-res"
-        const val KEYS_MEDIA_TYPE = "application/ohttp-keys"
 
         private val REQUEST_LABEL = "message/bhttp request".toByteArray(Charsets.US_ASCII)
         private val RESPONSE_LABEL = "message/bhttp response".toByteArray(Charsets.US_ASCII)

@@ -1,16 +1,12 @@
 package co.electriccoin.lightwallet.client.internal
 
 import android.util.Base64
-import android.util.Log
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
-import java.util.concurrent.TimeUnit
 
 /**
  * Signed OHTTP configuration envelope (RFC 9458 key configs with Ed25519 signature).
@@ -27,7 +23,7 @@ import java.util.concurrent.TimeUnit
  * @property keyId First 8 hex chars of SHA-256(signing public key)
  * @property signature Base64-encoded Ed25519 signature
  */
-data class SignedOhttpConfigEnvelope(
+internal data class SignedOhttpConfigEnvelope(
     val v: Int,
     val network: String,
     val configs: String,
@@ -38,35 +34,6 @@ data class SignedOhttpConfigEnvelope(
 )
 
 /**
- * Verified OHTTP configuration from signed envelope.
- *
- * @property configBytes RFC 9458 key configuration bytes (ready for HPKE)
- * @property keyId Key ID from the configuration (first byte)
- * @property validUntil Unix timestamp when this config expires
- */
-data class VerifiedOhttpConfig(
-    val configBytes: ByteArray,
-    val keyId: Byte,
-    val validUntil: Long,
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-        other as VerifiedOhttpConfig
-        return configBytes.contentEquals(other.configBytes) &&
-            keyId == other.keyId &&
-            validUntil == other.validUntil
-    }
-
-    override fun hashCode(): Int {
-        var result = configBytes.contentHashCode()
-        result = 31 * result + keyId
-        result = 31 * result + validUntil.hashCode()
-        return result
-    }
-}
-
-/**
  * Exception thrown when signed config verification fails.
  */
 class KeyConfigVerificationFailedException(
@@ -75,14 +42,12 @@ class KeyConfigVerificationFailedException(
 ) : Exception(message, cause)
 
 /**
- * Fetches and verifies signed OHTTP key configurations.
+ * Pure verification of signed OHTTP key configurations.
  *
- * Implements fail-closed security: any verification failure results in
- * OHTTP being unavailable (no fallback to unsigned configs in production).
+ * Implements fail-closed security: any verification failure throws [KeyConfigVerificationFailedException].
+ * No network calls, no fallbacks — verification only.
  */
-object OhttpSignedConfigFetcher {
-    private const val TAG = "OhttpSignedConfig"
-
+internal object OhttpSignedConfigVerifier {
     // Protocol constants
     private const val ENVELOPE_VERSION = 1
     private const val MILLIS_PER_SECOND = 1000L
@@ -91,10 +56,7 @@ object OhttpSignedConfigFetcher {
     private const val KEY_ID_BYTES = 4
     private const val HEX_CHARS_PER_BYTE = 2
     private const val HEX_RADIX = 16
-
-    // HTTP timeouts
-    private const val HTTP_CONNECT_TIMEOUT_SECONDS = 10L
-    private const val HTTP_READ_TIMEOUT_SECONDS = 10L
+    private const val MAX_VALIDITY_SECONDS = 86400L // 24 hours
 
     // Embedded signing public keys (32 bytes raw Ed25519 public keys)
     private val MAINNET_PUBLIC_KEY =
@@ -113,85 +75,23 @@ object OhttpSignedConfigFetcher {
     // Time tolerance (±60 seconds for clock skew)
     private const val TIME_TOLERANCE_SECONDS = 60L
 
-    // HTTP client with reasonable timeouts
-    private val httpClient =
-        OkHttpClient
-            .Builder()
-            .connectTimeout(HTTP_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .readTimeout(HTTP_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .build()
-
     /**
-     * Fetches and verifies signed OHTTP configs from the relay endpoint.
+     * Parses and verifies a signed OHTTP config envelope.
      *
-     * @param relayBaseUrl Base URL of the relay (e.g. "https://relay-simulator-testnet.example")
-     * @param network Network identifier ("mainnet" or "testnet")
-     * @param allowUnsignedFallback If true, falls back to unsigned /ohttp-configs on verification failure (DEBUG ONLY)
-     * @return Verified configuration ready for use
-     * @throws KeyConfigVerificationFailedException if verification fails and no fallback allowed
+     * @param envelopeJson JSON string from `/ohttp-configs/signed`
+     * @param expectedNetwork Network identifier ("mainnet" or "testnet")
+     * @return Parsed [OhttpKeyConfig] ready for use, along with expiry timestamp
+     * @throws KeyConfigVerificationFailedException if verification fails
      */
-    fun fetchAndVerify(
-        relayBaseUrl: String,
-        network: String,
-        allowUnsignedFallback: Boolean = false,
-    ): VerifiedOhttpConfig {
-        val signedUrl = deriveSignedConfigUrl(relayBaseUrl)
-
-        try {
-            Log.d(TAG, "Fetching signed configs from: $signedUrl")
-            val envelope = fetchEnvelope(signedUrl)
-            return verifyAndExtract(envelope, network)
-            // fail-closed: any verification error must disable OHTTP
-        } catch (
-            @Suppress("TooGenericExceptionCaught")
-            e: Exception,
-        ) {
-            Log.e(TAG, "Signed config verification failed", e)
-            if (allowUnsignedFallback) {
-                Log.w(TAG, "Falling back to unsigned configs (DEBUG MODE)")
-                return fetchUnsignedFallback(relayBaseUrl)
-            }
-            throw KeyConfigVerificationFailedException(
-                "Failed to fetch or verify signed OHTTP configs",
-                e,
-            )
-        }
-    }
-
-    /**
-     * Derives the signed config URL from the relay base URL.
-     * Replaces the path with /ohttp-configs/signed.
-     */
-    private fun deriveSignedConfigUrl(relayBaseUrl: String): String {
-        val url = relayBaseUrl.trimEnd('/')
-        val baseWithoutPath = url.substringBeforeLast('/', url)
-        return "$baseWithoutPath/ohttp-configs/signed"
-    }
-
-    /**
-     * Fetches the signed envelope from the given URL.
-     */
-    private fun fetchEnvelope(url: String): SignedOhttpConfigEnvelope {
-        val request =
-            Request
-                .Builder()
-                .url(url)
-                .get()
-                .build()
-
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw KeyConfigVerificationFailedException(
-                    "HTTP ${response.code} fetching signed configs",
-                )
-            }
-
-            val body =
-                response.body?.string()
-                    ?: throw KeyConfigVerificationFailedException("Empty response body")
-
-            return parseEnvelope(body)
-        }
+    fun verifyAndParse(
+        envelopeJson: String,
+        expectedNetwork: String,
+    ): Pair<OhttpKeyConfig, Long> {
+        val envelope = parseEnvelope(envelopeJson)
+        verifyEnvelope(envelope, expectedNetwork)
+        val configBytes = Base64.decode(envelope.configs, Base64.NO_WRAP)
+        val keyConfig = OhttpKeyConfig.parseSupported(configBytes)
+        return keyConfig to envelope.notAfter
     }
 
     /**
@@ -211,7 +111,7 @@ object OhttpSignedConfigFetcher {
     }
 
     /**
-     * Verifies the envelope signature and extracts the config.
+     * Verifies the envelope signature and validity.
      *
      * Checks:
      * 1. Protocol version == 1
@@ -219,12 +119,14 @@ object OhttpSignedConfigFetcher {
      * 3. Key ID matches embedded public key
      * 4. Signature is valid (Ed25519)
      * 5. Current time within [not_before - tolerance, not_after + tolerance]
+     * 6. Validity period ≤ 24 hours
+     * 7. not_after ≤ now + 24 hours
      */
     @Suppress("ThrowsCount") // sequential envelope validation
-    private fun verifyAndExtract(
+    private fun verifyEnvelope(
         envelope: SignedOhttpConfigEnvelope,
         expectedNetwork: String,
-    ): VerifiedOhttpConfig {
+    ) {
         // 1. Check protocol version
         if (envelope.v != ENVELOPE_VERSION) {
             throw KeyConfigVerificationFailedException(
@@ -243,9 +145,7 @@ object OhttpSignedConfigFetcher {
         val (publicKey, expectedKeyId) =
             when (expectedNetwork) {
                 "mainnet" -> MAINNET_PUBLIC_KEY to MAINNET_KEY_ID
-
                 "testnet" -> TESTNET_PUBLIC_KEY to TESTNET_KEY_ID
-
                 else -> throw KeyConfigVerificationFailedException(
                     "Unknown network: $expectedNetwork",
                 )
@@ -254,6 +154,23 @@ object OhttpSignedConfigFetcher {
         if (envelope.keyId != expectedKeyId) {
             throw KeyConfigVerificationFailedException(
                 "Key ID mismatch: expected $expectedKeyId, got ${envelope.keyId}",
+            )
+        }
+
+        // 6. Check validity period ≤ 24 hours
+        val validityPeriod = envelope.notAfter - envelope.notBefore
+        if (validityPeriod > MAX_VALIDITY_SECONDS) {
+            throw KeyConfigVerificationFailedException(
+                "Validity period too long: ${validityPeriod}s (max $MAX_VALIDITY_SECONDS)",
+            )
+        }
+
+        val nowSeconds = System.currentTimeMillis() / MILLIS_PER_SECOND
+
+        // 7. Check not_after ≤ now + 24 hours
+        if (envelope.notAfter > nowSeconds + MAX_VALIDITY_SECONDS) {
+            throw KeyConfigVerificationFailedException(
+                "not_after too far in future: ${envelope.notAfter} > ${nowSeconds + MAX_VALIDITY_SECONDS}",
             )
         }
 
@@ -273,7 +190,6 @@ object OhttpSignedConfigFetcher {
         }
 
         // 5. Check time validity
-        val nowSeconds = System.currentTimeMillis() / MILLIS_PER_SECOND
         val minValid = envelope.notBefore - TIME_TOLERANCE_SECONDS
         val maxValid = envelope.notAfter + TIME_TOLERANCE_SECONDS
 
@@ -282,12 +198,6 @@ object OhttpSignedConfigFetcher {
                 "Config not valid at current time: now=$nowSeconds, valid=[$minValid, $maxValid]",
             )
         }
-
-        // Extract key ID from first byte of configs
-        val keyId = configBytes[0]
-
-        Log.d(TAG, "Successfully verified signed config for $expectedNetwork")
-        return VerifiedOhttpConfig(configBytes, keyId, envelope.notAfter)
     }
 
     /**
@@ -333,48 +243,12 @@ object OhttpSignedConfigFetcher {
             signer.init(false, publicKeyParams)
             signer.update(message, 0, message.size)
             signer.verifySignature(signature)
-            // fail-closed: any crypto error must reject signature
         } catch (
             @Suppress("TooGenericExceptionCaught")
             e: Exception,
         ) {
-            Log.e(TAG, "Ed25519 verification error", e)
             false
         }
-
-    /**
-     * Unsigned fallback (DEBUG ONLY) - fetches raw RFC 9458 configs without signature verification.
-     */
-    private fun fetchUnsignedFallback(relayBaseUrl: String): VerifiedOhttpConfig {
-        val url = relayBaseUrl.trimEnd('/')
-        val baseWithoutPath = url.substringBeforeLast('/', url)
-        val unsignedUrl = "$baseWithoutPath/ohttp-configs"
-
-        Log.w(TAG, "Fetching UNSIGNED configs from: $unsignedUrl")
-
-        val request =
-            Request
-                .Builder()
-                .url(unsignedUrl)
-                .get()
-                .build()
-
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw KeyConfigVerificationFailedException(
-                    "HTTP ${response.code} fetching unsigned configs",
-                )
-            }
-
-            val configBytes =
-                response.body?.bytes()
-                    ?: throw KeyConfigVerificationFailedException("Empty unsigned config response")
-
-            val keyId = configBytes[0]
-            // Unsigned configs don't expire (use a far future timestamp)
-            return VerifiedOhttpConfig(configBytes, keyId, Long.MAX_VALUE)
-        }
-    }
 
     /**
      * Computes key ID for a public key (first 8 hex chars of SHA-256).

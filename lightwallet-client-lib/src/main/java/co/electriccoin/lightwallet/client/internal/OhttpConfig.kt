@@ -163,4 +163,3 @@ internal const val PROXY_RELAY_URL = "https://relay-simulator.example/relay"
  * Key config URL for proxy gateway hosts — derived from [PROXY_RELAY_URL].
  * All proxy hosts share the mainnet relay→gateway pair's HPKE key.
  */
-internal val PROXY_KEY_CONFIG_URL = PROXY_RELAY_URL.removeSuffix("/relay") + "/ohttp-configs"

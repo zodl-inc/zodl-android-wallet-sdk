@@ -158,13 +158,13 @@ class SaplingParamToolBasicTest {
                                     SaplingParamToolFixture.PARAMS_DIRECTORY,
                                     "test_file_1",
                                     SaplingParamTool.SPEND_PARAM_FILE_MAX_BYTES_SIZE,
-                                    SaplingParamTool.SPEND_PARAM_FILE_SHA1_HASH
+                                    SaplingParamTool.SPEND_PARAM_FILE_SHA256_HASH
                                 ),
                                 SaplingParameters(
                                     SaplingParamToolFixture.PARAMS_DIRECTORY,
                                     "test_file_0",
                                     SaplingParamTool.OUTPUT_PARAM_FILE_MAX_BYTES_SIZE,
-                                    SaplingParamTool.OUTPUT_PARAM_FILE_SHA1_HASH
+                                    SaplingParamTool.OUTPUT_PARAM_FILE_SHA256_HASH
                                 )
                             )
                     )

@@ -26,11 +26,12 @@ internal class OhttpChannelFactory(
     override fun newChannel(endpoint: LightWalletEndpoint): ManagedChannel {
         require(endpoint.isSecure) { "OHTTP endpoints must be secure (https)" }
         val logger: (String) -> Unit = { Log.i(Constants.LOG_TAG, it) }
-        Log.i(Constants.LOG_TAG, "OHTTP channel: gateway=${endpoint.host} relay=$relayUrl")
+        val network = OhttpEndpoints.networkFor(endpoint.host)
+        Log.i(Constants.LOG_TAG, "OHTTP channel: gateway=${endpoint.host} relay=$relayUrl network=$network")
         val transport =
             OhttpTransport(
                 relayUrl = relayUrl,
-                keyConfigUrl = OhttpEndpoints.keyConfigUrlFor(endpoint.host),
+                network = network,
                 logger = logger,
                 ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
             )
