@@ -107,27 +107,46 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
         let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let notes = java_note_info_array(env, &notes, "notes")?;
-        let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
         let round_id = java_string_to_rust(env, &round_id)?;
-        require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
+
+        // The pre-flight reads run under the shared access lock, which is
+        // released again before the PIR client is asked for.
+        let bundle_notes = {
+            let _access_lock = db.access_lock()?;
+            let notes = java_note_info_array(env, &notes, "notes")?;
+            let bundle_notes = bundled_notes_for_index(&notes, bundle_index)?;
+            require_bundle_notes_match(&db, &round_id, bundle_index, &bundle_notes)?;
+            bundle_notes
+        };
+
+        // Connecting a PIR client downloads a whole Tier-0 dataset, so it must
+        // not happen under the access lock. pir_client_for has a mutex of its
+        // own, which it holds across the connect, so a second caller for the
+        // same endpoint and layout waits there and then gets the cached client.
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_layout =
             pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
-        // `0`: this export has no `tor_runtime` JNI parameter of its own --
-        // see `connect_pir_client`'s doc comment.
-        let pir_client = connect_pir_client(&pir_url, pir_layout, 0)?;
-        let result = db
-            .precompute_delegation_pir(
+        // Uses the handle's cached client (rather than this file's own
+        // Tor-aware connect_pir_client): this export has no `tor_runtime`
+        // JNI parameter of its own -- see `connect_pir_client`'s doc
+        // comment -- and pir_client_for avoids the whole Tier-0 handshake
+        // again on every bundle of a round.
+        let pir_client = db.pir_client_for(&pir_url, pir_layout)?;
+
+        // The precompute itself writes through the shared connection and is
+        // short, so it takes the access lock again.
+        let result = {
+            let _access_lock = db.access_lock()?;
+            db.precompute_delegation_pir(
                 &round_id,
                 bundle_index,
                 &bundle_notes,
-                &pir_client,
+                pir_client.as_ref(),
                 db.network,
             )
-            .map_err(|e| anyhow!("precompute_delegation_pir: {}", e))?;
+            .map_err(|e| anyhow!("precompute_delegation_pir: {}", e))?
+        };
 
         make_jni_delegation_pir_precompute_result(env, result)
     });

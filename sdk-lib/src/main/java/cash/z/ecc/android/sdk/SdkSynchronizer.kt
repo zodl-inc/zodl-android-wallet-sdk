@@ -1086,19 +1086,6 @@ class SdkSynchronizer private constructor(
         )
 
     /**
-     * [lazyTorClient] is only ever `null` when [SdkFlags.isTorEnabled] is also `false` (see how [lazyTorClient]
-     * is constructed in [Synchronizer.Companion.new]), so this condition is never actually met: Tor client
-     * creation is lazy, and its failure is no longer observable at construction time. See
-     * [Synchronizer.InitializationError.TOR_NOT_AVAILABLE].
-     */
-    override val initializationError =
-        if (lazyTorClient == null && sdkFlags.isTorEnabled) {
-            Synchronizer.InitializationError.TOR_NOT_AVAILABLE
-        } else {
-            null
-        }
-
-    /**
      * Returns the current Unified Address for this account.
      */
     override suspend fun getUnifiedAddress(account: Account): String =

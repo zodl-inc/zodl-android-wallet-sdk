@@ -9,6 +9,7 @@ import cash.z.ecc.android.sdk.internal.FastestServerFetcher
 import cash.z.ecc.android.sdk.internal.model.JniAccount
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniRewindResult
+import cash.z.ecc.android.sdk.internal.model.LazyTorClient
 import cash.z.ecc.android.sdk.internal.model.RecoveryProgress
 import cash.z.ecc.android.sdk.internal.model.ScanProgress
 import cash.z.ecc.android.sdk.internal.model.TreeState
@@ -1813,7 +1814,7 @@ class SlipstreamSynchronizerLifecycleTest {
             walletClientFactory = mock(WalletClientFactory::class.java),
             defaultEndpoint = LightWalletEndpoint(host = "testnet.lightwalletd.com", port = 9067, isSecure = true),
             engineTorDir = null,
-            lazyTorClient = null,
+            lazyTorClient = LazyTorClient { error("Tor is not exercised by this test") },
             exchangeRateFetcher = null,
             sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false),
             fastestServerFetcher = mock(FastestServerFetcher::class.java),

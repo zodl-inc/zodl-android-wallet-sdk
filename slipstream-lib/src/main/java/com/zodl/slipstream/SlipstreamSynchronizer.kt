@@ -23,7 +23,6 @@ import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.PcztException
 import cash.z.ecc.android.sdk.exception.RustLayerException
 import cash.z.ecc.android.sdk.exception.TorInitializationErrorException
-import cash.z.ecc.android.sdk.exception.TorUnavailableException
 import cash.z.ecc.android.sdk.ext.ConsensusBranchId
 import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.internal.Backend
@@ -232,7 +231,7 @@ class SlipstreamSynchronizer internal constructor(
     private val walletClientFactory: WalletClientFactory,
     private val defaultEndpoint: LightWalletEndpoint,
     private val engineTorDir: String?,
-    private val lazyTorClient: LazyTorClient?,
+    private val lazyTorClient: LazyTorClient,
     private val exchangeRateFetcher: UsdExchangeRateFetcher?,
     private val sdkFlags: SdkFlags,
     private val fastestServerFetcher: FastestServerFetcher,
@@ -395,15 +394,6 @@ class SlipstreamSynchronizer internal constructor(
      */
     override val latestBirthdayHeight: BlockHeight
         get() = startBirthday
-
-    /**
-     * [lazyTorClient] is only ever `null` when [SdkFlags.isTorEnabled] is also `false` (see how [lazyTorClient]
-     * is constructed in [Companion.newLocked]), so this condition is never actually met: Tor client creation is
-     * lazy, and its failure is no longer observable at construction time. See
-     * [Synchronizer.InitializationError.TOR_NOT_AVAILABLE].
-     */
-    override val initializationError: Synchronizer.InitializationError?
-        get() = if (lazyTorClient == null && sdkFlags.isTorEnabled) Synchronizer.InitializationError.TOR_NOT_AVAILABLE else null
 
     override val broadcaster: Broadcaster get() = broadcasterImpl
 
@@ -1435,7 +1425,7 @@ class SlipstreamSynchronizer internal constructor(
             if (!awaitPrepared()) return@launchGuarded
             engine.stopPolling()
             engine.stop()
-            lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) }
+            lazyTorClient.ifCreated { it.setDormant(TorDormantMode.SOFT) }
         }
     }
 
@@ -1542,7 +1532,7 @@ class SlipstreamSynchronizer internal constructor(
             !inForeground.get() -> {
                 engine.stopPolling()
                 engine.stop()
-                lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.SOFT) }
+                lazyTorClient.ifCreated { it.setDormant(TorDormantMode.SOFT) }
             }
 
             // Mirror onForeground(): a live foreground wallet — leave it running and polling.
@@ -1568,7 +1558,7 @@ class SlipstreamSynchronizer internal constructor(
         if (burstActive.get()) return
         launchGuarded("onForeground") {
             if (!awaitPrepared()) return@launchGuarded
-            lazyTorClient?.ifCreated { it.setDormant(TorDormantMode.NORMAL) }
+            lazyTorClient.ifCreated { it.setDormant(TorDormantMode.NORMAL) }
             if (!engine.isRunning) {
                 engine.start(ufvk = null, birthday = startBirthday.value)
             }
@@ -1578,13 +1568,9 @@ class SlipstreamSynchronizer internal constructor(
 
     @Suppress("TooGenericExceptionCaught")
     override suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit): HttpClient {
-        if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
-        val client =
-            lazyTorClient
-                ?: throw TorInitializationErrorException(NullPointerException("Tor has not been initialized during synchronizer setup"))
         val isolatedTor =
             try {
-                client.getOrCreate().isolatedTorClient()
+                lazyTorClient.getOrCreate().isolatedTorClient()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1702,7 +1688,7 @@ class SlipstreamSynchronizer internal constructor(
                     step("stop") { engine.stop() }
                     step("free") { engine.free() }
                     step("shutdown") { engine.shutdown() }
-                    step("lazyTorClient.dispose") { lazyTorClient?.dispose() }
+                    step("lazyTorClient.dispose") { lazyTorClient.dispose() }
                     step("walletClient.dispose") { walletClient.dispose() }
                     step("exchangeRateFetcher.dispose") { exchangeRateFetcher?.dispose() }
                 }
@@ -1892,22 +1878,15 @@ class SlipstreamSynchronizer internal constructor(
              * Tor is only needed for on-demand/background work, never on the cold-start critical
              * path, so its creation (~1s) is deferred to first use via [LazyTorClient].
              */
-            val lazyTorClient =
-                if (isTorEnabled || isExchangeRateEnabled) {
-                    LazyTorClient { TorClient.new(Files.getTorDir(applicationContext), backend) }
-                } else {
-                    null
-                }
+            val lazyTorClient = LazyTorClient { TorClient.new(Files.getTorDir(applicationContext), backend) }
             val exchangeRateFetcher =
                 if (isExchangeRateEnabled) {
-                    lazyTorClient?.let { holder ->
-                        UsdExchangeRateFetcher(
-                            isolatedTorClient =
-                                LazyTorClient {
-                                    holder.getOrCreate().isolatedTorClient()
-                                }
-                        )
-                    }
+                    UsdExchangeRateFetcher(
+                        isolatedTorClient =
+                            LazyTorClient {
+                                lazyTorClient.getOrCreate().isolatedTorClient()
+                            }
+                    )
                 } else {
                     null
                 }

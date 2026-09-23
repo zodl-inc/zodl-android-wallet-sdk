@@ -6,6 +6,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-09-15
+
+### Changed
+
+- `Synchronizer.getTorHttpClient` on the Slipstream engine now always provides a Tor client, created lazily on
+  first use, even when neither Tor nor exchange rates are enabled. Callers such as the app's currency picker
+  no longer fail with `TorUnavailableException` when Tor is off; the legacy engine keeps the old gate.
+
+### Removed
+
+- `Synchronizer.initializationError` and `Synchronizer.InitializationError`. Tor client creation has been lazy
+  since it moved off the construction path, so the property was never non-null and nothing consumed it.
+
 ## [3.2.0] - 2026-09-08
 
 ### Added
