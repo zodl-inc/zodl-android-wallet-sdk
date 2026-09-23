@@ -96,12 +96,20 @@ internal class OhttpTransport(
         return try {
             roundTripWith(keyConfig, request, timeoutMs)
         } catch (e: OhttpException) {
-            if (e.httpStatus == HttpURLConnection.HTTP_BAD_REQUEST) {
-                logger("OHTTP gateway rejected request (${e.message}); refreshing key config and retrying")
-                keyConfig = keyConfig(forceRefresh = true)
-                roundTripWith(keyConfig, request, timeoutMs)
-            } else {
-                throw e
+            when {
+                e.httpStatus == HttpURLConnection.HTTP_BAD_REQUEST -> {
+                    logger("OHTTP gateway rejected request (${e.message}); refreshing key config and retrying")
+                    keyConfig = keyConfig(forceRefresh = true)
+                    roundTripWith(keyConfig, request, timeoutMs)
+                }
+                e.httpStatus == 422 && (e.message?.contains("ohttp-key", ignoreCase = true) == true ||
+                    e.message?.contains("HPKE", ignoreCase = true) == true) -> {
+                    // 422 with problem type ohttp-key: invalidate cache and refetch
+                    logger("OHTTP gateway 422 ohttp-key error (${e.message}); invalidating cache and retrying")
+                    keyConfig = keyConfig(forceRefresh = true)
+                    roundTripWith(keyConfig, request, timeoutMs)
+                }
+                else -> throw e
             }
         }
     }

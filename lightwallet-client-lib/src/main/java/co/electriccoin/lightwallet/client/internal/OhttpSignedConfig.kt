@@ -119,6 +119,14 @@ internal object OhttpSignedConfigVerifier {
         val envelope = parseEnvelope(envelopeJson)
         verifyEnvelope(envelope, expectedNetwork, clock, trustedPublicKey)
         val configBytes = decodeBase64("configs", envelope.configs)
+
+        // P4: Enforce 4096-byte limit on decoded configs (ZIP rule 5)
+        if (configBytes.size > 4096) {
+            throw KeyConfigVerificationFailedException(
+                "Decoded configs too large: ${configBytes.size} bytes (max 4096)"
+            )
+        }
+
         val keyConfig =
             try {
                 OhttpKeyConfig.parseSupported(configBytes)
@@ -143,15 +151,38 @@ internal object OhttpSignedConfigVerifier {
 
     /**
      * Parses JSON envelope into typed structure using kotlinx.serialization.
+     * P6: Checks for duplicate keys (best-effort; kotlinx.serialization last-value-wins by design).
      */
-    private fun parseEnvelope(jsonString: String): SignedOhttpConfigEnvelope =
-        try {
+    private fun parseEnvelope(jsonString: String): SignedOhttpConfigEnvelope {
+        // P6: Best-effort duplicate key detection (strict parse per ZIP rule 1)
+        // Note: kotlinx.serialization uses last-value-wins for duplicates by design.
+        // A full fix would require a streaming JSON parser.
+        checkNoDuplicateKeys(jsonString)
+
+        return try {
             json.decodeFromString<SignedOhttpConfigEnvelope>(jsonString)
         } catch (e: SerializationException) {
             throw KeyConfigVerificationFailedException("Failed to parse envelope JSON", e)
         } catch (e: IllegalArgumentException) {
             throw KeyConfigVerificationFailedException("Failed to parse envelope JSON", e)
         }
+    }
+
+    /**
+     * Best-effort check for duplicate JSON keys at top level.
+     * Limitation: Only checks top-level keys due to kotlinx.serialization design.
+     */
+    private fun checkNoDuplicateKeys(jsonString: String) {
+        val seenKeys = mutableSetOf<String>()
+        // Simple regex to extract top-level keys (between quotes before colons)
+        val keyPattern = """"([^"]+)"\s*:""".toRegex()
+        keyPattern.findAll(jsonString).forEach { match ->
+            val key = match.groupValues[1]
+            if (!seenKeys.add(key)) {
+                throw KeyConfigVerificationFailedException("Duplicate JSON key: $key")
+            }
+        }
+    }
 
     /**
      * Verifies the envelope signature and validity.
@@ -244,6 +275,13 @@ internal object OhttpSignedConfigVerifier {
         envelope: SignedOhttpConfigEnvelope,
         nowSeconds: Long,
     ) {
+        // P5: Require not_before < not_after strictly (ZIP rule 2)
+        if (envelope.notBefore >= envelope.notAfter) {
+            throw KeyConfigVerificationFailedException(
+                "Invalid validity window: not_before=${envelope.notBefore} >= not_after=${envelope.notAfter}"
+            )
+        }
+
         val validityPeriod = envelope.notAfter - envelope.notBefore
         val latestAllowed = nowSeconds + MAX_VALIDITY_SECONDS
         val minValid = envelope.notBefore - TIME_TOLERANCE_SECONDS
