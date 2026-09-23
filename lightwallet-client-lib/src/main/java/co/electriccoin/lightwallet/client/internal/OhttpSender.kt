@@ -16,7 +16,12 @@ interface OhttpSender {
      * POSTs [body] to [url] with the given [headers] and [timeoutMs], returning the response body.
      * @throws OhttpException on failure (network, HTTP error, timeout).
      */
-    suspend fun post(url: String, body: ByteArray, headers: List<Pair<String, String>>, timeoutMs: Int): ByteArray
+    suspend fun post(
+        url: String,
+        body: ByteArray,
+        headers: List<Pair<String, String>>,
+        timeoutMs: Int,
+    ): ByteArray
 
     /**
      * GETs [url] with the given [headers] and [timeoutMs], returning the response body.
@@ -24,7 +29,11 @@ interface OhttpSender {
      * config fetch also goes over Tor, preventing the client IP from being exposed to the gateway.
      * @throws OhttpException on failure (network, HTTP error, timeout).
      */
-    suspend fun get(url: String, headers: List<Pair<String, String>>, timeoutMs: Int): ByteArray
+    suspend fun get(
+        url: String,
+        headers: List<Pair<String, String>>,
+        timeoutMs: Int,
+    ): ByteArray
 }
 
 /**
@@ -35,7 +44,7 @@ class DirectOhttpSender : OhttpSender {
         url: String,
         body: ByteArray,
         headers: List<Pair<String, String>>,
-        timeoutMs: Int
+        timeoutMs: Int,
     ): ByteArray {
         val connection = open(url, timeoutMs)
         try {
@@ -54,7 +63,7 @@ class DirectOhttpSender : OhttpSender {
                         ?.take(ERROR_MESSAGE_MAX_LENGTH)
                 throw OhttpException(
                     "Relay/gateway returned HTTP $status${detail?.let { ": $it" } ?: ""}",
-                    status
+                    status,
                 )
             }
             return connection.inputStream.use { it.readFully() }
@@ -66,7 +75,7 @@ class DirectOhttpSender : OhttpSender {
     override suspend fun get(
         url: String,
         headers: List<Pair<String, String>>,
-        timeoutMs: Int
+        timeoutMs: Int,
     ): ByteArray {
         val connection = open(url, timeoutMs)
         try {
@@ -82,7 +91,7 @@ class DirectOhttpSender : OhttpSender {
                         ?.take(ERROR_MESSAGE_MAX_LENGTH)
                 throw OhttpException(
                     "GET request failed: HTTP $status${detail?.let { ": $it" } ?: ""}",
-                    status
+                    status,
                 )
             }
             return connection.inputStream.use { it.readFully() }
@@ -91,7 +100,10 @@ class DirectOhttpSender : OhttpSender {
         }
     }
 
-    private fun open(url: String, timeoutMs: Int): HttpURLConnection {
+    private fun open(
+        url: String,
+        timeoutMs: Int,
+    ): HttpURLConnection {
         val connection = URI(url).toURL().openConnection() as HttpURLConnection
         connection.connectTimeout = CONNECT_TIMEOUT_MS
         connection.readTimeout = timeoutMs

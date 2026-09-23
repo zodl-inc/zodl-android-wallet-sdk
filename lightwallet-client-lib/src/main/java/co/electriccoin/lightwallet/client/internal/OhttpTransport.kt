@@ -28,7 +28,7 @@ internal class OhttpTransport(
      * Optional pre-cached key configuration for testing. When set, skips the initial HTTP GET to
      * [keyConfigUrl]. Production code should leave this null.
      */
-    initialKeyConfig: OhttpKeyConfig? = null
+    initialKeyConfig: OhttpKeyConfig? = null,
 ) {
     private val lock = Any()
     private var cachedKeyConfig: OhttpKeyConfig? = initialKeyConfig
@@ -56,7 +56,10 @@ internal class OhttpTransport(
      * Performs one OHTTP round trip. A gateway rejection (HTTP 400 from the relay/gateway pair) is
      * retried once after refreshing the key configuration, which handles gateway key rotation.
      */
-    suspend fun roundTrip(request: BinaryHttp.Request, timeoutMs: Int): BinaryHttp.Response {
+    suspend fun roundTrip(
+        request: BinaryHttp.Request,
+        timeoutMs: Int,
+    ): BinaryHttp.Response {
         var keyConfig = keyConfig()
         return try {
             roundTripWith(keyConfig, request, timeoutMs)
@@ -74,7 +77,7 @@ internal class OhttpTransport(
     private suspend fun roundTripWith(
         keyConfig: OhttpKeyConfig,
         request: BinaryHttp.Request,
-        timeoutMs: Int
+        timeoutMs: Int,
     ): BinaryHttp.Response {
         // RFC 9458 §4.3 — Encapsulation of Requests
         val header = keyConfig.header()
@@ -149,7 +152,7 @@ private val SECRET_HEADERS = setOf("X-CMC_PRO_API_KEY", "Authorization")
 internal fun stripSecretsForGateway(
     authority: String,
     headers: List<Pair<String, String>>,
-    logger: (String) -> Unit
+    logger: (String) -> Unit,
 ): List<Pair<String, String>> {
     if (authority !in SECRET_INJECTING_GATEWAY_HOSTS) return headers
     val stripped = headers.filter { (key, _) -> key !in SECRET_HEADERS }
@@ -157,7 +160,7 @@ internal fun stripSecretsForGateway(
         val removed = headers.filter { (key, _) -> key in SECRET_HEADERS }.map { it.first }
         logger(
             "OHTTP: stripped secret headers $removed for gateway-mapped host $authority " +
-                "(gateway injects server-side)"
+                "(gateway injects server-side)",
         )
     }
     return stripped

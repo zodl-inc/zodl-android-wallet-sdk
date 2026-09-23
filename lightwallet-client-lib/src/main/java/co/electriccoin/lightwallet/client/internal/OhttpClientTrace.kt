@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicLong
  * truncated to ≤ 64 chars.
  */
 internal class OhttpClientTrace(
-    prefix: String
+    prefix: String,
 ) {
     private val sanitizedPrefix: String
     private val sessionUuid: String = UUID.randomUUID().toString()

@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger
 internal class OhttpManagedChannel(
     private val authority: String,
     private val transport: OhttpTransport,
-    private val logger: (String) -> Unit = {}
+    private val logger: (String) -> Unit = {},
 ) : ManagedChannel() {
     private val shutdown = AtomicBoolean(false)
     private val activeCalls = AtomicInteger(0)
@@ -43,7 +43,7 @@ internal class OhttpManagedChannel(
 
     override fun <RequestT, ResponseT> newCall(
         methodDescriptor: MethodDescriptor<RequestT, ResponseT>,
-        callOptions: CallOptions
+        callOptions: CallOptions,
     ): ClientCall<RequestT, ResponseT> {
         check(!shutdown.get()) { "Channel is shut down" }
         val call =
@@ -69,7 +69,10 @@ internal class OhttpManagedChannel(
 
     override fun isTerminated(): Boolean = shutdown.get() && activeCalls.get() == 0
 
-    override fun awaitTermination(timeout: Long, unit: TimeUnit): Boolean {
+    override fun awaitTermination(
+        timeout: Long,
+        unit: TimeUnit,
+    ): Boolean {
         val deadline = System.nanoTime() + unit.toNanos(timeout)
         while (!isTerminated) {
             if (System.nanoTime() >= deadline) return false
@@ -82,7 +85,10 @@ internal class OhttpManagedChannel(
     override fun getState(requestConnection: Boolean): ConnectivityState =
         if (shutdown.get()) ConnectivityState.SHUTDOWN else ConnectivityState.READY
 
-    override fun notifyWhenStateChanged(source: ConnectivityState, callback: Runnable) {
+    override fun notifyWhenStateChanged(
+        source: ConnectivityState,
+        callback: Runnable,
+    ) {
         // State never changes spontaneously; nothing to notify.
     }
 
@@ -105,7 +111,7 @@ internal class OhttpManagedChannel(
 
                     override fun newThread(r: Runnable): Thread =
                         Thread(r, "ohttp-io-${counter.incrementAndGet()}").apply { isDaemon = true }
-                }
+                },
             )
     }
 }
@@ -115,7 +121,7 @@ internal class OhttpManagedChannel(
  * callbacks to be serialised.
  */
 internal class SerializingExecutor(
-    private val delegate: Executor
+    private val delegate: Executor,
 ) : Executor {
     private val queue = ArrayDeque<Runnable>()
     private var running = false
@@ -157,7 +163,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     private val transport: OhttpTransport,
     private val logger: (String) -> Unit,
     private val activeCalls: AtomicInteger,
-    private val callRegistry: MutableSet<OhttpClientCall<*, *>>
+    private val callRegistry: MutableSet<OhttpClientCall<*, *>>,
 ) : ClientCall<RequestT, ResponseT>() {
     private val callbackExecutor = SerializingExecutor(callOptions.executor ?: OhttpManagedChannel.ioExecutor)
     private val requestBody = ByteArrayOutputStream()
@@ -173,7 +179,10 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     private var started = false
     private var cancelled = false
 
-    override fun start(responseListener: Listener<ResponseT>, headers: Metadata) {
+    override fun start(
+        responseListener: Listener<ResponseT>,
+        headers: Metadata,
+    ) {
         synchronized(lock) {
             check(!started) { "already started" }
             started = true
@@ -190,11 +199,14 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         deliver()
     }
 
-    override fun cancel(message: String?, cause: Throwable?) {
+    override fun cancel(
+        message: String?,
+        cause: Throwable?,
+    ) {
         synchronized(lock) { cancelled = true }
         finish(
             Status.CANCELLED.withDescription(message ?: "cancelled").withCause(cause),
-            Metadata()
+            Metadata(),
         )
     }
 
@@ -239,7 +251,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
                     authority = authority,
                     path = "/${method.fullMethodName}",
                     headers = headers,
-                    body = requestBody.toByteArray()
+                    body = requestBody.toByteArray(),
                 )
 
             val response = runBlocking { transport.roundTrip(request, timeoutMs + TIMEOUT_SLACK_MS) }
@@ -376,7 +388,10 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         }
     }
 
-    private fun finish(status: Status, trailers: Metadata) {
+    private fun finish(
+        status: Status,
+        trailers: Metadata,
+    ) {
         val currentListener: Listener<ResponseT>
         synchronized(lock) {
             if (closed) return

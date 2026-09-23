@@ -9,5 +9,5 @@ import java.io.IOException
 class OhttpException(
     message: String,
     val httpStatus: Int? = null,
-    cause: Throwable? = null
+    cause: Throwable? = null,
 ) : IOException(message, cause)

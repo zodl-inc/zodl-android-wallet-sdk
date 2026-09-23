@@ -21,7 +21,7 @@ internal class OhttpChannelFactory(
      * Optional client trace ID prefix. When set, every outer OHTTP POST to the relay carries
      * `X-Client-Trace-Id: <prefix>-<uuid>`. See [OhttpTransport.ohttpClientTraceIdPrefix] for details.
      */
-    private val ohttpClientTraceIdPrefix: String? = null
+    private val ohttpClientTraceIdPrefix: String? = null,
 ) : ChannelFactory {
     override fun newChannel(endpoint: LightWalletEndpoint): ManagedChannel {
         require(endpoint.isSecure) { "OHTTP endpoints must be secure (https)" }
@@ -32,7 +32,7 @@ internal class OhttpChannelFactory(
                 relayUrl = relayUrl,
                 keyConfigUrl = OhttpEndpoints.keyConfigUrlFor(endpoint.host),
                 logger = logger,
-                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
             )
         return OhttpManagedChannel(authority = endpoint.host, transport = transport, logger = logger)
     }

@@ -225,7 +225,9 @@ object OhttpSignedConfigFetcher {
         val (publicKey, expectedKeyId) =
             when (expectedNetwork) {
                 "mainnet" -> MAINNET_PUBLIC_KEY to MAINNET_KEY_ID
+
                 "testnet" -> TESTNET_PUBLIC_KEY to TESTNET_KEY_ID
+
                 else -> throw KeyConfigVerificationFailedException(
                     "Unknown network: $expectedNetwork",
                 )
