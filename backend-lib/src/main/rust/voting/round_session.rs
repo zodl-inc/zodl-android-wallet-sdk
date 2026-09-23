@@ -32,9 +32,9 @@ use zeroize::Zeroizing;
 use voting::{
     BallotIntent, ChainAdvancePolicy, ChainSubmissionClientConfig, ChainSubmissionControl,
     DirectRoute, HelperClient, HelperHealth, HelperTransport, HyperTransport,
-    NoopRoundDriveReporter, ProposalRosterEntry, RouteFuture, RouteHttp, RouteRequest,
-    RoundBinding, RoundDriveEvent, RoundDrivePolicy, RoundDriveReporter, RoundDriveReporterBridge,
-    RoundDriver, RoundExecutor, RoundHostContext, RoundHostSourceBridge,
+    NoopRoundDriveReporter, ProgressBaseline, ProposalRosterEntry, RouteFuture, RouteHttp,
+    RouteRequest, RoundBinding, RoundDriveEvent, RoundDrivePolicy, RoundDriveReporter,
+    RoundDriveReporterBridge, RoundDriver, RoundExecutor, RoundHostContext, RoundHostSourceBridge,
 };
 
 use crate::tor::TorRuntime;
@@ -664,6 +664,26 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
 /// mirroring iOS's `max_active_heavy_jobs`; see the task report for why that
 /// is flagged as a concern rather than fixed here.
 ///
+/// `progress_baseline: ProgressBaseline::SelectedChoices` (default is `Run`):
+/// the app's `SubmitVotesUseCase.runRoundWithBundleFailureRetry` re-invokes
+/// this same export when a round ends in isolated, transient bundle failures
+/// (commit `134528bb9`) -- and under `Run`, each such call's report/live
+/// tally counts progress only against what THAT call's own plan still owed,
+/// not the round as a whole. A 37-proposal round where 36 already succeeded
+/// before a retry, leaving 1 outstanding, reports "1 of 1" for the retry
+/// call; the app takes the last call's report as the round's final
+/// `submittedProposalCount`, so it persisted "voted on 1 of 37" for a round
+/// that genuinely finished all 37. `docs/migrating-to-v5.md` names this exact
+/// tradeoff and recommends `SelectedChoices` for it verbatim: "Use
+/// `RoundDrivePolicy::progress_baseline = ProgressBaseline::SelectedChoices`
+/// if UI progress counts all selected votes across restarts; the default
+/// `Run` counts work relative to this run." Our retry is effectively an
+/// additional restart of the same round, which is exactly that case. Note
+/// this is not retry-only: it changes the denominator/numerator for every
+/// `runRoundNative` call, including the live per-`PlanRefreshed`-event
+/// `VotingRoundWorkTally` that feeds the app's real-time progress bar on a
+/// normal, non-retried round too -- not just the final `VotingRoundRunReport`.
+///
 /// `delegation_inputs` is `null` for a signer-less precompute-only pass or a
 /// share-tracking-only pass (every step other than `Delegate`/
 /// `AdvanceDelegation` tolerates `None` per `RoundHostContext::delegation`'s
@@ -723,6 +743,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
         });
         let policy = RoundDrivePolicy {
             max_bundle_concurrency: NonZeroUsize::new(2).expect("2 is not zero"),
+            progress_baseline: ProgressBaseline::SelectedChoices,
             ..RoundDrivePolicy::default()
         };
 
