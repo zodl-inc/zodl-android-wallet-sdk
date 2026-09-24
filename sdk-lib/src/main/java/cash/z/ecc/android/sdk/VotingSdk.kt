@@ -202,7 +202,17 @@ interface VotingDbSession {
      */
     suspend fun generateHotkey(storedSecret: ByteArray): VotingHotkey
 
+    /**
+     * [torRuntime] is the caller's raw native Tor-runtime handle, same contract as
+     * [openRoundSession]'s own [torRuntime] parameter: obtain it from
+     * [Synchronizer.getVotingTorRuntimeHandle], and pass `0` when no live Tor runtime is
+     * available (Tor disabled) rather than failing the call. Without this, every PIR request
+     * this call makes would go out over plain HTTP unconditionally, correlating the caller's IP
+     * with holding voting-eligible notes -- the same privacy requirement [precomputePirProofs]
+     * and [precomputeSnapshotBundles] already carry.
+     */
     suspend fun precomputeDelegationPir(
+        torRuntime: Long,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,

@@ -262,6 +262,7 @@ internal interface VotingDbBackend {
     suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey
 
     suspend fun precomputeDelegationPir(
+        torRuntime: Long,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -367,6 +368,7 @@ private class RustVotingDbBackend(
         votingDb.generateHotkey(storedSecret)
 
     override suspend fun precomputeDelegationPir(
+        torRuntime: Long,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -377,6 +379,7 @@ private class RustVotingDbBackend(
         notes: List<JniNoteInfo>
     ): JniDelegationPirPrecomputeResult =
         votingDb.precomputeDelegationPir(
+            torRuntime,
             roundId,
             bundleIndex,
             pirServerUrl,
@@ -606,6 +609,7 @@ internal class TypesafeVotingDbImpl(
         }
 
     override suspend fun precomputeDelegationPir(
+        torRuntime: Long,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -617,6 +621,7 @@ internal class TypesafeVotingDbImpl(
     ): DelegationPirPrecomputeResult =
         votingDb
             .precomputeDelegationPir(
+                torRuntime,
                 roundId,
                 bundleIndex,
                 pirServerUrl,

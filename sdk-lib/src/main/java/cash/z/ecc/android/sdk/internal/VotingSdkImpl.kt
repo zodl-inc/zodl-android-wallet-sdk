@@ -155,6 +155,7 @@ internal class VotingDbSessionImpl(
         db.generateHotkey(storedSecret).toPublic()
 
     override suspend fun precomputeDelegationPir(
+        torRuntime: Long,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -166,6 +167,7 @@ internal class VotingDbSessionImpl(
     ): VotingDelegationPirPrecomputeResult =
         db
             .precomputeDelegationPir(
+                torRuntime,
                 roundId,
                 bundleIndex,
                 pirServerUrl,

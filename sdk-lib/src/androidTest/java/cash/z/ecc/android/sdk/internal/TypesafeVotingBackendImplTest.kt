@@ -85,6 +85,7 @@ class TypesafeVotingBackendImplTest {
 
             val result =
                 db.precomputeDelegationPir(
+                    torRuntime = 5L,
                     roundId = "round-1",
                     bundleIndex = 2,
                     pirServerUrl = "https://pir.example",
@@ -97,6 +98,7 @@ class TypesafeVotingBackendImplTest {
 
             assertEquals(3L, result.cachedCount)
             assertEquals(4L, result.fetchedCount)
+            assertEquals(5L, dbBackend.precomputeTorRuntime)
             assertEquals("round-1", dbBackend.precomputeRoundId)
             assertEquals(2, dbBackend.precomputeBundleIndex)
             assertEquals("https://pir.example", dbBackend.precomputePirServerUrl)
@@ -598,6 +600,7 @@ class TypesafeVotingBackendImplTest {
             RecordingShareTrackingSessionBackend(),
         private val roundSessionBackend: RoundSessionBackend = RecordingRoundSessionBackend()
     ) : VotingDbBackend {
+        var precomputeTorRuntime: Long? = null
         var precomputeRoundId: String? = null
         var precomputeBundleIndex: Int? = null
         var precomputePirServerUrl: String? = null
@@ -656,6 +659,7 @@ class TypesafeVotingBackendImplTest {
         }
 
         override suspend fun precomputeDelegationPir(
+            torRuntime: Long,
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
@@ -665,6 +669,7 @@ class TypesafeVotingBackendImplTest {
             pirPolyLen: Int,
             notes: List<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult {
+            precomputeTorRuntime = torRuntime
             precomputeRoundId = roundId
             precomputeBundleIndex = bundleIndex
             precomputePirServerUrl = pirServerUrl

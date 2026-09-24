@@ -145,6 +145,7 @@ internal interface TypesafeVotingDb {
     suspend fun generateHotkey(storedSecret: ByteArray): JniVotingHotkey
 
     suspend fun precomputeDelegationPir(
+        torRuntime: Long,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,

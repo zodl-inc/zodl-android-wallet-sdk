@@ -411,6 +411,7 @@ class VotingRustBackendTest {
 
                 assertFailsWith<RuntimeException> {
                     db.precomputeDelegationPir(
+                        torRuntime = 0,
                         roundId = ROUND_ID,
                         bundleIndex = 0,
                         pirServerUrl = "not-a-valid-url",
