@@ -75,6 +75,10 @@ mavenPublishing {
 android {
     namespace = "cash.z.ecc.android.backend"
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     useLibrary("android.test.runner")
 
     defaultConfig {

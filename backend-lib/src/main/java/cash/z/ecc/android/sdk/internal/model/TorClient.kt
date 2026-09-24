@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.internal.model
 
+import cash.z.ecc.android.backend.BuildConfig
 import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.ext.existsSuspend
 import cash.z.ecc.android.sdk.internal.ext.mkdirsSuspend
@@ -156,7 +157,8 @@ class TorClient private constructor(
                     error("${torDir.path} directory does not exist and could not be created.")
                 }
 
-                TorClient(createTorRuntime(torDir.path, clientTracePrefix), backend)
+                // Trace ids are debug-only: the Rust side no longer gates this itself.
+                TorClient(createTorRuntime(torDir.path, clientTracePrefix.takeIf { BuildConfig.DEBUG }), backend)
             }
 
         //

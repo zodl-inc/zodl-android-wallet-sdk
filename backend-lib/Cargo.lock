@@ -8150,7 +8150,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 [[package]]
 name = "zodl-slipstream"
 version = "0.3.0-alpha.1"
-source = "git+https://github.com/zodl-inc/slipstream-internal.git?rev=3b7878d5ae2484cc5ffb4e12fb3c5b45dc2fa0ec#3b7878d5ae2484cc5ffb4e12fb3c5b45dc2fa0ec"
+source = "git+https://github.com/zodl-inc/slipstream-internal.git?rev=661d67e87b648d469687772816d43549d615fdb4#661d67e87b648d469687772816d43549d615fdb4"
 dependencies = [
  "aes-gcm",
  "arti-client",
