@@ -55,6 +55,7 @@ class KeyConfigVerificationFailedException(
  * Implements fail-closed security: any verification failure throws [KeyConfigVerificationFailedException].
  * No network calls, no fallbacks — verification only.
  */
+@Suppress("TooManyFunctions")
 internal object OhttpSignedConfigVerifier {
     // Protocol constants
     private const val ENVELOPE_VERSION = 1
