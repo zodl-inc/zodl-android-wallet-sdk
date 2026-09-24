@@ -24,7 +24,10 @@ internal object OhttpEndpoints {
     private val relayByGatewayHost: Map<String, String> =
         mapOf(
             "ohttp-gateway-testnet.example" to "https://ohttp-relay-testnet.example/relay",
-            "ohttp-gateway.example" to "https://ohttp-relay.example/relay",
+            // TODO(COR-1830): Switch to ohttp-relay.example/relay once Fastly prod
+            // serves /ohttp-configs (currently 501; only POST /relay works). Mainnet clients fetch signed
+            // key config via the relay.
+            "ohttp-gateway.example" to "https://relay-simulator.example/relay",
         )
 
     fun isOhttpGateway(host: String): Boolean = host.startsWith(GATEWAY_HOST_PREFIX)
@@ -157,4 +160,5 @@ internal fun isOhttpProxyAllowedHost(host: String): Boolean {
 }
 
 /** Relay URL for proxy gateway hosts — all share the mainnet relay. */
-internal const val PROXY_RELAY_URL = "https://ohttp-relay.example/relay"
+// TODO(COR-1830): Switch to ohttp-relay once it serves /ohttp-configs
+internal const val PROXY_RELAY_URL = "https://relay-simulator.example/relay"
