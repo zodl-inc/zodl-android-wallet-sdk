@@ -23,8 +23,8 @@ internal object OhttpEndpoints {
 
     private val relayByGatewayHost: Map<String, String> =
         mapOf(
-            "ohttp-gateway-testnet.example" to "https://relay-simulator-testnet.example/relay",
-            "ohttp-gateway.example" to "https://relay-simulator.example/relay",
+            "ohttp-gateway-testnet.example" to "https://ohttp-relay-testnet.example/relay",
+            "ohttp-gateway.example" to "https://ohttp-relay.example/relay",
         )
 
     fun isOhttpGateway(host: String): Boolean = host.startsWith(GATEWAY_HOST_PREFIX)
@@ -157,4 +157,4 @@ internal fun isOhttpProxyAllowedHost(host: String): Boolean {
 }
 
 /** Relay URL for proxy gateway hosts — all share the mainnet relay. */
-internal const val PROXY_RELAY_URL = "https://relay-simulator.example/relay"
+internal const val PROXY_RELAY_URL = "https://ohttp-relay.example/relay"
