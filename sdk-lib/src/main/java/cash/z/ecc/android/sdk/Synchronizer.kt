@@ -893,11 +893,20 @@ interface Synchronizer {
      * Returns the raw native Tor-runtime handle backing this synchronizer's shared Tor client,
      * for callers that must hand it to a different native subsystem accepting a raw Tor runtime
      * handle -- today, `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`'s and
-     * `cash.z.ecc.android.sdk.VotingShareTrackingSession.run`'s `torRuntime` parameter. Shares
-     * [getTorHttpClient]'s enable/init preconditions (same exceptions, same underlying Tor
-     * client), but does not create a new isolated Tor client the
-     * way [getTorHttpClient] does -- owning any such isolation for the voting round driver's
-     * traffic is that driver's job, not this accessor's.
+     * `cash.z.ecc.android.sdk.VotingShareTrackingSession.run`'s `torRuntime` parameter. Uses the
+     * same underlying Tor client as [getTorHttpClient], but does not create a new isolated Tor
+     * client the way [getTorHttpClient] does -- owning any such isolation for the voting round
+     * driver's traffic is that driver's job, not this accessor's.
+     *
+     * Deliberately keeps the stricter `isTorEnabled || isExchangeRateEnabled` gate
+     * ([TorUnavailableException] otherwise) even on engines where [getTorHttpClient] itself no
+     * longer enforces it (the Slipstream engine's `getTorHttpClient` now always provides a
+     * client, created lazily, so a caller like the currency picker never fails just because Tor
+     * is off). Voting is not that caller: it is expected to respect the user's Tor preference
+     * explicitly rather than silently routing over plain HTTP the moment a client happens to
+     * exist, so this accessor keeps checking the preference itself instead of inheriting
+     * whatever [getTorHttpClient] currently does. If the two implementations ever diverge on the
+     * legacy (non-Slipstream) engine as well, re-check this comment against both.
      *
      * The returned handle is pinned: this synchronizer's shared Tor client cannot be disposed
      * (a `close()`/rebuild, e.g. from server-switch hysteresis or a wallet reset) until a
