@@ -102,14 +102,20 @@ internal class OhttpTransport(
                     keyConfig = keyConfig(forceRefresh = true)
                     roundTripWith(keyConfig, request, timeoutMs)
                 }
-                e.httpStatus == 422 && (e.message?.contains("ohttp-key", ignoreCase = true) == true ||
-                    e.message?.contains("HPKE", ignoreCase = true) == true) -> {
+
+                e.httpStatus == HTTP_UNPROCESSABLE_ENTITY && (
+                    e.message?.contains("ohttp-key", ignoreCase = true) == true ||
+                        e.message?.contains("HPKE", ignoreCase = true) == true
+                ) -> {
                     // 422 with problem type ohttp-key: invalidate cache and refetch
                     logger("OHTTP gateway 422 ohttp-key error (${e.message}); invalidating cache and retrying")
                     keyConfig = keyConfig(forceRefresh = true)
                     roundTripWith(keyConfig, request, timeoutMs)
                 }
-                else -> throw e
+
+                else -> {
+                    throw e
+                }
             }
         }
     }
@@ -175,6 +181,7 @@ internal class OhttpTransport(
         const val REQUEST_MEDIA_TYPE = "message/ohttp-req"
         const val RESPONSE_MEDIA_TYPE = "message/ohttp-res"
         private const val MILLIS_PER_SECOND = 1000L
+        private const val HTTP_UNPROCESSABLE_ENTITY = 422
 
         private val REQUEST_LABEL = "message/bhttp request".toByteArray(Charsets.US_ASCII)
         private val RESPONSE_LABEL = "message/bhttp response".toByteArray(Charsets.US_ASCII)

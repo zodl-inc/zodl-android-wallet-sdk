@@ -65,6 +65,7 @@ internal object OhttpSignedConfigVerifier {
     private const val HEX_CHARS_PER_BYTE = 2
     private const val HEX_RADIX = 16
     private const val MAX_VALIDITY_SECONDS = 86400L // 24 hours
+    private const val MAX_CONFIGS_BYTES = 4096 // ZIP rule 5
 
     // Embedded signing public keys (32 bytes raw Ed25519 public keys)
     private val MAINNET_PUBLIC_KEY =
@@ -121,9 +122,9 @@ internal object OhttpSignedConfigVerifier {
         val configBytes = decodeBase64("configs", envelope.configs)
 
         // P4: Enforce 4096-byte limit on decoded configs (ZIP rule 5)
-        if (configBytes.size > 4096) {
+        if (configBytes.size > MAX_CONFIGS_BYTES) {
             throw KeyConfigVerificationFailedException(
-                "Decoded configs too large: ${configBytes.size} bytes (max 4096)"
+                "Decoded configs too large: ${configBytes.size} bytes (max $MAX_CONFIGS_BYTES)"
             )
         }
 

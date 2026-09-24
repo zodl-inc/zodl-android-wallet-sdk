@@ -25,12 +25,14 @@ class OhttpHttpClient private constructor(
     private val ohttpClientTraceIdPrefix: String? = null,
 ) {
     // F-07 fix: Reuse OhttpTransport instance to share key cache across requests
-    private val transport = OhttpTransport(
-        PROXY_RELAY_URL,
-        PROXY_NETWORK,
-        sender,
-        ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
-    )
+    private val transport =
+        OhttpTransport(
+            PROXY_RELAY_URL,
+            PROXY_NETWORK,
+            sender,
+            ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
+        )
+
     data class Request(
         val url: String,
         val method: String = "GET",
