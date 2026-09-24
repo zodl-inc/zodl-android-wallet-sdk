@@ -6934,7 +6934,8 @@ checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 [[package]]
 name = "vote-commitment-tree"
 version = "0.6.2"
-source = "git+https://github.com/valargroup/zcash_voting.git?rev=67edd7eb797f66163c93ec66861f96ef7cffc4ae#67edd7eb797f66163c93ec66861f96ef7cffc4ae"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce66dba0fda960016f2ed6b87edcdd0706d8d3914859bd6d51ec0b618aa2d103"
 dependencies = [
  "anyhow",
  "imt-tree",
@@ -6948,7 +6949,8 @@ dependencies = [
 [[package]]
 name = "vote-commitment-tree-client"
 version = "0.8.2"
-source = "git+https://github.com/valargroup/zcash_voting.git?rev=67edd7eb797f66163c93ec66861f96ef7cffc4ae#67edd7eb797f66163c93ec66861f96ef7cffc4ae"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeb68896149059f300d8b2f08586cbde59889decfe106a05e3347b04f61b98c5"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -7696,7 +7698,7 @@ dependencies = [
 
 [[package]]
 name = "zcash-android-wallet-sdk"
-version = "3.2.0"
+version = "3.2.1"
 dependencies = [
  "anyhow",
  "bip0039",
@@ -8098,7 +8100,8 @@ dependencies = [
 [[package]]
 name = "zcash_voting"
 version = "5.1.0"
-source = "git+https://github.com/valargroup/zcash_voting.git?rev=67edd7eb797f66163c93ec66861f96ef7cffc4ae#67edd7eb797f66163c93ec66861f96ef7cffc4ae"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2417d8fd1c8f92b0e55e3d47e13360acee8f3a46bbe803f384e4421f1a22db7a"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

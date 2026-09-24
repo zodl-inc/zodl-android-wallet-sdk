@@ -6,6 +6,34 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking: shielded voting's public surface is replaced by a round-driver API.**
+  `VotingDbSession`/`VotingSdk` no longer expose the caller-drives-every-step methods a
+  round used to be advanced through one at a time -- `buildGovernancePczt*`,
+  `buildAndProveDelegation`, `buildVoteCommitment`, `buildSharePayloads`, `initRound`,
+  `storeWitnesses`, `recordShareDelegation`, `getDelegationSubmission*`, `getVotes`,
+  `markVoteSubmitted`/`markShareConfirmed`, and about twenty more (roughly 30 methods in
+  total). In their place, `VotingDbSession.openRoundSession`/`ensureRound` and the new
+  `VotingRoundSession`/`VotingShareTrackingSession` interfaces (`run`, `setBallotIntents`,
+  `getKeystoneSigningRequests`/`storeKeystoneSignatures`, `cancel`, `plan`) hand the crate's
+  own `RoundExecutor`/`RoundDriver` ownership of a round's build/prove/submit sequencing --
+  callers drive one round session to completion instead of one JNI call per step.
+  `Synchronizer.getVotingTorRuntimeHandle()` is new, for callers that need to route the
+  round session's own traffic through the same Tor client the rest of the SDK uses.
+  `configureVoting()` sets the process-wide proving-pool policy once, replacing per-call
+  tuning. `precomputeDelegationPir`/`precomputePirProofs`/`precomputeSnapshotBundles` remain
+  (the last two are new) for callers that want to warm PIR ahead of a round starting.
+- Shielded voting's delegation-PIR precompute now connects its PIR client once per open
+  voting DB and reuses it for every bundle of a round, instead of rebuilding it -- tokio
+  runtime, TLS client, tier parameters and a full Tier-0 dataset download -- on each call.
+- Shielded voting now builds against `zcash_voting` 5.1.0 (`voting-circuits` 0.12.x).
+  Proposal ids range from 1 to 50 instead of 1 to 15, and a client on the previous circuit
+  is rejected with `ConstraintSystemFailure` once a vote chain upgrades to match. The Rust
+  API the SDK wraps is unchanged in shape; the crate's default backend is upstream
+  librustzcash (`lrz`), so the native library still links exactly one copy of each Zcash
+  crate.
+
 ## [3.2.1] - 2026-09-15
 
 ### Changed
