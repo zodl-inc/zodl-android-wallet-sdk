@@ -2390,40 +2390,110 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
         let account_uuid = account_id_from_jni(env, account_uuid)?;
         let payment_uri = utils::java_string_to_rust(env, &payment_uri)?;
 
-        let account = db_data.get_account(account_uuid)?;
+        let proposal =
+            propose_transfer_from_uri_inner(&mut db_data, &network, account_uuid, &payment_uri)?;
 
-        // Always use ZIP 317 fees
-        let (change_strategy, input_selector) = zip317_helper(
-            None,
-            change_split_policy(account.as_ref().map(|a| a.source())),
-        );
-
-        let request = TransactionRequest::from_uri(&payment_uri)
-            .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
-
-        let proposal = propose_transfer::<_, _, _, _, Infallible>(
-            &mut db_data,
-            &network,
-            account_uuid,
-            &input_selector,
-            &change_strategy,
-            request,
-            wallet::ConfirmationsPolicy::default(),
-            &SpendPolicy::default(),
-            None,
-            None,
-        )
-        .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
-
-        Ok(utils::rust_bytes_to_java(
-            env,
-            Proposal::from_standard_proposal(&proposal)
-                .encode_to_vec()
-                .as_ref(),
-        )?
-        .into_raw())
+        Ok(utils::rust_bytes_to_java(env, proposal.encode_to_vec().as_ref())?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Proposes a ZIP 317 transfer fulfilling the ZIP 321 `payment_uri` from `account_uuid`,
+/// splitting change by the policy [`change_split_policy`] selects for the account's source.
+///
+/// This is the whole database-level body of `proposeTransferFromUri`; the JNI entry point only
+/// decodes its arguments, opens the wallet, and encodes the returned proposal.
+pub(crate) fn propose_transfer_from_uri_inner<DbT, P>(
+    db_data: &mut DbT,
+    network: &P,
+    account_uuid: AccountUuid,
+    payment_uri: &str,
+) -> anyhow::Result<Proposal>
+where
+    DbT: WalletRead<AccountId = AccountUuid>
+        + WalletWrite
+        + InputSource<AccountId = AccountUuid, Error = <DbT as WalletRead>::Error>,
+    <DbT as WalletRead>::Error: std::error::Error + Send + Sync + 'static,
+    <DbT as InputSource>::NoteRef: Copy + Eq + Ord + std::fmt::Display,
+    P: Parameters + Clone,
+{
+    let account = db_data.get_account(account_uuid)?;
+
+    let (change_strategy, input_selector) = zip317_helper(
+        None,
+        change_split_policy(account.as_ref().map(|a| a.source())),
+    );
+
+    let request = TransactionRequest::from_uri(payment_uri)
+        .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
+
+    let proposal = propose_transfer::<_, _, _, _, Infallible>(
+        db_data,
+        network,
+        account_uuid,
+        &input_selector,
+        &change_strategy,
+        request,
+        wallet::ConfirmationsPolicy::default(),
+        &SpendPolicy::default(),
+        None,
+        None,
+    )
+    .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
+
+    Ok(Proposal::from_standard_proposal(&proposal))
+}
+
+/// Proposes a ZIP 317 transfer of `value` to `to` (with an optional `memo`) from `account_uuid`,
+/// splitting change by the policy [`change_split_policy`] selects for the account's source.
+///
+/// This is the whole database-level body of `proposeTransfer`; the JNI entry point only decodes
+/// its arguments, opens the wallet, and encodes the returned proposal.
+pub(crate) fn propose_transfer_inner<DbT, P>(
+    db_data: &mut DbT,
+    network: &P,
+    account_uuid: AccountUuid,
+    to: ZcashAddress,
+    value: Zatoshis,
+    memo: Option<MemoBytes>,
+) -> anyhow::Result<Proposal>
+where
+    DbT: WalletRead<AccountId = AccountUuid>
+        + WalletWrite
+        + InputSource<AccountId = AccountUuid, Error = <DbT as WalletRead>::Error>,
+    <DbT as WalletRead>::Error: std::error::Error + Send + Sync + 'static,
+    <DbT as InputSource>::NoteRef: Copy + Eq + Ord + std::fmt::Display,
+    P: Parameters + Clone,
+{
+    let account = db_data.get_account(account_uuid)?;
+
+    // Always use ZIP 317 fees
+    let (change_strategy, input_selector) = zip317_helper(
+        None,
+        change_split_policy(account.as_ref().map(|a| a.source())),
+    );
+
+    let request = TransactionRequest::new(vec![
+        Payment::new(to, Some(value), memo, None, None, vec![])
+            .map_err(|e| anyhow!("Unable to construct payment: {}.", e))?,
+    ])
+    .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
+
+    let proposal = propose_transfer::<_, _, _, _, Infallible>(
+        db_data,
+        network,
+        account_uuid,
+        &input_selector,
+        &change_strategy,
+        request,
+        wallet::ConfirmationsPolicy::default(),
+        &SpendPolicy::default(),
+        None,
+        None,
+    )
+    .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
+
+    Ok(Proposal::from_standard_proposal(&proposal))
 }
 
 #[unsafe(no_mangle)]
@@ -2456,41 +2526,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             .transpose()
             .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
 
-        let account = db_data.get_account(account_uuid)?;
+        let proposal =
+            propose_transfer_inner(&mut db_data, &network, account_uuid, to, value, memo)?;
 
-        // Always use ZIP 317 fees
-        let (change_strategy, input_selector) = zip317_helper(
-            None,
-            change_split_policy(account.as_ref().map(|a| a.source())),
-        );
-
-        let request = TransactionRequest::new(vec![
-            Payment::new(to, Some(value), memo, None, None, vec![])
-                .map_err(|e| anyhow!("Unable to construct payment: {}.", e))?,
-        ])
-        .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
-
-        let proposal = propose_transfer::<_, _, _, _, Infallible>(
-            &mut db_data,
-            &network,
-            account_uuid,
-            &input_selector,
-            &change_strategy,
-            request,
-            wallet::ConfirmationsPolicy::default(),
-            &SpendPolicy::default(),
-            None,
-            None,
-        )
-        .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
-
-        Ok(utils::rust_bytes_to_java(
-            env,
-            Proposal::from_standard_proposal(&proposal)
-                .encode_to_vec()
-                .as_ref(),
-        )?
-        .into_raw())
+        Ok(utils::rust_bytes_to_java(env, proposal.encode_to_vec().as_ref())?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -2513,127 +2552,155 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
         let account_uuid = account_id_from_jni(env, account_uuid)?;
         let shielding_threshold = Zatoshis::from_nonnegative_i64(shielding_threshold)
             .map_err(|_| anyhow!("Invalid shielding threshold, out of range"))?;
-        let confirmations_policy = wallet::ConfirmationsPolicy::MIN;
-        let transparent_receiver =
-            match utils::java_nullable_string_to_rust(env, &transparent_receiver)? {
-                None => Ok(None),
-                Some(addr) => match Address::decode(&network, &addr) {
-                    None => Err(anyhow!("Transparent receiver is for the wrong network")),
-                    Some(addr) => match addr {
-                        Address::Sapling(_) | Address::Unified(_) | Address::Tex(_) => {
-                            Err(anyhow!("Transparent receiver is not a transparent address"))
-                        }
-                        Address::Transparent(addr) => {
-                            // Zashi does not support standalone keys, so we do not request standalone receivers.
-                            if db_data
-                                .get_transparent_receivers(account_uuid, true, false)?
-                                .contains_key(&addr)
-                            {
-                                Ok(Some(addr))
-                            } else {
-                                Err(anyhow!("Transparent receiver does not belong to account"))
-                            }
-                        }
-                    },
-                },
-            }?;
+        let transparent_receiver = utils::java_nullable_string_to_rust(env, &transparent_receiver)?;
+        let memo = utils::java_nullable_bytes_to_rust(env, &memo)?;
 
-        let account_receivers = db_data
-            .get_target_and_anchor_heights(NonZeroU32::MIN)
-            .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
-            .and_then(|opt| {
-                opt.map(|(target, _)| target) // Include unconfirmed funds.
-                    .ok_or_else(|| anyhow!("height not available; scan required."))
-            })
-            .and_then(|target_height| {
-                db_data
-                    .get_transparent_balances(account_uuid, target_height, confirmations_policy)
-                    .map_err(|e| {
-                        anyhow!(
-                            "Error while fetching transparent balances for {:?}: {}",
-                            account_uuid,
-                            e,
-                        )
-                    })
-            })?;
-
-        // If a specific address is specified, or balance only exists for one address, select the
-        // value for that address.
-        //
-        // Otherwise, if there are any non-ephemeral addresses, select value for all those
-        // addresses. See the warnings associated with the documentation of the
-        // `transparent_receiver` argument in the method documentation for privacy considerations.
-        //
-        // Finally, if there are only ephemeral addresses, select value for exactly one of those
-        // addresses.
-        let from_addrs: Vec<TransparentAddress> = match transparent_receiver {
-            Some(addr) => account_receivers
-                .get(&addr)
-                .and_then(|(_, balance)| {
-                    (balance.spendable_value() >= shielding_threshold).then_some(addr)
-                })
-                .into_iter()
-                .collect(),
-            None => {
-                let (ephemeral, non_ephemeral): (Vec<_>, Vec<_>) = account_receivers
-                    .into_iter()
-                    .filter(|(_, (_, balance))| balance.spendable_value() >= shielding_threshold)
-                    .partition(|(_, (origin, _))| matches!(origin, TransparentKeyOrigin::Derived { scope } if *scope == TransparentKeyScope::EPHEMERAL));
-
-                if non_ephemeral.is_empty() {
-                    ephemeral
-                        .into_iter()
-                        .take(1)
-                        .map(|(addr, _)| addr)
-                        .collect()
-                } else {
-                    non_ephemeral.into_iter().map(|(addr, _)| addr).collect()
-                }
-            }
-        };
-
-        if from_addrs.is_empty() {
-            // There are no transparent funds to shield; don't create a proposal.
-            return Ok(ptr::null_mut());
-        };
-
-        let memo = utils::java_nullable_bytes_to_rust(env, &memo)?
-            .as_deref()
-            .map(MemoBytes::from_bytes)
-            .transpose()
-            .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
-
-        let account = db_data.get_account(account_uuid)?;
-
-        // Always use ZIP 317 fees
-        let (change_strategy, input_selector) = zip317_helper(
-            memo,
-            change_split_policy(account.as_ref().map(|a| a.source())),
-        );
-
-        let proposal = propose_shielding::<_, _, _, _, Infallible>(
+        match propose_shielding_inner(
             &mut db_data,
             &network,
-            &input_selector,
-            &change_strategy,
-            shielding_threshold,
-            &from_addrs,
             account_uuid,
-            confirmations_policy,
-            CoinbaseFilter::AllTransparentOutputs,
-            None,
-        )
-        .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
-
-        Ok(utils::rust_bytes_to_java(
-            env,
-            Proposal::from_standard_proposal(&proposal)
-                .encode_to_vec()
-                .as_ref(),
-        )?
-        .into_raw())
+            shielding_threshold,
+            memo.as_deref(),
+            transparent_receiver.as_deref(),
+        )? {
+            Some(proposal) => {
+                Ok(utils::rust_bytes_to_java(env, proposal.encode_to_vec().as_ref())?.into_raw())
+            }
+            None => Ok(ptr::null_mut()),
+        }
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Proposes shielding `account_uuid`'s transparent funds into a ZIP 317 transaction with an
+/// optional `memo` (raw memo bytes), splitting change by the policy [`change_split_policy`]
+/// selects for the account's source. Returns `None`, and creates no proposal, when there are no
+/// transparent funds to shield.
+///
+/// Funds count once they reach `shielding_threshold` at an address, unconfirmed funds included.
+/// When `transparent_receiver` is given it must be one of the account's own transparent
+/// receivers, standalone keys excepted (the wallet does not support them), and only its funds are
+/// shielded. Otherwise the funds of every non-ephemeral address are shielded together (see the
+/// privacy warnings on `transparentReceiver` in `Synchronizer.proposeShielding`'s documentation),
+/// or, when only ephemeral addresses hold funds, those of exactly one of them.
+///
+/// This is the whole database-level body of `proposeShielding`; the JNI entry point only decodes
+/// its arguments, opens the wallet, and encodes the returned proposal.
+pub(crate) fn propose_shielding_inner<DbT, P>(
+    db_data: &mut DbT,
+    network: &P,
+    account_uuid: AccountUuid,
+    shielding_threshold: Zatoshis,
+    memo: Option<&[u8]>,
+    transparent_receiver: Option<&str>,
+) -> anyhow::Result<Option<Proposal>>
+where
+    DbT: WalletRead<AccountId = AccountUuid>
+        + WalletWrite
+        + InputSource<AccountId = AccountUuid, Error = <DbT as WalletRead>::Error>,
+    <DbT as WalletRead>::Error: std::error::Error + Send + Sync + 'static,
+    <DbT as InputSource>::NoteRef: Copy + Eq + Ord + std::fmt::Display,
+    P: Parameters + Clone,
+{
+    let confirmations_policy = wallet::ConfirmationsPolicy::MIN;
+    let transparent_receiver = match transparent_receiver {
+        None => Ok(None),
+        Some(addr) => match Address::decode(network, addr) {
+            None => Err(anyhow!("Transparent receiver is for the wrong network")),
+            Some(addr) => match addr {
+                Address::Sapling(_) | Address::Unified(_) | Address::Tex(_) => {
+                    Err(anyhow!("Transparent receiver is not a transparent address"))
+                }
+                Address::Transparent(addr) => {
+                    if db_data
+                        .get_transparent_receivers(account_uuid, true, false)?
+                        .contains_key(&addr)
+                    {
+                        Ok(Some(addr))
+                    } else {
+                        Err(anyhow!("Transparent receiver does not belong to account"))
+                    }
+                }
+            },
+        },
+    }?;
+
+    let account_receivers = db_data
+        .get_target_and_anchor_heights(NonZeroU32::MIN)
+        .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
+        .and_then(|opt| {
+            opt.map(|(target, _)| target)
+                .ok_or_else(|| anyhow!("height not available; scan required."))
+        })
+        .and_then(|target_height| {
+            db_data
+                .get_transparent_balances(account_uuid, target_height, confirmations_policy)
+                .map_err(|e| {
+                    anyhow!(
+                        "Error while fetching transparent balances for {:?}: {}",
+                        account_uuid,
+                        e,
+                    )
+                })
+        })?;
+
+    let from_addrs: Vec<TransparentAddress> = match transparent_receiver {
+        Some(addr) => account_receivers
+            .get(&addr)
+            .and_then(|(_, balance)| {
+                (balance.spendable_value() >= shielding_threshold).then_some(addr)
+            })
+            .into_iter()
+            .collect(),
+        None => {
+            let (ephemeral, non_ephemeral): (Vec<_>, Vec<_>) = account_receivers
+                .into_iter()
+                .filter(|(_, (_, balance))| balance.spendable_value() >= shielding_threshold)
+                .partition(|(_, (origin, _))| matches!(origin, TransparentKeyOrigin::Derived { scope } if *scope == TransparentKeyScope::EPHEMERAL));
+
+            if non_ephemeral.is_empty() {
+                ephemeral
+                    .into_iter()
+                    .take(1)
+                    .map(|(addr, _)| addr)
+                    .collect()
+            } else {
+                non_ephemeral.into_iter().map(|(addr, _)| addr).collect()
+            }
+        }
+    };
+
+    if from_addrs.is_empty() {
+        return Ok(None);
+    };
+
+    let memo = memo
+        .map(MemoBytes::from_bytes)
+        .transpose()
+        .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
+
+    let account = db_data.get_account(account_uuid)?;
+
+    let (change_strategy, input_selector) = zip317_helper(
+        memo,
+        change_split_policy(account.as_ref().map(|a| a.source())),
+    );
+
+    let proposal = propose_shielding::<_, _, _, _, Infallible>(
+        db_data,
+        network,
+        &input_selector,
+        &change_strategy,
+        shielding_threshold,
+        &from_addrs,
+        account_uuid,
+        confirmations_policy,
+        CoinbaseFilter::AllTransparentOutputs,
+        None,
+    )
+    .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
+
+    Ok(Some(Proposal::from_standard_proposal(&proposal)))
 }
 
 /// The JVM class thrown when creating transactions from a proposal fails with
@@ -4531,6 +4598,357 @@ mod tests {
                 "source {source:?}"
             );
         }
+    }
+
+    /// The wallet the end-to-end change-output tests propose from. A Ledger-tagged account signs
+    /// one change output: `change_split_policy`'s own unit coverage, constructing `AccountSource`
+    /// values directly, is the two tests above, and the tests below exercise it end to end over
+    /// [`propose_transfer_inner`], [`propose_transfer_from_uri_inner`] and
+    /// [`propose_shielding_inner`], the whole database-level bodies of the `proposeTransfer`,
+    /// `proposeTransferFromUri` and `proposeShielding` JNI entry points. Their shared harness is
+    /// [`stably_funded_fixture`]: one account, tagged `key_source`, funded with a single Orchard
+    /// note whose witness is stabilised.
+    type ProposalTestWallet = zcash_client_backend::data_api::testing::TestState<
+        zcash_client_sqlite::testing::BlockCache,
+        zcash_client_sqlite::testing::db::TestDb,
+        zcash_protocol::local_consensus::LocalNetwork,
+    >;
+
+    /// A real unified address of a throwaway key on `network` — used only as
+    /// [`proposed_change_output_count`]'s recipient, never a real user's address.
+    fn fixture_recipient_address(network: &impl Parameters) -> String {
+        UnifiedSpendingKey::from_seed(network, &[9; 32], zip32::AccountId::ZERO)
+            .expect("the recipient fixture key derives")
+            .to_unified_full_viewing_key()
+            .default_address(UnifiedAddressRequest::AllAvailableKeys)
+            .expect("the recipient fixture key has a default address")
+            .0
+            .to_zcash_address(network.network_type())
+            .encode()
+    }
+
+    /// A fixture wallet with one account tagged `key_source`, funded with a single `value_zat`
+    /// Orchard note whose witness is STABILIZED — spendable through the generic
+    /// `zcash_client_backend::data_api::wallet::propose_transfer` path under the default ZIP 315
+    /// confirmations policy [`propose_transfer_inner`] proposes with.
+    ///
+    /// `zcash_client_sqlite`'s own `mark_stabilized_notes` only ever grants stabilization once the
+    /// max scanned height has advanced at least `PRUNING_DEPTH` (100) blocks past the note's
+    /// shard: "a note within the chain-tip shard can not be marked as witness_stabilized, because
+    /// the tip shard is by definition not complete or confirmed to the PRUNING_DEPTH" (that
+    /// function's own doc comment). This mirrors `zcash_client_sqlite`'s own test pattern for the
+    /// same requirement (`testing::pool::truncate_to_chain_state_commitment_tree_error`,
+    /// `extra_blocks = PRUNING_DEPTH + 10`): fund one block, then scan `PRUNING_DEPTH + 10`
+    /// further EMPTY blocks in the SAME `scan_cached_blocks` call so the funding note's shard
+    /// closes and prunes.
+    fn stably_funded_fixture(
+        key_source: Option<&str>,
+        value_zat: u64,
+    ) -> (ProposalTestWallet, AccountUuid) {
+        use incrementalmerkletree::frontier::Frontier;
+        use orchard::tree::MerkleHashOrchard;
+        use zcash_client_backend::data_api::{
+            chain::ChainState,
+            testing::{AddressType, InitialChainState, TestBuilder},
+        };
+        use zcash_client_sqlite::testing::{BlockCache, db::TestDbFactory};
+        use zcash_primitives::block::BlockHash;
+        use zcash_protocol::consensus::{NetworkUpgrade, ZIP212_GRACE_PERIOD};
+
+        // `zcash_client_backend::data_api::ll::wallet::PRUNING_DEPTH` is crate-private; mirrored
+        // here exactly as `zcash_client_sqlite::testing::pool` mirrors it for the same reason.
+        const PRUNING_DEPTH: u32 = 100;
+        const EXTRA_BLOCKS: u32 = PRUNING_DEPTH + 10;
+
+        // Past Canopy's ZIP 212 grace period and NU5, so Orchard notes can be received; the same
+        // chain start `ledger::tests::ledger_wallet` uses.
+        let mut chain_state = None;
+        let mut st = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_block_cache(BlockCache::new())
+            .with_initial_chain_state(|_, network| {
+                let birthday_height = std::cmp::max(
+                    network
+                        .activation_height(NetworkUpgrade::Nu5)
+                        .expect("NU5 is active"),
+                    network
+                        .activation_height(NetworkUpgrade::Canopy)
+                        .expect("Canopy is active")
+                        + ZIP212_GRACE_PERIOD,
+                );
+                let state = ChainState::new(
+                    birthday_height - 1,
+                    BlockHash([5; 32]),
+                    Frontier::empty(),
+                    Frontier::empty(),
+                    Frontier::empty(),
+                );
+                chain_state = Some(state.clone());
+                InitialChainState {
+                    chain_state: state,
+                    prior_sapling_roots: vec![],
+                    prior_orchard_roots: vec![],
+                }
+            })
+            .build();
+        let usk = UnifiedSpendingKey::from_seed(st.network(), &[7; 32], zip32::AccountId::ZERO)
+            .expect("the fixture spending key derives");
+        let ufvk = usk.to_unified_full_viewing_key();
+        let birthday =
+            AccountBirthday::from_parts(chain_state.expect("the chain state was built"), None);
+        let account = st
+            .wallet_mut()
+            .import_account_ufvk(
+                "Fixture",
+                &ufvk,
+                &birthday,
+                AccountPurpose::Spending { derivation: None },
+                key_source,
+            )
+            .expect("the fixture UFVK imports");
+        let account = Account::id(&account);
+
+        let fvk = ufvk.orchard().cloned().expect("an Orchard key");
+        let (funding_height, _, _) = st.generate_next_block(
+            &fvk,
+            AddressType::DefaultExternal,
+            Zatoshis::const_from_u64(value_zat),
+        );
+        for _ in 0..EXTRA_BLOCKS {
+            st.generate_empty_block();
+        }
+
+        // A real wallet fetches subtree roots for already-closed shards from its lightwalletd
+        // connection before it ever scans a block, so a note in shard 0 still finds
+        // `subtree_end_height` non-NULL once scanning catches up — `mark_stabilized_notes` never
+        // sets that column itself. This fixture never talks to a lightwalletd, so it fabricates
+        // the one root it needs: the hash is never verified against a real root, only stored,
+        // and `put_shard`'s insert-or-update leaves an already-scanned shard's real leaf data
+        // untouched, updating only `subtree_end_height`/`root_hash`.
+        let fabricated_root =
+            Option::<MerkleHashOrchard>::from(MerkleHashOrchard::from_bytes(&[0u8; 32]))
+                .expect("an all-zero value is a valid Orchard Merkle tree node");
+        st.wallet_mut()
+            .put_orchard_subtree_roots(
+                0,
+                &[CommitmentTreeRoot::from_parts(
+                    funding_height,
+                    fabricated_root,
+                )],
+            )
+            .expect("the fabricated subtree root must store");
+
+        let summary = st.scan_cached_blocks(funding_height, 1 + EXTRA_BLOCKS as usize);
+        assert_eq!(
+            summary.received_orchard_note_count(),
+            1,
+            "the funding output must be detected as belonging to this wallet"
+        );
+        let stabilized: bool = st
+            .wallet()
+            .conn()
+            .query_row(
+                "SELECT witness_stabilized FROM orchard_received_notes",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the funding note is stored");
+        assert!(stabilized, "the funding note's witness must be stabilized");
+
+        (st, account)
+    }
+
+    /// Proposes a transfer of `value_zat` from `account` to `to_address` via
+    /// [`propose_transfer_inner`] and returns [`first_step_change_output_count`] of it.
+    ///
+    /// Callers must fund the wallet through [`stably_funded_fixture`]; see its doc comment.
+    fn proposed_change_output_count(
+        st: &mut ProposalTestWallet,
+        account: AccountUuid,
+        to_address: &str,
+        value_zat: i64,
+    ) -> usize {
+        let network = *st.network();
+        let to = to_address
+            .parse()
+            .expect("the fixture address parses the way `proposeTransfer` parses it");
+        let value =
+            Zatoshis::from_nonnegative_i64(value_zat).expect("the fixture amount is in range");
+        let proposal = propose_transfer_inner(st.wallet_mut(), &network, account, to, value, None)
+            .unwrap_or_else(|e| panic!("the transfer must propose: {e:#}"));
+        first_step_change_output_count(&proposal)
+    }
+
+    /// Round-trips `proposal` through the protobuf encoding the JNI entry points hand Kotlin, and
+    /// returns the number of proposed change outputs on its first step's balance.
+    fn first_step_change_output_count(proposal: &Proposal) -> usize {
+        let proposal =
+            Proposal::decode(proposal.encode_to_vec().as_slice()).expect("the proposal decodes");
+        proposal
+            .steps
+            .first()
+            .expect("a proposal always has at least one step")
+            .balance
+            .as_ref()
+            .expect("a proposal step always carries a balance")
+            .proposed_change
+            .len()
+    }
+
+    /// Proposes paying `zcash:<to_address>?amount=0.1` from `account` via
+    /// [`propose_transfer_from_uri_inner`] and returns [`first_step_change_output_count`] of it.
+    ///
+    /// Callers must fund the wallet through [`stably_funded_fixture`]; see its doc comment.
+    fn proposed_uri_change_output_count(
+        st: &mut ProposalTestWallet,
+        account: AccountUuid,
+        to_address: &str,
+    ) -> usize {
+        let network = *st.network();
+        let uri = format!("zcash:{to_address}?amount=0.1");
+        let proposal = propose_transfer_from_uri_inner(st.wallet_mut(), &network, account, &uri)
+            .unwrap_or_else(|e| panic!("the payment URI must propose: {e:#}"));
+        first_step_change_output_count(&proposal)
+    }
+
+    /// Gives `account` a `value_zat` transparent output at its default address's transparent
+    /// receiver, mined in the wallet's last scanned block.
+    fn receive_transparent_funds(
+        st: &mut ProposalTestWallet,
+        account: AccountUuid,
+        value_zat: u64,
+    ) {
+        let address = st
+            .wallet()
+            .get_last_generated_address_matching(account, UnifiedAddressRequest::AllAvailableKeys)
+            .expect("the account's addresses are readable")
+            .expect("the account has a default address");
+        let taddr = *address
+            .transparent()
+            .expect("the fixture account has a transparent receiver");
+        let height = st
+            .wallet()
+            .chain_height()
+            .expect("the chain height is readable")
+            .expect("the fixture has scanned blocks");
+        let utxo = WalletTransparentOutput::from_parts(
+            OutPoint::new([1; 32], 0),
+            TxOut::new(Zatoshis::const_from_u64(value_zat), taddr.script().into()),
+            Some(height),
+            Some(account),
+            Some(TransparentKeyScope::EXTERNAL),
+            None,
+        )
+        .expect("a transparent receiver's script has an address");
+        st.wallet_mut()
+            .put_received_transparent_utxo(&utxo)
+            .expect("the transparent output stores");
+    }
+
+    /// Proposes shielding all of `account`'s transparent funds via [`propose_shielding_inner`] and
+    /// returns [`first_step_change_output_count`] of it: a shielding transaction's shielded
+    /// outputs are all change.
+    ///
+    /// Callers must fund the wallet through [`stably_funded_fixture`] and
+    /// [`receive_transparent_funds`].
+    fn proposed_shielding_change_output_count(
+        st: &mut ProposalTestWallet,
+        account: AccountUuid,
+    ) -> usize {
+        let network = *st.network();
+        let proposal = propose_shielding_inner(
+            st.wallet_mut(),
+            &network,
+            account,
+            Zatoshis::const_from_u64(100_000),
+            None,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("the shielding must propose: {e:#}"))
+        .expect("the wallet holds transparent funds to shield");
+        first_step_change_output_count(&proposal)
+    }
+
+    /// The Ledger Zcash app signs exactly one change output per transaction: a `"ledger"`-tagged
+    /// account's proposal must carry exactly one, however many notes the default policy would
+    /// otherwise split it into (see `an_untagged_account_still_splits_its_change`, its control).
+    #[test]
+    fn a_ledger_tagged_account_proposes_a_single_change_output() {
+        let (mut st, account) = stably_funded_fixture(Some("ledger"), 100_000_000);
+        let to = fixture_recipient_address(st.network());
+        let change_outputs = proposed_change_output_count(&mut st, account, &to, 10_000_000);
+        assert_eq!(
+            change_outputs, 1,
+            "a Ledger-tagged account's proposal must carry exactly one change output"
+        );
+    }
+
+    /// Every account without the exact `ledger` tag keeps today's note-splitting change policy —
+    /// the untagged control for [`a_ledger_tagged_account_proposes_a_single_change_output`].
+    #[test]
+    fn an_untagged_account_still_splits_its_change() {
+        let (mut st, account) = stably_funded_fixture(None, 100_000_000);
+        let to = fixture_recipient_address(st.network());
+        let change_outputs = proposed_change_output_count(&mut st, account, &to, 10_000_000);
+        assert!(
+            change_outputs > 1,
+            "an untagged account's proposal must still split change into multiple notes; got \
+             {change_outputs}"
+        );
+    }
+
+    /// A payment URI goes through its own entry point, `proposeTransferFromUri`, which must
+    /// apply the same single-change-output policy to a `"ledger"`-tagged account.
+    #[test]
+    fn a_ledger_tagged_account_proposes_a_single_change_output_for_a_payment_uri() {
+        let (mut st, account) = stably_funded_fixture(Some("ledger"), 100_000_000);
+        let to = fixture_recipient_address(st.network());
+        let change_outputs = proposed_uri_change_output_count(&mut st, account, &to);
+        assert_eq!(
+            change_outputs, 1,
+            "a Ledger-tagged account's payment URI proposal must carry exactly one change output"
+        );
+    }
+
+    /// The untagged control for
+    /// [`a_ledger_tagged_account_proposes_a_single_change_output_for_a_payment_uri`].
+    #[test]
+    fn an_untagged_account_still_splits_its_change_for_a_payment_uri() {
+        let (mut st, account) = stably_funded_fixture(None, 100_000_000);
+        let to = fixture_recipient_address(st.network());
+        let change_outputs = proposed_uri_change_output_count(&mut st, account, &to);
+        assert!(
+            change_outputs > 1,
+            "an untagged account's payment URI proposal must still split change into multiple \
+             notes; got {change_outputs}"
+        );
+    }
+
+    /// Shielding goes through `proposeShielding`, where every shielded output is change: a
+    /// `"ledger"`-tagged account's shielding proposal must carry exactly one.
+    #[test]
+    fn a_ledger_tagged_account_proposes_a_single_change_output_when_shielding() {
+        let (mut st, account) = stably_funded_fixture(Some("ledger"), 100_000_000);
+        receive_transparent_funds(&mut st, account, 100_000_000);
+        let change_outputs = proposed_shielding_change_output_count(&mut st, account);
+        assert_eq!(
+            change_outputs, 1,
+            "a Ledger-tagged account's shielding proposal must carry exactly one change output"
+        );
+    }
+
+    /// The untagged control for
+    /// [`a_ledger_tagged_account_proposes_a_single_change_output_when_shielding`].
+    #[test]
+    fn an_untagged_account_still_splits_its_change_when_shielding() {
+        let (mut st, account) = stably_funded_fixture(None, 100_000_000);
+        receive_transparent_funds(&mut st, account, 100_000_000);
+        let change_outputs = proposed_shielding_change_output_count(&mut st, account);
+        assert!(
+            change_outputs > 1,
+            "an untagged account's shielding proposal must still split change into multiple \
+             notes; got {change_outputs}"
+        );
     }
 
     /// A transaction the wallet never stored, such as one `decrypt_and_store_transaction` skipped
