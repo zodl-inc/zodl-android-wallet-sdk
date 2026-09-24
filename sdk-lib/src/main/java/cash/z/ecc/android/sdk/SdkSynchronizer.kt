@@ -761,7 +761,7 @@ class SdkSynchronizer private constructor(
             }
 
             try {
-                lazyTorClient.getOrCreate().rawRuntimeHandle()
+                lazyTorClient.getOrCreate().pinRawRuntimeHandle()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -770,6 +770,10 @@ class SdkSynchronizer private constructor(
         } else {
             throw TorUnavailableException()
         }
+
+    override suspend fun releaseVotingTorRuntimeHandle() {
+        lazyTorClient?.getOrCreate()?.unpinRawRuntimeHandle()
+    }
 
     override suspend fun debugQuery(query: String): String = storage.debugQuery(query)
 

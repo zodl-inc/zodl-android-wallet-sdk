@@ -1591,12 +1591,16 @@ class SlipstreamSynchronizer internal constructor(
     override suspend fun getVotingTorRuntimeHandle(): Long {
         if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
         return try {
-            lazyTorClient.getOrCreate().rawRuntimeHandle()
+            lazyTorClient.getOrCreate().pinRawRuntimeHandle()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             throw TorInitializationErrorException(e)
         }
+    }
+
+    override suspend fun releaseVotingTorRuntimeHandle() {
+        lazyTorClient.getOrCreate().unpinRawRuntimeHandle()
     }
 
     override suspend fun debugQuery(query: String): String {

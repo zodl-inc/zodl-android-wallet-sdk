@@ -899,6 +899,15 @@ interface Synchronizer {
      * way [getTorHttpClient] does -- owning any such isolation for the voting round driver's
      * traffic is that driver's job, not this accessor's.
      *
+     * The returned handle is pinned: this synchronizer's shared Tor client cannot be disposed
+     * (a `close()`/rebuild, e.g. from server-switch hysteresis or a wallet reset) until a
+     * matching [releaseVotingTorRuntimeHandle] call runs. A round-driver session can hold this
+     * handle across its whole lifetime -- potentially 20-30 minutes for a multi-bundle round --
+     * so every caller MUST call [releaseVotingTorRuntimeHandle] exactly once, in a
+     * `finally`/`close()` path that always runs, once it is done with the handle. Without that,
+     * a concurrent dispose would otherwise free the native runtime out from under an in-flight
+     * round drive still holding this pointer -- a use-after-free.
+     *
      * @return the raw native Tor-runtime handle
      *
      * @throws TorInitializationErrorException if an error occurred during Tor setup
@@ -906,6 +915,13 @@ interface Synchronizer {
      */
     @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
     suspend fun getVotingTorRuntimeHandle(): Long
+
+    /**
+     * Releases a handle obtained from [getVotingTorRuntimeHandle]. Safe to call even if the
+     * underlying Tor client was disposed while the handle was pinned -- see that function's own
+     * doc comment.
+     */
+    suspend fun releaseVotingTorRuntimeHandle()
 
     suspend fun debugQuery(query: String): String
 

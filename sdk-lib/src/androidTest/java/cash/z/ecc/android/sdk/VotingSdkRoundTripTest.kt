@@ -60,7 +60,7 @@ class VotingSdkRoundTripTest {
 
                 val roundSession =
                     dbSession.openRoundSession(
-                        torRuntime = torClient.rawRuntimeHandle(),
+                        torRuntime = torClient.pinRawRuntimeHandle(),
                         roundId = ROUND_ID,
                         proposals = listOf(VotingProposalRosterEntry(proposalId = 1, numOptions = 2)),
                         hotkeySecret = null,
@@ -103,6 +103,7 @@ class VotingSdkRoundTripTest {
                     roundSession.cancel()
                 } finally {
                     roundSession.close()
+                    torClient.unpinRawRuntimeHandle()
                 }
 
                 // Still nothing persisted -- the whole exchange above was read-only/in-memory.
@@ -181,7 +182,7 @@ class VotingSdkRoundTripTest {
 
                 val roundSession =
                     dbSession.openRoundSession(
-                        torRuntime = torClient.rawRuntimeHandle(),
+                        torRuntime = torClient.pinRawRuntimeHandle(),
                         roundId = ROUND_ID,
                         proposals = listOf(VotingProposalRosterEntry(proposalId = 1, numOptions = 2)),
                         hotkeySecret = hotkey.storedSecret,
@@ -248,6 +249,7 @@ class VotingSdkRoundTripTest {
                     roundSession.setBallotIntents(listOf(VotingBallotIntent(proposalId = 1, choice = 0)))
                 } finally {
                     roundSession.close()
+                    torClient.unpinRawRuntimeHandle()
                 }
             } finally {
                 dbSession.close()

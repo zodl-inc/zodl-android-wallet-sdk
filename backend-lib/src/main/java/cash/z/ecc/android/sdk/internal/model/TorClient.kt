@@ -19,8 +19,22 @@ class TorClient private constructor(
 ) : Disposable {
     private val accessMutex = Mutex()
 
+    // Guards freeing the native runtime while a caller is still using a handle it obtained
+    // from [pinRawRuntimeHandle] -- see that function's own doc comment for the hazard this
+    // closes. Both fields are only ever touched under [accessMutex].
+    private var rawHandlePinCount = 0
+    private var disposalPending = false
+
     override suspend fun dispose() =
         accessMutex.withLock {
+            if (rawHandlePinCount > 0) {
+                // A pinned raw handle is still outstanding (e.g. a round-driver session mid
+                // multi-bundle run) -- freeing the runtime now would leave that caller's
+                // in-flight native call holding a dangling pointer. Defer the actual free to
+                // whichever unpinRawRuntimeHandle call brings the count back to zero.
+                disposalPending = true
+                return@withLock
+            }
             withContext(Dispatchers.IO) {
                 nativeHandle?.let { freeTorRuntime(it) }
                 nativeHandle = null
@@ -69,7 +83,8 @@ class TorClient private constructor(
         }
 
     /**
-     * Returns the raw native Tor-runtime handle backing this client.
+     * Returns the raw native Tor-runtime handle backing this client, pinned so [dispose] cannot
+     * free the underlying runtime until a matching [unpinRawRuntimeHandle] call releases it.
      *
      * Deliberately narrow: this exists only for handing this runtime off across a JNI boundary
      * to a *different* native subsystem that already accepts a raw runtime handle -- today,
@@ -80,12 +95,33 @@ class TorClient private constructor(
      * request dispatch ([httpGet]/[httpPost]/[createWalletClient]/...) -- those remain the only
      * sanctioned way to actually use this Tor runtime for HTTP.
      *
-     * The returned handle is only valid until this client is [dispose]d; it is the caller's
-     * responsibility not to hand it to another native subsystem after that.
+     * A round-driver session can hold the returned handle for the whole session's lifetime
+     * (potentially 20-30 minutes across a multi-bundle round), well past any single native call.
+     * [dispose] running concurrently with that -- a `Synchronizer` rebuild mid-vote (server-switch
+     * hysteresis, a wallet reset) -- must not free the runtime out from under the in-flight round
+     * drive: pinning defers that free (see [dispose]'s own doc comment) rather than racing it.
+     * Every call here MUST be matched by exactly one [unpinRawRuntimeHandle] call once the caller
+     * is done with the handle, in a `finally`/`close()` path that always runs.
      */
-    suspend fun rawRuntimeHandle(): Long =
+    suspend fun pinRawRuntimeHandle(): Long =
         accessMutex.withLock {
-            checkNotNull(nativeHandle) { "TorClient is disposed" }
+            checkNotNull(nativeHandle) { "TorClient is disposed" }.also { rawHandlePinCount++ }
+        }
+
+    /**
+     * Releases a pin obtained from [pinRawRuntimeHandle]. Once the pin count returns to zero, if
+     * [dispose] was called while pinned, the deferred free runs now.
+     */
+    suspend fun unpinRawRuntimeHandle() =
+        accessMutex.withLock {
+            check(rawHandlePinCount > 0) { "unpinRawRuntimeHandle called without a matching pin" }
+            rawHandlePinCount--
+            if (rawHandlePinCount == 0 && disposalPending) {
+                withContext(Dispatchers.IO) {
+                    nativeHandle?.let { freeTorRuntime(it) }
+                    nativeHandle = null
+                }
+            }
         }
 
     suspend fun httpGet(url: String, headers: List<JniHttpHeader>, retryLimit: Int): JniHttpResponseBytes =
