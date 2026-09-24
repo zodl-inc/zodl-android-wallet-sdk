@@ -6,11 +6,13 @@ import org.json.JSONObject
 /**
  * Small `org.json` helpers shared by the round-driver JSON-string carriers
  * (`VotingSdkVoteMappers.kt`/`VotingSdkDelegationMappers.kt`/`VotingSdkRoundPlanMappers.kt`/
- * `VotingSdkRoundRunReportMappers.kt`/`VotingSdkRoundDriveProgressMappers.kt`) that parse Task 9's raw `Jni*` types' JSON-encoded
- * fields into rich [cash.z.ecc.android.sdk.model.voting.VotingRoundPlan]/[cash.z.ecc.android.sdk.model.voting.VotingRoundRunReport]
- * model types. `org.json` (not a third-party JSON library) matches this codebase's existing
- * convention -- see `cash.z.ecc.android.sdk.internal.model.ext.CheckpointExt`'s use of
- * `org.json.JSONObject` for checkpoint parsing.
+ * `VotingSdkRoundRunReportMappers.kt`/`VotingSdkRoundDriveProgressMappers.kt`) that parse
+ * Task 9's raw `Jni*` types' JSON-encoded fields into rich
+ * [cash.z.ecc.android.sdk.model.voting.VotingRoundPlan]/
+ * [cash.z.ecc.android.sdk.model.voting.VotingRoundRunReport] model types. `org.json` (not a
+ * third-party JSON library) matches this codebase's existing convention -- see
+ * `cash.z.ecc.android.sdk.internal.model.ext.CheckpointExt`'s use of `org.json.JSONObject` for
+ * checkpoint parsing.
  *
  * Kept in one small file rather than duplicated per mapper file, since every one of them needs
  * the same handful of "optional field" idioms `org.json` does not provide directly.

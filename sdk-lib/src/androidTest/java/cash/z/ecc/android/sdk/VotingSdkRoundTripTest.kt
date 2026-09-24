@@ -127,6 +127,10 @@ class VotingSdkRoundTripTest {
      * [VotingRoundSession.run]'s doc comment for the full explanation.
      */
     @Test
+    // One linear round-trip flow with nested try/finally resource cleanup (db session, round
+    // session, Tor client) -- splitting it would scatter that cleanup ordering across helper
+    // functions rather than make the test easier to follow.
+    @Suppress("LongMethod")
     fun round_trip_ensure_round_bootstraps_a_virgin_round() =
         runTest(timeout = 5.minutes) {
             val sdk = VotingSdk.new()
