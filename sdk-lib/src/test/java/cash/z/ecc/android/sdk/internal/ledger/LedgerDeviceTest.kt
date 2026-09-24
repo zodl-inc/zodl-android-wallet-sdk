@@ -34,7 +34,7 @@ class LedgerDeviceTest {
     ) = LedgerDevice(transport, ZcashNetwork.Testnet, backend)
 
     @Test
-    fun pairing_exports_the_viewing_key_between_two_identity_reads() =
+    fun pairing_reads_the_identity_once_before_exporting_the_viewing_key() =
         runBlocking<Unit> {
             val backend = FakeLedgerBackend(vkContinuations = 1)
             val transport =
@@ -43,8 +43,7 @@ class LedgerDeviceTest {
                         ok(1),
                         ok('a'.code.toByte()),
                         ok(),
-                        ok(),
-                        ok('a'.code.toByte())
+                        ok()
                     )
                 )
 
@@ -55,12 +54,12 @@ class LedgerDeviceTest {
             assertEquals(account, pairing.binding.zip32AccountIndex)
             assertTrue(pairing.appVersion.supportsPczt)
             assertEquals(
-                listOf(CMD_VERSION, CMD_IDENTITY, CMD_VK, CMD_VK_CONTINUE, CMD_IDENTITY),
+                listOf(CMD_VERSION, CMD_IDENTITY, CMD_VK, CMD_VK_CONTINUE),
                 transport.sent.map { it.single() }
             )
             // The export request waits on the user's approval; its continuation does not.
             assertEquals(
-                listOf(NORMAL_TIMEOUT, NORMAL_TIMEOUT, null, NORMAL_TIMEOUT, NORMAL_TIMEOUT),
+                listOf(NORMAL_TIMEOUT, NORMAL_TIMEOUT, null, NORMAL_TIMEOUT),
                 transport.timeouts
             )
             assertEquals(1, backend.exportsClosed)
@@ -69,8 +68,11 @@ class LedgerDeviceTest {
         }
 
     @Test
-    fun pairing_is_refused_when_the_identity_changes_across_the_export() =
+    fun pairing_never_probes_the_identity_after_the_export() =
         runBlocking<Unit> {
+            val reference =
+                device(ScriptedTransport(listOf(ok(1), ok('a'.code.toByte()), ok(), ok())))
+                    .pairAccount(account)
             val transport =
                 ScriptedTransport(
                     listOf(
@@ -82,9 +84,12 @@ class LedgerDeviceTest {
                     )
                 )
 
-            assertFailsWith<LedgerException.DeviceMismatch> {
-                device(transport).pairAccount(account)
-            }
+            val pairing = device(transport).pairAccount(account)
+
+            assertEquals(identity('a'), pairing.binding.deviceIdentity.encoding)
+            assertEquals(reference.binding, pairing.binding)
+            assertEquals(reference.ufvk, pairing.ufvk)
+            assertEquals(1, transport.sent.count { it.single() == CMD_IDENTITY }, "one identity probe")
         }
 
     @Test
@@ -120,15 +125,14 @@ class LedgerDeviceTest {
                         ok('a'.code.toByte()),
                         status(NOT_ACCEPTED),
                         ok(),
-                        ok(),
-                        ok('a'.code.toByte())
+                        ok()
                     )
                 )
 
             device(transport).pairAccount(account)
 
             assertEquals(
-                listOf(CMD_VERSION, CMD_IDENTITY, CMD_VK, CMD_VK, CMD_VK_CONTINUE, CMD_IDENTITY),
+                listOf(CMD_VERSION, CMD_IDENTITY, CMD_VK, CMD_VK, CMD_VK_CONTINUE),
                 transport.sent.map { it.single() }
             )
             assertNull(transport.timeouts[3])

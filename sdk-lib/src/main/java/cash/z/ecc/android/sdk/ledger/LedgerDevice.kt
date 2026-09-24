@@ -53,8 +53,10 @@ class LedgerDevice internal constructor(
      * Pairs the device's ZIP 32 account [zip32AccountIndex]: exports its unified full viewing key,
      * which the user approves on the device, and binds it to the device's identity.
      *
-     * The export command answers for whatever device the transport is connected to, so the
-     * identity is read before and after it, and the pairing fails unless both are the same.
+     * The identity is read once, before the export. The Zcash app leaves a status screen up after
+     * the export and drops the next command until the user dismisses it, and a transport speaks to
+     * exactly one peripheral, so the device that answered the probe is the device that exported
+     * the key.
      *
      * Import the returned key with [Account.LEDGER_KEY_SOURCE] as its key source, and persist the
      * binding next to the imported account; see [LedgerAccountPairing].
@@ -62,7 +64,6 @@ class LedgerDevice internal constructor(
      * @throws LedgerException.AppTooOld if the Zcash app cannot sign PCZTs, before anything is
      *         exported.
      * @throws LedgerException.UserRejected if the user declines the export.
-     * @throws LedgerException.DeviceMismatch if the device's identity changed across the export.
      * @throws LedgerException.DerivationBudgetExhausted if the user has to reopen the Zcash app.
      * @throws LedgerException for any other failure.
      */
@@ -76,15 +77,11 @@ class LedgerDevice internal constructor(
                             "which predates PCZT signing"
                 )
             }
-            val before = readDeviceIdentity()
+            val identity = readDeviceIdentity()
             val ufvk = exportUfvk(zip32AccountIndex)
-            val after = readDeviceIdentity()
-            if (before != after) {
-                throw LedgerException.DeviceMismatch()
-            }
             LedgerAccountPairing(
                 ufvk = ufvk,
-                binding = LedgerAccountBinding(before, zip32AccountIndex),
+                binding = LedgerAccountBinding(identity, zip32AccountIndex),
                 appVersion = version
             )
         }
