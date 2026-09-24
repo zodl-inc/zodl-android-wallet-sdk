@@ -107,7 +107,7 @@ class SaplingParamToolBasicTest {
             assertFalse(isFileInPlace(SaplingParamsFixture.DESTINATION_DIRECTORY, spendFile))
             assertFalse(isFileInPlace(SaplingParamsFixture.DESTINATION_DIRECTORY, outputFile))
 
-            // We need to use modified array of sapling parameters to pass through the SHA1 hashes validation
+            // We need to use modified array of sapling parameters to pass through the SHA-256 hashes validation
             val destDir =
                 SaplingParamTool.initAndGetParamsDestinationDir(
                     SaplingParamToolFixture.new(
@@ -117,13 +117,13 @@ class SaplingParamToolBasicTest {
                                     SaplingParamToolFixture.PARAMS_DIRECTORY,
                                     SaplingParamTool.SPEND_PARAM_FILE_NAME,
                                     SaplingParamTool.SPEND_PARAM_FILE_MAX_BYTES_SIZE,
-                                    spendFile.getSha1Hash()
+                                    spendFile.getSha256Hash()
                                 ),
                                 SaplingParameters(
                                     SaplingParamToolFixture.PARAMS_DIRECTORY,
                                     SaplingParamTool.OUTPUT_PARAM_FILE_NAME,
                                     SaplingParamTool.OUTPUT_PARAM_FILE_MAX_BYTES_SIZE,
-                                    outputFile.getSha1Hash()
+                                    outputFile.getSha256Hash()
                                 )
                             )
                     )

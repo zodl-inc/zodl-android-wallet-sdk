@@ -482,7 +482,7 @@ class OhttpHttpClientTest {
             co.electriccoin.lightwallet.client.internal.OhttpEndpoints.keyConfigUrlFor(
                 "ohttp-gateway-testnet.example",
             )
-        org.junit.Assert.assertEquals("https://relay-simulator-testnet.example/ohttp-configs", url)
+        org.junit.Assert.assertEquals("https://ohttp-relay-testnet.example/ohttp-configs", url)
     }
 
     @Test
