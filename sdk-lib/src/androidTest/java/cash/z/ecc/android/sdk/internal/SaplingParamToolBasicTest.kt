@@ -4,7 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.filters.MediumTest
 import androidx.test.filters.SmallTest
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
-import cash.z.ecc.android.sdk.internal.ext.getSha1Hash
+import cash.z.ecc.android.sdk.internal.ext.getSha256Hash
 import cash.z.ecc.android.sdk.internal.ext.listFilesSuspend
 import cash.z.ecc.android.sdk.test.getAppContext
 import cash.z.ecc.fixture.SaplingParamToolFixture
