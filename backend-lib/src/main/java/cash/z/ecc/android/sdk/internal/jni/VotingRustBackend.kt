@@ -21,12 +21,12 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniSnapshotBundlePrecomputeR
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import cash.z.ecc.android.sdk.internal.model.voting.RoundDriveProgressListener
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
 import java.security.SecureRandom
 
 /**
@@ -645,6 +645,13 @@ class VotingRustBackend private constructor() {
         private val accessMutex = Mutex()
         private var inFlight = 0
 
+        // Signals close()'s wait below rather than having it poll -- runWithHandle's finally
+        // completes this the moment inFlight actually reaches zero, so close() suspends for the
+        // real remaining duration of a run() that can take 20-30 minutes, instead of spinning a
+        // dispatcher thread on yield() the whole time. Only allocated once a close() attempt
+        // actually needs to wait; runWithHandle only touches it when non-null.
+        private var drainSignal: CompletableDeferred<Unit>? = null
+
         /**
          * Removes this round session from the registry. No implicit chain cancellation: a
          * caller with a [runRound] call in flight must [cancel] first if it wants that run to
@@ -652,12 +659,15 @@ class VotingRustBackend private constructor() {
          */
         suspend fun close() {
             while (true) {
-                val handle =
+                val (handle, wait) =
                     accessMutex.withLock {
                         when {
                             sessionHandle == null -> return
-                            inFlight > 0 -> null
-                            else -> sessionHandle.also { sessionHandle = null }
+                            inFlight > 0 -> {
+                                val signal = drainSignal ?: CompletableDeferred<Unit>().also { drainSignal = it }
+                                null to signal
+                            }
+                            else -> (sessionHandle.also { sessionHandle = null }) to null
                         }
                     }
                 if (handle != null) {
@@ -666,7 +676,7 @@ class VotingRustBackend private constructor() {
                     }
                     return
                 }
-                yield()
+                wait?.await()
             }
         }
 
@@ -777,7 +787,15 @@ class VotingRustBackend private constructor() {
                 // of running its body. Without this, a cancel() racing run()'s own
                 // cancellation-driven finally could leak inFlight, and close()'s drain loop would
                 // then spin forever.
-                withContext(NonCancellable) { accessMutex.withLock { inFlight-- } }
+                withContext(NonCancellable) {
+                    accessMutex.withLock {
+                        inFlight--
+                        if (inFlight == 0) {
+                            drainSignal?.complete(Unit)
+                            drainSignal = null
+                        }
+                    }
+                }
             }
         }
     }
@@ -797,14 +815,20 @@ class VotingRustBackend private constructor() {
         private val accessMutex = Mutex()
         private var inFlight = 0
 
+        // See RoundSession.drainSignal's identical comment -- same fix, same reasoning.
+        private var drainSignal: CompletableDeferred<Unit>? = null
+
         suspend fun close() {
             while (true) {
-                val handle =
+                val (handle, wait) =
                     accessMutex.withLock {
                         when {
                             sessionHandle == null -> return
-                            inFlight > 0 -> null
-                            else -> sessionHandle.also { sessionHandle = null }
+                            inFlight > 0 -> {
+                                val signal = drainSignal ?: CompletableDeferred<Unit>().also { drainSignal = it }
+                                null to signal
+                            }
+                            else -> (sessionHandle.also { sessionHandle = null }) to null
                         }
                     }
                 if (handle != null) {
@@ -813,7 +837,7 @@ class VotingRustBackend private constructor() {
                     }
                     return
                 }
-                yield()
+                wait?.await()
             }
         }
 
@@ -873,7 +897,15 @@ class VotingRustBackend private constructor() {
                 // NonCancellable: see RoundSession.runWithHandle's comment -- a suspending
                 // withLock in a finally on an already-cancelled coroutine would be skipped,
                 // leaking inFlight and hanging close()'s drain loop forever.
-                withContext(NonCancellable) { accessMutex.withLock { inFlight-- } }
+                withContext(NonCancellable) {
+                    accessMutex.withLock {
+                        inFlight--
+                        if (inFlight == 0) {
+                            drainSignal?.complete(Unit)
+                            drainSignal = null
+                        }
+                    }
+                }
             }
         }
     }
