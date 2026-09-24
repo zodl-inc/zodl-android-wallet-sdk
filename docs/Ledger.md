@@ -122,6 +122,15 @@ returned.
 The device receives the whole transaction — recipients, amounts, memos and the randomness of every
 shielded action — and shows the user its outputs. It never leaves the phone for any other destination.
 
+### Change outputs
+
+The Ledger Zcash app signs exactly one change output per transaction. A PCZT with two or more change
+outputs fails with `LedgerException.TransactionNotSignable` before anything is sent to the device.
+`Synchronizer.proposeTransfer`, `Synchronizer.proposeFulfillingPaymentUri` and
+`Synchronizer.proposeShielding` therefore build at most one change output for an account whose key
+source is `Account.LEDGER_KEY_SOURCE` (compared case-insensitively). Every other account keeps
+splitting change into up to four outputs of at least 0.1 ZEC.
+
 ### Failures
 
 - A failed exchange (timeout, disconnect) or a cancelled call closes the transport; open a new one.

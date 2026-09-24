@@ -22,7 +22,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and persist the binding next to the account (`LedgerDeviceIdentity.encoding` and
   `Zip32AccountIndex.index`; restore with `LedgerDeviceIdentity.new`). A `LedgerDeviceIdentity` can be
   matched to the account's first transparent address once that address has spent on chain: store it as
-  you would that address. Its `toString()` does not print it.
+  you would that address. Its `toString()` does not print it. `proposeTransfer`,
+  `proposeFulfillingPaymentUri` and `proposeShielding` build at most one change output for an account
+  whose key source is `Account.LEDGER_KEY_SOURCE` (compared case-insensitively), because the Ledger
+  Zcash app signs only one; every other account keeps splitting change into notes.
 - `displayUnifiedAddress` returns a unified address carrying only the account's Orchard receiver at
   diversifier index 0, whatever the transparent address index; compare it with an address built from
   that receiver alone, not with the account's full unified address, which never matches.

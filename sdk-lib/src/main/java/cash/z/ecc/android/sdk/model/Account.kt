@@ -55,6 +55,11 @@ data class Account internal constructor(
          * The [keySource] to import an account paired with a Ledger device under
          * ([cash.z.ecc.android.sdk.ledger.LedgerDevice.pairAccount]). It marks the account as one
          * whose spend authority is on a Ledger, to be signed with `Synchronizer.signPcztWithLedger`.
+         *
+         * The tag is compared ignoring ASCII case. Because the Ledger Zcash app signs only one change
+         * output per transaction, the proposals built for a Ledger-tagged account carry at most one
+         * change output instead of splitting change into several notes. Migration run sizing is not
+         * affected.
          */
         const val LEDGER_KEY_SOURCE = "ledger"
 

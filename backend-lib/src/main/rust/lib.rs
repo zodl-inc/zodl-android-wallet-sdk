@@ -42,10 +42,10 @@ use zcash_address::{
 use zcash_client_backend::{
     address::{Address, UnifiedAddress},
     data_api::{
-        Account, AccountBalance, AccountBirthday, AccountPurpose, BirthdayError, CoinbaseFilter,
-        InputSource, OutputStatusFilter, SeedRelevance, TransactionDataRequest, TransactionStatus,
-        TransactionStatusFilter, TransparentKeyOrigin, WalletCommitmentTrees, WalletRead,
-        WalletSummary, WalletWrite, Zip32Derivation,
+        Account, AccountBalance, AccountBirthday, AccountPurpose, AccountSource, BirthdayError,
+        CoinbaseFilter, InputSource, OutputStatusFilter, SeedRelevance, TransactionDataRequest,
+        TransactionStatus, TransactionStatusFilter, TransparentKeyOrigin, WalletCommitmentTrees,
+        WalletRead, WalletSummary, WalletWrite, Zip32Derivation,
         anchor_retention::AnchorRetentionInterval,
         chain::{CommitmentTreeRoot, ScanSummary, scan_cached_blocks},
         error::Error as DataApiError,
@@ -2251,6 +2251,29 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransa
     unwrap_exc_or(&mut env, res, ())
 }
 
+/// The `key_source` value (compared ignoring ASCII case) the app stamps on a Ledger-imported
+/// account.
+pub(crate) const LEDGER_KEY_SOURCE: &str = "ledger";
+
+/// Returns the change split policy for proposals built for an account with the given source.
+///
+/// The Ledger Zcash app signs exactly one change output per transaction, and `pczt-ledger`
+/// refuses a second one before the first command goes out. A Ledger-tagged account
+/// ([`LEDGER_KEY_SOURCE`]) therefore gets [`SplitPolicy::single_output`]; every other account
+/// keeps splitting change into up to four outputs of at least 0.1 ZEC.
+pub(crate) fn change_split_policy(source: Option<&AccountSource>) -> SplitPolicy {
+    let is_ledger = source
+        .and_then(|source| source.key_source())
+        .is_some_and(|tag| tag.eq_ignore_ascii_case(LEDGER_KEY_SOURCE));
+    if is_ledger {
+        SplitPolicy::single_output()
+    } else {
+        SplitPolicy::with_min_output_value(
+            NonZeroUsize::new(4).expect("4 is nonzero"),
+            Zatoshis::const_from_u64(1000_0000),
+        )
+    }
+}
 /// Marks a transaction the wallet knows about as trusted or untrusted (ZIP 315).
 ///
 /// The outputs of a trusted transaction become spendable after the policy's `trusted` number of
@@ -2332,6 +2355,7 @@ where
 
 fn zip317_helper<DbT>(
     change_memo: Option<MemoBytes>,
+    split_policy: SplitPolicy,
 ) -> (
     MultiOutputChangeStrategy<StandardFeeRule, DbT>,
     GreedyInputSelector<DbT>,
@@ -2342,10 +2366,7 @@ fn zip317_helper<DbT>(
             change_memo,
             ShieldedPool::Orchard,
             DustOutputPolicy::default(),
-            SplitPolicy::with_min_output_value(
-                NonZeroUsize::new(4).expect("4 is nonzero"),
-                Zatoshis::const_from_u64(1000_0000),
-            ),
+            split_policy,
         ),
         GreedyInputSelector::new(),
     )
@@ -2369,8 +2390,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
         let account_uuid = account_id_from_jni(env, account_uuid)?;
         let payment_uri = utils::java_string_to_rust(env, &payment_uri)?;
 
+        let account = db_data.get_account(account_uuid)?;
+
         // Always use ZIP 317 fees
-        let (change_strategy, input_selector) = zip317_helper(None);
+        let (change_strategy, input_selector) = zip317_helper(
+            None,
+            change_split_policy(account.as_ref().map(|a| a.source())),
+        );
 
         let request = TransactionRequest::from_uri(&payment_uri)
             .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
@@ -2430,8 +2456,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             .transpose()
             .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
 
+        let account = db_data.get_account(account_uuid)?;
+
         // Always use ZIP 317 fees
-        let (change_strategy, input_selector) = zip317_helper(None);
+        let (change_strategy, input_selector) = zip317_helper(
+            None,
+            change_split_policy(account.as_ref().map(|a| a.source())),
+        );
 
         let request = TransactionRequest::new(vec![
             Payment::new(to, Some(value), memo, None, None, vec![])
@@ -2572,8 +2603,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
             .transpose()
             .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
 
+        let account = db_data.get_account(account_uuid)?;
+
         // Always use ZIP 317 fees
-        let (change_strategy, input_selector) = zip317_helper(memo);
+        let (change_strategy, input_selector) = zip317_helper(
+            memo,
+            change_split_policy(account.as_ref().map(|a| a.source())),
+        );
 
         let proposal = propose_shielding::<_, _, _, _, Infallible>(
             &mut db_data,
@@ -4454,6 +4490,47 @@ mod tests {
             "did not expect the marker prefix, got {mapped_msg:?}"
         );
         assert!(mapped_msg.starts_with("Error while initializing accounts: "));
+    }
+
+    fn view_only_source(key_source: Option<&str>) -> AccountSource {
+        AccountSource::Imported {
+            purpose: AccountPurpose::ViewOnly,
+            key_source: key_source.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_ledger_tag_selects_a_single_change_output() {
+        for tag in ["ledger", "Ledger", "LEDGER"] {
+            let source = view_only_source(Some(tag));
+            let policy = change_split_policy(Some(&source));
+            assert_eq!(policy.target_output_count().get(), 1, "tag {tag:?}");
+            assert_eq!(policy.min_split_output_value(), None, "tag {tag:?}");
+        }
+    }
+
+    #[test]
+    fn every_other_account_keeps_the_note_splitting_policy() {
+        let mut sources = vec![None, Some(view_only_source(None))];
+        for tag in [
+            "zashi",
+            "keystone",
+            " ledger",
+            "ledger ",
+            "ledgers",
+            "Ledger Nano",
+        ] {
+            sources.push(Some(view_only_source(Some(tag))));
+        }
+        for source in &sources {
+            let policy = change_split_policy(source.as_ref());
+            assert_eq!(policy.target_output_count().get(), 4, "source {source:?}");
+            assert_eq!(
+                policy.min_split_output_value(),
+                Some(Zatoshis::const_from_u64(1000_0000)),
+                "source {source:?}"
+            );
+        }
     }
 
     /// A transaction the wallet never stored, such as one `decrypt_and_store_transaction` skipped
