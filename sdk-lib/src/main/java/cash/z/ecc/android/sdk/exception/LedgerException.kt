@@ -55,8 +55,9 @@ sealed class LedgerException(
     ) : LedgerException("The Zcash app on the Ledger device is too old; update it and try again.")
 
     /**
-     * The connected device is not the Ledger the account was paired with, or the device's identity
-     * changed while an account was being paired. Nothing of the transaction was sent to it.
+     * Signing found that the connected device is not the one the account's binding names.
+     * Pairing reads the device identity once and can no longer raise this. Nothing of the
+     * transaction was sent to it.
      */
     class DeviceMismatch internal constructor() :
         LedgerException("The connected Ledger device is not the one this account was paired with.")
