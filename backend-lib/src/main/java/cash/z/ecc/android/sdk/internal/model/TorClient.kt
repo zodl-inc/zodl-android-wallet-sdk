@@ -13,6 +13,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.math.BigDecimal
 
+@Suppress("TooManyFunctions")
 class TorClient private constructor(
     private var nativeHandle: Long?,
     private val backend: Backend,

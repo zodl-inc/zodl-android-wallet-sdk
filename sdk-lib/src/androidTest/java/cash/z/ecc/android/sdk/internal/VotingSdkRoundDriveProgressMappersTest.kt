@@ -59,7 +59,7 @@ class VotingSdkRoundDriveProgressMappersTest {
     }
 
     @Test
-    fun vote_carrying_bundle_indexes_keeps_only_vote_family_next_steps_unioned_with_recovered_vote_work_sorted_and_deduped() {
+    fun vote_carrying_bundle_indexes_are_vote_family_steps_plus_recovered_work_sorted_deduped() {
         val json =
             """
             {

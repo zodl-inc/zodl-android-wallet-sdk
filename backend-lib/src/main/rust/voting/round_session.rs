@@ -18,8 +18,8 @@
 //! test below.
 
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::db::db_from_handle;
 use super::helpers::*;
@@ -32,9 +32,9 @@ use zeroize::Zeroizing;
 use voting::{
     BallotIntent, ChainAdvancePolicy, ChainSubmissionClientConfig, ChainSubmissionControl,
     DirectRoute, HelperClient, HelperHealth, HelperTransport, HyperTransport,
-    NoopRoundDriveReporter, ProgressBaseline, ProposalRosterEntry, RouteFuture, RouteHttp,
-    RouteRequest, RoundBinding, RoundDriveEvent, RoundDrivePolicy, RoundDriveReporter,
-    RoundDriveReporterBridge, RoundDriver, RoundExecutor, RoundHostContext, RoundHostSourceBridge,
+    NoopRoundDriveReporter, ProgressBaseline, ProposalRosterEntry, RoundBinding, RoundDriveEvent,
+    RoundDrivePolicy, RoundDriveReporter, RoundDriveReporterBridge, RoundDriver, RoundExecutor,
+    RoundHostContext, RoundHostSourceBridge, RouteFuture, RouteHttp, RouteRequest,
 };
 
 use crate::tor::TorRuntime;
@@ -825,9 +825,6 @@ mod tests {
         // fallback `delegation.rs`'s new `precomputePirProofsNative`/
         // `precomputeSnapshotBundlesNative` exports rely on when no Tor
         // runtime is available.
-        assert!(matches!(
-            resolve_session_route(0),
-            SessionRoute::Direct(_)
-        ));
+        assert!(matches!(resolve_session_route(0), SessionRoute::Direct(_)));
     }
 }

@@ -25,12 +25,14 @@
 //! cadence each pass itself computes until the round's shares are
 //! quiescent.
 
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::db::db_from_handle;
 use super::helpers::*;
-use super::round_session::{fallback_runtime, optional_seconds, resolve_tor_runtime, unix_now_seconds};
+use super::round_session::{
+    fallback_runtime, optional_seconds, resolve_tor_runtime, unix_now_seconds,
+};
 use super::route::ZodlVotingRoute;
 use super::*;
 
@@ -54,8 +56,9 @@ pub(super) struct ShareTrackingSessionHandle {
 }
 
 static NEXT_SHARE_TRACKING_SESSION_HANDLE: AtomicI64 = AtomicI64::new(1);
-static SHARE_TRACKING_SESSION_REGISTRY: OnceLock<Mutex<HashMap<jlong, Arc<ShareTrackingSessionHandle>>>> =
-    OnceLock::new();
+static SHARE_TRACKING_SESSION_REGISTRY: OnceLock<
+    Mutex<HashMap<jlong, Arc<ShareTrackingSessionHandle>>>,
+> = OnceLock::new();
 
 fn share_tracking_registry() -> &'static Mutex<HashMap<jlong, Arc<ShareTrackingSessionHandle>>> {
     SHARE_TRACKING_SESSION_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
@@ -67,7 +70,9 @@ fn next_share_tracking_session_handle() -> anyhow::Result<jlong> {
         .map_err(|_| anyhow!("share tracking session handle space exhausted"))
 }
 
-fn share_tracking_session_from_handle(handle: jlong) -> anyhow::Result<Arc<ShareTrackingSessionHandle>> {
+fn share_tracking_session_from_handle(
+    handle: jlong,
+) -> anyhow::Result<Arc<ShareTrackingSessionHandle>> {
     if handle <= 0 {
         return Err(anyhow!(
             "Share tracking session handle must be positive, got {handle}"

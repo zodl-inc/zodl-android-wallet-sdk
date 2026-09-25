@@ -664,12 +664,18 @@ class VotingRustBackend private constructor() {
                 val (handle, wait) =
                     accessMutex.withLock {
                         when {
-                            sessionHandle == null -> return
+                            sessionHandle == null -> {
+                                return
+                            }
+
                             inFlight > 0 -> {
                                 val signal = drainSignal ?: CompletableDeferred<Unit>().also { drainSignal = it }
                                 null to signal
                             }
-                            else -> (sessionHandle.also { sessionHandle = null }) to null
+
+                            else -> {
+                                (sessionHandle.also { sessionHandle = null }) to null
+                            }
                         }
                     }
                 if (handle != null) {
@@ -825,12 +831,18 @@ class VotingRustBackend private constructor() {
                 val (handle, wait) =
                     accessMutex.withLock {
                         when {
-                            sessionHandle == null -> return
+                            sessionHandle == null -> {
+                                return
+                            }
+
                             inFlight > 0 -> {
                                 val signal = drainSignal ?: CompletableDeferred<Unit>().also { drainSignal = it }
                                 null to signal
                             }
-                            else -> (sessionHandle.also { sessionHandle = null }) to null
+
+                            else -> {
+                                (sessionHandle.also { sessionHandle = null }) to null
+                            }
                         }
                     }
                 if (handle != null) {

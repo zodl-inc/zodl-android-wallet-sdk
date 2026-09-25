@@ -195,9 +195,11 @@ mod tests {
         note::{Note, NoteVersion, RandomSeed, Rho},
         value::NoteValue,
     };
-    use rusqlite::{params, Connection};
-    use zcash_client_backend::data_api::{chain::ChainState, AccountBirthday, WalletRead, WalletWrite};
-    use zcash_client_sqlite::{util::SystemClock, wallet::init::init_wallet_db, WalletDb};
+    use rusqlite::{Connection, params};
+    use zcash_client_backend::data_api::{
+        AccountBirthday, WalletRead, WalletWrite, chain::ChainState,
+    };
+    use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
     use zcash_primitives::block::BlockHash;
     use zcash_protocol::consensus::{NetworkUpgrade, Parameters};
     use zip32::Scope;
@@ -233,12 +235,8 @@ mod tests {
 
         let mut conn = Connection::open(&db_path).expect("open fresh wallet db file");
         let account_uuid = {
-            let mut db = WalletDb::from_connection(
-                &mut conn,
-                network,
-                SystemClock,
-                rand::rngs::OsRng,
-            );
+            let mut db =
+                WalletDb::from_connection(&mut conn, network, SystemClock, rand::rngs::OsRng);
             init_wallet_db(&mut db, Some(SecretVec::new(vec![7u8; 32])))
                 .expect("init wallet schema");
 
@@ -247,12 +245,7 @@ mod tests {
                 None,
             );
             let (account_uuid, usk) = db
-                .create_account(
-                    "voter",
-                    &SecretVec::new(vec![7u8; 32]),
-                    &birthday,
-                    None,
-                )
+                .create_account("voter", &SecretVec::new(vec![7u8; 32]), &birthday, None)
                 .expect("create test account");
             let orchard_fvk = usk
                 .to_unified_full_viewing_key()
@@ -282,7 +275,10 @@ mod tests {
         drop(conn);
 
         let wallet_db = SqliteWalletDbOpener::new(
-            db_path.to_str().expect("test db path is valid UTF-8").to_string(),
+            db_path
+                .to_str()
+                .expect("test db path is valid UTF-8")
+                .to_string(),
             network,
         )
         .open_for_read()
@@ -339,7 +335,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(err.to_string().contains("wallet DB has no fully scanned height"));
+        assert!(
+            err.to_string()
+                .contains("wallet DB has no fully scanned height")
+        );
     }
 
     #[test]
@@ -431,7 +430,12 @@ mod tests {
                     orchard_commitment_tree_size, sapling_output_count, orchard_action_count
                  )
                  VALUES (?1, ?2, ?3, ?4, 0, 0, 0, 0)",
-                params![height, [height as u8; PROTOCOL_FIELD_BYTES], height, Vec::<u8>::new()],
+                params![
+                    height,
+                    [height as u8; PROTOCOL_FIELD_BYTES],
+                    height,
+                    Vec::<u8>::new()
+                ],
             )
             .expect("insert blocks fixture");
         }
@@ -440,7 +444,11 @@ mod tests {
     /// Generates a real, validly-encoded Orchard note for [orchard_fvk], receivable at the
     /// external scope -- the same trial-seed technique `zcash_voting`'s own test fixtures use,
     /// since [`RandomSeed::from_bytes`]/[`orchard::Note::from_parts`] can reject a seed.
-    fn test_orchard_note(orchard_fvk: &FullViewingKey, note_tag: u8, value_zatoshi: u64) -> orchard::Note {
+    fn test_orchard_note(
+        orchard_fvk: &FullViewingKey,
+        note_tag: u8,
+        value_zatoshi: u64,
+    ) -> orchard::Note {
         let recipient = orchard_fvk.address_at(u64::from(note_tag), Scope::External);
         let mut rho_bytes = [0u8; PROTOCOL_FIELD_BYTES];
         rho_bytes[..8].copy_from_slice(&(u64::from(note_tag) + 1).to_le_bytes());
