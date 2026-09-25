@@ -21,6 +21,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingRoundState
 import cash.z.ecc.android.sdk.model.voting.VotingRoundSummary
 import cash.z.ecc.android.sdk.model.voting.VotingShareTrackingReport
 import cash.z.ecc.android.sdk.model.voting.VotingSnapshotBundlePrecomputeReport
+import cash.z.ecc.android.sdk.model.voting.VotingTorLease
 import cash.z.ecc.android.sdk.model.voting.VotingWitness
 
 /**
@@ -203,16 +204,15 @@ interface VotingDbSession {
     suspend fun generateHotkey(storedSecret: ByteArray): VotingHotkey
 
     /**
-     * [torRuntime] is the caller's raw native Tor-runtime handle, same contract as
-     * [openRoundSession]'s own [torRuntime] parameter: obtain it from
-     * [Synchronizer.getVotingTorRuntimeHandle], and pass `0` when no live Tor runtime is
-     * available (Tor disabled) rather than failing the call. Without this, every PIR request
-     * this call makes would go out over plain HTTP unconditionally, correlating the caller's IP
-     * with holding voting-eligible notes -- the same privacy requirement [precomputePirProofs]
-     * and [precomputeSnapshotBundles] already carry.
+     * [torLease] routes this call's PIR requests over Tor, same contract as [openRoundSession]'s
+     * own [torLease] parameter: obtain it from [Synchronizer.acquireVotingTorLease], and pass
+     * `null` when Tor is disabled rather than failing the call. Without it, every PIR request this
+     * call makes goes out over plain HTTP, correlating the caller's IP with holding
+     * voting-eligible notes -- the same privacy requirement [precomputePirProofs] and
+     * [precomputeSnapshotBundles] already carry.
      */
     suspend fun precomputeDelegationPir(
-        torRuntime: Long,
+        torLease: VotingTorLease?,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -231,10 +231,9 @@ interface VotingDbSession {
      * as a background pre-warming step whenever the app is idle with wallet notes available,
      * rather than only right before a delegation bundle needs its proofs.
      *
-     * [torRuntime] is the caller's raw native Tor-runtime handle, same contract as
-     * [openRoundSession]'s own [torRuntime] parameter: obtain it from
-     * [Synchronizer.getVotingTorRuntimeHandle], and pass `0` when no live Tor runtime is
-     * available (Tor disabled) rather than failing the call -- this routes real Tor traffic
+     * [torLease] routes this call's PIR requests over Tor, same contract as [openRoundSession]'s
+     * own [torLease] parameter: obtain it from [Synchronizer.acquireVotingTorLease], and pass
+     * `null` when Tor is disabled rather than failing the call -- this routes real Tor traffic
      * when available and falls back to plain HTTP otherwise, never failing closed. This matters
      * here specifically because, unlike [openRoundSession], this call is meant to be triggered
      * from background/browse-time code (e.g. on screen entry) rather than only on explicit vote
@@ -248,7 +247,7 @@ interface VotingDbSession {
      * real submission.
      */
     suspend fun precomputePirProofs(
-        torRuntime: Long,
+        torLease: VotingTorLease?,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -276,12 +275,12 @@ interface VotingDbSession {
      *   note set (for example after new notes synced in) does not silently update that plan --
      *   it fails hard instead. Treat this as committing state, not as a repeatable warm-up.
      *
-     * [torRuntime] and the shared-database-lock contract are the same as [precomputePirProofs]
+     * [torLease] and the shared-database-lock contract are the same as [precomputePirProofs]
      * above -- see that doc comment, including why this being wired to fire on background/browse
      * -time code (not just explicit vote submission) makes both of those points matter here.
      */
     suspend fun precomputeSnapshotBundles(
-        torRuntime: Long,
+        torLease: VotingTorLease?,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -334,21 +333,20 @@ interface VotingDbSession {
 
     /**
      * Opens a round session: binds a `RoundExecutor` to [roundId]'s roster and hotkey, wires its
-     * chain-submission and helper transports through [torRuntime], and registers it. Callers
+     * chain-submission and helper transports through [torLease], and registers it. Callers
      * must [VotingRoundSession.close] it when done.
      *
      * [hotkeySecret] may be `null` before a hotkey is bound. [ceremonyStartSeconds]/
      * [voteEndTimeSeconds] `null` decode to "not yet known".
      *
-     * [torRuntime] is the caller's raw native Tor-runtime handle — the same one the
-     * synchronizer's shared Tor client uses for its own HTTP dispatch. Obtain it from
-     * [Synchronizer.getVotingTorRuntimeHandle], the one sanctioned accessor for it; this
-     * SDK exposes no other way to reach the value, and it stays valid only for as long as
-     * that synchronizer's Tor client is alive.
+     * [torLease] is a lease on the synchronizer's shared Tor runtime from
+     * [Synchronizer.acquireVotingTorLease], or `null` when Tor is disabled (plain HTTP). The
+     * session uses the runtime for its whole lifetime, including every [VotingRoundSession.run]
+     * call, so the caller must keep the lease unreleased until after [VotingRoundSession.close].
      */
     @Suppress("LongParameterList")
     suspend fun openRoundSession(
-        torRuntime: Long,
+        torLease: VotingTorLease?,
         roundId: String,
         proposals: List<VotingProposalRosterEntry>,
         hotkeySecret: ByteArray?,
@@ -452,14 +450,12 @@ interface VotingShareTrackingSession {
      *
      * [voteEndTimeSeconds] `< 0` decodes to "no vote-end boundary known yet".
      *
-     * [torRuntime] is the caller's raw native Tor-runtime handle — the same one the
-     * synchronizer's shared Tor client uses for its own HTTP dispatch. Obtain it from
-     * [Synchronizer.getVotingTorRuntimeHandle], the one sanctioned accessor for it; this
-     * SDK exposes no other way to reach the value, and it stays valid only for as long as
-     * that synchronizer's Tor client is alive.
+     * [torLease] is a lease on the synchronizer's shared Tor runtime from
+     * [Synchronizer.acquireVotingTorLease], or `null` when Tor is disabled (plain HTTP). Keep it
+     * unreleased until this call returns.
      */
     suspend fun run(
-        torRuntime: Long,
+        torLease: VotingTorLease?,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
     ): VotingShareTrackingReport?

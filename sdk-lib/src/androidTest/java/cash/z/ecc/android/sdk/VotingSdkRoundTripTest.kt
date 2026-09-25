@@ -58,52 +58,58 @@ class VotingSdkRoundTripTest {
                 assertNull(dbSession.getRoundState(ROUND_ID))
                 assertTrue(dbSession.listRounds().isEmpty())
 
-                val roundSession =
-                    dbSession.openRoundSession(
-                        torRuntime = torClient.pinRawRuntimeHandle(),
-                        roundId = ROUND_ID,
-                        proposals = listOf(VotingProposalRosterEntry(proposalId = 1, numOptions = 2)),
-                        hotkeySecret = null,
-                        chainEndpoints = listOf("https://chain.example"),
-                        operationEpoch = 0L,
-                        configuredHelperUrls = emptyList(),
-                        voteTreeNodeUrls = emptyList(),
-                        ceremonyStartSeconds = null,
-                        voteEndTimeSeconds = null
-                    )
+                // Leased outside openRoundSession's argument list and released in this finally,
+                // so a throw from openRoundSession or close() still releases it.
+                val torLease = torClient.leaseRuntime()
                 try {
-                    // A signer-less run reaches a real quiescence state from the session's
-                    // in-memory binding alone -- no round row needed for this path.
-                    val report = roundSession.run(delegationInputs = null)
-                    assertNotNull(report)
-                    val quiescence = assertNotNull(report.quiescence as? VotingRoundQuiescence.NeedsBallot)
-                    assertEquals(listOf(1), quiescence.openProposals)
-                    val plan = assertNotNull(report.plan)
-                    assertEquals(ROUND_ID, plan.roundId)
-                    assertEquals(listOf(1), plan.openProposals)
+                    val roundSession =
+                        dbSession.openRoundSession(
+                            torLease = torLease,
+                            roundId = ROUND_ID,
+                            proposals = listOf(VotingProposalRosterEntry(proposalId = 1, numOptions = 2)),
+                            hotkeySecret = null,
+                            chainEndpoints = listOf("https://chain.example"),
+                            operationEpoch = 0L,
+                            configuredHelperUrls = emptyList(),
+                            voteTreeNodeUrls = emptyList(),
+                            ceremonyStartSeconds = null,
+                            voteEndTimeSeconds = null
+                        )
+                    try {
+                        // A signer-less run reaches a real quiescence state from the session's
+                        // in-memory binding alone -- no round row needed for this path.
+                        val report = roundSession.run(delegationInputs = null)
+                        assertNotNull(report)
+                        val quiescence = assertNotNull(report.quiescence as? VotingRoundQuiescence.NeedsBallot)
+                        assertEquals(listOf(1), quiescence.openProposals)
+                        val plan = assertNotNull(report.plan)
+                        assertEquals(ROUND_ID, plan.roundId)
+                        assertEquals(listOf(1), plan.openProposals)
 
-                    val refetchedPlan = assertNotNull(roundSession.plan())
-                    assertEquals(ROUND_ID, refetchedPlan.roundId)
+                        val refetchedPlan = assertNotNull(roundSession.plan())
+                        assertEquals(ROUND_ID, refetchedPlan.roundId)
 
-                    // setBallotIntents is a real write path; with no rounds-table row ever
-                    // persisted it fails the bundles/ballots foreign key -- proven here through
-                    // VotingBallotIntent/VotingRoundSession, not the raw IntArray/JniRoundPlan
-                    // shapes underneath.
-                    assertFailsWith<RuntimeException> {
-                        roundSession.setBallotIntents(listOf(VotingBallotIntent(proposalId = 1, choice = 0)))
+                        // setBallotIntents is a real write path; with no rounds-table row ever
+                        // persisted it fails the bundles/ballots foreign key -- proven here through
+                        // VotingBallotIntent/VotingRoundSession, not the raw IntArray/JniRoundPlan
+                        // shapes underneath.
+                        assertFailsWith<RuntimeException> {
+                            roundSession.setBallotIntents(listOf(VotingBallotIntent(proposalId = 1, choice = 0)))
+                        }
+
+                        // No delegation-enabled run ever succeeded on this session, so no pipeline
+                        // is cached yet.
+                        assertFailsWith<RuntimeException> {
+                            roundSession.getKeystoneSigningRequests(listOf(0))
+                        }
+
+                        roundSession.setOperationEpoch(1L)
+                        roundSession.cancel()
+                    } finally {
+                        roundSession.close()
                     }
-
-                    // No delegation-enabled run ever succeeded on this session, so no pipeline
-                    // is cached yet.
-                    assertFailsWith<RuntimeException> {
-                        roundSession.getKeystoneSigningRequests(listOf(0))
-                    }
-
-                    roundSession.setOperationEpoch(1L)
-                    roundSession.cancel()
                 } finally {
-                    roundSession.close()
-                    torClient.unpinRawRuntimeHandle()
+                    torLease.release()
                 }
 
                 // Still nothing persisted -- the whole exchange above was read-only/in-memory.
@@ -180,76 +186,82 @@ class VotingSdkRoundTripTest {
                 // delegation inputs below.
                 val hotkey = dbSession.generateHotkey(HOTKEY_SEED)
 
-                val roundSession =
-                    dbSession.openRoundSession(
-                        torRuntime = torClient.pinRawRuntimeHandle(),
-                        roundId = ROUND_ID,
-                        proposals = listOf(VotingProposalRosterEntry(proposalId = 1, numOptions = 2)),
-                        hotkeySecret = hotkey.storedSecret,
-                        chainEndpoints = listOf("https://chain.example"),
-                        operationEpoch = 0L,
-                        configuredHelperUrls = emptyList(),
-                        voteTreeNodeUrls = emptyList(),
-                        ceremonyStartSeconds = null,
-                        voteEndTimeSeconds = null
-                    )
+                // Leased outside openRoundSession's argument list and released in this finally,
+                // so a throw from openRoundSession or close() still releases it.
+                val torLease = torClient.leaseRuntime()
                 try {
-                    // A real temp path: SqliteWalletDbOpener::open_for_read genuinely opens
-                    // (and creates) this file now that this call reaches real wallet I/O -- a
-                    // bare "unused-wallet.db" would litter the process's working directory.
-                    val walletDbPath =
-                        createTempDirectory("wallet-db-").resolve("wallet.db").toFile().absolutePath
-                    val delegationInputs =
-                        VotingDelegationInputs(
-                            walletDbPath = walletDbPath,
-                            accountUuid = "unused-account-uuid",
-                            anchorTreeStateBytes = ByteArray(0),
+                    val roundSession =
+                        dbSession.openRoundSession(
+                            torLease = torLease,
+                            roundId = ROUND_ID,
+                            proposals = listOf(VotingProposalRosterEntry(proposalId = 1, numOptions = 2)),
                             hotkeySecret = hotkey.storedSecret,
-                            pirEndpoints = listOf("https://pir.example"),
-                            // A real, valid YPIR layout (zcash_voting's own
-                            // config::tests::test_pir_layout fixture) -- confirmed empirically
-                            // against the backend-lib layer test that PirFleet::new rejects an
-                            // inconsistent/undersized one before the pipeline is even touched.
-                            pirDepth = 19,
-                            pirTier0Layers = 12,
-                            pirTier1Layers = 7,
-                            pirPolyLen = 4096,
-                            keystone = false,
-                            softwareSeed = ByteArray(FIELD_BYTES) { 0x5A },
-                            keystoneSig = null,
-                            keystoneSighash = null,
-                            // Must match ensureRound's params above exactly: VotingDb::ensure_round
-                            // rejects a round it already knows under different parameters.
-                            snapshotHeight = 10,
-                            eaPk = eaPk,
-                            ncRoot = ncRoot,
-                            nullifierImtRoot = nullifierImtRoot
+                            chainEndpoints = listOf("https://chain.example"),
+                            operationEpoch = 0L,
+                            configuredHelperUrls = emptyList(),
+                            voteTreeNodeUrls = emptyList(),
+                            ceremonyStartSeconds = null,
+                            voteEndTimeSeconds = null
                         )
-
-                    // Whatever happens deeper in the pipeline (the wallet path has no real
-                    // notes, so a later stage may legitimately fail), the call must not be
-                    // rejected up front with "round not found" -- the original bug this test
-                    // guards against.
-                    runCatching { roundSession.run(delegationInputs) }
-                        .onFailure { error ->
-                            assertTrue(
-                                !error.message.orEmpty().contains("round not found"),
-                                "the round-bootstrap bug regressed: ${error.message}"
+                    try {
+                        // A real temp path: SqliteWalletDbOpener::open_for_read genuinely opens
+                        // (and creates) this file now that this call reaches real wallet I/O -- a
+                        // bare "unused-wallet.db" would litter the process's working directory.
+                        val walletDbPath =
+                            createTempDirectory("wallet-db-").resolve("wallet.db").toFile().absolutePath
+                        val delegationInputs =
+                            VotingDelegationInputs(
+                                walletDbPath = walletDbPath,
+                                accountUuid = "unused-account-uuid",
+                                anchorTreeStateBytes = ByteArray(0),
+                                hotkeySecret = hotkey.storedSecret,
+                                pirEndpoints = listOf("https://pir.example"),
+                                // A real, valid YPIR layout (zcash_voting's own
+                                // config::tests::test_pir_layout fixture) -- confirmed empirically
+                                // against the backend-lib layer test that PirFleet::new rejects an
+                                // inconsistent/undersized one before the pipeline is even touched.
+                                pirDepth = 19,
+                                pirTier0Layers = 12,
+                                pirTier1Layers = 7,
+                                pirPolyLen = 4096,
+                                keystone = false,
+                                softwareSeed = ByteArray(FIELD_BYTES) { 0x5A },
+                                keystoneSig = null,
+                                keystoneSighash = null,
+                                // Must match ensureRound's params above exactly: VotingDb::ensure_round
+                                // rejects a round it already knows under different parameters.
+                                snapshotHeight = 10,
+                                eaPk = eaPk,
+                                ncRoot = ncRoot,
+                                nullifierImtRoot = nullifierImtRoot
                             )
-                        }
 
-                    // The round is still there, unaffected by whatever run did or did not
-                    // dispatch.
-                    assertEquals(10L, assertNotNull(dbSession.getRoundState(ROUND_ID)).snapshotHeight)
+                        // Whatever happens deeper in the pipeline (the wallet path has no real
+                        // notes, so a later stage may legitimately fail), the call must not be
+                        // rejected up front with "round not found" -- the original bug this test
+                        // guards against.
+                        runCatching { roundSession.run(delegationInputs) }
+                            .onFailure { error ->
+                                assertTrue(
+                                    !error.message.orEmpty().contains("round not found"),
+                                    "the round-bootstrap bug regressed: ${error.message}"
+                                )
+                            }
 
-                    // Further proof the bootstrap is real, not a half-write: a write that used
-                    // to fail with a foreign-key error against a nonexistent round (per
-                    // round_trip_open_session_run_without_delegation_reaches_needs_ballot above)
-                    // now succeeds.
-                    roundSession.setBallotIntents(listOf(VotingBallotIntent(proposalId = 1, choice = 0)))
+                        // The round is still there, unaffected by whatever run did or did not
+                        // dispatch.
+                        assertEquals(10L, assertNotNull(dbSession.getRoundState(ROUND_ID)).snapshotHeight)
+
+                        // Further proof the bootstrap is real, not a half-write: a write that used
+                        // to fail with a foreign-key error against a nonexistent round (per
+                        // round_trip_open_session_run_without_delegation_reaches_needs_ballot above)
+                        // now succeeds.
+                        roundSession.setBallotIntents(listOf(VotingBallotIntent(proposalId = 1, choice = 0)))
+                    } finally {
+                        roundSession.close()
+                    }
                 } finally {
-                    roundSession.close()
-                    torClient.unpinRawRuntimeHandle()
+                    torLease.release()
                 }
             } finally {
                 dbSession.close()

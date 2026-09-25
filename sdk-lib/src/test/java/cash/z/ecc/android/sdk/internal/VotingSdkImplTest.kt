@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.internal
 
+import cash.z.ecc.android.sdk.internal.model.TorRuntimeLease
 import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationInputs
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureBatchResult
 import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureInput
@@ -28,6 +29,7 @@ import org.mockito.ArgumentMatchers.eq
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
+import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -235,7 +237,7 @@ class VotingSdkImplTest {
             val dbSession = VotingSdkImpl(backend).openDb("path", "wallet-1", 0)
 
             val session = dbSession.openShareTrackingSession("round-1")
-            val report = session.run(7L, listOf("https://helper.example"), -1L)
+            val report = session.run(torLease(7L), listOf("https://helper.example"), -1L)
 
             assertEquals(VotingShareTrackingQuiescence.AllConfirmed, report?.quiescence)
             assertEquals(2, report?.passes)
@@ -248,7 +250,35 @@ class VotingSdkImplTest {
             `when`(trackingSession.run(7L, listOf("https://helper.example"), -1L)).thenReturn(null)
             val session = VotingShareTrackingSessionImpl(trackingSession)
 
-            assertNull(session.run(7L, listOf("https://helper.example"), -1L))
+            assertNull(session.run(torLease(7L), listOf("https://helper.example"), -1L))
+        }
+
+    @Test
+    fun shareTrackingSession_run_with_a_null_lease_passes_the_no_tor_sentinel() =
+        runBlocking {
+            val trackingSession = mock(TypesafeShareTrackingSession::class.java)
+            `when`(trackingSession.run(0L, listOf("https://helper.example"), -1L)).thenReturn(
+                shareTrackingReportFixture()
+            )
+            val session = VotingShareTrackingSessionImpl(trackingSession)
+
+            val report = session.run(null, listOf("https://helper.example"), -1L)
+
+            assertEquals(VotingShareTrackingQuiescence.AllConfirmed, report?.quiescence)
+        }
+
+    @Test
+    fun shareTrackingSession_run_with_a_released_lease_fails_before_reaching_native_code() =
+        runBlocking<Unit> {
+            val trackingSession = mock(TypesafeShareTrackingSession::class.java)
+            val released = mock(TorRuntimeLease::class.java)
+            `when`(released.handle).thenThrow(IllegalStateException("TorRuntimeLease used after release"))
+            val session = VotingShareTrackingSessionImpl(trackingSession)
+
+            assertFailsWith<IllegalStateException> {
+                session.run(released, listOf("https://helper.example"), -1L)
+            }
+            verifyNoInteractions(trackingSession)
         }
 
     @Test
@@ -291,7 +321,7 @@ class VotingSdkImplTest {
 
             val roundSessionPublic =
                 session.openRoundSession(
-                    torRuntime = 7L,
+                    torLease = torLease(7L),
                     roundId = "round-1",
                     proposals =
                         listOf(
@@ -318,7 +348,7 @@ class VotingSdkImplTest {
             `when`(roundSession.dbHandle).thenReturn(1L)
             `when`(roundSession.setBallotIntents(intArrayOf(1, 2), intArrayOf(0, -1)))
                 .thenReturn(roundPlanFixture())
-            val session = VotingRoundSessionImpl(roundSession, torRuntime = 1L)
+            val session = VotingRoundSessionImpl(roundSession, torLease = torLease(1L))
 
             val plan =
                 session.setBallotIntents(
@@ -338,7 +368,7 @@ class VotingSdkImplTest {
             val roundSession = mock(TypesafeRoundSession::class.java)
             `when`(roundSession.dbHandle).thenReturn(42L)
             `when`(roundSession.runRound(anyLong(), any(), any())).thenReturn(roundRunReportFixture())
-            val session = VotingRoundSessionImpl(roundSession, torRuntime = 5L)
+            val session = VotingRoundSessionImpl(roundSession, torLease = torLease(5L))
 
             val delegationInputs =
                 VotingDelegationInputs(
@@ -390,7 +420,7 @@ class VotingSdkImplTest {
                     )
                 )
             )
-            val session = VotingRoundSessionImpl(roundSession, torRuntime = 1L)
+            val session = VotingRoundSessionImpl(roundSession, torLease = torLease(1L))
 
             val requests = session.getKeystoneSigningRequests(listOf(0))
 
@@ -404,10 +434,13 @@ class VotingSdkImplTest {
             val roundSession = mock(TypesafeRoundSession::class.java)
             `when`(roundSession.dbHandle).thenReturn(1L)
             `when`(roundSession.getRoundPlan()).thenReturn(null)
-            val session = VotingRoundSessionImpl(roundSession, torRuntime = 1L)
+            val session = VotingRoundSessionImpl(roundSession, torLease = torLease(1L))
 
             assertNull(session.plan())
         }
+
+    private fun torLease(handle: Long): TorRuntimeLease =
+        mock(TorRuntimeLease::class.java).also { `when`(it.handle).thenReturn(handle) }
 
     private fun roundPlanFixture(): JniRoundPlan =
         JniRoundPlan(

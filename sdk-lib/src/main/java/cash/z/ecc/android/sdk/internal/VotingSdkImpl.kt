@@ -26,6 +26,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingRoundState
 import cash.z.ecc.android.sdk.model.voting.VotingRoundSummary
 import cash.z.ecc.android.sdk.model.voting.VotingShareTrackingReport
 import cash.z.ecc.android.sdk.model.voting.VotingSnapshotBundlePrecomputeReport
+import cash.z.ecc.android.sdk.model.voting.VotingTorLease
 import cash.z.ecc.android.sdk.model.voting.VotingWitness
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -44,6 +45,13 @@ private const val UNKNOWN_TIME_SECONDS = -1L
  * instead, translated here at the boundary.
  */
 private const val SKIPPED_BALLOT_CHOICE = -1
+
+/**
+ * The raw runtime handle the JNI layer expects, `0` for "no Tor runtime" (plain HTTP). Reading
+ * [VotingTorLease.handle] throws once the lease is released, so a caller that released too early
+ * gets an exception here rather than handing a freed pointer to native code.
+ */
+private fun VotingTorLease?.rawHandle(): Long = this?.handle ?: 0L
 
 @Suppress("TooManyFunctions")
 internal class VotingSdkImpl(
@@ -155,7 +163,7 @@ internal class VotingDbSessionImpl(
         db.generateHotkey(storedSecret).toPublic()
 
     override suspend fun precomputeDelegationPir(
-        torRuntime: Long,
+        torLease: VotingTorLease?,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -167,7 +175,7 @@ internal class VotingDbSessionImpl(
     ): VotingDelegationPirPrecomputeResult =
         db
             .precomputeDelegationPir(
-                torRuntime,
+                torLease.rawHandle(),
                 roundId,
                 bundleIndex,
                 pirServerUrl,
@@ -179,7 +187,7 @@ internal class VotingDbSessionImpl(
             ).toPublic()
 
     override suspend fun precomputePirProofs(
-        torRuntime: Long,
+        torLease: VotingTorLease?,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -189,7 +197,7 @@ internal class VotingDbSessionImpl(
     ): VotingPirPrecomputeResult =
         db
             .precomputePirProofs(
-                torRuntime,
+                torLease.rawHandle(),
                 pirServerUrl,
                 pirDepth,
                 pirTier0Layers,
@@ -199,7 +207,7 @@ internal class VotingDbSessionImpl(
             ).toPublic()
 
     override suspend fun precomputeSnapshotBundles(
-        torRuntime: Long,
+        torLease: VotingTorLease?,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -210,7 +218,7 @@ internal class VotingDbSessionImpl(
     ): VotingSnapshotBundlePrecomputeReport =
         db
             .precomputeSnapshotBundles(
-                torRuntime,
+                torLease.rawHandle(),
                 roundId,
                 pirServerUrl,
                 pirDepth,
@@ -241,7 +249,7 @@ internal class VotingDbSessionImpl(
         VotingShareTrackingSessionImpl(db.openShareTrackingSession(roundId))
 
     override suspend fun openRoundSession(
-        torRuntime: Long,
+        torLease: VotingTorLease?,
         roundId: String,
         proposals: List<VotingProposalRosterEntry>,
         hotkeySecret: ByteArray?,
@@ -255,7 +263,7 @@ internal class VotingDbSessionImpl(
         VotingRoundSessionImpl(
             session =
                 db.openRoundSession(
-                    torRuntime = torRuntime,
+                    torRuntime = torLease.rawHandle(),
                     roundId = roundId,
                     proposalIds = proposals.map { it.proposalId }.toIntArray(),
                     proposalOptionCounts = proposals.map { it.numOptions }.toIntArray(),
@@ -267,12 +275,12 @@ internal class VotingDbSessionImpl(
                     ceremonyStartSeconds = ceremonyStartSeconds ?: UNKNOWN_TIME_SECONDS,
                     voteEndTimeSeconds = voteEndTimeSeconds ?: UNKNOWN_TIME_SECONDS
                 ),
-            torRuntime = torRuntime
+            torLease = torLease
         )
 }
 
 /**
- * [torRuntime] is captured once, from the same value [VotingDbSession.openRoundSession] was
+ * [torLease] is captured once, from the same lease [VotingDbSession.openRoundSession] was
  * called with, and reused for every [run] call on this session -- [run]'s own `torRuntime`
  * parameter (`runRoundNative`'s) exists only to drive `RoundDriver::run`'s future synchronously
  * from the JNI call (see that native function's doc comment); the session's own Tor-backed
@@ -282,7 +290,7 @@ internal class VotingDbSessionImpl(
  */
 internal class VotingRoundSessionImpl(
     private val session: TypesafeRoundSession,
-    private val torRuntime: Long
+    private val torLease: VotingTorLease?
 ) : VotingRoundSession {
     override suspend fun close() = session.close()
 
@@ -304,7 +312,7 @@ internal class VotingRoundSessionImpl(
     ): VotingRoundRunReport? =
         session
             .runRound(
-                torRuntime,
+                torLease.rawHandle(),
                 delegationInputs?.toInternal(session.dbHandle),
                 progressListener?.let { listener ->
                     RoundDriveProgressListener { _, detail -> listener.onProgress(parseRoundDriveProgress(detail)) }
@@ -323,8 +331,8 @@ internal class VotingShareTrackingSessionImpl(
     override suspend fun cancel() = session.cancel()
 
     override suspend fun run(
-        torRuntime: Long,
+        torLease: VotingTorLease?,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
-    ): VotingShareTrackingReport? = session.run(torRuntime, helperUrls, voteEndTimeSeconds)?.toPublic()
+    ): VotingShareTrackingReport? = session.run(torLease.rawHandle(), helperUrls, voteEndTimeSeconds)?.toPublic()
 }

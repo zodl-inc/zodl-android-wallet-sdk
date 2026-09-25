@@ -65,6 +65,7 @@ import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import cash.z.ecc.android.sdk.model.voting.VotingTorLease
 import cash.z.ecc.android.sdk.tool.CheckpointTool
 import cash.z.ecc.android.sdk.tool.DerivationTool
 import cash.z.ecc.android.sdk.type.AddressType
@@ -1588,19 +1589,15 @@ class SlipstreamSynchronizer internal constructor(
     }
 
     @Suppress("TooGenericExceptionCaught")
-    override suspend fun getVotingTorRuntimeHandle(): Long {
+    override suspend fun acquireVotingTorLease(): VotingTorLease {
         if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
         return try {
-            lazyTorClient.getOrCreate().pinRawRuntimeHandle()
+            lazyTorClient.getOrCreate().leaseRuntime()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             throw TorInitializationErrorException(e)
         }
-    }
-
-    override suspend fun releaseVotingTorRuntimeHandle() {
-        lazyTorClient.getOrCreate().unpinRawRuntimeHandle()
     }
 
     override suspend fun debugQuery(query: String): String {

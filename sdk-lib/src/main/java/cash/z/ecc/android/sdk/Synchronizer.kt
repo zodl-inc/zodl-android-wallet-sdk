@@ -51,6 +51,7 @@ import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import cash.z.ecc.android.sdk.model.voting.VotingTorLease
 import cash.z.ecc.android.sdk.tool.CheckpointTool
 import cash.z.ecc.android.sdk.type.AddressType
 import cash.z.ecc.android.sdk.type.ConsensusMatchType
@@ -890,13 +891,12 @@ interface Synchronizer {
     suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit = {}): HttpClient
 
     /**
-     * Returns the raw native Tor-runtime handle backing this synchronizer's shared Tor client,
-     * for callers that must hand it to a different native subsystem accepting a raw Tor runtime
-     * handle -- today, `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`'s and
-     * `cash.z.ecc.android.sdk.VotingShareTrackingSession.run`'s `torRuntime` parameter. Uses the
-     * same underlying Tor client as [getTorHttpClient], but does not create a new isolated Tor
-     * client the way [getTorHttpClient] does -- owning any such isolation for the voting round
-     * driver's traffic is that driver's job, not this accessor's.
+     * Leases this synchronizer's shared Tor runtime for the voting API -- the `torLease`
+     * parameter of `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`,
+     * `cash.z.ecc.android.sdk.VotingShareTrackingSession.run` and the `VotingDbSession.precompute*`
+     * calls. Uses the same underlying Tor client as [getTorHttpClient], but does not create a new
+     * isolated Tor client the way [getTorHttpClient] does -- owning any such isolation for the
+     * voting round driver's traffic is that driver's job, not this accessor's.
      *
      * Deliberately keeps the stricter `isTorEnabled || isExchangeRateEnabled` gate
      * ([TorUnavailableException] otherwise) even on engines where [getTorHttpClient] itself no
@@ -908,29 +908,20 @@ interface Synchronizer {
      * whatever [getTorHttpClient] currently does. If the two implementations ever diverge on the
      * legacy (non-Slipstream) engine as well, re-check this comment against both.
      *
-     * The returned handle is pinned: this synchronizer's shared Tor client cannot be disposed
-     * (a `close()`/rebuild, e.g. from server-switch hysteresis or a wallet reset) until a
-     * matching [releaseVotingTorRuntimeHandle] call runs. A round-driver session can hold this
-     * handle across its whole lifetime -- potentially 20-30 minutes for a multi-bundle round --
-     * so every caller MUST call [releaseVotingTorRuntimeHandle] exactly once, in a
-     * `finally`/`close()` path that always runs, once it is done with the handle. Without that,
-     * a concurrent dispose would otherwise free the native runtime out from under an in-flight
-     * round drive still holding this pointer -- a use-after-free.
-     *
-     * @return the raw native Tor-runtime handle
+     * The returned lease keeps the Tor runtime alive: a `close()`/rebuild of this synchronizer
+     * (server-switch hysteresis, a Tor or exchange-rate toggle, a wallet reset) while it is held
+     * defers freeing the runtime until the lease is released. A round-driver session can use the
+     * runtime across its whole lifetime -- potentially 20-30 minutes for a multi-bundle round --
+     * so callers MUST release the lease, in a `finally` path that always runs, only after every
+     * session it was passed to has been closed. Release goes to the Tor client that issued the
+     * lease, so it keeps working after this synchronizer has been closed or replaced; see
+     * [VotingTorLease] for the full contract.
      *
      * @throws TorInitializationErrorException if an error occurred during Tor setup
      * @throws TorUnavailableException if Tor or exchange rate is not enabled
      */
     @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
-    suspend fun getVotingTorRuntimeHandle(): Long
-
-    /**
-     * Releases a handle obtained from [getVotingTorRuntimeHandle]. Safe to call even if the
-     * underlying Tor client was disposed while the handle was pinned -- see that function's own
-     * doc comment.
-     */
-    suspend fun releaseVotingTorRuntimeHandle()
+    suspend fun acquireVotingTorLease(): VotingTorLease
 
     suspend fun debugQuery(query: String): String
 
