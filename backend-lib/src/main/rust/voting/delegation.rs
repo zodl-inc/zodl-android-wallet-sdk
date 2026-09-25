@@ -122,15 +122,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         };
 
         // Connecting a PIR client downloads a whole Tier-0 dataset, so it must
-        // not happen under the access lock. Uses this file's own Tor-aware
-        // connect_pir_client (not db.pir_client_for's cache) -- without a live
-        // Tor runtime this would otherwise route every PIR request over plain
-        // HTTP unconditionally, correlating the caller's IP with holding
-        // voting-eligible notes, exactly the privacy requirement
-        // precomputePirProofsNative below already carries. The tradeoff is
-        // paying the Tier-0 handshake again on every call rather than reusing
-        // a cached connection; see openRoundSessionNative's own doc comment
-        // for the same Tor-preference policy this mirrors.
+        // not happen under the access lock. connect_pir_client routes over Tor
+        // whenever the caller passed a Tor runtime, so PIR requests don't
+        // correlate the caller's IP with holding voting-eligible notes. A fresh
+        // client is connected on every call, paying the Tier-0 download each
+        // time; openRoundSessionNative follows the same Tor-preference policy.
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_layout =
             pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;

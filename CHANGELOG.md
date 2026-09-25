@@ -6,6 +6,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- `VotingDbSession.hasCompleteWitnesses(roundId, bundleIndex, notes)`, added on `main` for callers
+  that cached witnesses in an earlier precompute pass. The round driver generates witnesses itself
+  inside `VotingRoundSession.run`, so there is no caller-side witness cache left to check.
+
 ### Changed
 
 - **Breaking: shielded voting's public surface is replaced by a round-driver API.**
@@ -19,20 +25,32 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `getKeystoneSigningRequests`/`storeKeystoneSignatures`, `cancel`, `plan`) hand the crate's
   own `RoundExecutor`/`RoundDriver` ownership of a round's build/prove/submit sequencing --
   callers drive one round session to completion instead of one JNI call per step.
-  `Synchronizer.getVotingTorRuntimeHandle()` is new, for callers that need to route the
-  round session's own traffic through the same Tor client the rest of the SDK uses.
   `configureVoting()` sets the process-wide proving-pool policy once, replacing per-call
   tuning. `precomputeDelegationPir`/`precomputePirProofs`/`precomputeSnapshotBundles` remain
   (the last two are new) for callers that want to warm PIR ahead of a round starting.
-- Shielded voting's delegation-PIR precompute now connects its PIR client once per open
-  voting DB and reuses it for every bundle of a round, instead of rebuilding it -- tokio
-  runtime, TLS client, tier parameters and a full Tier-0 dataset download -- on each call.
+- **Breaking: voting traffic is routed over Tor through a `VotingTorLease`.**
+  `Synchronizer.acquireVotingTorLease()` returns a lease on the synchronizer's shared Tor
+  runtime; `VotingDbSession.openRoundSession`, `precomputeDelegationPir`,
+  `precomputePirProofs`, `precomputeSnapshotBundles` and `VotingShareTrackingSession.run`
+  take it as `torLease: VotingTorLease?` (`null` when Tor is disabled, for plain HTTP).
+  `precomputeDelegationPir` gained this parameter; it previously always went over plain
+  HTTP. The lease keeps the Tor runtime alive across a `Synchronizer` close or rebuild, and
+  `VotingTorLease.release()` releases against the Tor client that issued it -- idempotent,
+  and safe from a cancelled coroutine. Callers release it after closing every session it was
+  passed to.
+- Shielded voting's proof generation, now inside the round driver, no longer holds the voting
+  DB access lock. `precomputeDelegationPir` connects its PIR client outside that lock and
+  connects a fresh client on every call, over Tor when a lease is given, so each call pays
+  the Tier-0 dataset download again. `precomputePirProofs` and `precomputeSnapshotBundles`
+  hold the lock for their full duration, PIR round-trips included.
+  A panic while the voting DB lock is held no longer leaves that voting DB unusable for the
+  rest of its life.
 - Shielded voting now builds against `zcash_voting` 5.1.0 (`voting-circuits` 0.12.x).
-  Proposal ids range from 1 to 50 instead of 1 to 15, and a client on the previous circuit
-  is rejected with `ConstraintSystemFailure` once a vote chain upgrades to match. The Rust
-  API the SDK wraps is unchanged in shape; the crate's default backend is upstream
-  librustzcash (`lrz`), so the native library still links exactly one copy of each Zcash
-  crate.
+  Proposal ids range from 1 to 50 instead of 1 to 15, as required for the 37-question
+  Retroactive Grants round, and a client on the previous circuit is rejected with
+  `ConstraintSystemFailure` once a vote chain upgrades to match. The Rust API the SDK wraps
+  is unchanged in shape; the crate's default backend is upstream librustzcash (`lrz`), so the
+  native library still links exactly one copy of each Zcash crate.
 
 ## [3.2.1] - 2026-09-15
 

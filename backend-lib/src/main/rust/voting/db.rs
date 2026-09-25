@@ -45,10 +45,14 @@ impl VotingDbHandle {
         })
     }
 
+    /// Recovers a poisoned lock instead of failing: the mutex guards `()`, so a
+    /// panic in an earlier holder cannot have left any protected state half-written,
+    /// and treating poison as fatal would make this handle unusable until restart.
     pub(super) fn access_lock(&self) -> anyhow::Result<MutexGuard<'_, ()>> {
-        self.access_mutex
+        Ok(self
+            .access_mutex
             .lock()
-            .map_err(|_| anyhow!("voting DB access mutex poisoned"))
+            .unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 }
 
@@ -200,6 +204,31 @@ mod tests {
 
         drop(first);
         drop(second);
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn access_lock_recovers_after_a_panic_while_held() {
+        let db_path = unique_db_path();
+        let db_path_str = db_path.to_str().expect("test db path is valid UTF-8");
+        let db = open_managed_db(
+            db_path_str,
+            "wallet-poison",
+            voting::types::Network::Testnet,
+        )
+        .expect("DB open");
+
+        let panicking = Arc::clone(&db);
+        let _ = std::thread::spawn(move || {
+            let _guard = panicking.access_lock().expect("access lock");
+            panic!("simulated panic while holding the voting DB lock");
+        })
+        .join();
+        assert!(db.access_mutex.is_poisoned());
+
+        drop(db.access_lock().expect("poisoned access lock is recovered"));
+
+        drop(db);
         let _ = fs::remove_file(db_path);
     }
 
