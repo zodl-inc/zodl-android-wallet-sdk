@@ -9,10 +9,6 @@ static NEXT_DB_HANDLE: AtomicI64 = AtomicI64::new(1);
 static DB_REGISTRY: OnceLock<Mutex<HashMap<jlong, Arc<VotingDbHandle>>>> = OnceLock::new();
 static DB_BY_KEY: OnceLock<Mutex<HashMap<DbKey, Weak<VotingDbHandle>>>> = OnceLock::new();
 
-/// Admits one proof at a time for one bundle of one round; see
-/// [`VotingDbHandle::proof_lock`].
-type ProofLock = Arc<Mutex<()>>;
-
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct DbKey {
     path: String,
@@ -20,11 +16,11 @@ struct DbKey {
 }
 
 pub(super) struct VotingDbHandle {
-    db: VotingDb,
-    // The database location this handle was opened from, kept so a proof can
-    // reopen it on a private connection (see open_private_connection).
-    path: String,
-    wallet_id: String,
+    // `VotingDb::open_wallet_sidecar` itself returns `Arc<VotingDb>` -- the
+    // crate dedupes sidecar connections by path internally -- so this field
+    // has to stay Arc-wrapped to hold that value at all, not because
+    // anything in this module clones it independently.
+    db: Arc<VotingDb>,
     // VoteTreeSync owns only its synchronous tree-client cache and protects
     // that cache internally. JNI vote-tree entrypoints still hold access_mutex
     // before calling it so DB writes and tree-client state changes are
@@ -34,163 +30,37 @@ pub(super) struct VotingDbHandle {
     // The voting network rides the handle so downstream JNI entrypoints do not
     // need a redundant network_id parameter once a handle is open.
     pub(super) network: voting::types::Network,
-    pir_client: Mutex<Option<CachedPirClient>>,
-    // Proving entrypoints deliberately do not hold access_mutex: a Halo2 proof
-    // runs for minutes, and holding it would stop every other bundle of the
-    // round. They hold a per-(round, bundle) lock from proof_locks instead and
-    // run the crate call on a private connection, so two bundles can prove at
-    // the same time while the same bundle still cannot prove twice at once.
-    proof_locks: Mutex<HashMap<(String, u32), ProofLock>>,
-}
-
-/// A connected PIR client together with the endpoint and layout it was
-/// negotiated for, so a request for a different server or geometry reconnects
-/// instead of silently reusing the wrong dataset.
-struct CachedPirClient {
-    url: String,
-    layout: voting::config::PirLayout,
-    client: Arc<voting::PirClientBlocking>,
-}
-
-/// Takes `mutex`, recovering a poisoned one instead of failing.
-///
-/// Every JNI entrypoint runs under `catch_unwind`, so a panic inside a proof
-/// or a PIR handshake is caught and turned into a Java exception - but it
-/// still poisons whatever mutex was held, for the life of the deduped handle.
-/// The mutexes taken through here guard either nothing at all (the per-bundle
-/// proof lock, whose value is `()`) or a cache that is rebuilt on demand (the
-/// PIR client), so a panic leaves no broken invariant behind them and the
-/// poison flag is noise: every later proof of that bundle would fail for a
-/// panic that had nothing to do with it.
-pub(super) fn recover_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl VotingDbHandle {
     fn open(path: &str, wallet_id: &str, network: voting::types::Network) -> anyhow::Result<Self> {
-        let db = VotingDb::open(path).map_err(|e| anyhow!("VotingDb::open failed: {}", e))?;
-        db.set_wallet_id(wallet_id);
+        let db = VotingDb::open_wallet_sidecar(std::path::Path::new(path), wallet_id)
+            .map_err(|e| anyhow!("VotingDb::open_wallet_sidecar failed: {}", e))?;
 
         Ok(Self {
             db,
-            path: path.to_string(),
-            wallet_id: wallet_id.to_string(),
             tree_sync: VoteTreeSync::new(),
             access_mutex: Mutex::new(()),
             network,
-            pir_client: Mutex::new(None),
-            proof_locks: Mutex::new(HashMap::new()),
         })
     }
 
+    /// Recovers a poisoned lock instead of failing: the mutex guards `()`, so a
+    /// panic in an earlier holder cannot have left any protected state half-written,
+    /// and treating poison as fatal would make this handle unusable until restart.
     pub(super) fn access_lock(&self) -> anyhow::Result<MutexGuard<'_, ()>> {
-        self.access_mutex
+        Ok(self
+            .access_mutex
             .lock()
-            .map_err(|_| anyhow!("voting DB access mutex poisoned"))
+            .unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
-
-    /// Returns the lock that admits one proof at a time for a single bundle of
-    /// a single round.
-    ///
-    /// A second proof of the same bundle would redo the same work and race the
-    /// first one's writes, so it waits here. Different bundles get different
-    /// locks and may prove concurrently, which is the point: the shared
-    /// `access_mutex` is not held while a proof runs.
-    pub(super) fn proof_lock(
-        &self,
-        round_id: &str,
-        bundle_index: u32,
-    ) -> anyhow::Result<ProofLock> {
-        let mut locks = self
-            .proof_locks
-            .lock()
-            .map_err(|_| anyhow!("voting DB proof lock registry mutex poisoned"))?;
-
-        Ok(locks
-            .entry((round_id.to_string(), bundle_index))
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone())
-    }
-
-    /// Opens a second connection to this handle's voting database, for one
-    /// proof to use on its own.
-    ///
-    /// `zcash_voting` holds a `VotingDb`'s internal connection mutex for the
-    /// whole vote-commitment proof, so proving through the shared handle would
-    /// block every other caller of that `VotingDb` instance for the duration of
-    /// the proof. Proving on a private connection keeps that guard private to
-    /// the proof. It is safe to write through: the database is in WAL mode, the
-    /// crate's writes are single statements or short immediate transactions,
-    /// the bundles of a round write disjoint rows, and the per-bundle proof
-    /// lock keeps two proofs of one bundle apart.
-    ///
-    /// Returns `None` for an in-memory database, where a second connection
-    /// would be a different, empty database instead of the same one; in-memory
-    /// handles (tests and fixtures) keep proving through the shared connection.
-    pub(super) fn open_private_connection(&self) -> anyhow::Result<Option<VotingDb>> {
-        if self.path == ":memory:" {
-            return Ok(None);
-        }
-
-        let db = VotingDb::open(&self.path).map_err(|e| {
-            anyhow!(
-                "VotingDb::open for a private proving connection failed: {}",
-                e
-            )
-        })?;
-        db.set_wallet_id(&self.wallet_id);
-        Ok(Some(db))
-    }
-
-    /// Returns a PIR client connected to `url` for `layout`, connecting only
-    /// the first time.
-    ///
-    /// The handshake is expensive: it stands up a tokio runtime and a TLS
-    /// client, fetches both tiers' parameters, and downloads the whole Tier-0
-    /// dataset to recompute its root. Delegation precompute and proof
-    /// generation each need a client for every bundle of a round, so the
-    /// connection is made once per handle and shared between them. It is keyed
-    /// by endpoint and layout so a server or geometry change reconnects, and
-    /// it is dropped with the handle.
-    pub(super) fn pir_client_for(
-        &self,
-        url: &str,
-        layout: voting::config::PirLayout,
-    ) -> anyhow::Result<Arc<voting::PirClientBlocking>> {
-        let mut cached = recover_lock(&self.pir_client);
-
-        if let Some(cached) = cached.as_ref()
-            && cached.url == url
-            && cached.layout == layout
-        {
-            return Ok(cached.client.clone());
-        }
-
-        let client = Arc::new(connect_pir_client(url, layout)?);
-        *cached = Some(CachedPirClient {
-            url: url.to_string(),
-            layout,
-            client: Arc::clone(&client),
-        });
-        Ok(client)
-    }
-}
-
-fn connect_pir_client(
-    pir_url: &str,
-    pir_layout: voting::config::PirLayout,
-) -> anyhow::Result<voting::PirClientBlocking> {
-    voting::connect_pir_blocking(pir_layout, pir_url, Arc::new(voting::HyperTransport::new()))
-        .map_err(|e| anyhow!("connect to PIR server failed: {}", e))
 }
 
 impl Deref for VotingDbHandle {
     type Target = VotingDb;
 
     fn deref(&self) -> &Self::Target {
-        &self.db
+        self.db.deref()
     }
 }
 
@@ -338,99 +208,47 @@ mod tests {
     }
 
     #[test]
-    fn proof_lock_is_per_round_and_bundle() {
-        let db = VotingDbHandle::open(":memory:", "wallet-1", voting::types::Network::Testnet)
-            .expect("in-memory DB open");
-
-        let first = db.proof_lock("round-1", 0).expect("first proof lock");
-        let same = db.proof_lock("round-1", 0).expect("same proof lock");
-        let other_bundle = db
-            .proof_lock("round-1", 1)
-            .expect("other bundle proof lock");
-        let other_round = db.proof_lock("round-2", 0).expect("other round proof lock");
-
-        assert!(Arc::ptr_eq(&first, &same));
-        assert!(!Arc::ptr_eq(&first, &other_bundle));
-        assert!(!Arc::ptr_eq(&first, &other_round));
-
-        let guard = first.lock().expect("hold the proof lock");
-        assert!(same.try_lock().is_err());
-        assert!(other_bundle.try_lock().is_ok());
-        assert!(other_round.try_lock().is_ok());
-        drop(guard);
-    }
-
-    #[test]
-    fn proof_lock_survives_a_panic_while_it_is_held() {
-        let db = VotingDbHandle::open(":memory:", "wallet-1", voting::types::Network::Testnet)
-            .expect("in-memory DB open");
-
-        let poisoner = db.proof_lock("round-1", 0).expect("proof lock to poison");
-        let panicking = std::thread::spawn(move || {
-            let _guard = poisoner.lock().expect("hold the proof lock");
-            panic!("a proof panicked while holding its bundle lock");
-        });
-        assert!(panicking.join().is_err());
-
-        let lock = db
-            .proof_lock("round-1", 0)
-            .expect("proof lock after the panic");
-        assert!(lock.lock().is_err(), "the lock really is poisoned");
-        drop(recover_lock(&lock));
-    }
-
-    #[test]
-    fn open_private_connection_returns_none_for_memory_path() {
-        let db = VotingDbHandle::open(":memory:", "wallet-1", voting::types::Network::Testnet)
-            .expect("in-memory DB open");
-
-        assert!(
-            db.open_private_connection()
-                .expect("private connection")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn private_connection_sees_rows_written_through_the_shared_one() {
+    fn access_lock_recovers_after_a_panic_while_held() {
         let db_path = unique_db_path();
         let db_path_str = db_path.to_str().expect("test db path is valid UTF-8");
-        let db = VotingDbHandle::open(db_path_str, "wallet-1", voting::types::Network::Testnet)
-            .expect("file-backed DB open");
+        let db = open_managed_db(
+            db_path_str,
+            "wallet-poison",
+            voting::types::Network::Testnet,
+        )
+        .expect("DB open");
 
-        let params = voting::types::VotingRoundParams {
-            vote_round_id: "round-1".to_string(),
-            snapshot_height: 1000,
-            ea_pk: vec![0xEA; 32],
-            nc_root: vec![0xAA; 32],
-            nullifier_imt_root: vec![0xBB; 32],
-        };
-        db.init_round(voting::types::Network::Testnet, &params, None)
-            .expect("init round through the shared connection");
+        let panicking = Arc::clone(&db);
+        let _ = std::thread::spawn(move || {
+            let _guard = panicking.access_lock().expect("access lock");
+            panic!("simulated panic while holding the voting DB lock");
+        })
+        .join();
+        assert!(db.access_mutex.is_poisoned());
 
-        let private_db = db
-            .open_private_connection()
-            .expect("private connection")
-            .expect("file-backed DB gets a private connection");
-        assert_eq!(private_db.wallet_id(), "wallet-1");
-        assert!(
-            private_db
-                .has_round("round-1")
-                .expect("has_round on the private connection")
-        );
+        drop(db.access_lock().expect("poisoned access lock is recovered"));
 
-        drop(private_db);
         drop(db);
-        remove_db_files(&db_path);
+        let _ = fs::remove_file(db_path);
     }
 
-    fn remove_db_files(db_path: &std::path::Path) {
-        let _ = fs::remove_file(db_path);
-        for suffix in ["-wal", "-shm"] {
-            let mut sidecar = db_path.as_os_str().to_os_string();
-            sidecar.push(suffix);
-            let _ = fs::remove_file(std::path::PathBuf::from(sidecar));
-        }
+    #[test]
+    fn open_wallet_sidecar_creates_schema_without_manual_migration() {
+        let db_path = unique_db_path();
+        let db_path_str = db_path.to_str().expect("test db path is valid UTF-8");
+
+        // Before this task's rewrite, VotingDbHandle::open called the lower-
+        // level VotingDb::open(path) + a separate set_wallet_id(wallet_id)
+        // call. After the rewrite it calls open_wallet_sidecar, which owns
+        // schema creation and migrations internally and takes wallet_id as a
+        // constructor argument. Opening a brand-new path with zero manual
+        // setup on our side must succeed.
+        let handle = open_managed_db(db_path_str, "wallet-1", voting::types::Network::Testnet)
+            .expect("opening a fresh sidecar path must succeed with no manual schema step");
+
+        drop(handle);
+        let _ = fs::remove_file(&db_path);
+        let _ = fs::remove_file(format!("{db_path_str}.voting"));
     }
 
     fn unique_db_path() -> std::path::PathBuf {

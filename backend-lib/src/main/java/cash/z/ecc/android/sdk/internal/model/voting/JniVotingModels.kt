@@ -623,6 +623,91 @@ data class JniDelegationPirPrecomputeResult(
     val fetchedCount: Long
 )
 
+/**
+ * Typed JNI carrier for `zcash_voting::PirCachePrecomputeResult`, the bundle- and
+ * round-independent PIR proof cache warm-up result from `precomputePirProofsNative`. Distinct
+ * from [JniDelegationPirPrecomputeResult] (which is scoped to one delegation bundle and carries
+ * no served root): this call is not scoped to any round or bundle, and [servedRoot] is the
+ * 32-byte IMT root (little-endian) the connected PIR server served -- every proof this call
+ * counted as cached or fetched verifies under it.
+ */
+@Keep
+data class JniPirPrecomputeResult(
+    val cachedCount: Long,
+    val fetchedCount: Long,
+    val servedRoot: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniPirPrecomputeResult) return false
+        return cachedCount == other.cachedCount &&
+            fetchedCount == other.fetchedCount &&
+            servedRoot.contentEquals(other.servedRoot)
+    }
+
+    override fun hashCode(): Int {
+        var result = cachedCount.hashCode()
+        result = 31 * result + fetchedCount.hashCode()
+        result = 31 * result + servedRoot.contentHashCode()
+        return result
+    }
+}
+
+/**
+ * Typed JNI carrier for `zcash_voting::round::BundleLayout`, the persisted (or validated)
+ * canonical bundle plan for a round's snapshot note set. [eligibleWeightZatoshi] and the other
+ * `*ValueZatoshi`/weight fields mirror the crate struct's own `#[serde(rename = ...)]`
+ * "zatoshi"-suffixed names.
+ */
+@Keep
+data class JniBundleLayout(
+    val bundleCount: Int,
+    val eligibleWeightZatoshi: Long,
+    val droppedCount: Int,
+    val privacyTrimDroppedBundles: Int,
+    val privacyTrimDroppedNotes: Int,
+    val privacyTrimDroppedValueZatoshi: Long,
+    val skippedSuffixBundles: Int,
+    val skippedSuffixNotes: Int,
+    val skippedSuffixValueZatoshi: Long
+)
+
+/**
+ * Typed JNI carrier for one bundle's entry in `zcash_voting::precompute::SnapshotBundlePrecomputeReport::bundles`
+ * -- i.e. `zcash_voting::precompute::PirPrecomputeReport { cached, fetched }`. Distinct from
+ * [JniPirPrecomputeResult] (round-independent, carries a served root) and
+ * [JniDelegationPirPrecomputeResult] (same shape, but a standalone per-bundle
+ * `precomputeDelegationPirNative` result rather than one entry inside this report).
+ */
+@Keep
+data class JniPirPrecomputeReport(
+    val cachedCount: Long,
+    val fetchedCount: Long
+)
+
+/**
+ * Typed JNI carrier for `zcash_voting::precompute::SnapshotBundlePrecomputeReport`, the result
+ * of `precomputeSnapshotBundlesNative`: the round's persisted bundle [layout] plus one PIR
+ * warm-up report per bundle in [bundles], in bundle-index order.
+ */
+@Keep
+data class JniSnapshotBundlePrecomputeReport(
+    val layout: JniBundleLayout,
+    val bundles: Array<JniPirPrecomputeReport>
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniSnapshotBundlePrecomputeReport) return false
+        return layout == other.layout && bundles.contentEquals(other.bundles)
+    }
+
+    override fun hashCode(): Int {
+        var result = layout.hashCode()
+        result = 31 * result + bundles.contentHashCode()
+        return result
+    }
+}
+
 @Keep
 data class JniDelegationProofResult(
     val proof: ByteArray,
@@ -758,6 +843,451 @@ data class JniDelegationPhase(
     val bundleIndex: Int,
     val phase: String
 )
+
+/**
+ * Typed JNI carrier for `zcash_voting::session::RoundPlan`, `getRoundPlanNative`'s/
+ * `setBallotIntentsNative`'s return value and the embedded field of [JniRoundRunReport].
+ *
+ * Every `RoundPlan` field is carried, one property per field in declaration order. Nested
+ * record types the crate does not derive `Serialize` for ([delegationStatusesJson],
+ * [completedVoteDisplayJson], [recoveredDelegationWorkJson], [recoveredVoteWorkJson],
+ * [immediateShareKeyJson]) are JSON-encoded strings rather than first-class Kotlin models —
+ * see `encode_round_plan`'s own doc comment in `backend-lib/src/main/rust/voting/helpers.rs`
+ * for why. [primaryAction] is `RoundPlanAction` encoded as an int (0=Idle, 1=Delegate,
+ * 2=Vote, 3=SubmitShares, 4=Done, -1=unknown/future variant).
+ */
+@Keep
+data class JniRoundPlan(
+    val roundId: String,
+    val pendingRecovery: Boolean,
+    val nextStepsJson: String,
+    val openProposals: IntArray,
+    val unrosteredIntents: IntArray,
+    val immediateShareKeyJson: String?,
+    val immediateShareConfirmed: Boolean,
+    val allDecided: Boolean,
+    val delegationStatusesJson: String,
+    val blockingRecovery: Boolean,
+    val blockingShareWork: Boolean,
+    val hasUnconfirmedShares: Boolean,
+    val hotkeyBound: Boolean,
+    val completedVoteArtifact: Boolean,
+    val completedForDisplay: Boolean,
+    val completedVoteDisplayJson: String?,
+    val needsDraftSetup: Boolean,
+    val needsBundleSetup: Boolean,
+    val primaryAction: Int,
+    val needsDelegationSigning: Boolean,
+    val hasInFlightDelegation: Boolean,
+    val delegationBundlesNeedingWork: IntArray,
+    val delegationBundlesNeedingSigning: IntArray,
+    val needsVotePolling: Boolean,
+    val hasRemainingVoteOrShareWork: Boolean,
+    val hasRecoverableVoteOrShareWork: Boolean,
+    val recoveredDelegationWorkJson: String,
+    val recoveredVoteWorkJson: String
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniRoundPlan) return false
+        return scalarFieldsEqual(other) &&
+            flagFieldsEqual(other) &&
+            jsonFieldsEqual(other) &&
+            arrayFieldsEqual(other)
+    }
+
+    private fun scalarFieldsEqual(other: JniRoundPlan) =
+        roundId == other.roundId &&
+            pendingRecovery == other.pendingRecovery &&
+            immediateShareConfirmed == other.immediateShareConfirmed &&
+            allDecided == other.allDecided &&
+            blockingRecovery == other.blockingRecovery &&
+            blockingShareWork == other.blockingShareWork &&
+            hasUnconfirmedShares == other.hasUnconfirmedShares &&
+            hotkeyBound == other.hotkeyBound &&
+            completedVoteArtifact == other.completedVoteArtifact
+
+    private fun flagFieldsEqual(other: JniRoundPlan) =
+        completedForDisplay == other.completedForDisplay &&
+            needsDraftSetup == other.needsDraftSetup &&
+            needsBundleSetup == other.needsBundleSetup &&
+            primaryAction == other.primaryAction &&
+            needsDelegationSigning == other.needsDelegationSigning &&
+            hasInFlightDelegation == other.hasInFlightDelegation &&
+            needsVotePolling == other.needsVotePolling &&
+            hasRemainingVoteOrShareWork == other.hasRemainingVoteOrShareWork &&
+            hasRecoverableVoteOrShareWork == other.hasRecoverableVoteOrShareWork
+
+    private fun jsonFieldsEqual(other: JniRoundPlan) =
+        nextStepsJson == other.nextStepsJson &&
+            immediateShareKeyJson == other.immediateShareKeyJson &&
+            delegationStatusesJson == other.delegationStatusesJson &&
+            completedVoteDisplayJson == other.completedVoteDisplayJson &&
+            recoveredDelegationWorkJson == other.recoveredDelegationWorkJson &&
+            recoveredVoteWorkJson == other.recoveredVoteWorkJson
+
+    private fun arrayFieldsEqual(other: JniRoundPlan) =
+        openProposals.contentEquals(other.openProposals) &&
+            unrosteredIntents.contentEquals(other.unrosteredIntents) &&
+            delegationBundlesNeedingWork.contentEquals(other.delegationBundlesNeedingWork) &&
+            delegationBundlesNeedingSigning.contentEquals(other.delegationBundlesNeedingSigning)
+
+    override fun hashCode(): Int {
+        var result = roundId.hashCode()
+        result = 31 * result + pendingRecovery.hashCode()
+        result = 31 * result + nextStepsJson.hashCode()
+        result = 31 * result + openProposals.contentHashCode()
+        result = 31 * result + unrosteredIntents.contentHashCode()
+        result = 31 * result + (immediateShareKeyJson?.hashCode() ?: 0)
+        result = 31 * result + immediateShareConfirmed.hashCode()
+        result = 31 * result + allDecided.hashCode()
+        result = 31 * result + delegationStatusesJson.hashCode()
+        result = 31 * result + blockingRecovery.hashCode()
+        result = 31 * result + blockingShareWork.hashCode()
+        result = 31 * result + hasUnconfirmedShares.hashCode()
+        result = 31 * result + hotkeyBound.hashCode()
+        result = 31 * result + completedVoteArtifact.hashCode()
+        result = 31 * result + completedForDisplay.hashCode()
+        result = 31 * result + (completedVoteDisplayJson?.hashCode() ?: 0)
+        result = 31 * result + needsDraftSetup.hashCode()
+        result = 31 * result + needsBundleSetup.hashCode()
+        result = 31 * result + primaryAction
+        result = 31 * result + needsDelegationSigning.hashCode()
+        result = 31 * result + hasInFlightDelegation.hashCode()
+        result = 31 * result + delegationBundlesNeedingWork.contentHashCode()
+        result = 31 * result + delegationBundlesNeedingSigning.contentHashCode()
+        result = 31 * result + needsVotePolling.hashCode()
+        result = 31 * result + hasRemainingVoteOrShareWork.hashCode()
+        result = 31 * result + hasRecoverableVoteOrShareWork.hashCode()
+        result = 31 * result + recoveredDelegationWorkJson.hashCode()
+        result = 31 * result + recoveredVoteWorkJson.hashCode()
+        return result
+    }
+}
+
+/**
+ * Callback for `runRoundNative`'s progress parameter, bridged from the crate's own
+ * `RoundDriveEvent`s by `round_drive_reporter_from_callback` in `round_session.rs` (see its doc
+ * comment). A `RoundDriver::run` pass can take on the order of a minute or more, so this exists
+ * to give the UI something to show while it runs rather than looking stuck.
+ *
+ * [step] is a short label (e.g. `"StepSelected"`, `"StepFinished"`) naming the
+ * [zcash_voting]'s `RoundDriveEvent` variant that fired; [detail] is that event's full
+ * `{:?}` debug dump (the exact `NextStep`, bundle index, disposition, etc.). Called from
+ * whichever native thread the round-driver's concurrent bundle tasks happen to be running on —
+ * an implementation must be safe to call from any thread and must not block.
+ */
+fun interface RoundDriveProgressListener {
+    fun onRoundDriveProgress(
+        step: String,
+        detail: String
+    )
+}
+
+/**
+ * Typed JNI carrier for `zcash_voting::RoundRunReport`, `runRoundNative`'s return value: the
+ * terminal outcome of one `RoundDriver::run` pass.
+ *
+ * [quiescenceKind] is a stable discriminator string for the crate's (non-exhaustive)
+ * `RoundQuiescence` enum; [quiescenceDetailJson] carries the variant-specific payload where one
+ * exists, `null` otherwise. [plan] reuses [JniRoundPlan] for the report's embedded
+ * `Option<RoundPlan>`. The remaining complex fields (failures, chain outcomes, share
+ * deliveries) are JSON-encoded rather than first-class models — see `encode_round_run_report`'s
+ * doc comment in `backend-lib/src/main/rust/voting/helpers.rs`. [delegationsSignedCount] is a
+ * count only: signed delegation bundles themselves are not surfaced here.
+ */
+@Keep
+data class JniRoundRunReport(
+    val quiescenceKind: String,
+    val quiescenceDetailJson: String?,
+    val plan: JniRoundPlan?,
+    val completedProposals: Int,
+    val totalProposals: Int,
+    val remainingObligations: Int,
+    val failuresJson: String,
+    val skippedBundles: IntArray,
+    val chainOutcomesJson: String,
+    val shareDeliveriesJson: String,
+    val delegationsSignedCount: Int
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniRoundRunReport) return false
+        return quiescenceKind == other.quiescenceKind &&
+            quiescenceDetailJson == other.quiescenceDetailJson &&
+            plan == other.plan &&
+            completedProposals == other.completedProposals &&
+            totalProposals == other.totalProposals &&
+            remainingObligations == other.remainingObligations &&
+            failuresJson == other.failuresJson &&
+            skippedBundles.contentEquals(other.skippedBundles) &&
+            chainOutcomesJson == other.chainOutcomesJson &&
+            shareDeliveriesJson == other.shareDeliveriesJson &&
+            delegationsSignedCount == other.delegationsSignedCount
+    }
+
+    override fun hashCode(): Int {
+        var result = quiescenceKind.hashCode()
+        result = 31 * result + (quiescenceDetailJson?.hashCode() ?: 0)
+        result = 31 * result + (plan?.hashCode() ?: 0)
+        result = 31 * result + completedProposals
+        result = 31 * result + totalProposals
+        result = 31 * result + remainingObligations
+        result = 31 * result + failuresJson.hashCode()
+        result = 31 * result + skippedBundles.contentHashCode()
+        result = 31 * result + chainOutcomesJson.hashCode()
+        result = 31 * result + shareDeliveriesJson.hashCode()
+        result = 31 * result + delegationsSignedCount
+        return result
+    }
+}
+
+/**
+ * Typed JNI carrier for `zcash_voting::ShareTrackingRunReport`,
+ * `runShareTrackingSessionNative`'s return value: the terminal outcome of one
+ * `ShareTrackingDriver::run` pass.
+ *
+ * [quiescenceKind] is a stable discriminator string for the crate's (non-exhaustive)
+ * `ShareTrackingQuiescence` enum; [quiescenceDetailJson] carries the variant-specific payload
+ * where one exists, `null` otherwise. `ShareKey`/`ResubmittedShare` do not derive `Serialize` in
+ * the crate, so [confirmedJson]/[resubmittedJson]/[ambiguousJson]/[unrecoverableJson] are
+ * JSON-encoded arrays rather than first-class models — see `encode_share_tracking_report`'s doc
+ * comment in `backend-lib/src/main/rust/voting/helpers.rs`.
+ */
+@Keep
+data class JniShareTrackingRunReport(
+    val quiescenceKind: String,
+    val quiescenceDetailJson: String?,
+    val passes: Int,
+    val confirmedJson: String,
+    val resubmittedJson: String,
+    val ambiguousJson: String,
+    val unrecoverableJson: String,
+    val failuresJson: String
+)
+
+/**
+ * Typed JNI carrier for `zcash_voting::delegate::KeystoneSigningRequest`, one entry per bundle
+ * from `getKeystoneSigningRequestsNative`. [pcztBytes] is the full PCZT for local
+ * sighash/spend-auth verification; [redactedPcztBytes] is the memo-redacted variant Keystone
+ * itself signs. [displayMemo] is the human-readable delegation memo shown to the signer.
+ */
+@Keep
+data class JniKeystoneSigningRequest(
+    val pcztBytes: ByteArray,
+    val redactedPcztBytes: ByteArray,
+    val pcztSighash: ByteArray,
+    val rk: ByteArray,
+    val actionIndex: Int,
+    val displayMemo: String,
+    val eligibleWeightZatoshi: Long,
+    val delegatedWeightZatoshi: Long,
+    val bundleCount: Int,
+    val bundleIndex: Int
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniKeystoneSigningRequest) return false
+        return pcztBytes.contentEquals(other.pcztBytes) &&
+            redactedPcztBytes.contentEquals(other.redactedPcztBytes) &&
+            pcztSighash.contentEquals(other.pcztSighash) &&
+            rk.contentEquals(other.rk) &&
+            actionIndex == other.actionIndex &&
+            displayMemo == other.displayMemo &&
+            eligibleWeightZatoshi == other.eligibleWeightZatoshi &&
+            delegatedWeightZatoshi == other.delegatedWeightZatoshi &&
+            bundleCount == other.bundleCount &&
+            bundleIndex == other.bundleIndex
+    }
+
+    override fun hashCode(): Int {
+        var result = pcztBytes.contentHashCode()
+        result = 31 * result + redactedPcztBytes.contentHashCode()
+        result = 31 * result + pcztSighash.contentHashCode()
+        result = 31 * result + rk.contentHashCode()
+        result = 31 * result + actionIndex
+        result = 31 * result + displayMemo.hashCode()
+        result = 31 * result + eligibleWeightZatoshi.hashCode()
+        result = 31 * result + delegatedWeightZatoshi.hashCode()
+        result = 31 * result + bundleCount
+        result = 31 * result + bundleIndex
+        return result
+    }
+}
+
+/**
+ * Typed JNI carrier for `zcash_voting::storage::KeystoneSignatureBatchResult`,
+ * `storeKeystoneSignaturesNative`'s return value.
+ */
+@Keep
+data class JniKeystoneSignatureBatchResult(
+    val inserted: Int,
+    val alreadyPresent: Int
+)
+
+/**
+ * Typed JNI carrier for `zcash_voting::storage::KeystoneSignatureRecord`, one entry per bundle
+ * from `getKeystoneSignaturesNative`.
+ */
+@Keep
+data class JniKeystoneSignatureRecord(
+    val bundleIndex: Int,
+    val sig: ByteArray,
+    val sighash: ByteArray,
+    val rk: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniKeystoneSignatureRecord) return false
+        return bundleIndex == other.bundleIndex &&
+            sig.contentEquals(other.sig) &&
+            sighash.contentEquals(other.sighash) &&
+            rk.contentEquals(other.rk)
+    }
+
+    override fun hashCode(): Int {
+        var result = bundleIndex
+        result = 31 * result + sig.contentHashCode()
+        result = 31 * result + sighash.contentHashCode()
+        result = 31 * result + rk.contentHashCode()
+        return result
+    }
+}
+
+/**
+ * Typed JNI carrier for `zcash_voting::storage::KeystoneSignatureInput`, one entry per bundle
+ * passed into `storeKeystoneSignaturesNative`. Construct with the `rk`/`sighash` already
+ * verified by a prior [JniKeystoneSigningRequest]-driven Keystone signing flow, not arbitrary
+ * caller-supplied values — the native side's `matches_bundle` guard compares against them but
+ * does not itself re-verify the signature.
+ */
+@Keep
+data class JniKeystoneSignatureInput(
+    val bundleIndex: Int,
+    val sig: ByteArray,
+    val sighash: ByteArray,
+    val rk: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniKeystoneSignatureInput) return false
+        return bundleIndex == other.bundleIndex &&
+            sig.contentEquals(other.sig) &&
+            sighash.contentEquals(other.sighash) &&
+            rk.contentEquals(other.rk)
+    }
+
+    override fun hashCode(): Int {
+        var result = bundleIndex
+        result = 31 * result + sig.contentHashCode()
+        result = 31 * result + sighash.contentHashCode()
+        result = 31 * result + rk.contentHashCode()
+        return result
+    }
+}
+
+/**
+ * Kotlin-constructed carrier for `runRoundNative`'s `delegation_inputs` parameter, read back by
+ * the Rust side via JNI field reflection (`decode_delegation_inputs` in
+ * `backend-lib/src/main/rust/voting/delegation_driver.rs`) rather than a generated constructor —
+ * every property name/type below must match that function's `env.get_field` calls exactly.
+ *
+ * Pass `null` for a signer-less precompute-only pass or a share-tracking-only pass; every
+ * `RoundHostContext` step other than `Delegate`/`AdvanceDelegation` tolerates that.
+ *
+ * [keystone] selects the signer: `true` uses a Keystone-signed delegation ([keystoneSig]/
+ * [keystoneSighash] both present replay a previously-obtained signature; both absent resumes
+ * from a previously *persisted* Keystone signature; exactly one present is rejected).
+ * `false` requires [softwareSeed] and signs with the wallet's own seed.
+ *
+ * [softwareSeed] and [keystoneSig]/[keystoneSighash] are sensitive signing-path inputs and must
+ * not be logged.
+ *
+ * [snapshotHeight]/[eaPk]/[ncRoot]/[nullifierImtRoot] are the round's own metadata (together with
+ * the `round_id` the Rust side's `runRoundNative` already has from the session, this is the
+ * complete `VotingRoundParams`). The caller must supply these directly from the same authenticated
+ * round config it used to fetch [anchorTreeStateBytes] -- the Rust side must never read them back
+ * from the `rounds` table, since a brand-new round has no row there yet; that row is exactly what
+ * `DelegationPipeline`'s own bootstrap path creates from these values. See
+ * `delegation_step_inputs_from_jni`'s doc comment in `delegation_driver.rs` for the bug this fixed
+ * (a delegation-enabled `runRound` could not bootstrap a virgin round at all).
+ */
+@Keep
+data class JniDelegationInputs(
+    val dbHandle: Long,
+    val walletDbPath: String,
+    val accountUuid: String,
+    val anchorTreeStateBytes: ByteArray,
+    val hotkeySecret: ByteArray?,
+    val pirEndpoints: Array<String>,
+    val pirDepth: Int,
+    val pirTier0Layers: Int,
+    val pirTier1Layers: Int,
+    val pirPolyLen: Int,
+    val keystone: Boolean,
+    val softwareSeed: ByteArray?,
+    val keystoneSig: ByteArray?,
+    val keystoneSighash: ByteArray?,
+    val snapshotHeight: Long,
+    val eaPk: ByteArray,
+    val ncRoot: ByteArray,
+    val nullifierImtRoot: ByteArray
+) {
+    override fun toString(): String = "JniDelegationInputs(redacted)"
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is JniDelegationInputs) return false
+        return scalarFieldsEqual(other) && byteFieldsEqual(other)
+    }
+
+    private fun scalarFieldsEqual(other: JniDelegationInputs) =
+        dbHandle == other.dbHandle &&
+            walletDbPath == other.walletDbPath &&
+            accountUuid == other.accountUuid &&
+            pirEndpoints.contentEquals(other.pirEndpoints) &&
+            pirDepth == other.pirDepth &&
+            pirTier0Layers == other.pirTier0Layers &&
+            pirTier1Layers == other.pirTier1Layers &&
+            pirPolyLen == other.pirPolyLen &&
+            keystone == other.keystone &&
+            snapshotHeight == other.snapshotHeight
+
+    private fun byteFieldsEqual(other: JniDelegationInputs) =
+        anchorTreeStateBytes.contentEquals(other.anchorTreeStateBytes) &&
+            hotkeySecret.nullableContentEquals(other.hotkeySecret) &&
+            softwareSeed.nullableContentEquals(other.softwareSeed) &&
+            keystoneSig.nullableContentEquals(other.keystoneSig) &&
+            keystoneSighash.nullableContentEquals(other.keystoneSighash) &&
+            eaPk.contentEquals(other.eaPk) &&
+            ncRoot.contentEquals(other.ncRoot) &&
+            nullifierImtRoot.contentEquals(other.nullifierImtRoot)
+
+    override fun hashCode(): Int {
+        var result = dbHandle.hashCode()
+        result = 31 * result + walletDbPath.hashCode()
+        result = 31 * result + accountUuid.hashCode()
+        result = 31 * result + anchorTreeStateBytes.contentHashCode()
+        result = 31 * result + (hotkeySecret?.contentHashCode() ?: 0)
+        result = 31 * result + pirEndpoints.contentHashCode()
+        result = 31 * result + pirDepth
+        result = 31 * result + pirTier0Layers
+        result = 31 * result + pirTier1Layers
+        result = 31 * result + pirPolyLen
+        result = 31 * result + keystone.hashCode()
+        result = 31 * result + (softwareSeed?.contentHashCode() ?: 0)
+        result = 31 * result + (keystoneSig?.contentHashCode() ?: 0)
+        result = 31 * result + (keystoneSighash?.contentHashCode() ?: 0)
+        result = 31 * result + snapshotHeight.hashCode()
+        result = 31 * result + eaPk.contentHashCode()
+        result = 31 * result + ncRoot.contentHashCode()
+        result = 31 * result + nullifierImtRoot.contentHashCode()
+        return result
+    }
+}
+
+private fun ByteArray?.nullableContentEquals(other: ByteArray?): Boolean =
+    if (this == null || other == null) this == null && other == null else contentEquals(other)
 
 private fun List<ByteArray>.contentDeepEquals(other: List<ByteArray>): Boolean =
     size == other.size && zip(other).all { (left, right) -> left.contentEquals(right) }

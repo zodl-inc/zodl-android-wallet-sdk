@@ -51,6 +51,7 @@ import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import cash.z.ecc.android.sdk.model.voting.VotingTorLease
 import cash.z.ecc.android.sdk.tool.CheckpointTool
 import cash.z.ecc.android.sdk.type.AddressType
 import cash.z.ecc.android.sdk.type.ConsensusMatchType
@@ -888,6 +889,39 @@ interface Synchronizer {
      */
     @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
     suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit = {}): HttpClient
+
+    /**
+     * Leases this synchronizer's shared Tor runtime for the voting API -- the `torLease`
+     * parameter of `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`,
+     * `cash.z.ecc.android.sdk.VotingShareTrackingSession.run` and the `VotingDbSession.precompute*`
+     * calls. Uses the same underlying Tor client as [getTorHttpClient], but does not create a new
+     * isolated Tor client the way [getTorHttpClient] does -- owning any such isolation for the
+     * voting round driver's traffic is that driver's job, not this accessor's.
+     *
+     * Deliberately keeps the stricter `isTorEnabled || isExchangeRateEnabled` gate
+     * ([TorUnavailableException] otherwise) even on engines where [getTorHttpClient] itself no
+     * longer enforces it (the Slipstream engine's `getTorHttpClient` now always provides a
+     * client, created lazily, so a caller like the currency picker never fails just because Tor
+     * is off). Voting is not that caller: it is expected to respect the user's Tor preference
+     * explicitly rather than silently routing over plain HTTP the moment a client happens to
+     * exist, so this accessor keeps checking the preference itself instead of inheriting
+     * whatever [getTorHttpClient] currently does. If the two implementations ever diverge on the
+     * legacy (non-Slipstream) engine as well, re-check this comment against both.
+     *
+     * The returned lease keeps the Tor runtime alive: a `close()`/rebuild of this synchronizer
+     * (server-switch hysteresis, a Tor or exchange-rate toggle, a wallet reset) while it is held
+     * defers freeing the runtime until the lease is released. A round-driver session can use the
+     * runtime across its whole lifetime -- potentially 20-30 minutes for a multi-bundle round --
+     * so callers MUST release the lease, in a `finally` path that always runs, only after every
+     * session it was passed to has been closed. Release goes to the Tor client that issued the
+     * lease, so it keeps working after this synchronizer has been closed or replaced; see
+     * [VotingTorLease] for the full contract.
+     *
+     * @throws TorInitializationErrorException if an error occurred during Tor setup
+     * @throws TorUnavailableException if Tor or exchange rate is not enabled
+     */
+    @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
+    suspend fun acquireVotingTorLease(): VotingTorLease
 
     suspend fun debugQuery(query: String): String
 

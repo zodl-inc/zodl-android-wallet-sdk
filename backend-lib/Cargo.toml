@@ -74,6 +74,11 @@ incrementalmerkletree = { version = "0.8", default-features = false }
 prost = "0.14"
 rusqlite = "0.37"
 secrecy = "0.8"
+# `zcash_voting::RoundBinding::hotkey_secret` is `Option<zeroize::Zeroizing<Vec<u8>>>`; this
+# crate is already in the dependency graph transitively (via zcash_voting), but must be a
+# direct dependency to name `zeroize::Zeroizing` here. Version pinned to match Cargo.lock's
+# existing resolution (1.9.0) rather than introducing a second copy.
+zeroize = { version = "1", default-features = false }
 rand = "0.8"
 nonempty = "0.11"
 
@@ -144,32 +149,26 @@ xz2 = { version = "0.1", features = ["static"] }
 # got 0". Earlier rc.4 only had this fix via an unpublished git pin (see the removed
 # `[patch.crates-io]` entry below); rc.5 ships it on crates.io directly.
 #
-# 3.0.0-rc.3 (adopted for MOB-1678, see #2406) tracks Valargroup's v1.3.0 vote-chain
-# generation: the PIR dataset moves to poly_len 4096 and round attestations become
-# auth-v2-signed. It stays pinned exactly (not a `^`/default caret range) to match the
-# same rev iOS (swift-sdk PR #1972) and Vizor build against; it still resolves against
-# this crate's Ironwood family, so no `[patch.crates-io]` entry is needed here either.
+# 4.0.0/5.x adopts the breaking circuit + verification-key change from `voting-circuits`
+# that expands the supported proposal-ID and atomic-vote-batch range from 1-15 to 1-50,
+# and adds `cast-vote-batch` atomic multi-proposal submission. `zcash_voting`'s own default
+# feature is `zakura` (Valar's alternate crypto backend, ~4.2MB of duplicate
+# orchard/halo2/pasta_curves/bls12_381/client-backend/client-sqlite code with zero sharing
+# with our existing librustzcash deps) — `lrz` selects the librustzcash-backed
+# implementation instead, which resolves to the EXACT versions already in this Cargo.lock.
 #
-# 3.0.0 (adopted for the 3.1.0 SDK release, 2026-08-20): the vote-chain generation itself is
-# unchanged from rc.3, this is just the crate's stable tag.
-#
-# 4.0.0-rc.1 (adopted 2026-09-14 for the 37-question Retroactive Grants round): Valargroup's
-# API-compatible circuit bump on their release/v4.0.x line. It consumes the breaking
-# circuit/verification-key change from voting-circuits 0.12.0 that widens proposal ids from
-# 1..=15 to 1..=50, which the vote chain requires once it upgrades (stage already rejects the
-# 0.10 circuit with ConstraintSystemFailure). The crate's default feature is `lrz`, the
-# upstream librustzcash backend, so it keeps resolving against this crate's Ironwood family;
-# the Zakura forks are never pulled in. The 5.0.x line (round driver, batched submission) is a
-# separate API port and deliberately not adopted here.
-#
-# 4.0.0-rc.2 (adopted 2026-09-16): fixes store_vote taking a deferred SAVEPOINT and reading
-# before writing, which let a concurrent writer's INSERT hit an instant, non-retryable
-# SQLITE_BUSY regardless of any configured busy_timeout (SQLite skips the busy handler for
-# a lock upgrade inside an already-open transaction). This is what caused the "database is
-# locked" crash on many-bundle wallets with concurrent proving (MAX_CONCURRENT_PROOFS=2) --
-# reported upstream and fixed in valargroup/zcash_voting#358, verified end-to-end against a
-# real 13-bundle/37-proposal reproduction (481/481 vote commitments, zero SQLITE_BUSY).
-zcash_voting = { version = "=4.0.0-rc.2" }
+# `zcash_voting 5.1.0` has been published on crates.io since 2026-09-18 (confirmed live via
+# the crates.io API, not yanked), and its tag `67edd7eb797f66163c93ec66861f96ef7cffc4ae`
+# resolves to the exact commit this was previously git-pinned to -- so it now resolves as a
+# normal crates.io dependency, per policy (a direct git dependency is only for genuinely
+# unreleased code, via a `[patch.crates-io]` stanza, never a bare `git =` entry like this
+# used to be). v5.1.0 itself adds only one purely additive, opt-in feature (Ledger
+# hardware-wallet output review via `DelegationPipeline::with_ledger_output_review()`),
+# which this codebase does not use (Keystone, not Ledger) -- picked up on the way here were
+# v5.0.1's higher vote-chain endpoint limit, v5.0.2's WAL-writer race fix in `store_vote`,
+# and a network-triggerable vote-tree-sync panic fix. See this crate's own CHANGELOG for
+# the full 4.0.0-through-5.1.0 history if re-pinning again later.
+zcash_voting = { version = "=5.1.0", default-features = false, features = ["lrz"] }
 
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
