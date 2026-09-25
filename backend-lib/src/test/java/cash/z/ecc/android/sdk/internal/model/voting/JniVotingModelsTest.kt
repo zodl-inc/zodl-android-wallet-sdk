@@ -332,6 +332,92 @@ class JniVotingModelsTest {
         )
     }
 
+    /**
+     * Guards `precomputePirProofsNative`'s (Task 1) return type against a transposed `Int`/`Long`
+     * param -- see `JniPirPrecomputeResult`'s constructor and `helpers.rs`'s
+     * `JNI_PIR_PRECOMPUTE_RESULT_CTOR_SIG`, which must stay byte-identical to this descriptor.
+     */
+    @Test
+    fun pir_precompute_result_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniPirPrecomputeResult::class.java.getDeclaredConstructor(
+                Long::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType,
+                ByteArray::class.java
+            )
+
+        assertEquals(
+            "(JJ[B)V",
+            constructor.jniDescriptor()
+        )
+    }
+
+    /**
+     * Guards `precomputeSnapshotBundlesNative`'s (Task 2) `layout` field against a transposed
+     * `Int`/`Long` param -- 9 positional params, 5 `Int` interleaved with `Long`, the exact shape
+     * this constructor-descriptor pattern exists to catch. See `JniBundleLayout`'s constructor
+     * and `helpers.rs`'s `JNI_BUNDLE_LAYOUT_CTOR_SIG`.
+     */
+    @Test
+    fun bundle_layout_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniBundleLayout::class.java.getDeclaredConstructor(
+                Int::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType
+            )
+
+        assertEquals(
+            "(IJIIIJIIJ)V",
+            constructor.jniDescriptor()
+        )
+    }
+
+    /**
+     * Guards one bundle's entry in `JniSnapshotBundlePrecomputeReport.bundles` (Task 2) against a
+     * transposed `Int`/`Long` param. See `JniPirPrecomputeReport`'s constructor and
+     * `helpers.rs`'s `JNI_PIR_PRECOMPUTE_REPORT_CTOR_SIG`.
+     */
+    @Test
+    fun pir_precompute_report_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniPirPrecomputeReport::class.java.getDeclaredConstructor(
+                Long::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType
+            )
+
+        assertEquals(
+            "(JJ)V",
+            constructor.jniDescriptor()
+        )
+    }
+
+    /**
+     * Guards `precomputeSnapshotBundlesNative`'s (Task 2) top-level return type against a
+     * transposed/misordered object param. See `JniSnapshotBundlePrecomputeReport`'s constructor
+     * and `helpers.rs`'s `JNI_SNAPSHOT_BUNDLE_PRECOMPUTE_REPORT_CTOR_SIG`.
+     */
+    @Test
+    fun snapshot_bundle_precompute_report_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniSnapshotBundlePrecomputeReport::class.java.getDeclaredConstructor(
+                JniBundleLayout::class.java,
+                Array<JniPirPrecomputeReport>::class.java
+            )
+
+        assertEquals(
+            "(Lcash/z/ecc/android/sdk/internal/model/voting/JniBundleLayout;" +
+                "[Lcash/z/ecc/android/sdk/internal/model/voting/JniPirPrecomputeReport;)V",
+            constructor.jniDescriptor()
+        )
+    }
+
     private fun java.lang.reflect.Constructor<*>.jniDescriptor() =
         parameterTypes.joinToString(prefix = "(", postfix = ")V", separator = "") { parameter ->
             parameter.jniDescriptor()

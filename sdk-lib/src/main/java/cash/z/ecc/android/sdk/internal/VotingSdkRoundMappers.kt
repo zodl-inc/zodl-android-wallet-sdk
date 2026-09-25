@@ -5,16 +5,28 @@ import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundState
 import cash.z.ecc.android.sdk.internal.model.voting.JniRoundSummary
 import cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey
+import cash.z.ecc.android.sdk.model.voting.VotingBundleLayout
 import cash.z.ecc.android.sdk.model.voting.VotingBundleSetupResult
-import cash.z.ecc.android.sdk.model.voting.VotingGovernancePczt
+import cash.z.ecc.android.sdk.model.voting.VotingDelegationPirPrecomputeResult
 import cash.z.ecc.android.sdk.model.voting.VotingHotkey
+import cash.z.ecc.android.sdk.model.voting.VotingPirPrecomputeReport
+import cash.z.ecc.android.sdk.model.voting.VotingPirPrecomputeResult
 import cash.z.ecc.android.sdk.model.voting.VotingRoundPhase
 import cash.z.ecc.android.sdk.model.voting.VotingRoundState
 import cash.z.ecc.android.sdk.model.voting.VotingRoundSummary
+import cash.z.ecc.android.sdk.model.voting.VotingSnapshotBundlePrecomputeReport
 
-// Round/session mappers split out of VotingSdkMappers.kt (now VotingSdkNoteMappers.kt,
-// VotingSdkVoteMappers.kt, VotingSdkDelegationMappers.kt, and this file) to keep each file under
-// detekt's TooManyFunctions threshold -- this is a straight file split, no behavior changes.
+// Round/hotkey mappers split out of the pre-4.0 VotingSdkMappers.kt (now VotingSdkNoteMappers.kt,
+// VotingSdkVoteMappers.kt, VotingSdkDelegationMappers.kt, VotingSdkRoundPlanMappers.kt,
+// VotingSdkRoundRunReportMappers.kt, and this file) to keep each file under detekt's
+// TooManyFunctions threshold.
+//
+// Task 10 dropped this file's former `GovernancePcztResult.toPublic()` mapper -- its sole
+// caller ([TypesafeVotingDb.buildGovernancePczt]/`buildGovernancePcztFromSeed`) is gone,
+// superseded by `zcash_voting::DelegationPipeline`'s own PCZT construction. The remaining
+// mappers here (round-level phase/state/summary, from `getRoundStateNative`/`listRoundsNative`,
+// and hotkey/bundle-setup) are unrelated to the round-driver session model and unaffected by
+// the port -- Task 9 kept their backing native calls unchanged.
 
 internal fun JniRoundPhase.toPublic(): VotingRoundPhase =
     when (this) {
@@ -30,15 +42,6 @@ internal fun JniVotingHotkey.toPublic(): VotingHotkey =
 
 internal fun JniBundleSetupResult.toPublic(): VotingBundleSetupResult =
     VotingBundleSetupResult(bundleCount = bundleCount, eligibleWeight = eligibleWeight, bundleWeights = bundleWeights)
-
-// NOTE: deviates from the brief, which mapped from `JniGovernancePczt`. `TypesafeVotingDb`'s
-// `buildGovernancePczt`/`buildGovernancePcztFromSeed` (pre-existing, not part of this plan)
-// actually return the already-JNI-decoupled internal `GovernancePcztResult` (see
-// TypesafeVotingBackend.kt), not `JniGovernancePczt` directly -- the two are field-for-field
-// identical (pcztBytes/rk/sighash/actionIndex), so this maps from the type that's actually on
-// the wire here.
-internal fun GovernancePcztResult.toPublic(): VotingGovernancePczt =
-    VotingGovernancePczt(pcztBytes = pcztBytes, rk = rk, sighash = sighash, actionIndex = actionIndex)
 
 internal fun JniRoundState.toPublic(): VotingRoundState =
     VotingRoundState(
@@ -56,4 +59,45 @@ internal fun JniRoundSummary.toPublic(): VotingRoundSummary =
         phase = roundPhase.toPublic(),
         snapshotHeight = snapshotHeight,
         createdAt = createdAt
+    )
+
+// Moved here from the pre-4.0 VotingSdkDelegationMappers.kt (unrelated to the port, still
+// unchanged; relocated only to keep that file's function count under detekt's TooManyFunctions
+// threshold once it grew Keystone/round-plan-parsing responsibilities).
+internal fun DelegationPirPrecomputeResult.toPublic(): VotingDelegationPirPrecomputeResult =
+    VotingDelegationPirPrecomputeResult(
+        cachedCount = cachedCount,
+        fetchedCount = fetchedCount
+    )
+
+internal fun PirPrecomputeResult.toPublic(): VotingPirPrecomputeResult =
+    VotingPirPrecomputeResult(
+        cachedCount = cachedCount,
+        fetchedCount = fetchedCount,
+        servedRoot = servedRoot
+    )
+
+internal fun BundleLayout.toPublic(): VotingBundleLayout =
+    VotingBundleLayout(
+        bundleCount = bundleCount,
+        eligibleWeightZatoshi = eligibleWeightZatoshi,
+        droppedCount = droppedCount,
+        privacyTrimDroppedBundles = privacyTrimDroppedBundles,
+        privacyTrimDroppedNotes = privacyTrimDroppedNotes,
+        privacyTrimDroppedValueZatoshi = privacyTrimDroppedValueZatoshi,
+        skippedSuffixBundles = skippedSuffixBundles,
+        skippedSuffixNotes = skippedSuffixNotes,
+        skippedSuffixValueZatoshi = skippedSuffixValueZatoshi
+    )
+
+internal fun PirPrecomputeReport.toPublic(): VotingPirPrecomputeReport =
+    VotingPirPrecomputeReport(
+        cachedCount = cachedCount,
+        fetchedCount = fetchedCount
+    )
+
+internal fun SnapshotBundlePrecomputeReport.toPublic(): VotingSnapshotBundlePrecomputeReport =
+    VotingSnapshotBundlePrecomputeReport(
+        layout = layout.toPublic(),
+        bundles = bundles.map { it.toPublic() }
     )

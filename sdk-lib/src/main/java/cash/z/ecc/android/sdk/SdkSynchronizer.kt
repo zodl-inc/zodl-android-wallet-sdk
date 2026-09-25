@@ -79,6 +79,7 @@ import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import cash.z.ecc.android.sdk.model.voting.VotingTorLease
 import cash.z.ecc.android.sdk.tool.CheckpointTool
 import cash.z.ecc.android.sdk.type.AddressType
 import cash.z.ecc.android.sdk.type.AddressType.Shielded
@@ -751,6 +752,26 @@ class SdkSynchronizer private constructor(
             throw TorUnavailableException()
         }
 
+    @Suppress("TooGenericExceptionCaught")
+    override suspend fun acquireVotingTorLease(): VotingTorLease =
+        if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
+            if (lazyTorClient == null) {
+                throw TorInitializationErrorException(
+                    NullPointerException("Tor has not been initialized during synchronizer setup")
+                )
+            }
+
+            try {
+                VotingTorLease(lazyTorClient.getOrCreate().leaseRuntime())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw TorInitializationErrorException(e)
+            }
+        } else {
+            throw TorUnavailableException()
+        }
+
     override suspend fun debugQuery(query: String): String = storage.debugQuery(query)
 
     override suspend fun deleteAccount(accountUuid: AccountUuid) =
@@ -1150,6 +1171,7 @@ class SdkSynchronizer private constructor(
     ): Proposal? = txManager.proposeShielding(account, shieldingThreshold, memo, transparentReceiver)
 
     @Throws(
+        TransactionEncoderException.AnchorNotFoundException::class,
         TransactionEncoderException.TransactionNotCreatedException::class,
         TransactionEncoderException.TransactionNotFoundException::class
     )

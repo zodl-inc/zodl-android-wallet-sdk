@@ -6,6 +6,68 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-09-25
+
+### Added
+- `TransactionEncoderException.AnchorNotFoundException`, thrown by
+  `Synchronizer.createProposedTransactions` and `Broadcaster.createProposedTransactions`
+  when transactions cannot be created from a proposal because no anchor is computable at
+  the height the proposal anchors to
+  (`zcash_client_backend`'s `ProposalError::AnchorNotFound`). When
+  `Synchronizer.createPcztFromProposal` fails for the same reason, the
+  `CreatePcztFromProposalException` it throws now carries this exception as its `cause`.
+  The failure previously surfaced only as the generic
+  `TransactionEncoderException.TransactionNotCreatedException` (or the generic PCZT
+  exception), identifiable only by matching the formatted Rust error message. The new
+  exception is a sibling of `TransactionNotCreatedException`, not a subtype: code that
+  catches `TransactionNotCreatedException` around `createProposedTransactions` and
+  needs to handle this case must add a catch for the new exception. Scanning
+  creates a checkpoint at every height a proposal can anchor to, so the expected
+  recovery is to sync further and then create a new proposal; the failed proposal
+  anchors to the same height, so retrying it unchanged is not expected to succeed on
+  its own.
+
+### Removed
+
+- `VotingDbSession.hasCompleteWitnesses(roundId, bundleIndex, notes)`, added in 3.3.0 for callers
+  that cached witnesses in an earlier precompute pass. The round driver generates witnesses itself
+  inside `VotingRoundSession.run`, so there is no caller-side witness cache left to check.
+
+### Changed
+
+- **Breaking: shielded voting's public surface is replaced by a round-driver API.**
+  `VotingDbSession`/`VotingSdk` no longer expose the caller-drives-every-step methods a
+  round used to be advanced through one at a time -- `buildGovernancePczt*`,
+  `buildAndProveDelegation`, `buildVoteCommitment`, `buildSharePayloads`, `initRound`,
+  `storeWitnesses`, `recordShareDelegation`, `getDelegationSubmission*`, `getVotes`,
+  `markVoteSubmitted`/`markShareConfirmed`, and about twenty more (roughly 30 methods in
+  total). In their place, `VotingDbSession.openRoundSession`/`ensureRound` and the new
+  `VotingRoundSession`/`VotingShareTrackingSession` interfaces (`run`, `setBallotIntents`,
+  `getKeystoneSigningRequests`/`storeKeystoneSignatures`, `cancel`, `plan`) hand the crate's
+  own `RoundExecutor`/`RoundDriver` ownership of a round's build/prove/submit sequencing --
+  callers drive one round session to completion instead of one JNI call per step.
+  `configureVoting()` sets the process-wide proving-pool policy once, replacing per-call
+  tuning. `precomputeDelegationPir`/`precomputePirProofs`/`precomputeSnapshotBundles` remain
+  (the last two are new) for callers that want to warm PIR ahead of a round starting.
+- **Breaking: voting traffic is routed over Tor through a `VotingTorLease`.**
+  `Synchronizer.acquireVotingTorLease()` returns a lease on the synchronizer's shared Tor
+  runtime; `VotingDbSession.openRoundSession`, `precomputeDelegationPir`,
+  `precomputePirProofs`, `precomputeSnapshotBundles` and `VotingShareTrackingSession.run`
+  take it as `torLease: VotingTorLease?` (`null` when Tor is disabled, for plain HTTP).
+  `precomputeDelegationPir` gained this parameter; it previously always went over plain
+  HTTP. The lease keeps the Tor runtime alive across a `Synchronizer` close or rebuild, and
+  `VotingTorLease.release()` releases against the Tor client that issued it -- idempotent,
+  and safe from a cancelled coroutine. Callers release it after closing every session it was
+  passed to.
+- Shielded voting's PIR client is no longer cached per open voting DB. `precomputeDelegationPir`
+  connects a fresh client outside the voting DB lock on every call, over Tor when a lease is
+  given, so each call pays the Tier-0 dataset download again. `precomputePirProofs` and
+  `precomputeSnapshotBundles` hold the voting DB lock for their full duration, PIR round-trips
+  included.
+- Shielded voting now builds against `zcash_voting` 5.1.0 (`voting-circuits` 0.12.x), up from
+  4.0.0-rc.2. The crate's default backend is still upstream librustzcash (`lrz`), so the
+  native library still links exactly one copy of each Zcash crate.
+
 ## [3.3.0] - 2026-09-16
 
 ### Added
