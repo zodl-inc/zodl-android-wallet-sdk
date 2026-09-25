@@ -9,6 +9,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingNoteInfo
 import cash.z.ecc.android.sdk.model.voting.VotingNoteScope
 import cash.z.ecc.android.sdk.model.voting.VotingProposalRosterEntry
 import cash.z.ecc.android.sdk.model.voting.VotingRoundQuiescence
+import cash.z.ecc.android.sdk.model.voting.VotingTorLease
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.mockito.Mockito.mock
@@ -60,7 +61,7 @@ class VotingSdkRoundTripTest {
 
                 // Leased outside openRoundSession's argument list and released in this finally,
                 // so a throw from openRoundSession or close() still releases it.
-                val torLease = torClient.leaseRuntime()
+                val torLease = VotingTorLease(torClient.leaseRuntime())
                 try {
                     val roundSession =
                         dbSession.openRoundSession(
@@ -188,7 +189,7 @@ class VotingSdkRoundTripTest {
 
                 // Leased outside openRoundSession's argument list and released in this finally,
                 // so a throw from openRoundSession or close() still releases it.
-                val torLease = torClient.leaseRuntime()
+                val torLease = VotingTorLease(torClient.leaseRuntime())
                 try {
                     val roundSession =
                         dbSession.openRoundSession(

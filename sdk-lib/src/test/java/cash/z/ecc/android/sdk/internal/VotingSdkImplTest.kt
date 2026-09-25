@@ -19,6 +19,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingRoundPhase
 import cash.z.ecc.android.sdk.model.voting.VotingRoundPlanAction
 import cash.z.ecc.android.sdk.model.voting.VotingRoundQuiescence
 import cash.z.ecc.android.sdk.model.voting.VotingShareTrackingQuiescence
+import cash.z.ecc.android.sdk.model.voting.VotingTorLease
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
@@ -276,7 +277,7 @@ class VotingSdkImplTest {
             val session = VotingShareTrackingSessionImpl(trackingSession)
 
             assertFailsWith<IllegalStateException> {
-                session.run(released, listOf("https://helper.example"), -1L)
+                session.run(VotingTorLease(released), listOf("https://helper.example"), -1L)
             }
             verifyNoInteractions(trackingSession)
         }
@@ -439,8 +440,8 @@ class VotingSdkImplTest {
             assertNull(session.plan())
         }
 
-    private fun torLease(handle: Long): TorRuntimeLease =
-        mock(TorRuntimeLease::class.java).also { `when`(it.handle).thenReturn(handle) }
+    private fun torLease(handle: Long): VotingTorLease =
+        VotingTorLease(mock(TorRuntimeLease::class.java).also { `when`(it.handle).thenReturn(handle) })
 
     private fun roundPlanFixture(): JniRoundPlan =
         JniRoundPlan(

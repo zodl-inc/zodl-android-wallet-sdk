@@ -762,7 +762,7 @@ class SdkSynchronizer private constructor(
             }
 
             try {
-                lazyTorClient.getOrCreate().leaseRuntime()
+                VotingTorLease(lazyTorClient.getOrCreate().leaseRuntime())
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

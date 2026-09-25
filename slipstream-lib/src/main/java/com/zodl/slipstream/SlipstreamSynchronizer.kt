@@ -1592,7 +1592,7 @@ class SlipstreamSynchronizer internal constructor(
     override suspend fun acquireVotingTorLease(): VotingTorLease {
         if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
         return try {
-            lazyTorClient.getOrCreate().leaseRuntime()
+            VotingTorLease(lazyTorClient.getOrCreate().leaseRuntime())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
