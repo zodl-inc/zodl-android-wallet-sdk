@@ -1171,6 +1171,7 @@ class SdkSynchronizer private constructor(
     ): Proposal? = txManager.proposeShielding(account, shieldingThreshold, memo, transparentReceiver)
 
     @Throws(
+        TransactionEncoderException.AnchorNotFoundException::class,
         TransactionEncoderException.TransactionNotCreatedException::class,
         TransactionEncoderException.TransactionNotFoundException::class
     )
