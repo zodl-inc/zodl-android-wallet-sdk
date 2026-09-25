@@ -12,8 +12,7 @@ import cash.z.ecc.android.sdk.model.voting.VotingRoundQuiescence
 import cash.z.ecc.android.sdk.model.voting.VotingTorLease
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
-import org.mockito.Mockito.mock
-import org.mockito.Mockito.`when`
+import java.lang.reflect.Proxy
 import kotlin.io.path.createTempDirectory
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -270,11 +269,21 @@ class VotingSdkRoundTripTest {
             }
         }
 
-    private suspend fun newTorClientForTesting(): TorClient {
-        val backend = mock(Backend::class.java)
-        `when`(backend.networkId).thenReturn(JNI_VOTING_NETWORK_ID_TESTNET)
-        return TorClient.new(createTempDirectory("tor-client-").toFile(), backend)
-    }
+    private suspend fun newTorClientForTesting(): TorClient =
+        TorClient.new(createTempDirectory("tor-client-").toFile(), testnetOnlyBackend())
+
+    // TorClient only reads Backend.networkId. A plain dynamic proxy stands in for the rest:
+    // Mockito's Android mock maker can't create mocks on the API 27 test device.
+    private fun testnetOnlyBackend(): Backend =
+        Proxy.newProxyInstance(Backend::class.java.classLoader, arrayOf(Backend::class.java)) { proxy, method, args ->
+            when (method.name) {
+                "getNetworkId" -> JNI_VOTING_NETWORK_ID_TESTNET
+                "toString" -> "testnetOnlyBackend"
+                "hashCode" -> System.identityHashCode(proxy)
+                "equals" -> proxy === args?.firstOrNull()
+                else -> throw UnsupportedOperationException("Backend.${method.name} is not used by this test")
+            }
+        } as Backend
 
     private fun newDbPath() = createTempDirectory("voting-db-").resolve("voting.db").toFile().absolutePath
 
