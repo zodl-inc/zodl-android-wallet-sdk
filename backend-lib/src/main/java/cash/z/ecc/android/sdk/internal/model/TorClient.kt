@@ -13,14 +13,29 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.math.BigDecimal
 
+@Suppress("TooManyFunctions")
 class TorClient private constructor(
     private var nativeHandle: Long?,
     private val backend: Backend,
 ) : Disposable {
     private val accessMutex = Mutex()
 
+    // Guards freeing the native runtime while a [TorRuntimeLease] from [leaseRuntime] is still
+    // outstanding -- see that function's own doc comment for the hazard this closes. Both fields
+    // are only ever touched under [accessMutex].
+    private var leaseCount = 0
+    private var disposalPending = false
+
     override suspend fun dispose() =
         accessMutex.withLock {
+            if (leaseCount > 0) {
+                // A lease is still outstanding (e.g. a round-driver session mid multi-bundle
+                // run) -- freeing the runtime now would leave that caller's in-flight native call
+                // holding a dangling pointer. Defer the actual free to whichever lease release
+                // brings the count back to zero.
+                disposalPending = true
+                return@withLock
+            }
             withContext(Dispatchers.IO) {
                 nativeHandle?.let { freeTorRuntime(it) }
                 nativeHandle = null
@@ -65,6 +80,48 @@ class TorClient private constructor(
             withContext(Dispatchers.IO) {
                 checkNotNull(nativeHandle) { "TorClient is disposed" }
                 setDormant(nativeHandle!!, mode.ordinal)
+            }
+        }
+
+    /**
+     * Leases this client's native Tor runtime so [dispose] cannot free it until the returned
+     * [TorRuntimeLease] is released.
+     *
+     * Deliberately narrow: this exists only for handing this runtime off across a JNI boundary
+     * to a *different* native subsystem that holds it beyond a single call -- today, the voting
+     * round driver and share-tracking driver (see `Synchronizer.acquireVotingTorLease`, the
+     * sanctioned way for a caller outside this module to get one). Do not use it to bypass this
+     * client's own request dispatch ([httpGet]/[httpPost]/[createWalletClient]/...).
+     *
+     * A round-driver session can hold the lease for the whole session's lifetime (potentially
+     * 20-30 minutes across a multi-bundle round). [dispose] running concurrently with that -- a
+     * `Synchronizer` rebuild mid-vote -- defers the free (see [dispose]'s own doc comment) until the
+     * last outstanding lease is released. The lease releases against this exact instance, so it
+     * stays releasable after the holder that handed out this client has been disposed.
+     *
+     * @throws IllegalStateException if this client is already disposed, or has a dispose pending
+     * behind outstanding leases -- a runtime on its way out must not gain new holders.
+     */
+    suspend fun leaseRuntime(): TorRuntimeLease =
+        accessMutex.withLock {
+            check(!disposalPending) { "TorClient is being disposed" }
+            val handle = checkNotNull(nativeHandle) { "TorClient is disposed" }
+            leaseCount++
+            TorRuntimeLease(handle, ::releaseRuntimeLease)
+        }
+
+    // Only ever invoked through TorRuntimeLease.release(), which is idempotent and already runs
+    // under NonCancellable -- so each lease decrements exactly once, and the deferred free below
+    // runs even when the releasing coroutine has been cancelled.
+    private suspend fun releaseRuntimeLease() =
+        accessMutex.withLock {
+            check(leaseCount > 0) { "TorRuntimeLease released without an outstanding lease" }
+            leaseCount--
+            if (leaseCount == 0 && disposalPending) {
+                withContext(Dispatchers.IO) {
+                    nativeHandle?.let { freeTorRuntime(it) }
+                    nativeHandle = null
+                }
             }
         }
 
