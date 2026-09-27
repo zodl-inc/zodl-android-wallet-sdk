@@ -23,6 +23,7 @@ import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.PcztException
 import cash.z.ecc.android.sdk.exception.RustLayerException
 import cash.z.ecc.android.sdk.exception.TorInitializationErrorException
+import cash.z.ecc.android.sdk.exception.TorUnavailableException
 import cash.z.ecc.android.sdk.ext.ConsensusBranchId
 import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.internal.Backend
@@ -64,6 +65,7 @@ import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import cash.z.ecc.android.sdk.model.voting.VotingTorLease
 import cash.z.ecc.android.sdk.tool.CheckpointTool
 import cash.z.ecc.android.sdk.tool.DerivationTool
 import cash.z.ecc.android.sdk.type.AddressType
@@ -1583,6 +1585,18 @@ class SlipstreamSynchronizer internal constructor(
                 retryLimit = 1
             }
             config(this as HttpClientConfig<HttpClientEngineConfig>)
+        }
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    override suspend fun acquireVotingTorLease(): VotingTorLease {
+        if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
+        return try {
+            VotingTorLease(lazyTorClient.getOrCreate().leaseRuntime())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw TorInitializationErrorException(e)
         }
     }
 

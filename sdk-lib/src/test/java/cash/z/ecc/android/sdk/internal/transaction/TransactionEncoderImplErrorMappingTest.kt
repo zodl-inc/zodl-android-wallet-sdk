@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.Zatoshi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.Mockito.mock
@@ -137,6 +138,56 @@ class TransactionEncoderImplErrorMappingTest {
                 }
 
             assertSame(unrelated, exception.rootCause)
+        }
+
+    @Test
+    fun proposeTransferRethrowsCancellationInsteadOfWrapping(): Unit =
+        runBlocking {
+            val backend = mock(TypesafeBackend::class.java)
+            `when`(
+                backend.proposeTransfer(account, RECIPIENT, AMOUNT.value, null)
+            ).thenThrow(CancellationException("scope cancelled"))
+
+            assertFailsWith<CancellationException> {
+                encoder(backend).proposeTransfer(account, RECIPIENT, AMOUNT, null)
+            }
+        }
+
+    @Test
+    fun proposeTransferFromUriRethrowsCancellationInsteadOfWrapping(): Unit =
+        runBlocking {
+            val backend = mock(TypesafeBackend::class.java)
+            `when`(backend.proposeTransferFromUri(account, URI)).thenThrow(CancellationException("scope cancelled"))
+
+            assertFailsWith<CancellationException> {
+                encoder(backend).proposeTransferFromUri(account, URI)
+            }
+        }
+
+    @Test
+    fun proposeShieldingRethrowsCancellationInsteadOfWrapping(): Unit =
+        runBlocking {
+            val backend = mock(TypesafeBackend::class.java)
+            `when`(
+                backend.proposeShielding(account, THRESHOLD.value, null, null)
+            ).thenThrow(CancellationException("scope cancelled"))
+
+            assertFailsWith<CancellationException> {
+                encoder(backend).proposeShielding(account, THRESHOLD, null, null)
+            }
+        }
+
+    @Test
+    fun proposeOrchardToIronwoodMigrationRethrowsCancellationInsteadOfWrapping(): Unit =
+        runBlocking {
+            val backend = mock(TypesafeBackend::class.java)
+            `when`(
+                backend.proposeOrchardToIronwoodMigration(account)
+            ).thenThrow(CancellationException("scope cancelled"))
+
+            assertFailsWith<CancellationException> {
+                encoder(backend).proposeOrchardToIronwoodMigration(account)
+            }
         }
 
     private fun encoder(backend: TypesafeBackend): TransactionEncoderImpl =

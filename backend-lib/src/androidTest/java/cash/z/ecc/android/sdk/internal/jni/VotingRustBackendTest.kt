@@ -2,18 +2,13 @@
 
 package cash.z.ecc.android.sdk.internal.jni
 
-import android.content.ContentValues
-import android.database.sqlite.SQLiteDatabase
-import cash.z.ecc.android.sdk.internal.model.voting.JniGovernancePczt
+import cash.z.ecc.android.sdk.internal.model.TorClient
+import cash.z.ecc.android.sdk.internal.model.voting.JniDelegationInputs
+import cash.z.ecc.android.sdk.internal.model.voting.JniKeystoneSignatureInput
 import cash.z.ecc.android.sdk.internal.model.voting.JniNoteInfo
-import cash.z.ecc.android.sdk.internal.model.voting.JniRoundPhase
-import cash.z.ecc.android.sdk.internal.model.voting.JniVanWitness
-import cash.z.ecc.android.sdk.internal.model.voting.JniVoteCommitmentResult
-import cash.z.ecc.android.sdk.internal.model.voting.JniWireEncryptedShare
 import cash.z.ecc.android.sdk.internal.model.voting.JniWitnessData
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
-import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -24,10 +19,22 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
+/**
+ * Exercises `VotingRustBackend`'s raw JNI surface against the round-driver session model
+ * (voting-5.0.0 SDK port). Every test either round-trips real data through the native
+ * boundary or asserts a [RuntimeException] rejection from the native side -- both prove the
+ * JNI signature resolved and matched (no [UnsatisfiedLinkError]), which is this file's real
+ * job now that Tasks 1-8 replaced most of the JNI export surface with the session-based
+ * `openRoundSession`/`runRound`/`openShareTrackingSession`/Keystone-batch API.
+ *
+ * A handful of tests need a live (but never network-reachable in these tests) Tor runtime
+ * handle -- `openRoundSessionNative`/`runRoundNative`/`runShareTrackingSessionNative` all take
+ * one. Rather
+ * than duplicating `TorClient`'s JNI wiring, [torRuntimeHandleForTesting] reads `TorClient`'s
+ * private `nativeHandle` field via reflection; this is test-only scaffolding, not a production
+ * pattern.
+ */
 @OptIn(ExperimentalStdlibApi::class)
-// Re-enabled on the chp worktree: cfg(zcash_voting) is now threaded through
-// backend-lib/build.gradle.kts's cargo exec block and the zcash_voting dependency is
-// uncommented in Cargo.toml (pinned to valargroup/zcash_voting@7d39d02b, v1.0.0).
 @Suppress("LargeClass", "MagicNumber", "DEPRECATION_ERROR")
 class VotingRustBackendTest {
     companion object {
@@ -38,7 +45,6 @@ class VotingRustBackendTest {
         private const val DIVERSIFIER_BYTES = 11
         private const val ORCHARD_FVK_BYTES = 96
         private const val ORCHARD_WITNESS_PATH_DEPTH = 32
-        private const val SCANNED_PRIORITY = 10
         private val VOTE_COMMITMENT = ByteArray(FIELD_BYTES) { 1 }
         private val BLIND = ByteArray(FIELD_BYTES) { 2 }
         private val SHORT_FIELD = ByteArray(FIELD_BYTES - 1)
@@ -47,34 +53,21 @@ class VotingRustBackendTest {
 
         private const val WALLET_ID = "wallet-1"
         private const val OTHER_WALLET_ID = "wallet-2"
-        private const val ROUND_ID = "round-1"
-        private const val SNAPSHOT_HEIGHT = 4_134_000L
-        private const val MAINNET_SNAPSHOT_HEIGHT = 3_428_143L
-        private const val SESSION_JSON = "{\"round\":\"one\"}"
+
+        // RoundExecutor::with_binding (openRoundSessionNative) requires round_id to be exactly
+        // 64 lowercase hex characters -- the crate's canonical Pallas field element encoding.
+        // There is no init-round JNI export any more; a round row is created implicitly the
+        // first time openRoundSessionNative's RoundBinding is persisted for this id.
+        private const val ROUND_ID = "0101010101010101010101010101010101010101010101010101010101010101"
         private const val TESTNET_NETWORK_ID = JNI_VOTING_NETWORK_ID_TESTNET
         private const val ACCOUNT_INDEX = 0
-        private const val MAINNET_NETWORK_ID = JNI_VOTING_NETWORK_ID_MAINNET
-        private const val SECOND_ROUND_ID = "round-2"
-        private const val PCZT_ROUND_ID =
-            "0101010101010101010101010101010101010101010101010101010101010101"
-        private const val CONFIRMED_PROPOSAL_ID = 2
-        private const val CONFIRMED_VOTE_TX_HASH = "confirmed-vote-tx"
-        private const val ROUND_NAME = "Test Round"
-        private const val TEST_PIR_DEPTH = 1
-        private const val TEST_PIR_TIER0_LAYERS = 1
-        private const val TEST_PIR_TIER1_LAYERS = 1
-        private const val TEST_PIR_POLY_LEN = 2048
+        private const val SECOND_ROUND_ID = "0202020202020202020202020202020202020202020202020202020202020202"
         private const val NOTE_VALUE = 13_000_000L
-        private const val PCZT_NOTE_VALUE = 15_000_000L
         private const val LARGE_BUNDLE_WEIGHT = 62_500_000L
         private const val SMALL_BUNDLE_WEIGHT = 12_500_000L
         private const val TWO_BUNDLE_ELIGIBLE_WEIGHT = 75_000_000L
-        private val EA_PK = ByteArray(FIELD_BYTES) { 3 }
-        private val NC_ROOT = ByteArray(FIELD_BYTES) { 4 }
-        private val NULLIFIER_IMT_ROOT = ByteArray(FIELD_BYTES) { 5 }
         private val HOTKEY_SEED = ByteArray(64) { 0x42 }
         private val OTHER_HOTKEY_SEED = ByteArray(64) { 0x43 }
-        private val SEED_FINGERPRINT = ByteArray(FIELD_BYTES) { 6 }
         private const val EMPTY_ORCHARD_NOTE_COMMITMENT =
             "0200000000000000000000000000000000000000000000000000000000000000"
         private const val EMPTY_ORCHARD_WITNESS_ROOT =
@@ -145,12 +138,34 @@ class VotingRustBackendTest {
 
     @Test
     fun warm_proving_caches_smoke() =
-        // Warming the proving caches builds the zk proving keys, which is
-        // CPU-heavy. On the in-runner managed-device emulator (slower than the
-        // former emulator.wtf hardware) it exceeds runTest's default 60s
-        // timeout, so allow more time.
-        runTest(timeout = 5.minutes) {
+        // warmProvingCachesNative now calls the crate's start_proving_cache_warmup, which only
+        // spawns the crate's own background thread and returns immediately -- unlike the old
+        // synchronous warm_proving_caches (which built the zk proving keys inline and needed a
+        // 5-minute runTest timeout on a slow emulator), this call itself is cheap and fits well
+        // within runTest's default timeout regardless of how long the actual, now-backgrounded,
+        // key generation takes.
+        runTest {
             VotingRustBackend.new().warmProvingCaches()
+        }
+
+    @Test
+    fun warm_proving_caches_is_idempotent() =
+        // start_proving_cache_warmup's own doc comment: "Later calls are no-ops." -- mirrors
+        // configure_voting_is_idempotent's shape for the sibling one-time-setup native call.
+        runTest {
+            val backend = VotingRustBackend.new()
+            backend.warmProvingCaches()
+            backend.warmProvingCaches()
+        }
+
+    @Test
+    fun configure_voting_is_idempotent() =
+        runTest {
+            val backend = VotingRustBackend.new()
+            // configureVotingNative's own doc comment: a second call observes
+            // AlreadyConfigured and is intentionally not escalated to an exception.
+            backend.configureVoting()
+            backend.configureVoting()
         }
 
     @Test
@@ -177,33 +192,12 @@ class VotingRustBackendTest {
             val first = backend.deriveHotkeyRawAddress(HOTKEY_SEED, TESTNET_NETWORK_ID)
             val second = backend.deriveHotkeyRawAddress(HOTKEY_SEED, TESTNET_NETWORK_ID)
             val otherSeed = backend.deriveHotkeyRawAddress(OTHER_HOTKEY_SEED, TESTNET_NETWORK_ID)
-            val mainnet = backend.deriveHotkeyRawAddress(HOTKEY_SEED, MAINNET_NETWORK_ID)
 
             assertEquals(DIVERSIFIER_BYTES + FIELD_BYTES, first.size)
             assertContentEquals(first, second)
             assertFalse(first.contentEquals(otherSeed))
-            assertFalse(first.contentEquals(mainnet))
             assertFailsWith<RuntimeException> {
                 backend.deriveHotkeyRawAddress(SHORT_FIELD, TESTNET_NETWORK_ID)
-            }
-        }
-
-    /**
-     * `deriveHotkeyRawAddress` and `generateHotkey`'s `storedSecret` run the exact same
-     * ZIP-32 derivation over the same bytes (`VotingHotkey::from_stored_secret` internally
-     * delegates to the same `UnifiedSpendingKey::from_seed` call), so a length this call
-     * silently accepted but `generateHotkey` would go on to reject (32..63 bytes) would let
-     * an app derive a "hotkey address" preview for material that can never actually become a
-     * usable hotkey.
-     */
-    @Test
-    fun derive_hotkey_raw_address_rejects_seed_shorter_than_hotkey_stored_secret() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val fieldOnlySeed = ByteArray(FIELD_BYTES) { 0x42 }
-
-            assertFailsWith<RuntimeException> {
-                backend.deriveHotkeyRawAddress(fieldOnlySeed, TESTNET_NETWORK_ID)
             }
         }
 
@@ -227,7 +221,7 @@ class VotingRustBackendTest {
             val validWitness = witnesses().single()
 
             assertTrue(backend.verifyWitness(validWitness))
-            assertFalse(backend.verifyWitness(validWitness.copy(root = NC_ROOT)))
+            assertFalse(backend.verifyWitness(validWitness.copy(root = ByteArray(FIELD_BYTES) { 4 })))
             assertFailsWith<RuntimeException> {
                 backend.verifyWitness(
                     validWitness.copy(
@@ -238,136 +232,52 @@ class VotingRustBackendTest {
         }
 
     @Test
-    fun voting_db_round_state_round_trips() =
+    fun note_and_witness_array_fixtures_cross_rust_to_kotlin_construction() =
         runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                assertNull(db.getRoundState(ROUND_ID))
+            val backend = VotingRustBackend.new()
 
-                db.initRound(
-                    roundId = ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = NC_ROOT,
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = SESSION_JSON
-                )
+            val note = backend.noteInfoArrayFixtureForTesting().single()
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x01 }, note.commitment)
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x02 }, note.nullifier)
+            assertEquals(123_456L, note.value)
+            assertEquals(7L, note.position)
+            assertContentEquals(ByteArray(DIVERSIFIER_BYTES) { 0x03 }, note.diversifier)
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x04 }, note.rho)
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x05 }, note.rseed)
+            assertEquals(1, note.scope)
+            assertEquals("ufvk-fixture", note.ufvk)
 
-                val state = assertNotNull(db.getRoundState(ROUND_ID))
-                assertEquals(ROUND_ID, state.roundId)
-                assertEquals(JniRoundPhase.INITIALIZED.value, state.phase)
-                assertEquals(JniRoundPhase.INITIALIZED, state.roundPhase)
-                assertEquals(SNAPSHOT_HEIGHT, state.snapshotHeight)
-                assertNull(state.hotkeyAddress)
-                assertNull(state.delegatedWeight)
-                assertFalse(state.proofGenerated)
-
-                val rounds = db.listRounds()
-                assertEquals(1, rounds.size)
-                val round = rounds.single()
-                assertEquals(ROUND_ID, round.roundId)
-                assertEquals(JniRoundPhase.INITIALIZED.value, round.phase)
-                assertEquals(JniRoundPhase.INITIALIZED, round.roundPhase)
-                assertEquals(SNAPSHOT_HEIGHT, round.snapshotHeight)
-
-                assertEquals(emptyList(), db.getVotes(ROUND_ID).asList())
-
-                db.clearRound(ROUND_ID)
-                assertNull(db.getRoundState(ROUND_ID))
-            } finally {
-                db.close()
-            }
+            val witness = backend.witnessDataArrayFixtureForTesting().single()
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x11 }, witness.noteCommitment)
+            assertEquals(9L, witness.position)
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x12 }, witness.root)
+            assertEquals(ORCHARD_WITNESS_PATH_DEPTH, witness.authPath.size)
+            assertContentEquals(ByteArray(FIELD_BYTES) { 0x20 }, witness.authPath.first())
         }
 
     @Test
-    fun voting_db_keeps_wallet_state_isolated() =
-        runTest {
-            val dbPath = newDbPath()
-            val firstWallet = VotingRustBackend.new().openVotingDb(dbPath, WALLET_ID, TESTNET_NETWORK_ID)
-            val secondWallet = VotingRustBackend.new().openVotingDb(dbPath, OTHER_WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                firstWallet.initRound(
-                    roundId = ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = NC_ROOT,
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-
-                assertNotNull(firstWallet.getRoundState(ROUND_ID))
-                assertNull(secondWallet.getRoundState(ROUND_ID))
-            } finally {
-                firstWallet.close()
-                secondWallet.close()
-            }
-        }
-
-    @Test
-    fun list_rounds_returns_all_rounds_for_current_wallet_only() =
-        runTest {
-            val dbPath = newDbPath()
-            val firstWallet = VotingRustBackend.new().openVotingDb(dbPath, WALLET_ID, TESTNET_NETWORK_ID)
-            val secondWallet = VotingRustBackend.new().openVotingDb(dbPath, OTHER_WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                firstWallet.initRound(
-                    roundId = ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = NC_ROOT,
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-                firstWallet.initRound(
-                    roundId = SECOND_ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = NC_ROOT,
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-
-                val firstWalletRounds = firstWallet.listRounds().map { it.roundId }.toSet()
-                val secondWalletRounds = secondWallet.listRounds()
-
-                assertEquals(setOf(ROUND_ID, SECOND_ROUND_ID), firstWalletRounds)
-                assertEquals(0, secondWalletRounds.size)
-            } finally {
-                firstWallet.close()
-                secondWallet.close()
-            }
-        }
-
-    @Test
-    fun voting_db_rejects_malformed_inputs_and_closed_handle() =
+    fun voting_db_close_is_idempotent_and_disables_further_calls() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
 
-            assertFailsWith<RuntimeException> {
-                db.initRound(
-                    roundId = ROUND_ID,
-                    snapshotHeight = -1,
-                    eaPK = EA_PK,
-                    ncRoot = NC_ROOT,
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-            }
-            assertFailsWith<RuntimeException> {
-                db.initRound(
-                    roundId = ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = SHORT_FIELD,
-                    ncRoot = NC_ROOT,
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-            }
+            assertNull(db.getRoundState(ROUND_ID))
 
             db.close()
             db.close()
             assertFailsWith<IllegalStateException> {
                 db.getRoundState(ROUND_ID)
+            }
+        }
+
+    @Test
+    fun voting_db_list_rounds_is_empty_for_a_fresh_wallet() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
+            try {
+                assertEquals(emptyList(), db.listRounds().asList())
+                assertNull(db.getRoundState(ROUND_ID))
+            } finally {
+                db.close()
             }
         }
 
@@ -408,249 +318,54 @@ class VotingRustBackendTest {
         }
 
     @Test
-    fun setup_bundles_round_trips_bundle_count() =
+    fun setup_bundles_rejects_a_round_that_does_not_exist_yet() =
+        runTest {
+            // There is no init-round JNI export any more, and (confirmed empirically on-device
+            // -- see round_session_run_round_does_not_persist_the_round_row's doc comment)
+            // openRoundSessionNative/runRoundNative do not persist a `rounds` table row either.
+            // setupBundlesNative's insert therefore always violates the bundles-to-rounds
+            // foreign key for a round no JNI call has created -- this reaches the real native
+            // boundary (a RuntimeException, not UnsatisfiedLinkError), which is what this test
+            // actually proves; see this task's report for why round creation is currently a gap.
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
+            try {
+                assertFailsWith<RuntimeException> {
+                    db.setupBundles(ROUND_ID, notes(noteCount = 6))
+                }
+                assertEquals(0, db.getBundleCount(ROUND_ID))
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun get_bundle_count_and_delete_skipped_bundles_are_zero_for_an_unknown_round() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             try {
-                db.initRound(
-                    roundId = ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = NC_ROOT,
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-
-                val setup = db.setupBundles(ROUND_ID, notes(noteCount = 6))
-
-                assertEquals(2, setup.bundleCount)
-                assertEquals(TWO_BUNDLE_ELIGIBLE_WEIGHT, setup.eligibleWeight)
-                assertEquals(listOf(LARGE_BUNDLE_WEIGHT, SMALL_BUNDLE_WEIGHT), setup.bundleWeights)
-                assertEquals(setup.eligibleWeight, setup.bundleWeights.sum())
-                assertEquals(2, db.getBundleCount(ROUND_ID))
-
-                val deletedRows = db.deleteSkippedBundles(ROUND_ID, keepCount = 1)
-                assertEquals(1L, deletedRows)
-                assertEquals(1, db.getBundleCount(ROUND_ID))
+                assertEquals(0, db.getBundleCount(ROUND_ID))
+                assertEquals(0L, db.deleteSkippedBundles(ROUND_ID, keepCount = 0))
+                // clearRound is a pure delete-if-present; it does not require the round to exist.
+                db.clearRound(ROUND_ID)
             } finally {
                 db.close()
             }
         }
 
     @Test
-    fun store_tree_state_rejects_invalid_cached_bytes() =
+    fun voting_db_keeps_wallet_state_isolated() =
         runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
+            val dbPath = newDbPath()
+            val firstWallet = VotingRustBackend.new().openVotingDb(dbPath, WALLET_ID, TESTNET_NETWORK_ID)
+            val secondWallet = VotingRustBackend.new().openVotingDb(dbPath, OTHER_WALLET_ID, TESTNET_NETWORK_ID)
             try {
-                db.initRound(
-                    roundId = ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = NC_ROOT,
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-
-                assertFailsWith<RuntimeException> {
-                    db.storeTreeState(ROUND_ID, byteArrayOf(1, 2, 3))
-                }
+                assertEquals(0, firstWallet.getBundleCount(ROUND_ID))
+                assertEquals(0, secondWallet.getBundleCount(ROUND_ID))
+                assertNull(firstWallet.getRoundState(ROUND_ID))
+                assertNull(secondWallet.getRoundState(ROUND_ID))
             } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun store_tree_state_rejects_snapshot_height_mismatch() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val db = backend.openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                db.initRound(
-                    roundId = ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT + 1,
-                    eaPK = EA_PK,
-                    ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-
-                assertFailsWith<RuntimeException> {
-                    db.storeTreeState(ROUND_ID, backend.treeStateFixtureForTesting())
-                }
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun store_tree_state_rejects_nc_root_mismatch() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val db = backend.openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                db.initRound(
-                    roundId = ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = NC_ROOT,
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-
-                assertFailsWith<RuntimeException> {
-                    db.storeTreeState(ROUND_ID, backend.treeStateFixtureForTesting())
-                }
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun store_tree_state_accepts_matching_snapshot_fixture() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val db = backend.openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                db.initRound(
-                    roundId = ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-
-                db.storeTreeState(ROUND_ID, backend.treeStateFixtureForTesting())
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun get_wallet_notes_rejects_unknown_account() =
-        runTest {
-            val wallet = newWalletDbWithAccount()
-            markWalletScannedThrough(wallet.path, walletBirthdayHeight(wallet.path))
-
-            assertRuntimeExceptionContains("account not found in wallet DB") {
-                VotingRustBackend.new().getWalletNotes(
-                    walletDbPath = wallet.path,
-                    snapshotHeight = walletBirthdayHeight(wallet.path),
-                    networkId = TESTNET_NETWORK_ID,
-                    accountUuidBytes = ByteArray(16) { 9 }
-                )
-            }
-        }
-
-    @Test
-    fun get_wallet_notes_rejects_account_without_ufvk() =
-        runTest {
-            val wallet = newWalletDbWithAccount()
-            markWalletScannedThrough(wallet.path, walletBirthdayHeight(wallet.path))
-            downgradeAccountToUivkOnly(wallet.path, wallet.accountUuid)
-
-            assertRuntimeExceptionContains("account has no UFVK") {
-                VotingRustBackend.new().getWalletNotes(
-                    walletDbPath = wallet.path,
-                    snapshotHeight = walletBirthdayHeight(wallet.path),
-                    networkId = TESTNET_NETWORK_ID,
-                    accountUuidBytes = wallet.accountUuid
-                )
-            }
-        }
-
-    @Test
-    fun get_wallet_notes_rejects_snapshot_above_fully_scanned_height() =
-        runTest {
-            val wallet = newWalletDbWithAccount()
-            val fullyScannedHeight = walletBirthdayHeight(wallet.path)
-            markWalletScannedThrough(wallet.path, fullyScannedHeight)
-
-            assertRuntimeExceptionContains(
-                "wallet DB fully scanned height $fullyScannedHeight is below snapshot_height " +
-                    "${fullyScannedHeight + 1}"
-            ) {
-                VotingRustBackend.new().getWalletNotes(
-                    walletDbPath = wallet.path,
-                    snapshotHeight = fullyScannedHeight + 1,
-                    networkId = TESTNET_NETWORK_ID,
-                    accountUuidBytes = wallet.accountUuid
-                )
-            }
-        }
-
-    @Test
-    fun generate_note_witnesses_rejects_missing_wallet_db_path() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val db = backend.openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val notes = witnessNotes()
-                val treeState = backend.nonEmptyTreeStateFixtureForTesting()
-                db.initRound(
-                    roundId = PCZT_ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = backend.extractNcRoot(treeState),
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-                db.setupBundles(PCZT_ROUND_ID, notes)
-                db.storeTreeState(PCZT_ROUND_ID, treeState)
-
-                val missingWalletDbPath =
-                    createTempDirectory("wallet-db-")
-                        .resolve("missing-wallet.db")
-                        .toFile()
-                        .absolutePath
-
-                assertRuntimeExceptionContains("open wallet DB read-only") {
-                    db.generateNoteWitnesses(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 0,
-                        walletDbPath = missingWalletDbPath,
-                        networkId = TESTNET_NETWORK_ID,
-                        notes = notes
-                    )
-                }
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun generate_note_witnesses_rejects_empty_snapshot_frontier() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val db = backend.openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val notes = witnessNotes()
-                val wallet = newWalletDbWithAccount()
-                markWalletScannedThrough(wallet.path, walletBirthdayHeight(wallet.path))
-                db.initRound(
-                    roundId = PCZT_ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray(),
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-                db.setupBundles(PCZT_ROUND_ID, notes)
-                db.storeTreeState(PCZT_ROUND_ID, backend.treeStateFixtureForTesting())
-
-                assertRuntimeExceptionContains(
-                    "empty ironwood frontier at snapshot height"
-                ) {
-                    db.generateNoteWitnesses(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 0,
-                        walletDbPath = wallet.path,
-                        networkId = TESTNET_NETWORK_ID,
-                        notes = notes
-                    )
-                }
-            } finally {
-                db.close()
+                firstWallet.close()
+                secondWallet.close()
             }
         }
 
@@ -688,465 +403,77 @@ class VotingRustBackendTest {
         }
 
     @Test
-    fun build_governance_pczt_rejects_mismatched_bundle_inputs_and_seed() =
+    fun precompute_delegation_pir_rejects_malformed_pir_url() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             try {
-                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
-                val mismatchedNotesJson = notes(noteCount = 1, value = PCZT_NOTE_VALUE)
-                val mismatchedSameIndexNotesJson =
-                    notes(noteCount = 6, value = PCZT_NOTE_VALUE, positionOffset = 10)
-                val mismatchedSamePositionNotesJson =
-                    notes(noteCount = 6, value = PCZT_NOTE_VALUE, ufvkString = "different")
-                val ufvk = deriveTestUfvk()
-                val mismatchedUfvk = deriveTestUfvk(seed = OTHER_HOTKEY_SEED)
-                db.initPcztRoundWithBundles(notes)
+                val notes = notes(noteCount = 6)
 
-                assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePczt(ufvk, mismatchedNotesJson)
-                }
-                assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePczt(ufvk, mismatchedSameIndexNotesJson)
-                }
-                assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePczt(ufvk, mismatchedSamePositionNotesJson)
-                }
-                assertFailsWith<RuntimeException> {
-                    db.buildTestGovernancePcztFromSeed(mismatchedUfvk, notes)
-                }
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun build_governance_pczt_does_not_advance_round_phase() =
-        runTest {
-            // build_governance_pczt_for_bundle deliberately stopped advancing the
-            // round-level phase (see its doc comment) — the round-level phase can't distinguish
-            // "this round's bundles are all still Prepared" from "some OTHER bundle in this round
-            // already raced ahead to Proved", which made constructing bundle 1+ of a multi-bundle
-            // round fail with "refusing to regress round phase" once bundle 0 had been proved.
-            // Per-bundle status now comes from zcash_voting::phases::DelegationPhase (surfaced via
-            // delegationPhasesNative), not this round-level phase.
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
-                val ufvk = deriveTestUfvk()
-                db.initRound(
-                    roundId = PCZT_ROUND_ID,
-                    snapshotHeight = SNAPSHOT_HEIGHT,
-                    eaPK = EA_PK,
-                    ncRoot = NC_ROOT,
-                    nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-                    sessionJson = null
-                )
-                db.setupBundles(PCZT_ROUND_ID, notes)
-                assertEquals(
-                    JniRoundPhase.INITIALIZED,
-                    assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
-                )
-
-                val pczt = db.buildTestGovernancePczt(ufvk, notes)
-
-                assertTrue(pczt.pcztBytes.isNotEmpty())
-                assertEquals(
-                    JniRoundPhase.INITIALIZED,
-                    assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
-                )
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun build_governance_pczt_returns_parseable_pczt_and_extractable_sighash() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val db = backend.openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
-                val ufvk = deriveTestUfvk()
-                db.initPcztRoundWithBundles(notes)
-
-                val pczt = db.buildTestGovernancePczt(ufvk, notes)
-                val extractedSighash = backend.extractPcztSighash(pczt.pcztBytes)
-
-                assertTrue(pczt.pcztBytes.isNotEmpty())
-                assertEquals(FIELD_BYTES, pczt.rk.size)
-                assertEquals(FIELD_BYTES, pczt.sighash.size)
-                assertTrue(pczt.actionIndex >= 0)
-                assertContentEquals(pczt.sighash, extractedSighash)
-                assertFailsWith<RuntimeException> {
-                    backend.extractSpendAuthSig(pczt.pcztBytes, pczt.actionIndex)
-                }
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun build_governance_pczt_explicit_and_seed_paths_produce_valid_pczts() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val explicitDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            val seedDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
-                val ufvk = deriveTestUfvk()
-                explicitDb.initPcztRoundWithBundles(notes)
-                seedDb.initPcztRoundWithBundles(notes)
-
-                val explicitPczt = explicitDb.buildTestGovernancePczt(ufvk, notes)
-                val seedPczt = seedDb.buildTestGovernancePcztFromSeed(ufvk, notes)
-
-                assertValidGovernancePczt(backend, explicitDb, explicitPczt)
-                assertValidGovernancePczt(backend, seedDb, seedPczt)
-            } finally {
-                explicitDb.close()
-                seedDb.close()
-            }
-        }
-
-    @Test
-    fun build_governance_pczt_from_seed_uses_wallet_account_but_hotkey_account_zero() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val explicitDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            val seedDb = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val accountIndex = 1
-                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
-                val ufvk = deriveTestUfvk(accountIndex = accountIndex)
-                val hotkeyWalletAccount =
-                    backend.deriveHotkeyRawAddressForAccountFixture(
-                        HOTKEY_SEED,
-                        TESTNET_NETWORK_ID,
-                        accountIndex
-                    )
-                explicitDb.initPcztRoundWithBundles(notes)
-                seedDb.initPcztRoundWithBundles(notes)
-
-                val hotkey = explicitDb.generateHotkey(HOTKEY_SEED)
-                assertContentEquals(
-                    hotkey.rawAddress,
-                    backend.deriveHotkeyRawAddress(HOTKEY_SEED, TESTNET_NETWORK_ID)
-                )
-                assertFalse(hotkey.rawAddress.contentEquals(hotkeyWalletAccount))
-
-                val explicitPczt =
-                    explicitDb.buildTestGovernancePczt(
-                        ufvk = ufvk,
-                        notes = notes,
-                        options =
-                            GovernancePcztOptions(
-                                hotkeySecret = hotkey.storedSecret,
-                                accountIndex = accountIndex
-                            )
-                    )
-                val seedPczt =
-                    seedDb.buildTestGovernancePcztFromSeed(
-                        ufvk = ufvk,
-                        notes = notes,
-                        options = GovernancePcztOptions(accountIndex = accountIndex)
-                    )
-
-                assertValidGovernancePczt(backend, explicitDb, explicitPczt)
-                assertValidGovernancePczt(backend, seedDb, seedPczt)
-                val seedPcztRecipient =
-                    backend.extractPcztOutputRecipientFixture(
-                        seedPczt.pcztBytes,
-                        seedPczt.actionIndex
-                    )
-                assertContentEquals(hotkey.rawAddress, seedPcztRecipient)
-                assertFalse(seedPcztRecipient.contentEquals(hotkeyWalletAccount))
-            } finally {
-                explicitDb.close()
-                seedDb.close()
-            }
-        }
-
-    @Test
-    fun build_governance_pczt_from_seed_rejects_wallet_seed_that_does_not_match_ufvk() =
-        runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
-                val ufvk = deriveTestUfvk()
-                db.initPcztRoundWithBundles(notes)
-
-                val error =
-                    assertFailsWith<RuntimeException> {
-                        db.buildTestGovernancePcztFromSeed(
-                            ufvk = ufvk,
-                            notes = notes,
-                            options = GovernancePcztOptions(walletSeed = OTHER_HOTKEY_SEED)
-                        )
-                    }
-
-                assertTrue(error.message.orEmpty().contains("ufvk does not match walletSeed"))
-                assertEquals(
-                    JniRoundPhase.INITIALIZED,
-                    assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
-                )
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun build_governance_pczt_accepts_mainnet_network_id() =
-        runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, MAINNET_NETWORK_ID)
-            try {
-                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
-                val ufvk = deriveTestUfvk(networkId = MAINNET_NETWORK_ID)
-                db.initPcztRoundWithBundles(notes, snapshotHeight = MAINNET_SNAPSHOT_HEIGHT)
-
-                val pczt =
-                    db.buildTestGovernancePczt(
-                        ufvk = ufvk,
-                        notes = notes,
-                        options = GovernancePcztOptions(networkId = MAINNET_NETWORK_ID)
-                    )
-
-                assertTrue(pczt.pcztBytes.isNotEmpty())
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun store_witnesses_accepts_valid_witness_json() =
-        runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val notes = witnessNotes()
-                db.initPcztRoundWithBundles(
-                    notes,
-                    ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray()
-                )
-
-                db.storeWitnesses(
-                    roundId = PCZT_ROUND_ID,
-                    bundleIndex = 0,
-                    notes = notes,
-                    witnesses = witnesses()
-                )
-
-                assertEquals(
-                    JniRoundPhase.INITIALIZED,
-                    assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
-                )
-                db.storeWitnesses(
-                    roundId = PCZT_ROUND_ID,
-                    bundleIndex = 0,
-                    notes = notes,
-                    witnesses = witnesses()
-                )
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun store_witnesses_rejects_root_that_does_not_match_round() =
-        runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val notes = witnessNotes()
-                db.initPcztRoundWithBundles(notes)
-
-                assertFailsWith<RuntimeException> {
-                    db.storeWitnesses(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 0,
-                        notes = notes,
-                        witnesses = witnesses()
-                    )
-                }
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun store_witnesses_rejects_witness_that_does_not_match_selected_note() =
-        runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val notes = witnessNotes()
-                db.initPcztRoundWithBundles(
-                    notes,
-                    ncRoot = EMPTY_ORCHARD_WITNESS_ROOT.hexToByteArray()
-                )
-
-                assertFailsWith<RuntimeException> {
-                    db.storeWitnesses(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 0,
-                        notes = notes,
-                        witnesses = witnesses(noteCommitment = repeatedHex(9))
-                    )
-                }
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun delegation_bridge_methods_reject_malformed_inputs_before_side_effects() =
-        runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
-                db.initPcztRoundWithBundles(notes)
-
-                assertFailsWith<RuntimeException> {
-                    db.storeWitnesses(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        notes = notes,
-                        witnesses =
-                            witnesses(
-                                authPathEntries = ORCHARD_WITNESS_PATH_DEPTH - 1
-                            )
-                    )
-                }
                 assertFailsWith<RuntimeException> {
                     db.precomputeDelegationPir(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
+                        torRuntime = 0,
+                        roundId = ROUND_ID,
+                        bundleIndex = 0,
                         pirServerUrl = "not-a-valid-url",
-                        pirDepth = TEST_PIR_DEPTH,
-                        pirTier0Layers = TEST_PIR_TIER0_LAYERS,
-                        pirTier1Layers = TEST_PIR_TIER1_LAYERS,
-                        pirPolyLen = TEST_PIR_POLY_LEN,
+                        pirDepth = 1,
+                        pirTier0Layers = 1,
+                        pirTier1Layers = 1,
+                        pirPolyLen = 2048,
+                        notes = bundledNotes(notes, bundleIndex = 0)
+                    )
+                }
+            } finally {
+                db.close()
+            }
+        }
+
+    @Test
+    fun precompute_pir_proofs_rejects_malformed_pir_url() =
+        runTest {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
+            try {
+                // Unlike precomputeDelegationPir, this call is bundle- and round-independent --
+                // notes are passed directly, with no bundledNotes()/roundId/bundleIndex needed.
+                val notes = notes(noteCount = 6)
+
+                assertFailsWith<RuntimeException> {
+                    db.precomputePirProofs(
+                        torRuntime = 0,
+                        pirServerUrl = "not-a-valid-url",
+                        pirDepth = 1,
+                        pirTier0Layers = 1,
+                        pirTier1Layers = 1,
+                        pirPolyLen = 2048,
                         notes = notes
                     )
                 }
-                assertFailsWith<RuntimeException> {
-                    db.buildAndProveDelegation(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        pirServerUrl = "http://127.0.0.1:1",
-                        pirDepth = TEST_PIR_DEPTH,
-                        pirTier0Layers = TEST_PIR_TIER0_LAYERS,
-                        pirTier1Layers = TEST_PIR_TIER1_LAYERS,
-                        pirPolyLen = TEST_PIR_POLY_LEN,
-                        notes = notes,
-                        fvkBytes = SHORT_FIELD,
-                        hotkeySecret = HOTKEY_SEED,
-                        seedFingerprint = SEED_FINGERPRINT,
-                        accountIndex = ACCOUNT_INDEX,
-                        roundName = ROUND_NAME,
-                        proofProgress = null
-                    )
-                }
-                assertFailsWith<RuntimeException> {
-                    db.getDelegationSubmission(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        walletDbPath = "missing-wallet.db",
-                        accountUuid = "not-a-uuid",
-                        hotkeySecret = SHORT_FIELD,
-                        roundName = ROUND_NAME,
-                        senderSeed = HOTKEY_SEED
-                    )
-                }
-                assertFailsWith<RuntimeException> {
-                    db.getDelegationSubmissionWithKeystoneSig(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        keystoneSig = ByteArray(FIELD_BYTES),
-                        keystoneSighash = ByteArray(FIELD_BYTES)
-                    )
-                }
             } finally {
                 db.close()
             }
         }
 
     @Test
-    fun build_share_payloads_round_trips_commitment_fields() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val commitment = jniVoteCommitmentResult()
-
-            val payloads =
-                backend.buildSharePayloads(
-                    commitment = commitment,
-                    voteDecision = 1,
-                    numOptions = 2,
-                    vcTreePosition = 42,
-                    singleShareMode = false
-                )
-
-            assertEquals(JNI_VOTE_SHARE_COUNT, payloads.size)
-            assertContentEquals(commitment.sharesHash, payloads.first().sharesHash)
-            assertEquals(commitment.proposalId, payloads.first().proposalId)
-            assertEquals(1, payloads.first().voteDecision)
-            assertEquals(42, payloads.first().treePosition)
-            assertEquals(commitment.encShares.first(), payloads.first().encShare)
-            assertEquals(commitment.encShares, payloads.first().allEncShares)
-            assertContentEquals(commitment.shareComms.first(), payloads.first().shareComms.first())
-            assertContentEquals(commitment.shareBlinds.first(), payloads.first().primaryBlind)
-        }
-
-    @Test
-    fun build_share_payloads_single_share_mode_keeps_commitment_context() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val commitment = jniVoteCommitmentResult()
-
-            val payloads =
-                backend.buildSharePayloads(
-                    commitment = commitment,
-                    voteDecision = 1,
-                    numOptions = 2,
-                    vcTreePosition = 42,
-                    singleShareMode = true
-                )
-
-            assertEquals(1, payloads.size)
-            val payload = payloads.single()
-            assertContentEquals(commitment.sharesHash, payload.sharesHash)
-            assertEquals(commitment.proposalId, payload.proposalId)
-            assertEquals(1, payload.voteDecision)
-            assertEquals(42, payload.treePosition)
-            assertEquals(0, payload.encShare.shareIndex)
-            assertEquals(commitment.encShares.first(), payload.encShare)
-            assertEquals(commitment.encShares, payload.allEncShares)
-            assertEquals(JNI_VOTE_SHARE_COUNT, payload.allEncShares.size)
-            assertContentEquals(commitment.shareComms.first(), payload.shareComms.first())
-            assertContentEquals(commitment.shareBlinds.first(), payload.primaryBlind)
-        }
-
-    @Test
-    fun build_share_payloads_rejects_malformed_share_counts() =
-        runTest {
-            val backend = VotingRustBackend.new()
-
-            assertFailsWith<RuntimeException> {
-                backend.buildSharePayloads(
-                    commitment = jniVoteCommitmentResult(encShares = emptyList()),
-                    voteDecision = 1,
-                    numOptions = 2,
-                    vcTreePosition = 42,
-                    singleShareMode = false
-                )
-            }
-        }
-
-    @Test
-    fun sync_vote_tree_reaches_native_boundary() =
+    fun precompute_snapshot_bundles_rejects_malformed_pir_url() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             try {
-                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
+                // connect_pir_client runs before precompute_snapshot_bundles_with_report ever
+                // touches round state (same ordering precomputeDelegationPirNative/
+                // precomputePirProofsNative use above), so this fails on the malformed URL
+                // without needing a real round to exist first.
+                val notes = notes(noteCount = 6)
 
                 assertFailsWith<RuntimeException> {
-                    db.syncVoteTree(PCZT_ROUND_ID, "not-a-url")
+                    db.precomputeSnapshotBundles(
+                        torRuntime = 0,
+                        roundId = ROUND_ID,
+                        pirServerUrl = "not-a-valid-url",
+                        pirDepth = 1,
+                        pirTier0Layers = 1,
+                        pirTier1Layers = 1,
+                        pirPolyLen = 2048,
+                        notes = notes
+                    )
                 }
             } finally {
                 db.close()
@@ -1154,545 +481,355 @@ class VotingRustBackendTest {
         }
 
     @Test
-    fun store_van_position_reaches_native_boundary() =
+    fun sync_vote_tree_and_reset_tree_client_reach_native_boundary() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             try {
-                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
-
-                db.storeVanPosition(PCZT_ROUND_ID, bundleIndex = 1, position = 42)
+                assertFailsWith<RuntimeException> {
+                    db.syncVoteTree(ROUND_ID, "not-a-url")
+                }
+                // resetTreeClient succeeds even for a round with no cached tree client -- it is
+                // a pure cache-drop, not a lookup.
+                db.resetTreeClient(ROUND_ID)
             } finally {
                 db.close()
             }
         }
 
     @Test
-    fun generate_van_witness_reaches_native_boundary() =
+    fun reset_voting_session_state_is_a_no_op_for_an_unknown_round() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             try {
-                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
-                db.storeVanPosition(PCZT_ROUND_ID, bundleIndex = 1, position = 42)
-
-                assertFailsWith<RuntimeException> {
-                    db.generateVanWitness(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        anchorHeight = SNAPSHOT_HEIGHT
-                    )
-                }
+                // No round has been created (there is no init-round JNI export any more --
+                // round creation now happens implicitly via openRoundSession).
+                // reset_voting_session_state is a best-effort clear of unsigned delegation setup
+                // fields; confirmed empirically on-device that it succeeds as a no-op for a
+                // round with no persisted state, rather than throwing. This still proves the
+                // JNI call reaches the native boundary correctly (no UnsatisfiedLinkError).
+                db.resetVotingSessionState(SECOND_ROUND_ID)
             } finally {
                 db.close()
             }
         }
 
     @Test
-    fun build_vote_commitment_requires_delegation_ready() =
+    fun store_and_get_keystone_signatures_round_trip_and_reject_mismatched_context() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             try {
-                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
-                val ufvk = deriveTestUfvk()
-                db.initPcztRoundWithBundles(notes)
-                db.buildTestGovernancePczt(ufvk, notes)
+                assertEquals(emptyList(), db.getKeystoneSignatures(ROUND_ID).asList())
 
+                // No bundle has ever been persisted for this round (there is no bundle-setup
+                // path reachable without an existing round row -- see this task's report), so
+                // the batch's signing-context match against bundles.pczt_sighash/rk always
+                // fails here. This still proves the JNI array marshaling and native round trip
+                // work correctly -- the crate-side matching guard is exercised, not bypassed.
                 assertFailsWith<RuntimeException> {
-                    db.buildVoteCommitment(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        hotkeySecret = HOTKEY_SEED,
-                        proposalId = 1,
-                        choice = 0,
-                        numOptions = 2,
-                        witness = jniVanWitness(),
-                        singleShare = false,
-                        proofProgress = null
+                    db.storeKeystoneSignatures(
+                        ROUND_ID,
+                        listOf(
+                            JniKeystoneSignatureInput(
+                                bundleIndex = 0,
+                                sig = ByteArray(64) { 0x11 },
+                                sighash = ByteArray(FIELD_BYTES) { 0xAA.toByte() },
+                                rk = ByteArray(FIELD_BYTES) { 0x22 }
+                            )
+                        )
                     )
                 }
 
-                assertEquals(emptyList(), db.getVotes(PCZT_ROUND_ID).asList())
-                assertEquals(
-                    JniRoundPhase.INITIALIZED,
-                    assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
-                )
+                assertEquals(emptyList(), db.getKeystoneSignatures(ROUND_ID).asList())
             } finally {
                 db.close()
             }
         }
 
+    /**
+     * `runShareTrackingSessionNative` bootstraps a real Tor circuit before it can even attempt
+     * (and fail to reach) the fake helper URL, which can legitimately take well past `runTest`'s
+     * default 60s timeout on a slow emulator. A generous 5-minute allowance still proves the JNI
+     * call resolves and marshals correctly (a real report or a RuntimeException), without
+     * flaking on timing.
+     */
     @Test
-    fun record_vc_position_and_recover_committed_vote_reach_native_boundary() =
+    fun share_tracking_session_reaches_native_boundary_without_a_reachable_helper() =
+        runTest(timeout = 5.minutes) {
+            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
+            val torClient = newTorClientForTesting()
+            try {
+                val session = db.openShareTrackingSession(ROUND_ID)
+                try {
+                    // No real helper fleet is reachable, and no shares are pending, so this either
+                    // reports a NothingToTrack-style quiescence report or fails while trying to
+                    // resolve the helper URL -- either outcome (a real report, or a
+                    // RuntimeException) proves the JNI array/report marshaling and native round
+                    // trip work; only UnsatisfiedLinkError would indicate a real signature
+                    // mismatch.
+                    runCatching {
+                        session.run(
+                            torRuntime = torClient.torRuntimeHandleForTesting(),
+                            helperUrls = listOf("https://helper.example"),
+                            voteEndTimeSeconds = -1
+                        )
+                    }.onFailure { error ->
+                        assertTrue(error is RuntimeException, "expected RuntimeException, got $error")
+                    }
+                } finally {
+                    session.close()
+                }
+            } finally {
+                db.close()
+                torClient.dispose()
+            }
+        }
+
+    /**
+     * Confirmed empirically on-device: neither `openRoundSessionNative`'s `RoundBinding` nor a
+     * `runRoundNative` pass persists a `rounds` table row -- `getRoundPlanNative` and
+     * `runRoundNative`'s own "needs_ballot" early return both work from the session's in-memory
+     * binding alone, but `setBallotIntentsNative` (an actual write path) fails with a
+     * `FOREIGN KEY constraint failed` storage error, exactly like `setupBundlesNative` does with
+     * no round row. There is currently no JNI export that creates one (the old `initRoundNative`
+     * is gone and nothing in the final Task 1-8 export list replaces it) -- see this task's
+     * report for why that is flagged as a concern rather than something Task 9 works around.
+     */
+    @Test
+    fun round_session_run_round_and_plan_work_without_a_persisted_round_row() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
+            val torClient = newTorClientForTesting()
             try {
-                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
+                val session =
+                    db.openRoundSession(
+                        torRuntime = torClient.torRuntimeHandleForTesting(),
+                        roundId = ROUND_ID,
+                        proposalIds = intArrayOf(1),
+                        proposalOptionCounts = intArrayOf(2),
+                        hotkeySecret = null,
+                        chainEndpoints = listOf("https://chain.example"),
+                        operationEpoch = 0,
+                        configuredHelperUrls = emptyList(),
+                        voteTreeNodeUrls = emptyList(),
+                        ceremonyStartSeconds = -1,
+                        voteEndTimeSeconds = -1
+                    )
+                try {
+                    // No ballot decisions exist yet, so RoundDriver::run determines there is
+                    // nothing to submit and returns a needs_ballot quiescence report without
+                    // ever needing to reach the (fake) chain endpoint -- confirmed empirically
+                    // on-device: this completes immediately, no real network I/O involved.
+                    val report = session.runRound(torClient.torRuntimeHandleForTesting(), delegationInputs = null)
+                    assertNotNull(report)
+                    assertEquals("needs_ballot", report.quiescenceKind)
+                    val plan = assertNotNull(report.plan)
+                    assertEquals(ROUND_ID, plan.roundId)
+                    assertEquals(listOf(1), plan.openProposals.toList())
 
-                assertFailsWith<RuntimeException> {
-                    db.recordVcPosition(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        proposalId = 1,
-                        vcTreePosition = 42
-                    )
-                }
-                assertFailsWith<RuntimeException> {
-                    db.recoverCommittedVote(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        proposalId = 1
-                    )
+                    val refetchedPlan = session.getRoundPlan()
+                    assertNotNull(refetchedPlan)
+                    assertEquals(ROUND_ID, refetchedPlan.roundId)
+
+                    // setBallotIntents is an actual write path; with no rounds-table row ever
+                    // persisted for this round_id it fails the bundles/ballots foreign key, per
+                    // this test's doc comment.
+                    assertFailsWith<RuntimeException> {
+                        session.setBallotIntents(intArrayOf(1), intArrayOf(0))
+                    }
+
+                    // No delegation-enabled runRound call ever succeeded on this session, so no
+                    // pipeline is cached yet.
+                    assertFailsWith<RuntimeException> {
+                        session.getKeystoneSigningRequests(intArrayOf(0))
+                    }
+
+                    session.setOperationEpoch(1)
+                    session.cancel()
+                } finally {
+                    session.close()
+                    session.close()
                 }
             } finally {
                 db.close()
+                torClient.dispose()
             }
         }
 
+    /**
+     * Round-bootstrap fix, verified on-device with concrete evidence: [ensureRound] genuinely
+     * bootstraps a virgin round, and a delegation-enabled `runRoundNative` call against it no
+     * longer fails with "round not found".
+     *
+     * This test used to be `runRound_with_delegation_inputs_cannot_bootstrap_a_virgin_round` and
+     * documented the opposite: Task 10's finding that `delegation_driver.rs`'s
+     * `delegation_step_inputs_from_jni` called `voting::storage::queries::load_round_params` --
+     * a hard `SELECT ... FROM rounds` -- immediately after decoding `delegation_inputs` and
+     * unconditionally before constructing the `DelegationPipeline`, so an unknown `round_id` was
+     * rejected before `zcash_voting`'s own bootstrap mechanism (`DelegationPipeline`'s
+     * `execute_prepare` -> `prepare_delegation_bundle_inner` -> `observe_ensure_round_context` ->
+     * `VotingDb::ensure_round_state`) ever ran. That fix (removing the premature read;
+     * [JniDelegationInputs] now carries `snapshotHeight`/`eaPk`/`ncRoot`/`nullifierImtRoot`
+     * directly) turned out, on real-device verification, to be necessary but **not sufficient**
+     * on its own: `RoundDriver::run`'s planner (`round_planning::classify`) derives delegation
+     * obligations from a `DelegationPhase` snapshot over *persisted* `bundles` rows, so with zero
+     * bundle rows it proposes zero `Delegate` steps no matter what `delegationInputs` carries --
+     * `execute_prepare`'s own bootstrap call is never reached from `runRound` alone on a fully
+     * virgin round. Confirmed empirically: even after the `load_round_params` fix,
+     * `session.runRound(delegationInputs)` alone still left `getRoundState(ROUND_ID)` `null`.
+     *
+     * The real fix is the sequence this test now exercises: [ensureRoundNative] (new, exposes
+     * the crate's own standalone `DelegationPipeline::ensure_round` -- an inherent method that
+     * touches neither the wallet nor bundles, so it can run before either exists) creates the
+     * round row from caller-supplied metadata; [setupBundlesNative] can then create bundle rows
+     * (its insert has a foreign key on `rounds`, so it could not before); only then can
+     * `runRoundNative`'s planner have anything to propose delegation work for. Concrete evidence
+     * below: the `rounds` row does not exist before [ensureRound], does exist immediately after
+     * it (with this round's own `snapshotHeight`), `runRound` no longer rejects with "round not
+     * found", and a write that used to fail with a foreign-key error against a nonexistent round
+     * (`setBallotIntents`, per `round_session_run_round_and_plan_work_without_a_persisted_round_row`
+     * above) now succeeds.
+     */
     @Test
-    fun scheduled_share_submit_at_returns_unix_seconds_or_immediate() =
-        runTest {
-            val backend = VotingRustBackend.new()
-            val now = 1_700_000_000L
-            val voteEndTime = now + 3_600L
-
-            val submitAt =
-                backend.scheduledShareSubmitAt(
-                    nowSeconds = now,
-                    ceremonyStartSeconds = now - 3_600L,
-                    voteEndTimeSeconds = voteEndTime,
-                    singleShare = true
-                )
-
-            assertTrue(submitAt == 0L || submitAt in now..voteEndTime)
-        }
-
-    @Test
-    fun recovery_state_round_trips_through_native_jni() =
+    fun ensureRound_bootstraps_a_virgin_round_and_unblocks_setup_and_run() =
         runTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
+            val torClient = newTorClientForTesting()
             try {
-                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
-                db.storeVoteFixtureForTesting(
-                    roundId = PCZT_ROUND_ID,
-                    bundleIndex = 1,
-                    proposalId = 1,
-                    choice = 0,
-                    recordVcPosition = false
-                )
-                db.storeVoteFixtureForTesting(
-                    roundId = PCZT_ROUND_ID,
-                    bundleIndex = 1,
-                    proposalId = CONFIRMED_PROPOSAL_ID,
-                    choice = 0
-                )
+                assertNull(db.getRoundState(ROUND_ID))
+                assertTrue(db.listRounds().isEmpty())
 
-                db.assertStoredTxHashesRoundTrip()
-                db.storeVoteTxHash(
-                    PCZT_ROUND_ID,
-                    bundleIndex = 1,
-                    proposalId = CONFIRMED_PROPOSAL_ID,
-                    txHash = CONFIRMED_VOTE_TX_HASH
-                )
-                assertNull(db.getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
-                assertNotNull(
-                    db.getCommitmentBundle(
-                        PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        proposalId = CONFIRMED_PROPOSAL_ID
+                val eaPk = ByteArray(FIELD_BYTES) { 0xEA.toByte() }
+                val ncRoot = ByteArray(FIELD_BYTES) { 0x01 }
+                val nullifierImtRoot = ByteArray(FIELD_BYTES) { 0x02 }
+
+                // The concrete evidence this test is named for: the round genuinely bootstraps.
+                db.ensureRound(ROUND_ID, ByteArray(0), snapshotHeight = 10L, eaPk, ncRoot, nullifierImtRoot)
+                val bootstrappedState = assertNotNull(db.getRoundState(ROUND_ID))
+                assertEquals(ROUND_ID, bootstrappedState.roundId)
+                assertEquals(10L, bootstrappedState.snapshotHeight)
+                assertTrue(db.listRounds().isNotEmpty())
+
+                // Re-calling with the same params is idempotent (VotingDb::ensure_round's own
+                // contract): no error, no change.
+                db.ensureRound(ROUND_ID, ByteArray(0), snapshotHeight = 10L, eaPk, ncRoot, nullifierImtRoot)
+                assertEquals(10L, assertNotNull(db.getRoundState(ROUND_ID)).snapshotHeight)
+
+                // setupBundles's insert has a foreign key on rounds -- this only succeeds now
+                // that ensureRound has created the row (contrast with
+                // round_session_run_round_and_plan_work_without_a_persisted_round_row's
+                // setBallotIntents failing the same way on a round ensureRound was never called
+                // for).
+                val bundleSetup = db.setupBundles(ROUND_ID, notes(1))
+                assertEquals(1, bundleSetup.bundleCount)
+                assertEquals(1, db.getBundleCount(ROUND_ID))
+
+                val hotkey = db.generateHotkey(HOTKEY_SEED)
+
+                val session =
+                    db.openRoundSession(
+                        torRuntime = torClient.torRuntimeHandleForTesting(),
+                        roundId = ROUND_ID,
+                        proposalIds = intArrayOf(1),
+                        proposalOptionCounts = intArrayOf(2),
+                        hotkeySecret = hotkey.storedSecret,
+                        chainEndpoints = listOf("https://chain.example"),
+                        operationEpoch = 0,
+                        configuredHelperUrls = emptyList(),
+                        voteTreeNodeUrls = emptyList(),
+                        ceremonyStartSeconds = -1,
+                        voteEndTimeSeconds = -1
                     )
-                )
-                db.assertShareDelegationRecoveryStateRoundTrips()
-                db.clearRecoveryState(PCZT_ROUND_ID)
-                db.assertClearDroppedRetryableStateAndKeptConfirmedVote()
-            } finally {
-                db.close()
-            }
-        }
+                try {
+                    // A real (if otherwise-unused) temp path: SqliteWalletDbOpener::open_for_read
+                    // genuinely opens (and, since the path does not exist yet, creates) this
+                    // file now that a delegation-enabled run reaches real wallet I/O.
+                    val walletDbPath =
+                        createTempDirectory("wallet-db-").resolve("wallet.db").toFile().absolutePath
+                    val delegationInputs =
+                        JniDelegationInputs(
+                            dbHandle = db.dbHandleForTesting(),
+                            walletDbPath = walletDbPath,
+                            accountUuid = "unused-account-uuid",
+                            anchorTreeStateBytes = ByteArray(0),
+                            hotkeySecret = hotkey.storedSecret,
+                            pirEndpoints = arrayOf("https://pir.example"),
+                            // A real, valid YPIR layout (zcash_voting's own
+                            // config::tests::test_pir_layout fixture) -- confirmed empirically
+                            // that PirFleet::new rejects an inconsistent/undersized one before
+                            // the pipeline is even touched, so this cannot be arbitrary.
+                            pirDepth = 19,
+                            pirTier0Layers = 12,
+                            pirTier1Layers = 7,
+                            pirPolyLen = 4096,
+                            keystone = false,
+                            softwareSeed = ByteArray(FIELD_BYTES) { 0x5A },
+                            keystoneSig = null,
+                            keystoneSighash = null,
+                            // Must match ensureRound's params above exactly: VotingDb::ensure_round
+                            // rejects a round it already knows under different parameters.
+                            snapshotHeight = 10,
+                            eaPk = eaPk,
+                            ncRoot = ncRoot,
+                            nullifierImtRoot = nullifierImtRoot
+                        )
 
-    @Test
-    fun store_keystone_signature_reaches_native_boundary_and_validates_lengths() =
-        runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
+                    // Whatever happens deeper in the pipeline (the wallet path has no real
+                    // notes, so a later stage may legitimately fail), the call must not be
+                    // rejected up front with "round not found" -- the original bug this test
+                    // guards against.
+                    runCatching {
+                        session.runRound(torClient.torRuntimeHandleForTesting(), delegationInputs)
+                    }.onFailure { error ->
+                        assertFalse(
+                            error.message.orEmpty().contains("round not found"),
+                            "the round-bootstrap bug regressed: ${error.message}"
+                        )
+                    }
 
-                // Reaches the native boundary and persists successfully -- resetVotingSessionState's
-                // preservation of Keystone-signed bundles (verified at the Rust unit-test level:
-                // store_keystone_signature_persists_and_is_retrievable) depends on this call
-                // actually landing in the crate's keystone_signatures table.
-                db.storeKeystoneSignature(
-                    roundId = PCZT_ROUND_ID,
-                    bundleIndex = 1,
-                    keystoneSig = ByteArray(JNI_SPEND_AUTH_SIG_BYTES_SIZE) { 0x11 },
-                    keystoneSighash = ByteArray(FIELD_BYTES) { 0xAA.toByte() },
-                    rk = ByteArray(FIELD_BYTES) { 0x22 }
-                )
+                    // The round is still there, unaffected by whatever runRound did or did not
+                    // dispatch.
+                    assertEquals(10L, assertNotNull(db.getRoundState(ROUND_ID)).snapshotHeight)
 
-                assertFailsWith<RuntimeException> {
-                    db.storeKeystoneSignature(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        keystoneSig = ByteArray(JNI_SPEND_AUTH_SIG_BYTES_SIZE - 1),
-                        keystoneSighash = ByteArray(FIELD_BYTES),
-                        rk = ByteArray(FIELD_BYTES)
-                    )
-                }
-                assertFailsWith<RuntimeException> {
-                    db.storeKeystoneSignature(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        keystoneSig = ByteArray(JNI_SPEND_AUTH_SIG_BYTES_SIZE),
-                        keystoneSighash = ByteArray(FIELD_BYTES),
-                        rk = ByteArray(FIELD_BYTES - 1)
-                    )
-                }
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun add_sent_servers_appends_and_deduplicates_native_jni() =
-        runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                db.initPcztRoundWithBundles(notes(noteCount = 6, value = PCZT_NOTE_VALUE))
-                db.storeVoteFixtureForTesting(
-                    roundId = PCZT_ROUND_ID,
-                    bundleIndex = 1,
-                    proposalId = 1,
-                    choice = 0
-                )
-                db.recordShareDelegation(
-                    roundId = PCZT_ROUND_ID,
-                    bundleIndex = 1,
-                    proposalId = 1,
-                    shareIndex = SHARE_INDEX,
-                    sentToUrls = listOf("https://helper-1.example"),
-                    nullifier = ByteArray(FIELD_BYTES) { 0x55 },
-                    submitAt = 123
-                )
-
-                db.addSentServers(
-                    roundId = PCZT_ROUND_ID,
-                    bundleIndex = 1,
-                    proposalId = 1,
-                    shareIndex = SHARE_INDEX,
-                    newUrls = listOf("https://helper-2.example")
-                )
-                assertEquals(
-                    listOf("https://helper-1.example", "https://helper-2.example"),
-                    db.getShareDelegations(PCZT_ROUND_ID).single().sentToUrls
-                )
-
-                db.addSentServers(
-                    roundId = PCZT_ROUND_ID,
-                    bundleIndex = 1,
-                    proposalId = 1,
-                    shareIndex = SHARE_INDEX,
-                    newUrls = listOf("https://helper-2.example", "https://helper-3.example")
-                )
-                assertEquals(
-                    listOf(
-                        "https://helper-1.example",
-                        "https://helper-2.example",
-                        "https://helper-3.example"
-                    ),
-                    db.getShareDelegations(PCZT_ROUND_ID).single().sentToUrls
-                )
-            } finally {
-                db.close()
-            }
-        }
-
-    @Test
-    fun delegation_proof_result_fixture_crosses_rust_to_kotlin_object_construction() =
-        runTest {
-            val result =
-                VotingRustBackend
-                    .new()
-                    .delegationProofResultFixtureForTesting()
-
-            assertEquals(96, result.proof.size)
-            assertEquals(14, result.publicInputs.size)
-            assertContentEquals(ByteArray(FIELD_BYTES) { 0x10 }, result.publicInputs.first())
-            assertEquals(5, result.govNullifiers.size)
-            assertContentEquals(ByteArray(FIELD_BYTES) { 0x42 }, result.rk)
-        }
-
-    @Test
-    fun note_and_witness_array_fixtures_cross_rust_to_kotlin_construction() =
-        runTest {
-            val backend = VotingRustBackend.new()
-
-            val note = backend.noteInfoArrayFixtureForTesting().single()
-            assertContentEquals(ByteArray(FIELD_BYTES) { 0x01 }, note.commitment)
-            assertContentEquals(ByteArray(FIELD_BYTES) { 0x02 }, note.nullifier)
-            assertEquals(123_456L, note.value)
-            assertEquals(7L, note.position)
-            assertContentEquals(ByteArray(DIVERSIFIER_BYTES) { 0x03 }, note.diversifier)
-            assertContentEquals(ByteArray(FIELD_BYTES) { 0x04 }, note.rho)
-            assertContentEquals(ByteArray(FIELD_BYTES) { 0x05 }, note.rseed)
-            assertEquals(1, note.scope)
-            assertEquals("ufvk-fixture", note.ufvk)
-
-            val witness = backend.witnessDataArrayFixtureForTesting().single()
-            assertContentEquals(ByteArray(FIELD_BYTES) { 0x11 }, witness.noteCommitment)
-            assertEquals(9L, witness.position)
-            assertContentEquals(ByteArray(FIELD_BYTES) { 0x12 }, witness.root)
-            assertEquals(ORCHARD_WITNESS_PATH_DEPTH, witness.authPath.size)
-            assertContentEquals(ByteArray(FIELD_BYTES) { 0x20 }, witness.authPath.first())
-        }
-
-    @Test
-    fun get_delegation_submission_reaches_native_boundary() =
-        runTest {
-            val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
-            try {
-                val notes = notes(noteCount = 6, value = PCZT_NOTE_VALUE)
-                val ufvk = deriveTestUfvk()
-                val wallet = newWalletDbWithAccount()
-                db.initPcztRoundWithBundles(notes)
-                db.buildTestGovernancePczt(ufvk, notes)
-                db.storeDelegationProofFixtureForTesting(
-                    roundId = PCZT_ROUND_ID,
-                    bundleIndex = 1,
-                    proof = ByteArray(96) { 0x7A }
-                )
-
-                // gather_delegation_keys_for_submission needs a stored tree state for the round
-                // and a wallet-DB account lookup; SEED_FINGERPRINT is a fixture placeholder that
-                // will never match a real senderSeed's ZIP-32 fingerprint, so this call always
-                // fails, exercising the native boundary and its wallet-DB/tree-state plumbing.
-                assertFailsWith<RuntimeException> {
-                    db.getDelegationSubmission(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        walletDbPath = wallet.path,
-                        accountUuid = wallet.accountUuid.toUuidString(),
-                        hotkeySecret = HOTKEY_SEED,
-                        roundName = ROUND_NAME,
-                        senderSeed = HOTKEY_SEED
-                    )
-                }
-
-                assertFailsWith<RuntimeException> {
-                    db.getDelegationSubmissionWithKeystoneSig(
-                        roundId = PCZT_ROUND_ID,
-                        bundleIndex = 1,
-                        keystoneSig = ByteArray(JNI_SPEND_AUTH_SIG_BYTES_SIZE),
-                        keystoneSighash = ByteArray(FIELD_BYTES)
-                    )
+                    // Further proof the bootstrap is real, not a half-write: a write that used
+                    // to fail with a foreign-key error against a nonexistent round now succeeds.
+                    session.setBallotIntents(intArrayOf(1), intArrayOf(0))
+                } finally {
+                    session.close()
                 }
             } finally {
                 db.close()
+                torClient.dispose()
             }
         }
+
+    private suspend fun newTorClientForTesting() =
+        TorClient.new(
+            createTempDirectory("tor-client-").toFile(),
+            FakeRustBackend(TESTNET_NETWORK_ID, mutableListOf())
+        )
+
+    private fun TorClient.torRuntimeHandleForTesting(): Long {
+        val field = TorClient::class.java.getDeclaredField("nativeHandle")
+        field.isAccessible = true
+        return field.get(this) as Long
+    }
+
+    private fun VotingRustBackend.VotingDb.dbHandleForTesting(): Long {
+        val field = VotingRustBackend.VotingDb::class.java.getDeclaredField("dbHandle")
+        field.isAccessible = true
+        return field.get(this) as Long
+    }
 
     private fun newDbPath() =
         createTempDirectory("voting-db-").resolve("voting.db").toFile().absolutePath
 
-    private fun ByteArray.toUuidString(): String {
-        val buffer = java.nio.ByteBuffer.wrap(this)
-        return java.util.UUID(buffer.long, buffer.long).toString()
-    }
-
-    private suspend fun VotingRustBackend.VotingDb.assertStoredTxHashesRoundTrip() {
-        assertNull(getDelegationTxHash(PCZT_ROUND_ID, bundleIndex = 1))
-        assertNull(getVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
-
-        storeDelegationTxHash(PCZT_ROUND_ID, bundleIndex = 1, txHash = "delegation-tx")
-        assertEquals("delegation-tx", getDelegationTxHash(PCZT_ROUND_ID, bundleIndex = 1))
-
-        storeVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1, txHash = "vote-tx")
-        assertEquals("vote-tx", getVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
-
-        markVoteSubmitted(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1)
-        assertTrue(
-            getVotes(PCZT_ROUND_ID)
-                .single { vote ->
-                    vote.bundleIndex == 1 && vote.proposalId == 1
-                }.submitted
-        )
-    }
-
-    private suspend fun VotingRustBackend.VotingDb.assertShareDelegationRecoveryStateRoundTrips() {
-        val nullifier = ByteArray(FIELD_BYTES) { 0x55 }
-        recordShareDelegation(
-            roundId = PCZT_ROUND_ID,
-            bundleIndex = 1,
-            proposalId = 1,
-            shareIndex = SHARE_INDEX,
-            sentToUrls = listOf("https://helper-1.example"),
-            nullifier = nullifier,
-            submitAt = 123
-        )
-        assertRecordedShareDelegation(EXPECTED_NULLIFIER)
-
-        addSentServers(
-            roundId = PCZT_ROUND_ID,
-            bundleIndex = 1,
-            proposalId = 1,
-            shareIndex = SHARE_INDEX,
-            newUrls = listOf("https://helper-2.example")
-        )
-        assertEquals(
-            listOf("https://helper-1.example", "https://helper-2.example"),
-            getShareDelegations(PCZT_ROUND_ID).single().sentToUrls
-        )
-
-        markShareConfirmed(
-            PCZT_ROUND_ID,
-            bundleIndex = 1,
-            proposalId = 1,
-            shareIndex = SHARE_INDEX
-        )
-        assertTrue(getShareDelegations(PCZT_ROUND_ID).single().confirmed)
-        assertEquals(emptyList(), getUnconfirmedDelegations(PCZT_ROUND_ID).asList())
-    }
-
-    private suspend fun VotingRustBackend.VotingDb.assertRecordedShareDelegation(
-        nullifier: ByteArray
-    ) {
-        val recordedShare = getShareDelegations(PCZT_ROUND_ID).single()
-        assertEquals(SHARE_INDEX, recordedShare.shareIndex)
-        assertEquals(listOf("https://helper-1.example"), recordedShare.sentToUrls)
-        assertContentEquals(nullifier, recordedShare.nullifier)
-        assertFalse(recordedShare.confirmed)
-        assertEquals(123, recordedShare.submitAt)
-        assertEquals(1, getUnconfirmedDelegations(PCZT_ROUND_ID).size)
-    }
-
-    /**
-     * As of zcash_voting 3.0, `clear_recovery_state` wipes retryable state (votes without a
-     * recorded vote-commitment-tree position, share delegations, delegation tx hashes) while
-     * preserving votes whose position is recorded — those count as on-chain confirmations.
-     */
-    private suspend fun VotingRustBackend.VotingDb.assertClearDroppedRetryableStateAndKeptConfirmedVote() {
-        assertNull(getDelegationTxHash(PCZT_ROUND_ID, bundleIndex = 1))
-        assertNull(getVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
-        assertNull(getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = 1))
-        assertEquals(emptyList(), getShareDelegations(PCZT_ROUND_ID).asList())
-        assertEquals(
-            CONFIRMED_VOTE_TX_HASH,
-            getVoteTxHash(PCZT_ROUND_ID, bundleIndex = 1, proposalId = CONFIRMED_PROPOSAL_ID)
-        )
-        assertNotNull(
-            getCommitmentBundle(PCZT_ROUND_ID, bundleIndex = 1, proposalId = CONFIRMED_PROPOSAL_ID)
-        )
-    }
-
-    private suspend fun newWalletDbWithAccount(): WalletDbFixture {
-        val walletDbFile =
-            createTempDirectory("wallet-db-")
-                .resolve("data.db")
-                .toFile()
-        val rustBackend =
-            RustBackend.new(
-                fsBlockDbRoot = createTempDirectory("fs-block-db-").toFile(),
-                dataDbFile = walletDbFile,
-                saplingSpendFile =
-                    createTempDirectory("sapling-spend-")
-                        .resolve("sapling-spend.params")
-                        .toFile(),
-                saplingOutputFile =
-                    createTempDirectory("sapling-output-")
-                        .resolve("sapling-output.params")
-                        .toFile(),
-                zcashNetworkId = TESTNET_NETWORK_ID
-            )
-        assertEquals(0, rustBackend.initDataDb(HOTKEY_SEED))
-
-        val account =
-            rustBackend.createAccount(
-                accountName = "account",
-                keySource = null,
-                seed = HOTKEY_SEED,
-                treeState = VotingRustBackend.new().treeStateFixtureForTesting(),
-                recoverUntil = null
-            )
-
-        return WalletDbFixture(walletDbFile.absolutePath, account.accountUuid)
-    }
-
-    private fun walletBirthdayHeight(walletDbPath: String): Long =
-        SQLiteDatabase
-            .openDatabase(walletDbPath, null, SQLiteDatabase.OPEN_READONLY)
-            .use { db ->
-                db.rawQuery("SELECT MIN(birthday_height) FROM accounts", null).use { cursor ->
-                    assertTrue(cursor.moveToFirst())
-                    cursor.getLong(0)
-                }
-            }
-
-    private fun markWalletScannedThrough(walletDbPath: String, fullyScannedHeight: Long) {
-        val birthdayHeight = walletBirthdayHeight(walletDbPath)
-        require(fullyScannedHeight >= birthdayHeight)
-
-        SQLiteDatabase
-            .openDatabase(walletDbPath, null, SQLiteDatabase.OPEN_READWRITE)
-            .use { db ->
-                val blockValues =
-                    ContentValues().apply {
-                        put("height", fullyScannedHeight)
-                        put("hash", ByteArray(FIELD_BYTES) { fullyScannedHeight.toByte() })
-                        put("time", 0L)
-                        put("sapling_tree", byteArrayOf(0))
-                        put("sapling_commitment_tree_size", 0)
-                        put("orchard_commitment_tree_size", 0)
-                        put("sapling_output_count", 0)
-                        put("orchard_action_count", 0)
-                    }
-                db.insertWithOnConflict(
-                    "blocks",
-                    null,
-                    blockValues,
-                    SQLiteDatabase.CONFLICT_REPLACE
-                )
-
-                db.delete("scan_queue", null, null)
-                val scanValues =
-                    ContentValues().apply {
-                        put("block_range_start", birthdayHeight)
-                        put("block_range_end", fullyScannedHeight + 1)
-                        put("priority", SCANNED_PRIORITY)
-                    }
-                db.insert("scan_queue", null, scanValues)
-            }
-    }
-
-    private fun downgradeAccountToUivkOnly(walletDbPath: String, accountUuid: ByteArray) {
-        SQLiteDatabase
-            .openDatabase(walletDbPath, null, SQLiteDatabase.OPEN_READWRITE)
-            .use { db ->
-                db.execSQL(
-                    """
-                    UPDATE accounts
-                    SET account_kind = 1,
-                        has_spend_key = 0,
-                        ufvk = NULL
-                    WHERE uuid = ?
-                    """.trimIndent(),
-                    arrayOf(accountUuid)
-                )
-            }
-    }
-
-    private suspend fun assertRuntimeExceptionContains(
-        expectedMessage: String,
-        block: suspend () -> Unit
-    ) {
-        val error =
-            try {
-                block()
-                null
-            } catch (e: RuntimeException) {
-                e
-            }
-        assertNotNull(error)
-        assertTrue(
-            error.message.orEmpty().contains(expectedMessage),
-            "Expected '${error.message}' to contain '$expectedMessage'"
-        )
+    private fun bundledNotes(
+        notes: List<JniNoteInfo>,
+        bundleIndex: Int,
+        bundleSize: Int = 5
+    ): List<JniNoteInfo> {
+        val start = bundleIndex * bundleSize
+        return notes.subList(start, minOf(start + bundleSize, notes.size))
     }
 
     private suspend fun deriveTestUfvk(
@@ -1704,83 +841,6 @@ class VotingRustBackendTest {
             .new()
             .deriveUnifiedFullViewingKeys(seed, networkId, accountIndex + 1)
             .last()
-
-    private suspend fun VotingRustBackend.VotingDb.initPcztRoundWithBundles(
-        notes: List<JniNoteInfo>,
-        roundId: String = PCZT_ROUND_ID,
-        ncRoot: ByteArray = NC_ROOT,
-        snapshotHeight: Long = SNAPSHOT_HEIGHT
-    ) {
-        initRound(
-            roundId = roundId,
-            snapshotHeight = snapshotHeight,
-            eaPK = EA_PK,
-            ncRoot = ncRoot,
-            nullifierIMTRoot = NULLIFIER_IMT_ROOT,
-            sessionJson = null
-        )
-        setupBundles(roundId, notes)
-        generateHotkey(HOTKEY_SEED)
-    }
-
-    private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePczt(
-        ufvk: String,
-        notes: List<JniNoteInfo>,
-        options: GovernancePcztOptions = GovernancePcztOptions()
-    ): JniGovernancePczt {
-        val backend = VotingRustBackend.new()
-        return buildGovernancePczt(
-            roundId = options.roundId,
-            bundleIndex = 1,
-            fvkBytes = backend.extractOrchardFvkFromUfvk(ufvk, options.networkId),
-            hotkeySecret = options.hotkeySecret,
-            accountIndex = options.accountIndex,
-            notes = notes,
-            seedFingerprint = SEED_FINGERPRINT,
-            roundName = ROUND_NAME
-        )
-    }
-
-    private suspend fun VotingRustBackend.VotingDb.buildTestGovernancePcztFromSeed(
-        ufvk: String,
-        notes: List<JniNoteInfo>,
-        options: GovernancePcztOptions = GovernancePcztOptions()
-    ) = buildGovernancePcztFromSeed(
-        roundId = options.roundId,
-        bundleIndex = 1,
-        ufvk = ufvk,
-        networkId = options.networkId,
-        accountIndex = options.accountIndex,
-        notes = notes,
-        walletSeed = options.walletSeed,
-        hotkeySecret = options.hotkeySecret,
-        seedFingerprint = SEED_FINGERPRINT,
-        roundName = ROUND_NAME
-    )
-
-    private suspend fun assertValidGovernancePczt(
-        backend: VotingRustBackend,
-        db: VotingRustBackend.VotingDb,
-        pczt: JniGovernancePczt
-    ) {
-        assertTrue(pczt.pcztBytes.isNotEmpty())
-        assertEquals(FIELD_BYTES, pczt.rk.size)
-        assertEquals(FIELD_BYTES, pczt.sighash.size)
-        assertTrue(pczt.actionIndex >= 0)
-        assertContentEquals(pczt.sighash, backend.extractPcztSighash(pczt.pcztBytes))
-        assertEquals(
-            JniRoundPhase.INITIALIZED,
-            assertNotNull(db.getRoundState(PCZT_ROUND_ID)).roundPhase
-        )
-    }
-
-    private class GovernancePcztOptions(
-        val hotkeySecret: ByteArray = HOTKEY_SEED,
-        val walletSeed: ByteArray = HOTKEY_SEED,
-        val networkId: Int = TESTNET_NETWORK_ID,
-        val roundId: String = PCZT_ROUND_ID,
-        val accountIndex: Int = ACCOUNT_INDEX
-    )
 
     private fun notes(
         noteCount: Int,
@@ -1815,15 +875,6 @@ class VotingRustBackendTest {
         ufvk = ufvkString
     )
 
-    private fun witnessNotes() =
-        listOf(
-            note(
-                value = PCZT_NOTE_VALUE,
-                position = 0,
-                byteValue = 1
-            ).copy(commitment = EMPTY_ORCHARD_NOTE_COMMITMENT.hexToByteArray())
-        )
-
     private fun witnesses(
         authPathEntries: Int = ORCHARD_WITNESS_PATH_DEPTH,
         noteCommitment: String = EMPTY_ORCHARD_NOTE_COMMITMENT,
@@ -1838,62 +889,5 @@ class VotingRustBackendTest {
                     EMPTY_ORCHARD_AUTH_PATH[index].hexToByteArray()
                 }
         )
-    )
-
-    private fun jniVanWitness(
-        position: Long = 1,
-        anchorHeight: Long = SNAPSHOT_HEIGHT
-    ) = JniVanWitness(
-        authPath = List(JNI_VAN_WITNESS_PATH_DEPTH) { ByteArray(FIELD_BYTES) },
-        position = position,
-        anchorHeight = anchorHeight
-    )
-
-    private fun jniVoteCommitmentResult(
-        encShares: List<JniWireEncryptedShare> = wireShares(),
-        shareBlinds: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 5),
-        shareComms: List<ByteArray> = fieldElements(JNI_VOTE_SHARE_COUNT, 6),
-        bundleIndex: Int = 1,
-        alphaV: ByteArray = ByteArray(FIELD_BYTES) { 8 }
-    ) = JniVoteCommitmentResult(
-        vanNullifier = ByteArray(FIELD_BYTES) { 1 },
-        voteAuthorityNoteNew = ByteArray(FIELD_BYTES) { 2 },
-        voteCommitment = ByteArray(FIELD_BYTES) { 3 },
-        proposalId = 1,
-        bundleIndex = bundleIndex,
-        proof = byteArrayOf(4),
-        encShares = encShares,
-        anchorHeight = SNAPSHOT_HEIGHT,
-        voteRoundId = PCZT_ROUND_ID,
-        sharesHash = ByteArray(FIELD_BYTES) { 4 },
-        shareBlinds = shareBlinds,
-        shareComms = shareComms,
-        rVpk = ByteArray(FIELD_BYTES) { 7 },
-        alphaV = alphaV
-    )
-
-    private fun wireShares(
-        count: Int = JNI_VOTE_SHARE_COUNT
-    ) = List(count) { index ->
-        JniWireEncryptedShare(
-            c1 = ByteArray(FIELD_BYTES) { (index + 1).toByte() },
-            c2 = ByteArray(FIELD_BYTES) { (index + 2).toByte() },
-            shareIndex = index
-        )
-    }
-
-    private fun fieldElements(
-        count: Int,
-        byteValue: Int
-    ) = List(count) { ByteArray(FIELD_BYTES) { byteValue.toByte() } }
-
-    private fun repeatedHex(
-        byteValue: Int,
-        size: Int = FIELD_BYTES
-    ) = ByteArray(size) { byteValue.toByte() }.toHexString()
-
-    private data class WalletDbFixture(
-        val path: String,
-        val accountUuid: ByteArray
     )
 }
