@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-09-25
+
 ### Added
 - `TransactionEncoderException.AnchorNotFoundException`, thrown by
   `Synchronizer.createProposedTransactions` and `Broadcaster.createProposedTransactions`
