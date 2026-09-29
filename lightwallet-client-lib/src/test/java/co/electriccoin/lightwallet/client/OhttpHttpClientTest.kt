@@ -97,7 +97,7 @@ class OhttpHttpClientTest {
     fun `client trace ID header is absent when prefix not set`() {
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
-            object : co.electriccoin.lightwallet.client.internal.OhttpSender {
+            object : OhttpSender {
                 override suspend fun post(
                     url: String,
                     body: ByteArray,
@@ -150,7 +150,7 @@ class OhttpHttpClientTest {
         co.electriccoin.lightwallet.client.internal.OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
-            object : co.electriccoin.lightwallet.client.internal.OhttpSender {
+            object : OhttpSender {
                 override suspend fun post(
                     url: String,
                     body: ByteArray,
@@ -233,7 +233,7 @@ class OhttpHttpClientTest {
         co.electriccoin.lightwallet.client.internal.OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
-            object : co.electriccoin.lightwallet.client.internal.OhttpSender {
+            object : OhttpSender {
                 override suspend fun post(
                     url: String,
                     body: ByteArray,
@@ -299,7 +299,7 @@ class OhttpHttpClientTest {
         co.electriccoin.lightwallet.client.internal.OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
-            object : co.electriccoin.lightwallet.client.internal.OhttpSender {
+            object : OhttpSender {
                 override suspend fun post(
                     url: String,
                     body: ByteArray,
@@ -358,7 +358,7 @@ class OhttpHttpClientTest {
         val capturedGetUrls = mutableListOf<String>()
         val capturedGetHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
-            object : co.electriccoin.lightwallet.client.internal.OhttpSender {
+            object : OhttpSender {
                 override suspend fun post(
                     url: String,
                     body: ByteArray,
@@ -410,7 +410,7 @@ class OhttpHttpClientTest {
         var getCallCount = 0
         var postCallCount = 0
         val mockSender =
-            object : co.electriccoin.lightwallet.client.internal.OhttpSender {
+            object : OhttpSender {
                 override suspend fun post(
                     url: String,
                     body: ByteArray,

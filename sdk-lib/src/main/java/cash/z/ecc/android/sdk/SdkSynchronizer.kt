@@ -90,6 +90,7 @@ import cash.z.ecc.android.sdk.type.ConsensusMatchType
 import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
+import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
@@ -784,7 +785,7 @@ class SdkSynchronizer private constructor(
             throw TorUnavailableException()
         }
 
-    override suspend fun ohttpSenderOverTor(): co.electriccoin.lightwallet.client.internal.OhttpSender =
+    override suspend fun ohttpSenderOverTor(): OhttpSender =
         cash.z.ecc.android.sdk.internal
             .TorOhttpSender(getTorClient())
 

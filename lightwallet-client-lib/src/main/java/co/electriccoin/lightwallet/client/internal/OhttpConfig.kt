@@ -18,7 +18,9 @@ internal object OhttpEndpoints {
         when (gatewayHost) {
             "ohttp-gateway-testnet.example" -> "testnet"
             "ohttp-gateway.example" -> "mainnet"
-            else -> "mainnet"
+            // Fails closed like relayUrlFor below, rather than silently verifying a future third
+            // gateway host's signed key config against the mainnet signing key by default.
+            else -> throw IllegalArgumentException("No OHTTP network configured for gateway host $gatewayHost")
         }
 
     private val relayByGatewayHost: Map<String, String> =

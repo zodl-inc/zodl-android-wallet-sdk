@@ -57,6 +57,7 @@ import cash.z.ecc.android.sdk.type.ConsensusMatchType
 import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
+import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
@@ -201,6 +202,7 @@ interface Synchronizer {
      * Tor-mode network calls.
      */
     val initializationError: InitializationError?
+        get() = null
 
     /**
      * Tells the wallet to track an account using a unified full viewing key.
@@ -908,7 +910,7 @@ interface Synchronizer {
      * @throws TorUnavailableException if Tor is not enabled
      */
     @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
-    suspend fun getTorClient(): TorClient
+    suspend fun getTorClient(): TorClient = throw TorUnavailableException()
 
     /**
      * Creates an OhttpSender that routes relay traffic through Tor, for use with OhttpHttpClient.
@@ -916,12 +918,16 @@ interface Synchronizer {
      * The relay leg goes over Tor, hiding the app's IP from the relay, and the gateway injects the
      * secret server-side.
      *
+     * Defaults to [getTorClient]'s same [TorUnavailableException] so an implementer that hasn't
+     * (yet) provided a real OHTTP-over-Tor path fails the same way as Tor itself being off,
+     * rather than a compile error breaking every existing implementer of this interface.
+     *
      * @return TorOhttpSender wrapping an isolated TorClient
      * @throws TorInitializationErrorException if Tor bootstrapping failed
      * @throws TorUnavailableException if Tor is not enabled
      */
     @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
-    suspend fun ohttpSenderOverTor(): co.electriccoin.lightwallet.client.internal.OhttpSender
+    suspend fun ohttpSenderOverTor(): OhttpSender = throw TorUnavailableException()
 
     suspend fun debugQuery(query: String): String
 

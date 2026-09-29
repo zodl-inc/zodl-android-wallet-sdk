@@ -1,40 +1,10 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.OhttpSender
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
-
-/**
- * Transport abstraction for the OHTTP relay POST leg, supporting both direct HttpURLConnection
- * and Tor-backed sending. The Tor path is used when Tor is enabled in the app and the target
- * is a gateway-mapped external API (CMC, NEAR) — the relay leg goes over Tor, hiding the
- * app's IP from the relay, and the gateway injects the secret server-side.
- */
-interface OhttpSender {
-    /**
-     * POSTs [body] to [url] with the given [headers] and [timeoutMs], returning the response body.
-     * @throws OhttpException on failure (network, HTTP error, timeout).
-     */
-    suspend fun post(
-        url: String,
-        body: ByteArray,
-        headers: List<Pair<String, String>>,
-        timeoutMs: Int,
-    ): ByteArray
-
-    /**
-     * GETs [url] with the given [headers] and [timeoutMs], returning the response body.
-     * Used for fetching the gateway key configuration. With Tor enabled, this ensures the key
-     * config fetch also goes over Tor, preventing the client IP from being exposed to the gateway.
-     * @throws OhttpException on failure (network, HTTP error, timeout).
-     */
-    suspend fun get(
-        url: String,
-        headers: List<Pair<String, String>>,
-        timeoutMs: Int,
-    ): ByteArray
-}
 
 /**
  * Default OHTTP sender: direct HttpURLConnection. Used when Tor is OFF.
@@ -58,7 +28,7 @@ class DirectOhttpSender : OhttpSender {
             if (status != HttpURLConnection.HTTP_OK) {
                 val detail =
                     connection.errorStream
-                        ?.use { it.readFully() }
+                        ?.use { it.readFully(MAX_RESPONSE_SIZE_BYTES) }
                         ?.toString(Charsets.UTF_8)
                         ?.take(ERROR_MESSAGE_MAX_LENGTH)
                 throw OhttpException(
@@ -66,7 +36,7 @@ class DirectOhttpSender : OhttpSender {
                     status,
                 )
             }
-            return connection.inputStream.use { it.readFully() }
+            return connection.inputStream.use { it.readFully(MAX_RESPONSE_SIZE_BYTES) }
         } finally {
             connection.disconnect()
         }
@@ -86,7 +56,7 @@ class DirectOhttpSender : OhttpSender {
             if (status != HttpURLConnection.HTTP_OK) {
                 val detail =
                     connection.errorStream
-                        ?.use { it.readFully() }
+                        ?.use { it.readFully(MAX_RESPONSE_SIZE_BYTES) }
                         ?.toString(Charsets.UTF_8)
                         ?.take(ERROR_MESSAGE_MAX_LENGTH)
                 throw OhttpException(
@@ -94,7 +64,7 @@ class DirectOhttpSender : OhttpSender {
                     status,
                 )
             }
-            return connection.inputStream.use { it.readFully() }
+            return connection.inputStream.use { it.readFully(MAX_RESPONSE_SIZE_BYTES) }
         } finally {
             connection.disconnect()
         }
@@ -112,12 +82,23 @@ class DirectOhttpSender : OhttpSender {
         return connection
     }
 
-    private fun InputStream.readFully(): ByteArray {
+    /**
+     * Reads the whole stream, refusing past [maxBytes]. The relay/gateway is untrusted (a
+     * malicious or compromised one could return an arbitrarily large body regardless of what was
+     * requested), so this must never buffer without a bound — the bulk-sync path in particular
+     * relies on this to not OOM the client.
+     */
+    private fun InputStream.readFully(maxBytes: Int): ByteArray {
         val out = ByteArrayOutputStream()
         val buffer = ByteArray(READ_BUFFER_SIZE)
+        var total = 0
         while (true) {
             val n = read(buffer)
             if (n < 0) break
+            total += n
+            if (total > maxBytes) {
+                throw OhttpException("Response exceeded the $maxBytes byte limit")
+            }
             out.write(buffer, 0, n)
         }
         return out.toByteArray()
@@ -127,5 +108,10 @@ class DirectOhttpSender : OhttpSender {
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val ERROR_MESSAGE_MAX_LENGTH = 200
         private const val READ_BUFFER_SIZE = 16 * 1024
+
+        // Generous enough for the largest legitimate response (a bulk GetBlockRange chunk,
+        // capped at 2k blocks -- see slipstream-internal's TOR_OHTTP_MAX_CHUNK_BLOCKS), while
+        // still bounding memory against a malicious/compromised relay or gateway.
+        private const val MAX_RESPONSE_SIZE_BYTES = 64 * 1024 * 1024
     }
 }

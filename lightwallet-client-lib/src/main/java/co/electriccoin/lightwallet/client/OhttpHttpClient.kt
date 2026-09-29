@@ -5,7 +5,6 @@ import co.electriccoin.lightwallet.client.internal.BinaryHttp
 import co.electriccoin.lightwallet.client.internal.Constants
 import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.OHTTP_PROXY_ALLOWED_SUFFIXES
-import co.electriccoin.lightwallet.client.internal.OhttpSender
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.PROXY_RELAY_URL
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
