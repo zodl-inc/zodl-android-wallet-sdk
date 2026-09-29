@@ -30,7 +30,7 @@ class TorOhttpSender(
                 response.status
             )
         }
-        return response.body
+        return response.body.requireWithinResponseSizeLimit()
     }
 
     override suspend fun get(
@@ -47,6 +47,25 @@ class TorOhttpSender(
                 response.status
             )
         }
-        return response.body
+        return response.body.requireWithinResponseSizeLimit()
+    }
+
+    /**
+     * `torClient.httpPost`/`httpGet` cross the JNI boundary as an already-fully-materialized
+     * [ByteArray] -- unlike [co.electriccoin.lightwallet.client.internal.DirectOhttpSender], there
+     * is no streaming read to bound here, so this can only reject an oversized response after the
+     * fact, not prevent the Rust side from buffering it. Kept for parity: a malicious/compromised
+     * relay or gateway should not get a bigger blast radius just because Tor is on.
+     */
+    private fun ByteArray.requireWithinResponseSizeLimit(): ByteArray {
+        if (size > MAX_RESPONSE_SIZE_BYTES) {
+            throw OhttpException("Response exceeded the $MAX_RESPONSE_SIZE_BYTES byte limit (Tor path)")
+        }
+        return this
+    }
+
+    private companion object {
+        // Matches DirectOhttpSender.MAX_RESPONSE_SIZE_BYTES.
+        const val MAX_RESPONSE_SIZE_BYTES = 64 * 1024 * 1024
     }
 }
