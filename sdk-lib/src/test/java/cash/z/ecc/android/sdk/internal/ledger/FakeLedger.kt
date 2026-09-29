@@ -293,8 +293,11 @@ internal class ScriptedTransport(
     private val replies = ArrayDeque(replies)
     val sent = mutableListOf<ByteArray>()
     val timeouts = mutableListOf<Duration?>()
-    var closed = false
+
+    /** How many times [close] was called. */
+    var closes = 0
         private set
+    val closed get() = closes > 0
 
     override suspend fun exchange(
         apdu: ByteArray,
@@ -317,6 +320,6 @@ internal class ScriptedTransport(
     }
 
     override suspend fun close() {
-        closed = true
+        closes++
     }
 }

@@ -53,9 +53,9 @@ object LedgerZcashApp {
      * the device switches apps; a dropped link is then replaced with one from [reconnect], and the
      * transport returned may be one of those.
      *
-     * A transport this replaces is closed, whatever happens. The caller closes the one returned, and
-     * [transport] if the call fails; a transport opened through [reconnect] is closed here when the
-     * call fails.
+     * A transport whose link fails during the call is closed when it fails, before it is replaced.
+     * The caller closes the one returned, and [transport] if the call fails; a transport opened
+     * through [reconnect] is closed here when the call fails.
      *
      * @param transport A transport connected to the device.
      * @param reconnect Opens a new transport to the same device.
@@ -204,7 +204,8 @@ internal class LedgerAppLauncher(
             }
 
         /**
-         * Replaces the dropped transport with a new one; false if the device cannot be reached yet.
+         * Replaces the dropped transport, which [markUnusable] has already closed, with a new one;
+         * false if the device cannot be reached yet.
          */
         private suspend fun replace(): Boolean {
             val replacement =
@@ -215,7 +216,6 @@ internal class LedgerAppLauncher(
                     Twig.debug { "Reconnecting to the Ledger failed (${e.javaClass.simpleName}); retrying" }
                     return false
                 }
-            closeQuietly(current)
             current = replacement
             usable = true
             return true
@@ -239,8 +239,12 @@ internal class LedgerAppLauncher(
             closeQuietly(current)
         }
 
+        /**
+         * Closes a transport opened through [reconnect] that is still open; one that failed was
+         * closed then.
+         */
         suspend fun closeReplacement() {
-            if (current !== original) {
+            if (current !== original && usable) {
                 closeQuietly(current)
             }
         }

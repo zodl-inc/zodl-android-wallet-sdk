@@ -169,7 +169,7 @@ class LedgerZcashAppTest {
             assertSame(afterSwitch, result)
             assertEquals(2, reconnects)
             assertContentEquals(openZcash, original.sent[1])
-            assertTrue(original.closed, "the replaced transport is closed")
+            assertEquals(1, original.closes, "the dropped transport is closed once")
             assertFalse(afterSwitch.closed)
             assertEquals(2, afterSwitch.sent.size)
         }
@@ -265,6 +265,24 @@ class LedgerZcashAppTest {
 
             assertTrue(original.closed)
             assertTrue(replacement.closed)
+        }
+
+    @Test
+    fun a_dropped_replacement_is_closed_once_when_the_switch_times_out() =
+        runBlocking<Unit> {
+            val original =
+                ScriptedTransport(listOf(dashboard), failAt = 1 to LedgerException.Disconnected())
+            val dropped = ScriptedTransport(listOf(dashboard), failAt = 1 to LedgerException.Disconnected())
+            val replacement = ScriptedTransport(List(10_000) { dashboard })
+            val transports = ArrayDeque(listOf(dropped, replacement))
+
+            assertFailsWith<LedgerException.WrongApp> {
+                launcher.ensureZcashAppOpen(original) { transports.removeFirst() }
+            }
+
+            assertEquals(1, original.closes)
+            assertEquals(1, dropped.closes)
+            assertEquals(1, replacement.closes)
         }
 
     @Test
