@@ -36,15 +36,18 @@ sealed class LedgerException(
     ) : LedgerException("The request was declined on the Ledger device.")
 
     /**
-     * The device is not running the Zcash app, or runs a version that does not know the command.
-     * The user has to open the Zcash app on the device.
+     * The device is not running the Zcash app: it shows its dashboard, runs another app, or runs a
+     * version that does not know the command. The user has to open the Zcash app on the device;
+     * once it is open, starting the operation again can succeed, so [isRestartable] is always true.
      *
      * @param statusWord The status word the device answered.
      */
     class WrongApp internal constructor(
         val statusWord: Int?,
         override val reason: String?
-    ) : LedgerException("The Zcash app is not open on the Ledger device.")
+    ) : LedgerException("The Zcash app is not open on the Ledger device.") {
+        override val isRestartable: Boolean = true
+    }
 
     /**
      * The Zcash app on the device is too old for the request: it predates PCZT signing, or the
@@ -86,10 +89,13 @@ sealed class LedgerException(
 
     /**
      * The Zcash app's per-run Orchard key derivation budget is spent. Closing and reopening the Zcash
-     * app on the device clears it.
+     * app on the device clears it; after that, starting the operation again can succeed, so
+     * [isRestartable] is always true.
      */
     class DerivationBudgetExhausted internal constructor() :
-        LedgerException("Close and reopen the Zcash app on the Ledger device, then try again.")
+        LedgerException("Close and reopen the Zcash app on the Ledger device, then try again.") {
+            override val isRestartable: Boolean = true
+        }
 
     /**
      * The device refused a command. Its context for the operation is gone.

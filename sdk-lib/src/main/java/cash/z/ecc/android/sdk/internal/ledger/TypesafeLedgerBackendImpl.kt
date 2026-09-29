@@ -296,6 +296,12 @@ private suspend inline fun <T> ledgerSuspendCall(crossinline block: suspend () -
         throw LedgerException.Internal(e)
     }
 
+/** The status word a device answers from its dashboard, with no app open. */
+private const val SW_NO_APP_OPEN = 0x6E01
+
+/** The status word a device answers while another app is open. */
+private const val SW_OTHER_APP_OPEN = 0x6511
+
 /**
  * Maps the engine's structured failure onto the public exception hierarchy.
  */
@@ -327,12 +333,7 @@ internal fun JniLedgerException.toLedgerException(): Exception {
         }
 
         JniLedgerException.KIND_DEVICE_REFUSED -> {
-            LedgerException.DeviceRefused(
-                statusWord = status ?: 0,
-                isTransient = isTransient,
-                isRestartable = isRestartable,
-                reason = reason
-            )
+            deviceRefusal(status)
         }
 
         JniLedgerException.KIND_TRANSACTION_NOT_SIGNABLE -> {
@@ -356,3 +357,24 @@ internal fun JniLedgerException.toLedgerException(): Exception {
         }
     }
 }
+
+/**
+ * A refusal the engine did not classify further. The engine reports the dashboard's and another
+ * app's answers ([SW_NO_APP_OPEN], [SW_OTHER_APP_OPEN]) as plain refusals; both mean the Zcash app is
+ * not running, so they become [LedgerException.WrongApp].
+ */
+private fun JniLedgerException.deviceRefusal(status: Int?): LedgerException =
+    when (status) {
+        SW_NO_APP_OPEN, SW_OTHER_APP_OPEN -> {
+            LedgerException.WrongApp(status, reason)
+        }
+
+        else -> {
+            LedgerException.DeviceRefused(
+                statusWord = status ?: 0,
+                isTransient = isTransient,
+                isRestartable = isRestartable,
+                reason = reason
+            )
+        }
+    }
