@@ -85,8 +85,8 @@ class LedgerDevice internal constructor(
      * [LedgerException.DeviceNotFound] — and [reconnect] is given, the failed transport is closed,
      * [reconnect] is called once for a fresh one, and both reads are asked again over it before
      * anything else is sent. A second failure propagates. Once the export command has been sent,
-     * nothing is retried: the export waits on the user with no timeout, and its continuation and the
-     * identity read after it keep the engine's normal timeout.
+     * nothing is retried: the export waits on the user with no timeout, its continuation keeps the
+     * engine's normal timeout, and nothing is read after it.
      *
      * A transport [reconnect] returns becomes this device's [transport], whatever the outcome, and
      * belongs to the caller like the one passed to [new]; an exception [reconnect] throws propagates

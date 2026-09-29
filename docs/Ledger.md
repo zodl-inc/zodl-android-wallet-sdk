@@ -133,8 +133,8 @@ closed any whose exchange failed).
 `pairAccount` reads the device's identity, and asks the user to approve the viewing key export on the
 device. The identity is read once, before the export: the Zcash app leaves a status screen up after
 the export and drops the next command until the user dismisses it, and a transport speaks to exactly
-one peripheral, so the device that answered the probe is the device that exported the key. It refuses an app that cannot sign PCZTs (`LedgerException.AppTooOld`) before
-exporting anything.
+one peripheral, so the device that answered the probe is the device that exported the key. It refuses
+an app that cannot sign PCZTs (`LedgerException.AppTooOld`) before exporting anything.
 
 The device identity is a hash of the public key at `m/44'/coin'/0'/0/0`. It is not secret, but it is
 linkable: once that address has spent on chain, anyone can match the identity to it. Store it as you
