@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.ledger
 
 import cash.z.ecc.android.sdk.exception.LedgerException
+import cash.z.ecc.android.sdk.exception.isLinkFailure
 import cash.z.ecc.android.sdk.internal.Twig
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -356,15 +357,6 @@ internal class LedgerAppLauncher(
 
         fun hex(statusWord: Int) =
             "0x" + statusWord.toString(HEX_RADIX).uppercase().padStart(STATUS_WORD_HEX_DIGITS, '0')
-
-        /**
-         * A failure of the link rather than an answer from the device: expected while it switches apps.
-         */
-        fun LedgerException.isLinkFailure() =
-            this is LedgerException.Disconnected ||
-                this is LedgerException.Timeout ||
-                this is LedgerException.ConnectionFailed ||
-                this is LedgerException.DeviceNotFound
 
         @Suppress("TooGenericExceptionCaught", "SwallowedException")
         suspend fun closeQuietly(transport: LedgerApduTransport) {

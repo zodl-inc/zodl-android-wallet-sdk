@@ -345,28 +345,24 @@ internal class AndroidGattLink private constructor(
 
     /**
      * Waits for the bond Android started on the refused operation, asking for one if it did not.
-     * A pairing that ends unbonded, or never ends, is refused; a `BOND_NONE` read before pairing
-     * has started is not taken for an ending. The timeout's own exception carries nothing the refusal
-     * does not say, so it is not attached.
+     * A pairing that ends unbonded is refused; a `BOND_NONE` read before pairing has started is not
+     * taken for an ending.
+     *
+     * The wait has no deadline of its own: [open]'s connect timeout bounds the whole setup, pairing
+     * included, and turns a pairing still running when it runs out into
+     * [LedgerException.PairingRefused]. A timeout of the caller's own propagates as a cancellation.
      */
-    @Suppress("SwallowedException")
     private suspend fun awaitBond() {
         var pairingStarted = bondState.value == BluetoothDevice.BOND_BONDING
         if (bondState.value == BluetoothDevice.BOND_NONE) {
             pairingStarted = device.createBond()
         }
         val state =
-            try {
-                withTimeout(PAIRING_TIMEOUT) {
-                    bondState.first {
-                        if (it == BluetoothDevice.BOND_BONDING) {
-                            pairingStarted = true
-                        }
-                        it == BluetoothDevice.BOND_BONDED || (it == BluetoothDevice.BOND_NONE && pairingStarted)
-                    }
+            bondState.first {
+                if (it == BluetoothDevice.BOND_BONDING) {
+                    pairingStarted = true
                 }
-            } catch (e: TimeoutCancellationException) {
-                throw LedgerException.PairingRefused(reason = "pairing did not complete in time")
+                it == BluetoothDevice.BOND_BONDED || (it == BluetoothDevice.BOND_NONE && pairingStarted)
             }
         if (state != BluetoothDevice.BOND_BONDED) {
             throw LedgerException.PairingRefused(reason = "pairing was declined or failed")
@@ -456,7 +452,10 @@ internal class AndroidGattLink private constructor(
         private val OPERATION_TIMEOUT = 10.seconds
         private val MTU_TIMEOUT = 5.seconds
 
-        /** How long the user has to confirm the pairing codes on the phone and the device. */
+        /**
+         * How long the subscription's descriptor write may take: on a device the phone has not bonded
+         * with, Android's pairing flow runs before it completes.
+         */
         private val PAIRING_TIMEOUT = 60.seconds
 
         private fun Int.isAuthenticationFailure() = this in AUTHENTICATION_FAILURES
@@ -476,7 +475,8 @@ internal class AndroidGattLink private constructor(
          * exception's message is the address itself.
          *
          * A [SecurityException] from the Bluetooth stack, a permission revoked or never granted
-         * despite [usableBluetoothAdapter]'s check, is [LedgerException.BluetoothUnauthorized]. When
+         * despite [usableBluetoothAdapter]'s check, is [LedgerException.BluetoothUnauthorized] naming
+         * the permissions to request, as [bluetoothUnauthorized] reads them. When
          * [connectTimeout] runs out while Android's pairing flow is still running, the user did not
          * finish pairing: that is [LedgerException.PairingRefused], not a connection failure. A GATT
          * operation of the setup that runs out of its own, shorter timeout is
@@ -502,7 +502,7 @@ internal class AndroidGattLink private constructor(
                 try {
                     AndroidGattLink(context.applicationContext, device)
                 } catch (e: SecurityException) {
-                    throw LedgerException.BluetoothUnauthorized(missingPermissions = emptyList(), cause = e)
+                    throw bluetoothUnauthorized(context, e)
                 }
             try {
                 withTimeout(connectTimeout) { link.connectAndSetUp() }
@@ -518,7 +518,7 @@ internal class AndroidGattLink private constructor(
                 }
             } catch (e: SecurityException) {
                 link.close()
-                throw LedgerException.BluetoothUnauthorized(missingPermissions = emptyList(), cause = e)
+                throw bluetoothUnauthorized(context, e)
             } catch (e: Throwable) {
                 link.close()
                 throw e

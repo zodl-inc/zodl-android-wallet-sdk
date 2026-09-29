@@ -144,6 +144,20 @@ class LedgerBleChannelTest {
         }
 
     @Test
+    fun the_callers_own_timeout_during_an_exchange_propagates_as_cancellation() =
+        runBlocking<Unit> {
+            listOf(1.seconds, null).forEach { timeout ->
+                val link = FakeLink(backend, frameSize = 8) { null }
+                val channel = LedgerBleChannel(link, backend, frameSize = 8)
+
+                assertFailsWith<TimeoutCancellationException>("exchange timeout $timeout") {
+                    withTimeout(20.milliseconds) { channel.exchange(byteArrayOf(1), timeout) }
+                }
+                assertTrue(link.closed, "the exchange left its reply uncollected")
+            }
+        }
+
+    @Test
     fun the_mtu_handshake_reads_the_frame_size_and_skips_other_notifications() =
         runBlocking<Unit> {
             val link = FakeLink(backend, frameSize = 8) { null }
@@ -154,13 +168,34 @@ class LedgerBleChannelTest {
             assertContentEquals(byteArrayOf(0x08, 0, 0, 0, 0), link.written.single())
         }
 
+    /** A link whose writes fail with [failure], as a GATT write the device refuses does. */
+    private class FailingWriteLink(
+        private val failure: LedgerException
+    ) : LedgerBleLink {
+        override val notifications = Channel<ByteArray>(Channel.UNLIMITED)
+
+        override suspend fun write(frame: ByteArray) = throw failure
+
+        override fun close() = Unit
+    }
+
     @Test
     fun a_refused_handshake_write_is_a_refused_pairing() =
         runBlocking<Unit> {
-            val link = FakeLink(backend, frameSize = 8)
-            link.close()
+            val link = FailingWriteLink(LedgerException.PairingRefused(reason = null))
 
-            assertFailsWith<LedgerException.PairingRefused> { negotiateFrameSize(link, backend, 1.seconds) }
+            val error = assertFailsWith<LedgerException.PairingRefused> { negotiateFrameSize(link, backend, 1.seconds) }
+            assertEquals("the device refused the first write on the link", error.reason)
+        }
+
+    @Test
+    fun a_link_dropped_under_the_handshake_write_stays_a_disconnect() =
+        runBlocking<Unit> {
+            assertFailsWith<LedgerException.Disconnected> {
+                negotiateFrameSize(FailingWriteLink(LedgerException.Disconnected()), backend, 1.seconds)
+            }
+            val closed = FakeLink(backend, frameSize = 8).apply { close() }
+            assertFailsWith<LedgerException.Disconnected> { negotiateFrameSize(closed, backend, 1.seconds) }
         }
 
     /** A link whose writes the Bluetooth stack never confirms, as a GATT write timing out does. */

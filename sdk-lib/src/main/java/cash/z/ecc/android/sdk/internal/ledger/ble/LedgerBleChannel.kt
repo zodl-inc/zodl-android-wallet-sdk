@@ -7,6 +7,8 @@ import cash.z.ecc.android.sdk.internal.ledger.TypesafeLedgerBackend
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.getOrElse
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -21,6 +23,8 @@ internal interface LedgerBleLink {
      * Writes one frame to the device's write characteristic, returning once the stack has taken it.
      *
      * @throws LedgerException.Disconnected if the link is down.
+     * @throws LedgerException.PairingRefused if the device refuses the write on an unauthenticated
+     *         link.
      */
     suspend fun write(frame: ByteArray)
 
@@ -84,8 +88,9 @@ internal class LedgerBleChannel(
                 deframer.reset()
                 reply
             } catch (e: TimeoutCancellationException) {
-                Twig.warn { "Ledger BLE exchange timed out after $timeout; closing" }
                 poison()
+                currentCoroutineContext().ensureActive()
+                Twig.warn { "Ledger BLE exchange timed out after $timeout; closing" }
                 throw LedgerException.Timeout()
             } catch (e: CancellationException) {
                 poison()

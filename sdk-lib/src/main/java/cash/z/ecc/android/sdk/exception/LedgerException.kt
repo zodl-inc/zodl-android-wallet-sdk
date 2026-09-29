@@ -203,3 +203,13 @@ sealed class LedgerException(
         cause: Throwable?
     ) : LedgerException("An internal error occurred in the Ledger integration.", cause)
 }
+
+/**
+ * A failure of the link to the device rather than an answer from it: the one kind of failure pairing's
+ * reads and an app switch retry on a fresh connection.
+ */
+internal fun LedgerException.isLinkFailure() =
+    this is LedgerException.Disconnected ||
+        this is LedgerException.Timeout ||
+        this is LedgerException.ConnectionFailed ||
+        this is LedgerException.DeviceNotFound

@@ -27,6 +27,28 @@ internal fun requiredBluetoothPermissions(): List<String> =
     }
 
 /**
+ * The permissions of [requiredBluetoothPermissions] not granted to the app now.
+ */
+internal fun missingBluetoothPermissions(context: Context): List<String> =
+    requiredBluetoothPermissions().filter {
+        ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+    }
+
+/**
+ * [LedgerException.BluetoothUnauthorized] for a [SecurityException] from the Bluetooth stack. It names
+ * the permissions not granted now, or every required one when all of them read as granted, so the app
+ * always has something to request.
+ */
+internal fun bluetoothUnauthorized(
+    context: Context,
+    cause: SecurityException
+): LedgerException.BluetoothUnauthorized =
+    LedgerException.BluetoothUnauthorized(
+        missingPermissions = missingBluetoothPermissions(context).ifEmpty { requiredBluetoothPermissions() },
+        cause = cause
+    )
+
+/**
  * The device's Bluetooth adapter, once Bluetooth LE is known to be present, permitted and on.
  *
  * @throws LedgerException.BluetoothUnavailable if the device has no Bluetooth LE.
@@ -41,10 +63,7 @@ internal fun usableBluetoothAdapter(context: Context): BluetoothAdapter {
             ?.getSystemService(BluetoothManager::class.java)
             ?.adapter
             ?: throw LedgerException.BluetoothUnavailable()
-    val missing =
-        requiredBluetoothPermissions().filter {
-            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
-        }
+    val missing = missingBluetoothPermissions(context)
     if (missing.isNotEmpty()) {
         throw LedgerException.BluetoothUnauthorized(missingPermissions = missing)
     }

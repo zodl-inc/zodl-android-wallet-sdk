@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal.ledger
 
 import cash.z.ecc.android.sdk.exception.LedgerException
+import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.BAD_STATE
 import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.CMD_IDENTITY
 import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.CMD_VERSION
 import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.CMD_VK
@@ -11,22 +12,48 @@ import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.NOT_ACCEPTED
 import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.identity
 import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.ok
 import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.status
+import cash.z.ecc.android.sdk.ledger.LedgerApduTransport
 import cash.z.ecc.android.sdk.ledger.LedgerDevice
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zip32AccountIndex
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import java.io.IOException
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 class LedgerDeviceTest {
     private val account = Zip32AccountIndex.new(0)
+
+    private val pairingReadTimeout = LedgerDevice.DEFAULT_PAIRING_READ_TIMEOUT
+
+    private fun pairingReplies(tag: Char = 'a') =
+        listOf(ok(1), ok(tag.code.toByte()), ok(), ok(), ok(tag.code.toByte()))
+
+    /** Hands out [transports] in order, one per reconnect, and counts the reconnects. */
+    private class Reconnects(
+        vararg transports: ScriptedTransport
+    ) {
+        private val pending = ArrayDeque(transports.toList())
+        var count = 0
+            private set
+
+        val reconnect: suspend () -> LedgerApduTransport = {
+            count++
+            pending.removeFirst()
+        }
+    }
 
     private fun device(
         transport: ScriptedTransport,
@@ -57,10 +84,10 @@ class LedgerDeviceTest {
                 listOf(CMD_VERSION, CMD_IDENTITY, CMD_VK, CMD_VK_CONTINUE),
                 transport.sent.map { it.single() }
             )
-            // The export request waits on the user's approval; its continuation does not.
             assertEquals(
-                listOf(NORMAL_TIMEOUT, NORMAL_TIMEOUT, null, NORMAL_TIMEOUT),
-                transport.timeouts
+                listOf(pairingReadTimeout, pairingReadTimeout, null, NORMAL_TIMEOUT),
+                transport.timeouts,
+                "the reads before the export have the pairing deadline, the export request waits on the user"
             )
             assertEquals(1, backend.exportsClosed)
             assertFalse(transport.closed)
@@ -188,5 +215,127 @@ class LedgerDeviceTest {
                 device(transport).deviceIdentity()
             }
             assertTrue(transport.closed)
+        }
+
+    @Test
+    fun a_stalled_read_before_the_export_is_retried_once_on_a_fresh_connection() =
+        runBlocking<Unit> {
+            val stalled = ScriptedTransport(emptyList(), failAt = 0 to LedgerException.Timeout())
+            val fresh = ScriptedTransport(pairingReplies())
+            val reconnects = Reconnects(fresh)
+            val device = device(stalled)
+
+            val pairing = device.pairAccount(account, reconnect = reconnects.reconnect)
+
+            assertEquals(identity('a'), pairing.binding.deviceIdentity.encoding)
+            assertEquals(1, reconnects.count)
+            assertTrue(stalled.closed)
+            assertEquals(listOf(CMD_VERSION), stalled.sent.map { it.single() })
+            assertEquals(
+                listOf(CMD_VERSION, CMD_IDENTITY, CMD_VK, CMD_VK_CONTINUE),
+                fresh.sent.map { it.single() }
+            )
+            assertFalse(fresh.closed, "the caller closes the reconnected transport")
+            assertSame(fresh, device.transport)
+        }
+
+    @Test
+    fun a_disconnect_on_the_identity_read_asks_both_reads_again() =
+        runBlocking<Unit> {
+            val dropped = ScriptedTransport(listOf(ok(1)), failAt = 1 to LedgerException.Disconnected())
+            val fresh = ScriptedTransport(pairingReplies())
+            val reconnects = Reconnects(fresh)
+
+            device(dropped).pairAccount(account, reconnect = reconnects.reconnect)
+
+            assertEquals(1, reconnects.count)
+            assertTrue(dropped.closed)
+            assertEquals(CMD_VERSION, fresh.sent.first().single())
+        }
+
+    @Test
+    fun a_second_stall_before_the_export_fails() =
+        runBlocking<Unit> {
+            val stalled = ScriptedTransport(emptyList(), failAt = 0 to LedgerException.Timeout())
+            val stalledAgain = ScriptedTransport(emptyList(), failAt = 0 to LedgerException.Timeout())
+            val reconnects = Reconnects(stalledAgain)
+
+            assertFailsWith<LedgerException.Timeout> {
+                device(stalled).pairAccount(account, reconnect = reconnects.reconnect)
+            }
+            assertEquals(1, reconnects.count)
+            assertTrue(stalled.closed)
+            assertTrue(stalledAgain.closed)
+            assertEquals(1, stalledAgain.sent.size, "nothing is sent after the second failure")
+        }
+
+    @Test
+    fun a_failure_after_the_export_command_is_not_retried() =
+        runBlocking<Unit> {
+            val backend = FakeLedgerBackend()
+            val transport =
+                ScriptedTransport(
+                    listOf(ok(1), ok('a'.code.toByte())),
+                    failAt = 2 to LedgerException.Timeout()
+                )
+            val reconnects = Reconnects()
+
+            assertFailsWith<LedgerException.Timeout> {
+                device(transport, backend).pairAccount(account, reconnect = reconnects.reconnect)
+            }
+            assertEquals(0, reconnects.count)
+            assertEquals(listOf(CMD_VERSION, CMD_IDENTITY, CMD_VK), transport.sent.map { it.single() })
+            assertTrue(transport.closed)
+            assertEquals(1, backend.exportsClosed)
+        }
+
+    @Test
+    fun a_refusal_before_the_export_is_not_retried() =
+        runBlocking<Unit> {
+            val transport = ScriptedTransport(listOf(status(BAD_STATE)))
+            val reconnects = Reconnects()
+
+            assertFailsWith<LedgerException.DeviceRefused> {
+                device(transport).pairAccount(account, reconnect = reconnects.reconnect)
+            }
+            assertEquals(0, reconnects.count)
+            assertFalse(transport.closed)
+        }
+
+    @Test
+    fun the_callers_own_timeout_during_a_read_propagates_as_cancellation_without_a_reconnect() =
+        runBlocking<Unit> {
+            var closed = false
+            val silent =
+                object : LedgerApduTransport {
+                    override suspend fun exchange(
+                        apdu: ByteArray,
+                        timeout: Duration?
+                    ): ByteArray = awaitCancellation()
+
+                    override suspend fun close() {
+                        closed = true
+                    }
+                }
+            val reconnects = Reconnects()
+
+            assertFailsWith<TimeoutCancellationException> {
+                withTimeout(50.milliseconds) {
+                    LedgerDevice(silent, ZcashNetwork.Testnet, FakeLedgerBackend())
+                        .pairAccount(account, reconnect = reconnects.reconnect)
+                }
+            }
+            assertEquals(0, reconnects.count)
+            assertTrue(closed, "the read left its reply uncollected")
+        }
+
+    @Test
+    fun the_reads_before_the_export_take_the_callers_deadline() =
+        runBlocking<Unit> {
+            val transport = ScriptedTransport(pairingReplies())
+
+            device(transport).pairAccount(account, readTimeout = 3.seconds)
+
+            assertEquals(listOf(3.seconds, 3.seconds, null, NORMAL_TIMEOUT), transport.timeouts)
         }
 }

@@ -9,6 +9,7 @@ import android.content.Context
 import android.os.ParcelUuid
 import cash.z.ecc.android.sdk.exception.LedgerException
 import cash.z.ecc.android.sdk.internal.Twig
+import cash.z.ecc.android.sdk.internal.ledger.ble.bluetoothUnauthorized
 import cash.z.ecc.android.sdk.internal.ledger.ble.usableBluetoothAdapter
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -86,7 +87,7 @@ class LedgerBluetoothScanner(
             try {
                 scanner.startScan(filters, settings, callback)
             } catch (e: SecurityException) {
-                throw LedgerException.BluetoothUnauthorized(missingPermissions = emptyList(), cause = e)
+                throw bluetoothUnauthorized(context, e)
             }
             awaitClose {
                 runCatching { scanner.stopScan(callback) }

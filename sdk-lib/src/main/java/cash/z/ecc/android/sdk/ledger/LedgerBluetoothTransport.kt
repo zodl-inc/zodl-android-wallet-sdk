@@ -57,6 +57,7 @@ class LedgerBluetoothTransport private constructor(
          * @throws LedgerException.BluetoothDisabled if Bluetooth is off.
          * @throws LedgerException.DeviceNotFound if the device is not a Ledger or not reachable.
          * @throws LedgerException.PairingRefused if Bluetooth pairing is declined or fails.
+         * @throws LedgerException.Disconnected if the link drops once connected, during setup.
          * @throws LedgerException.ConnectionFailed for any other setup failure.
          */
         @Suppress("TooGenericExceptionCaught")
