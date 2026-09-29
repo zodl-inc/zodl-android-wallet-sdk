@@ -277,4 +277,52 @@ class LedgerZcashAppTest {
                 launcher.ensureZcashAppOpen(original) { throw LedgerException.BluetoothDisabled() }
             }
         }
+
+    @Test
+    fun a_stalled_first_query_is_asked_once_more_on_a_fresh_connection() =
+        runBlocking<Unit> {
+            val stalled = ScriptedTransport(emptyList(), failAt = 0 to LedgerException.Timeout())
+            val fresh = ScriptedTransport(listOf(zcash))
+            var reconnects = 0
+
+            val result =
+                launcher.ensureZcashAppOpen(stalled) {
+                    reconnects++
+                    fresh
+                }
+
+            assertSame(fresh, result)
+            assertEquals(1, reconnects)
+            assertTrue(stalled.closed, "the stalled transport is closed")
+            assertContentEquals(getApp, fresh.sent.single())
+        }
+
+    @Test
+    fun a_first_query_that_stalls_twice_fails_without_sending_anything_else() =
+        runBlocking<Unit> {
+            val stalled = ScriptedTransport(emptyList(), failAt = 0 to LedgerException.Timeout())
+            val stalledAgain = ScriptedTransport(emptyList(), failAt = 0 to LedgerException.Timeout())
+            var reconnects = 0
+
+            assertFailsWith<LedgerException.Timeout> {
+                launcher.ensureZcashAppOpen(stalled) {
+                    reconnects++
+                    stalledAgain
+                }
+            }
+
+            assertEquals(1, reconnects)
+            assertEquals(1, stalledAgain.sent.size)
+            assertTrue(stalledAgain.closed, "the fresh transport is closed when the call fails")
+        }
+
+    @Test
+    fun a_locked_device_is_not_retried_on_a_fresh_connection() =
+        runBlocking<Unit> {
+            val locked = ScriptedTransport(listOf(sw(0x5515)))
+
+            assertFailsWith<LedgerException.DeviceRefused> {
+                launcher.ensureZcashAppOpen(locked, noReconnect())
+            }
+        }
 }

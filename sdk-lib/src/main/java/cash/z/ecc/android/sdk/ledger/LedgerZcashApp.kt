@@ -21,7 +21,7 @@ import kotlin.time.TimeSource
  * Nothing handled here is logged: not the commands, not the replies, not the app names.
  */
 object LedgerZcashApp {
-    private val QUERY_TIMEOUT = 5.seconds
+    private val QUERY_TIMEOUT = 10.seconds
     private val POLL_INTERVAL = 200.milliseconds
     private val APP_TRANSITION_TIMEOUT = 10.seconds
 
@@ -40,7 +40,12 @@ object LedgerZcashApp {
      * Makes sure the device is running the Zcash app, opening it if needed, and returns the transport
      * to keep using.
      *
-     * If the Zcash app is already open, nothing is sent beyond the query and [transport] is returned.
+     * The first query waits up to 10 seconds; if it stalls or the link fails, it is asked once more on
+     * a fresh connection from [reconnect] before anything else is sent. The open command itself is
+     * never sent twice.
+     *
+     * If the Zcash app is already open, nothing is sent beyond the query and the transport it was
+     * answered on is returned.
      * Otherwise any other app is closed, the device is asked to open the Zcash app — it asks the user
      * to confirm, and the reply waits for that without a timeout — and the device is polled until it
      * reports the Zcash app, for up to 10 seconds after the reply. The Bluetooth link may drop while
@@ -95,12 +100,12 @@ internal class LedgerAppLauncher(
         transport: LedgerApduTransport,
         reconnect: suspend () -> LedgerApduTransport
     ): LedgerApduTransport {
-        val running = currentApp(transport)
-        if (running.isZcash) {
-            return transport
-        }
         val switch = AppSwitch(transport, reconnect)
         try {
+            val running = switch.queryOnFreshConnectionOnce()
+            if (running.isZcash) {
+                return switch.current
+            }
             if (!running.isDashboard) {
                 Twig.debug { "Ledger is running another app; closing it" }
                 switch.closeRunningApp()
@@ -130,6 +135,19 @@ internal class LedgerAppLauncher(
         var current: LedgerApduTransport = original
             private set
         private var usable = true
+
+        /**
+         * The running app before anything else is sent. A query that stalls past its deadline or loses
+         * the link is asked once more on a fresh connection from [reconnect]; a second failure, and
+         * any answer from the device, is final.
+         */
+        suspend fun queryOnFreshConnectionOnce(): LedgerRunningApp {
+            queryAllowingDisconnect()?.let { return it }
+            Twig.debug { "Ledger app query failed; asking once more on a fresh connection" }
+            current = reconnect()
+            usable = true
+            return currentApp(current)
+        }
 
         suspend fun closeRunningApp() {
             val reply = exchangeAllowingDisconnect(closeAppApdu(), queryTimeout) ?: return
