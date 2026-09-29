@@ -4,8 +4,12 @@ import cash.z.ecc.android.sdk.exception.LedgerException
 import cash.z.ecc.android.sdk.exception.isLinkFailure
 import cash.z.ecc.android.sdk.internal.Twig
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -25,6 +29,10 @@ object LedgerZcashApp {
     private val QUERY_TIMEOUT = 10.seconds
     private val POLL_INTERVAL = 200.milliseconds
     private val APP_TRANSITION_TIMEOUT = 10.seconds
+    private val SWITCH_RECONNECT_TIMEOUT = 10.seconds
+
+    private fun launcher() =
+        LedgerAppLauncher(QUERY_TIMEOUT, POLL_INTERVAL, APP_TRANSITION_TIMEOUT, SWITCH_RECONNECT_TIMEOUT)
 
     /**
      * Reads which app the device is running. Works on the dashboard and in any app.
@@ -35,7 +43,7 @@ object LedgerZcashApp {
      * @throws LedgerException for a transport failure.
      */
     suspend fun currentApp(transport: LedgerApduTransport): LedgerRunningApp =
-        LedgerAppLauncher(QUERY_TIMEOUT, POLL_INTERVAL, APP_TRANSITION_TIMEOUT).currentApp(transport)
+        launcher().currentApp(transport)
 
     /**
      * Makes sure the device is running the Zcash app, opening it if needed, and returns the transport
@@ -51,7 +59,11 @@ object LedgerZcashApp {
      * to confirm, and the reply waits for that without a timeout — and the device is polled until it
      * reports the Zcash app, for up to 10 seconds after the reply. The Bluetooth link may drop while
      * the device switches apps; a dropped link is then replaced with one from [reconnect], and the
-     * transport returned may be one of those.
+     * transport returned may be one of those. Each of those reconnects has 10 seconds and is
+     * cancelled past them: the phone has already bonded with the device, so none of it waits on a
+     * Bluetooth pairing. A reconnect that fails starts the 10 seconds of polling over, since the
+     * device may still be rebooting into the app; the third one that fails while waiting for an app
+     * propagates its failure. The reconnect after a failed first query is not limited this way.
      *
      * A transport whose link fails during the call is closed when it fails, before it is replaced.
      * The caller closes the one returned, and [transport] if the call fails; a transport opened
@@ -65,14 +77,15 @@ object LedgerZcashApp {
      *         command.
      * @throws LedgerException.WrongApp if the device does not reach the Zcash app in time, or cannot
      *         open it; the user has to open it on the device.
+     * @throws LedgerException.ConnectionFailed if reconnecting during the switch runs out of time
+     *         for the third time; another link failure from [reconnect] propagates as it is.
      * @throws LedgerException for any other failure.
      */
     suspend fun ensureZcashAppOpen(
         transport: LedgerApduTransport,
         reconnect: suspend () -> LedgerApduTransport
     ): LedgerApduTransport =
-        LedgerAppLauncher(QUERY_TIMEOUT, POLL_INTERVAL, APP_TRANSITION_TIMEOUT)
-            .ensureZcashAppOpen(transport, reconnect)
+        launcher().ensureZcashAppOpen(transport, reconnect)
 }
 
 /**
@@ -81,7 +94,8 @@ object LedgerZcashApp {
 internal class LedgerAppLauncher(
     private val queryTimeout: Duration,
     private val pollInterval: Duration,
-    private val transitionTimeout: Duration
+    private val transitionTimeout: Duration,
+    private val reconnectTimeout: Duration
 ) {
     suspend fun currentApp(transport: LedgerApduTransport): LedgerRunningApp {
         val reply = transport.exchange(getAppAndVersionApdu(), queryTimeout)
@@ -110,11 +124,11 @@ internal class LedgerAppLauncher(
             if (!running.isDashboard) {
                 Twig.debug { "Ledger is running another app; closing it" }
                 switch.closeRunningApp()
-                switch.awaitApp(deadline()) { it.isDashboard }
+                switch.awaitApp { it.isDashboard }
             }
             Twig.debug { "Asking the Ledger to open the Zcash app" }
             switch.openZcashApp()
-            switch.awaitApp(deadline()) { it.isZcash }
+            switch.awaitApp { it.isZcash }
             Twig.debug { "The Ledger is running the Zcash app" }
             return switch.current
         } catch (e: Throwable) {
@@ -165,29 +179,38 @@ internal class LedgerAppLauncher(
 
         /**
          * Polls the device, reconnecting when the link is down, until it runs an app [reached]
-         * accepts. The deadline is checked between attempts.
+         * accepts.
+         *
+         * The device has [transitionTimeout] from the call, checked after each query, so the wait
+         * ends at most one query past it. A reconnect that fails starts that time over from the
+         * failure, because the device may still be rebooting into the app; the
+         * [MAX_RECONNECT_FAILURES]th failed reconnect propagates its failure.
          */
-        suspend fun awaitApp(
-            deadline: TimeSource.Monotonic.ValueTimeMark,
-            reached: (LedgerRunningApp) -> Boolean
-        ) {
+        suspend fun awaitApp(reached: (LedgerRunningApp) -> Boolean) {
+            var deadline = deadline()
+            var failedReconnects = 0
             while (true) {
-                if (poll(reached)) {
-                    return
-                }
-                if (deadline.hasPassedNow()) {
-                    throw LedgerException.WrongApp(
-                        statusWord = null,
-                        reason = "the device did not switch apps in time"
-                    )
+                val reconnectFailure = if (usable) null else replace()
+                if (reconnectFailure != null) {
+                    failedReconnects++
+                    if (failedReconnects >= MAX_RECONNECT_FAILURES) {
+                        throw reconnectFailure
+                    }
+                    deadline = deadline()
+                } else {
+                    val running = queryAllowingDisconnect()
+                    if (running != null && reached(running)) {
+                        return
+                    }
+                    if (deadline.hasPassedNow()) {
+                        throw LedgerException.WrongApp(
+                            statusWord = null,
+                            reason = "the device did not switch apps in time"
+                        )
+                    }
                 }
                 delay(pollInterval)
             }
-        }
-
-        private suspend fun poll(reached: (LedgerRunningApp) -> Boolean): Boolean {
-            val running = if (usable || replace()) queryAllowingDisconnect() else null
-            return running != null && reached(running)
         }
 
         /**
@@ -204,21 +227,27 @@ internal class LedgerAppLauncher(
             }
 
         /**
-         * Replaces the dropped transport, which [markUnusable] has already closed, with a new one;
-         * false if the device cannot be reached yet.
+         * Replaces the dropped transport, which [markUnusable] has already closed, with one from
+         * [reconnect], which has [reconnectTimeout] to open it. Returns the link failure when the
+         * device cannot be reached yet, and null once replaced. The caller's own cancellation, a
+         * timeout of its own included, propagates.
          */
-        private suspend fun replace(): Boolean {
-            val replacement =
-                try {
-                    reconnect()
-                } catch (e: LedgerException) {
-                    if (!e.isLinkFailure()) throw e
-                    Twig.debug { "Reconnecting to the Ledger failed (${e.javaClass.simpleName}); retrying" }
-                    return false
-                }
-            current = replacement
-            usable = true
-            return true
+        private suspend fun replace(): LedgerException? {
+            var opened: LedgerApduTransport? = null
+            return try {
+                current = withTimeout(reconnectTimeout) { reconnect().also { opened = it } }
+                usable = true
+                null
+            } catch (e: TimeoutCancellationException) {
+                opened?.let { closeQuietly(it) }
+                currentCoroutineContext().ensureActive()
+                Twig.debug { "Reconnecting to the Ledger took longer than $reconnectTimeout; retrying" }
+                LedgerException.ConnectionFailed(reason = "reconnecting timed out", cause = e)
+            } catch (e: LedgerException) {
+                if (!e.isLinkFailure()) throw e
+                Twig.debug { "Reconnecting to the Ledger failed (${e.javaClass.simpleName}); retrying" }
+                e
+            }
         }
 
         private suspend fun exchangeAllowingDisconnect(
@@ -255,6 +284,9 @@ internal class LedgerAppLauncher(
         const val SW_USER_REFUSED = 0x5501
         const val SW_LOCKED = 0x5515
         const val SW_APP_NOT_INSTALLED = 0x6807
+
+        /** How many failed reconnects end a wait for an app; the last one's failure propagates. */
+        const val MAX_RECONNECT_FAILURES = 3
 
         private const val CLA_DASHBOARD: Byte = 0xB0.toByte()
         private const val CLA_OPEN_APP: Byte = 0xE0.toByte()

@@ -3,7 +3,11 @@ package cash.z.ecc.android.sdk.internal.ledger
 import cash.z.ecc.android.sdk.exception.LedgerException
 import cash.z.ecc.android.sdk.ledger.LedgerApduTransport
 import cash.z.ecc.android.sdk.ledger.LedgerAppLauncher
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -22,7 +26,8 @@ class LedgerZcashAppTest {
         LedgerAppLauncher(
             queryTimeout = queryTimeout,
             pollInterval = 1.milliseconds,
-            transitionTimeout = 200.milliseconds
+            transitionTimeout = 200.milliseconds,
+            reconnectTimeout = 1.seconds
         )
 
     private val getApp = byteArrayOf(0xB0.toByte(), 0x01, 0x00, 0x00, 0x00)
@@ -283,6 +288,89 @@ class LedgerZcashAppTest {
             assertEquals(1, original.closes)
             assertEquals(1, dropped.closes)
             assertEquals(1, replacement.closes)
+        }
+
+    @Test
+    fun a_failed_reconnect_that_outlasts_the_deadline_still_reaches_the_zcash_app() =
+        runBlocking<Unit> {
+            val original =
+                ScriptedTransport(listOf(dashboard), failAt = 1 to LedgerException.Disconnected())
+            val afterSwitch = ScriptedTransport(listOf(zcash))
+            var reconnects = 0
+
+            val result =
+                launcher.ensureZcashAppOpen(original) {
+                    reconnects++
+                    if (reconnects == 1) {
+                        delay(300.milliseconds)
+                        throw LedgerException.ConnectionFailed(reason = null)
+                    }
+                    afterSwitch
+                }
+
+            assertSame(afterSwitch, result)
+            assertEquals(2, reconnects)
+        }
+
+    @Test
+    fun a_reconnect_that_hangs_is_cut_off_and_tried_again() =
+        runBlocking<Unit> {
+            val original =
+                ScriptedTransport(listOf(dashboard), failAt = 1 to LedgerException.Disconnected())
+            val afterSwitch = ScriptedTransport(listOf(zcash))
+            var reconnects = 0
+
+            val result =
+                LedgerAppLauncher(
+                    queryTimeout = queryTimeout,
+                    pollInterval = 1.milliseconds,
+                    transitionTimeout = 200.milliseconds,
+                    reconnectTimeout = 50.milliseconds
+                ).ensureZcashAppOpen(original) {
+                    reconnects++
+                    if (reconnects == 1) awaitCancellation()
+                    afterSwitch
+                }
+
+            assertSame(afterSwitch, result)
+            assertEquals(2, reconnects)
+        }
+
+    @Test
+    fun the_third_failed_reconnect_propagates_its_failure() =
+        runBlocking<Unit> {
+            val original =
+                ScriptedTransport(listOf(dashboard), failAt = 1 to LedgerException.Disconnected())
+            var reconnects = 0
+
+            assertFailsWith<LedgerException.ConnectionFailed> {
+                launcher.ensureZcashAppOpen(original) {
+                    reconnects++
+                    throw LedgerException.ConnectionFailed(reason = null)
+                }
+            }
+
+            assertEquals(LedgerAppLauncher.MAX_RECONNECT_FAILURES, reconnects)
+            assertEquals(1, original.closes)
+        }
+
+    @Test
+    fun the_callers_own_timeout_during_a_reconnect_propagates_as_cancellation() =
+        runBlocking<Unit> {
+            val original =
+                ScriptedTransport(listOf(dashboard), failAt = 1 to LedgerException.Disconnected())
+            var reconnects = 0
+
+            assertFailsWith<TimeoutCancellationException> {
+                withTimeout(100.milliseconds) {
+                    launcher.ensureZcashAppOpen(original) {
+                        reconnects++
+                        awaitCancellation()
+                    }
+                }
+            }
+
+            assertEquals(1, reconnects, "the caller's timeout is not a failed reconnect to retry")
         }
 
     @Test
