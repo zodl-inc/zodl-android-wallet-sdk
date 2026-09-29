@@ -75,7 +75,10 @@ confirms on the device.
 
 The Bluetooth link may drop while the device switches apps, and `ensureZcashAppOpen` then replaces it
 with a transport from `reconnect`. Build on the transport it **returns**, not on the one passed in: the
-original may already be closed after a link failure.
+original may already be closed after a link failure. The same holds for a `LedgerDevice` that already
+exists: it keeps talking over its own `device.transport`, which `ensureZcashAppOpen` cannot replace, so
+after `ensureZcashAppOpen(device.transport) { ... }` build a new `LedgerDevice` over the transport
+returned rather than keep using the old one.
 
 ```kotlin
 val connected = scanner.connect(ledger)

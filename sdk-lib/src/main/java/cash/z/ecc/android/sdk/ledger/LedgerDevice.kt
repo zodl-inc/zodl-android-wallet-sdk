@@ -37,6 +37,11 @@ import kotlin.time.Duration.Companion.seconds
  * idempotent) but never closes one otherwise, so the caller closes each transport it opened once it
  * is done, whether the call succeeded or failed. [transport] is the one this device currently talks
  * over; after [pairAccount] reconnected, it is the reconnected one, and later calls use it.
+ *
+ * Nothing else changes [transport]. [LedgerZcashApp.ensureZcashAppOpen] may close the transport it
+ * is given and return another, so call it before building a device, or build a new device over the
+ * transport it returns: a device whose [transport] was passed to it stays bound to that transport,
+ * which may be closed.
  */
 class LedgerDevice internal constructor(
     transport: LedgerApduTransport,
@@ -49,8 +54,10 @@ class LedgerDevice internal constructor(
     /**
      * The transport this device talks over: the one passed to [new], or the last one a
      * [pairAccount] `reconnect` function returned. The caller closes it; see the class
-     * documentation.
+     * documentation. Readable from any thread. A transport [LedgerZcashApp.ensureZcashAppOpen]
+     * returns never replaces it; build a new device over that one.
      */
+    @Volatile
     var transport: LedgerApduTransport = transport
         private set
 
