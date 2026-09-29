@@ -85,19 +85,25 @@ val connected = scanner.connect(ledger)
 val transport =
     try {
         LedgerZcashApp.ensureZcashAppOpen(connected) { scanner.connect(ledger) }
-    } catch (e: LedgerException) {
-        connected.close()
+    } catch (e: Throwable) {
+        withContext(NonCancellable) { connected.close() }
         throw e
     }
 val device = LedgerDevice.new(transport, synchronizer.network)
 ```
 
+Catch `Throwable`, not only `LedgerException`: a cancellation, and the timeout of the app's own
+suggested below, is a `CancellationException`, and the transport passed in has to be closed then too.
+
 The app closes the transport returned, and the one it passed in if the call fails; a transport opened
-through `reconnect` is closed by the SDK when the call fails. While the device switches, each
-reconnect has 10 seconds, and a failed one is tried again after 500 ms, then after twice the previous
-wait (at most 2 s), for 10 seconds from the first failure. The call itself has no overall timeout: the
-open command waits for the user's confirmation on the device, so bound the whole call with a timeout of
-the app's own if it needs one.
+through `reconnect` is closed by the SDK when the call fails. The device has 10 seconds to reach the
+Zcash app after the user confirms, polled every 200 ms with up to 3 seconds for each answer; a poll that
+loses the link or gets no answer is always followed by a reconnect, and the time a reconnect that
+succeeds takes does not count towards the 10 seconds. While the device switches, each reconnect has 10
+seconds, and a failed one is tried again after 500 ms, then after twice the previous wait (at most 2 s),
+for 10 seconds from the first of the failures in a row; a reconnect that succeeds ends the row. The
+call itself has no overall timeout: the open command waits for the user's confirmation on the device,
+so bound the whole call with a timeout of the app's own if it needs one.
 
 ## Pairing an account
 

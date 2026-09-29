@@ -225,7 +225,10 @@ internal class AndroidGattLink private constructor(
             setUp()
         } catch (e: TimeoutCancellationException) {
             currentCoroutineContext().ensureActive()
-            throw LedgerException.ConnectionFailed(reason = "a Bluetooth operation timed out while connecting", cause = e)
+            throw LedgerException.ConnectionFailed(
+                reason = "a Bluetooth operation timed out while connecting",
+                cause = e
+            )
         }
     }
 

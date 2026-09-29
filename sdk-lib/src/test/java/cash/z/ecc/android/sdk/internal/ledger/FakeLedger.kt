@@ -308,15 +308,18 @@ internal class ScriptedTransport(
         // Copied: the caller wipes the command once the exchange returns.
         sent.add(apdu.copyOf())
         timeouts.add(timeout)
-        failAt?.let { (at, error) ->
-            if (at == index) {
-                if (stallBeforeFailing) {
-                    if (timeout != null) delay(timeout) else awaitCancellation()
-                }
-                throw error
-            }
-        }
+        failAt?.let { (at, error) -> if (at == index) fail(error, timeout) }
         return replies.removeFirstOrNull() ?: error("no scripted reply for exchange $index")
+    }
+
+    private suspend fun fail(
+        error: Throwable,
+        timeout: Duration?
+    ): Nothing {
+        if (stallBeforeFailing) {
+            if (timeout != null) delay(timeout) else awaitCancellation()
+        }
+        throw error
     }
 
     override suspend fun close() {
