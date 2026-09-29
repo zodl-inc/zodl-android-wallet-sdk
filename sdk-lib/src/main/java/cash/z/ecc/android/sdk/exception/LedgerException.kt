@@ -55,6 +55,20 @@ sealed class LedgerException(
     ) : LedgerException("The Zcash app on the Ledger device is too old; update it and try again.")
 
     /**
+     * The device was asked to open the Zcash app and has no app of that name installed. The user
+     * has to install it, with Ledger Live, first.
+     */
+    class AppNotInstalled internal constructor() : LedgerException("The Zcash app is not installed on the Ledger.")
+
+    /**
+     * The device was asked to open the Zcash app and the user declined on the device. Asking again
+     * can succeed.
+     */
+    class AppOpenRejected internal constructor() : LedgerException("The user declined opening the Zcash app.") {
+        override val isRestartable: Boolean = true
+    }
+
+    /**
      * Signing found that the connected device is not the one the account's binding names.
      * Pairing reads the device identity once and can no longer raise this. Nothing of the
      * transaction was sent to it.

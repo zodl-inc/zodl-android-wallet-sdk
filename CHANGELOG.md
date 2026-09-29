@@ -54,6 +54,27 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   these must declare and request `BLUETOOTH_SCAN` (with `neverForLocation`) and `BLUETOOTH_CONNECT` on
   API 31 and later, and `BLUETOOTH`, `BLUETOOTH_ADMIN` and `ACCESS_FINE_LOCATION` on API 30 and earlier
   (see `docs/Ledger.md`). An exchange that fails or is cancelled closes the transport.
+- `LedgerZcashApp`, which drives the device's dashboard commands. `currentApp(transport)` returns the
+  `LedgerRunningApp` (`name`, `version`, `isDashboard`, `isZcash`) the device is running.
+  `ensureZcashAppOpen(transport, reconnect)` opens the Zcash app when the device is elsewhere - on its
+  dashboard, as it is after a first Bluetooth pairing, or in another app, which it closes first - once
+  the user confirms on the device, and returns the transport to keep using: the Bluetooth link may drop
+  while the device switches apps, and a dropped link is replaced through `reconnect`. It waits up to
+  10 seconds for the Zcash app after the user's confirmation.
+- `LedgerException.AppNotInstalled`, when the device has no Zcash app to open, and
+  `LedgerException.AppOpenRejected` (restartable), when the user declines opening it on the device.
+  A device that does not reach the Zcash app in time fails with `WrongApp`.
+- `LedgerDevice.pairAccount` takes an optional `readTimeout` (default
+  `LedgerDevice.DEFAULT_PAIRING_READ_TIMEOUT`, 10 seconds) for the app version and device identity reads
+  before the export, and an optional `reconnect` function. When one of those reads fails on the
+  connection (`Timeout`, `Disconnected`, `ConnectionFailed`, `DeviceNotFound`), the failed transport is
+  closed and both reads are asked once more over a transport from `reconnect`; nothing is retried once
+  the export command has been sent. The app owns every transport, the reconnected ones included, and
+  closes each one it opened; the new `LedgerDevice.transport` is the one the device currently talks over.
+- `docs/Ledger.md` gains an error table: for each `LedgerException`, when it happens, whether it is
+  restartable and what the app should do, and the failures that are not `LedgerException`s; and an
+  "Opening the Zcash app" section: call `LedgerZcashApp.ensureZcashAppOpen` before `LedgerDevice.new`
+  and build on the transport it returns.
 - `GiftCard`, a gift card read from a gift card link with `GiftCard.parse(link)`: this SDK's
   own links (`https://gift.zodl.com/#v=1&key=...&height=...`) and the legacy JSON payment-link
   encoding at `/payment-links/open#vN=` (`v1=` / `v2=` / `v3=` payloads). Exposes `origin`
@@ -223,6 +244,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   device) can be imported with no ZIP 32 derivation. Pass both or neither; passing exactly one throws
   `IllegalArgumentException`. Existing constructor calls compile and behave as before; code that reads
   either property must now handle `null`.
+- A Ledger device on its dashboard (status word `0x6E01`) or running another app (`0x6511`) now fails
+  with `LedgerException.WrongApp` instead of a non-restartable `DeviceRefused`.
+- `LedgerException.WrongApp` and `LedgerException.DerivationBudgetExhausted` are restartable: once the
+  user opens or reopens the Zcash app, starting the operation again can succeed.
 - `GiftCardRedeemer.new` is deprecated: it always runs the card wallet on `SdkSynchronizer`,
   whatever engine the app syncs with. Use `GiftCardRedeemers.new` from the incubator.
 - `GiftCardRedeemer.check` fails at once with `GiftCardException.SyncFailed`, carrying the
@@ -281,6 +306,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   releases exist under new version numbers. The voting API is unchanged.
 
 ### Fixed
+- `LedgerBluetoothTransport.connect` no longer lets raw exceptions escape: a GATT write that times out
+  on the Ledger MTU handshake is `LedgerException.ConnectionFailed`, a `SecurityException` from the
+  Bluetooth stack while connecting is `LedgerException.BluetoothUnauthorized`, and a connect timeout
+  that runs out while Android's pairing flow is still in progress is `LedgerException.PairingRefused`
+  instead of `ConnectionFailed`. Cancelling the caller still propagates as a cancellation.
 - Two synchronizers running in the same process (different aliases) no longer overwrite each
   other's stored transaction submit plans; previously the later writer could drop a plan the
   other had stored, so a created transaction was not resubmitted to the endpoints it was

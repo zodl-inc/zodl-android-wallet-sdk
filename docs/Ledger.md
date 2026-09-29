@@ -6,8 +6,9 @@ version the engine is pinned to) over Bluetooth LE. The protocol engine is
 performs no I/O: the SDK drives it over a `LedgerApduTransport`, a request/response channel to one
 device — `LedgerBluetoothTransport`, or a channel of the app's own.
 
-All Ledger types are in `cash.z.ecc.android.sdk.ledger`; every failure is a
-`cash.z.ecc.android.sdk.exception.LedgerException`.
+All Ledger types are in `cash.z.ecc.android.sdk.ledger`. Failures are
+`cash.z.ecc.android.sdk.exception.LedgerException`s, with the exceptions listed under
+[Errors](#errors).
 
 ## Connecting over Bluetooth LE
 
@@ -64,6 +65,37 @@ reassemble, a cancellation — closes the transport, and every later exchange fa
 be taken for the answer to the next one. Connect again to continue. The device's identifier (its
 Bluetooth address) is a stable hardware identifier; do not log it or send it anywhere.
 
+## Opening the Zcash app
+
+A device returns to its dashboard after its first Bluetooth pairing with the phone, and every Zcash
+command then fails with `LedgerException.WrongApp`. Call `LedgerZcashApp.ensureZcashAppOpen(transport,
+reconnect)` before `LedgerDevice.new`: it does nothing beyond one query when the Zcash app is already
+open, and otherwise closes any other app and asks the device to open the Zcash app, which the user
+confirms on the device.
+
+The Bluetooth link may drop while the device switches apps, and `ensureZcashAppOpen` then replaces it
+with a transport from `reconnect`. Build on the transport it **returns**, not on the one passed in: the
+original may already be closed after a link failure.
+
+```kotlin
+val connected = scanner.connect(ledger)
+val transport =
+    try {
+        LedgerZcashApp.ensureZcashAppOpen(connected) { scanner.connect(ledger) }
+    } catch (e: LedgerException) {
+        connected.close()
+        throw e
+    }
+val device = LedgerDevice.new(transport, synchronizer.network)
+```
+
+The app closes the transport returned, and the one it passed in if the call fails; a transport opened
+through `reconnect` is closed by the SDK when the call fails. While the device switches, each
+reconnect has 10 seconds, and a failed one is tried again after 500 ms, then after twice the previous
+wait (at most 2 s), for 10 seconds from the first failure. The call itself has no overall timeout: the
+open command waits for the user's confirmation on the device, so bound the whole call with a timeout of
+the app's own if it needs one.
+
 ## Pairing an account
 
 ```kotlin
@@ -77,6 +109,26 @@ val account = synchronizer.importAccountByUfvk(pairing.accountImportSetup("Ledge
 val deviceIdentity = pairing.binding.deviceIdentity.encoding
 val zip32AccountIndex = pairing.binding.zip32AccountIndex.index
 ```
+
+The reads before the export (the app version and the device's identity) answer at once on a healthy
+link, so each gets `readTimeout` (default `LedgerDevice.DEFAULT_PAIRING_READ_TIMEOUT`, 10 s) rather than
+the engine's two minutes. Pass `reconnect`, a function that opens a fresh connection to the same device,
+and a read that fails on the connection (`Timeout`, `Disconnected`, `ConnectionFailed`,
+`DeviceNotFound`) is asked once more over a new transport before anything else is sent; a second failure
+propagates. Nothing is retried once the export command has been sent.
+
+```kotlin
+val device = LedgerDevice.new(scanner.connect(ledger), synchronizer.network)
+try {
+    val pairing = device.pairAccount(Zip32AccountIndex.new(0), reconnect = { scanner.connect(ledger) })
+} finally {
+    device.transport.close() // the reconnected transport, if pairAccount reconnected
+}
+```
+
+The app owns every transport, the reconnected ones included: `device.transport` is the one the device
+talks over now, and the app closes each transport it opened (closing is idempotent; the SDK has already
+closed any whose exchange failed).
 
 `pairAccount` reads the device's identity, and asks the user to approve the viewing key export on the
 device. The identity is read once, before the export: the Zcash app leaves a status screen up after
@@ -139,6 +191,49 @@ splitting change into up to four outputs of at least 0.1 ZEC.
   again with the same PCZT.
 - `LedgerException.DerivationBudgetExhausted`: the Zcash app limits Orchard key derivations per run;
   the user has to close and reopen the app.
+
+## Errors
+
+Every `LedgerException` carries `isRestartable`: whether starting the whole operation again (a new
+pairing, a new signing session over the same PCZT) can succeed. It never means "resend the last
+command". A refusal by the device leaves the transport open; a failure on the transport closes it.
+
+| Exception | When | Restartable | Suggested app action |
+|---|---|---|---|
+| `UserRejected` | The user declined on the device: the viewing key export, the transaction review, or the address. | As reported | Say it was declined; when restartable, offer to try again over the same transport. |
+| `WrongApp` | The Zcash app is not running: the device shows its dashboard (`0x6E01`), runs another app (`0x6511`), or runs a version that does not know the command (`0x6E00`, `0x6D00`). `statusWord` says which. | Yes | Ask the user to open the Zcash app on the device, then start again. |
+| `AppNotInstalled` | `ensureZcashAppOpen` asked the device to open the Zcash app and it has none installed. | No | Ask the user to install the Zcash app with Ledger Live, then start again. |
+| `AppOpenRejected` | The user declined opening the Zcash app on the device during `ensureZcashAppOpen`. | Yes | Offer to try again; the device asks the user once more. |
+| `AppTooOld` | The Zcash app predates PCZT signing (checked before anything is exported), or the Ironwood pool a version 6 transaction needs. | No | Ask the user to update the Zcash app with Ledger Live. |
+| `DeviceMismatch` | Signing found that the connected device is not the one the account was paired with. Pairing reads the identity once and no longer raises it. Nothing of the transaction was sent. | No | Ask the user to connect the paired device. |
+| `CapsMismatch` | The Zcash app was updated or swapped during the operation. Nothing of the transaction was sent. | No | Connect again and start over. |
+| `DerivationBudgetExhausted` | The Zcash app's per-run Orchard key derivation budget is spent. | Yes | Ask the user to close and reopen the Zcash app, then start again. |
+| `DeviceRefused` | Any other refusal; `statusWord` and `isTransient` describe it (a locked device is transient). | As reported | When restartable, ask the user to unlock the device and try again; otherwise report the status word. |
+| `TransactionNotSignable` | A rule refuses the transaction before anything is sent: Sapling funds, too many outputs to review, an account without an Orchard key. `reason` names it. | No | Explain `reason`; the user has to change the transaction (for example, shield or migrate the funds first). |
+| `MalformedReply` | A reply did not have the promised shape, did not reassemble, or a returned signature did not verify. | No | Connect again and start over; if it persists, report it. |
+| `InvalidInput` | A value passed in was refused before any device I/O: a stored identity, an index, an unknown account. | No | A bug or corrupt stored data in the app; do not retry unchanged. |
+| `BluetoothUnavailable` | The phone has no Bluetooth LE, or a scan could not be started (`scanErrorCode`). | No | Hide the Bluetooth option, or retry the scan later. |
+| `BluetoothUnauthorized` | A Bluetooth permission is not granted (`missingPermissions`), or the Bluetooth stack refused a call for lack of one while connecting. | No | Request the permissions, then scan or connect again. |
+| `BluetoothDisabled` | Bluetooth is off. | No | Ask the user to turn Bluetooth on. |
+| `DeviceNotFound` | The identifier is not a Bluetooth device, or the device offers no Ledger service. | No | Scan again. |
+| `ConnectionFailed` | The connection could not be set up: the connect timeout ran out, service discovery or subscribing failed, or the Ledger MTU handshake's write or answer did not complete in time. | No | Ask the user to make sure the device is on, unlocked, nearby and not connected to another phone; connect again. |
+| `Disconnected` | The device disconnected, the transport was closed, or an earlier exchange failed and left it unusable. | No | Connect again and start over. |
+| `PairingRefused` | Bluetooth pairing was declined, failed, or did not complete before the connect timeout; or the device refused the first write on the link. | No | Ask the user to accept the pairing on both the phone and the device; if the device was reset or paired elsewhere, remove it from the phone's Bluetooth settings first. |
+| `Timeout` | The device did not answer an exchange in time. The transport is closed. | No | Connect again and start over; `pairAccount` with `reconnect` does this once for the reads before the export. |
+| `Internal` | An unexpected failure on this side of the transport. | No | Report it. |
+
+"No" means the flag is `false`: starting again unchanged is not expected to help. For the transport
+failures (`ConnectionFailed`, `Disconnected`, `Timeout`, `DeviceNotFound`), connecting again is the
+recovery, and a new operation over the new transport can then succeed.
+
+Not every failure is a `LedgerException`:
+
+- `CancellationException` from cancelling the calling coroutine, a timeout of the caller's own
+  included, propagates as it is (and closes the transport of an exchange in progress).
+- A transport of the app's own, `onProgress`, and a `pairAccount` `reconnect` function throw whatever
+  they throw; the SDK rethrows it unchanged.
+- Errors from loading the SDK's native library (`UnsatisfiedLinkError` and other `Error`s) are not
+  wrapped.
 
 ## Verifying an address on the device
 
