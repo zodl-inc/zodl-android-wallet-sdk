@@ -312,7 +312,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the Ledger MTU handshake is `LedgerException.ConnectionFailed`, a `SecurityException` from the
   Bluetooth stack while connecting is `LedgerException.BluetoothUnauthorized`, and a connect timeout
   that runs out while Android's pairing flow is still in progress is `LedgerException.PairingRefused`
-  instead of `ConnectionFailed`. Cancelling the caller still propagates as a cancellation.
+  instead of `ConnectionFailed`. A GATT operation of the setup that runs out of its own timeout
+  (service discovery, the subscription) is `ConnectionFailed`, whatever the bond state, and never taken
+  for the connect timeout. Cancelling the caller still propagates as a cancellation, also while the ATT
+  MTU request is pending, and a `SecurityException` from that request is `BluetoothUnauthorized` too.
 - Two synchronizers running in the same process (different aliases) no longer overwrite each
   other's stored transaction submit plans; previously the later writer could drop a plan the
   other had stored, so a created transaction was not resubmitted to the endpoints it was

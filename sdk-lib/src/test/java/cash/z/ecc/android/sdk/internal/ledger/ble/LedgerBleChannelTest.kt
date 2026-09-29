@@ -3,15 +3,19 @@ package cash.z.ecc.android.sdk.internal.ledger.ble
 import cash.z.ecc.android.sdk.exception.LedgerException
 import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerBackend
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -157,5 +161,43 @@ class LedgerBleChannelTest {
             link.close()
 
             assertFailsWith<LedgerException.PairingRefused> { negotiateFrameSize(link, backend, 1.seconds) }
+        }
+
+    /** A link whose writes the Bluetooth stack never confirms, as a GATT write timing out does. */
+    private class StalledWriteLink : LedgerBleLink {
+        override val notifications = Channel<ByteArray>(Channel.UNLIMITED)
+
+        override suspend fun write(frame: ByteArray) {
+            withTimeout(10.milliseconds) { awaitCancellation() }
+        }
+
+        override fun close() = Unit
+    }
+
+    @Test
+    fun a_handshake_write_that_times_out_is_a_connection_failure() =
+        runBlocking<Unit> {
+            val error =
+                assertFailsWith<LedgerException.ConnectionFailed> {
+                    negotiateFrameSize(StalledWriteLink(), backend, 1.seconds)
+                }
+            assertIs<TimeoutCancellationException>(error.cause)
+        }
+
+    @Test
+    fun the_callers_own_timeout_during_the_handshake_write_is_not_a_connection_failure() =
+        runBlocking<Unit> {
+            val link =
+                object : LedgerBleLink {
+                    override val notifications = Channel<ByteArray>(Channel.UNLIMITED)
+
+                    override suspend fun write(frame: ByteArray) = awaitCancellation()
+
+                    override fun close() = Unit
+                }
+
+            assertFailsWith<TimeoutCancellationException> {
+                withTimeout(20.milliseconds) { negotiateFrameSize(link, backend, 1.seconds) }
+            }
         }
 }

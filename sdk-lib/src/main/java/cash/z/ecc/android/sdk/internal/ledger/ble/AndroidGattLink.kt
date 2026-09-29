@@ -22,6 +22,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -212,14 +214,26 @@ internal class AndroidGattLink private constructor(
         }
     }
 
+    /**
+     * Connects and sets up the link. A GATT operation that times out on its own is
+     * [LedgerException.ConnectionFailed]; the enclosing connect timeout, and the caller's own
+     * cancellation, propagate as they are.
+     */
+    private suspend fun connectAndSetUp() {
+        try {
+            connect()
+            setUp()
+        } catch (e: TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive()
+            throw LedgerException.ConnectionFailed(reason = "a Bluetooth operation timed out while connecting", cause = e)
+        }
+    }
+
     @Suppress("ThrowsCount")
     private suspend fun setUp() {
         val gatt = gatt ?: throw LedgerException.Disconnected()
         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-
-        // The firmware caps the ATT MTU at 156; a stack that never answers the request leaves the
-        // default, which the Ledger MTU handshake then reports.
-        runCatching { operation(Operation.MTU, MTU_TIMEOUT) { it.requestMtu(REQUESTED_ATT_MTU) } }
+        requestLargeMtu()
 
         val discovery = operation(Operation.DISCOVER_SERVICES, OPERATION_TIMEOUT) { it.discoverServices() }
         if (discovery != BluetoothGatt.GATT_SUCCESS) {
@@ -235,6 +249,25 @@ internal class AndroidGattLink private constructor(
         )
         subscribe(gatt, service.getCharacteristic(spec.notifyUuid), spec)
         this.model = model
+    }
+
+    /**
+     * Asks for the ATT MTU LedgerHQ's transport asks for; the firmware caps it at 156. A stack that
+     * refuses the request or never answers it leaves the default, which the Ledger MTU handshake then
+     * reports. A [SecurityException] propagates, for [open] to report as
+     * [LedgerException.BluetoothUnauthorized], and so does the caller's cancellation, the enclosing
+     * connect timeout included.
+     */
+    @Suppress("SwallowedException")
+    private suspend fun requestLargeMtu() {
+        try {
+            operation(Operation.MTU, MTU_TIMEOUT) { it.requestMtu(REQUESTED_ATT_MTU) }
+        } catch (e: TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive()
+            Twig.debug { "Ledger BLE ATT MTU request was not answered; keeping the default" }
+        } catch (e: LedgerException) {
+            Twig.debug { "Ledger BLE ATT MTU request failed (${e.javaClass.simpleName}); keeping the default" }
+        }
     }
 
     private fun chooseWriteCharacteristic(
@@ -442,7 +475,15 @@ internal class AndroidGattLink private constructor(
          * An invalid address is [LedgerException.DeviceNotFound] without its exception attached: that
          * exception's message is the address itself.
          *
-         * @throws LedgerException for every failure; the link is closed first.
+         * A [SecurityException] from the Bluetooth stack, a permission revoked or never granted
+         * despite [usableBluetoothAdapter]'s check, is [LedgerException.BluetoothUnauthorized]. When
+         * [connectTimeout] runs out while Android's pairing flow is still running, the user did not
+         * finish pairing: that is [LedgerException.PairingRefused], not a connection failure. A GATT
+         * operation of the setup that runs out of its own, shorter timeout is
+         * [LedgerException.ConnectionFailed], whatever the bond state.
+         *
+         * @throws LedgerException for every failure other than the caller's own cancellation; the link
+         *         is closed first.
          */
         @Suppress("TooGenericExceptionCaught", "SwallowedException", "ThrowsCount")
         suspend fun open(
@@ -457,16 +498,27 @@ internal class AndroidGattLink private constructor(
                 } catch (e: IllegalArgumentException) {
                     throw LedgerException.DeviceNotFound()
                 }
-            val link = AndroidGattLink(context.applicationContext, device)
-            try {
-                withTimeout(connectTimeout) {
-                    link.connect()
-                    link.setUp()
+            val link =
+                try {
+                    AndroidGattLink(context.applicationContext, device)
+                } catch (e: SecurityException) {
+                    throw LedgerException.BluetoothUnauthorized(missingPermissions = emptyList(), cause = e)
                 }
+            try {
+                withTimeout(connectTimeout) { link.connectAndSetUp() }
                 return link
             } catch (e: TimeoutCancellationException) {
+                val pairing = link.bondState.value == BluetoothDevice.BOND_BONDING
                 link.close()
-                throw LedgerException.ConnectionFailed(reason = "connecting timed out", cause = e)
+                currentCoroutineContext().ensureActive()
+                throw if (pairing) {
+                    LedgerException.PairingRefused(reason = "pairing did not complete in time")
+                } else {
+                    LedgerException.ConnectionFailed(reason = "connecting timed out", cause = e)
+                }
+            } catch (e: SecurityException) {
+                link.close()
+                throw LedgerException.BluetoothUnauthorized(missingPermissions = emptyList(), cause = e)
             } catch (e: Throwable) {
                 link.close()
                 throw e
