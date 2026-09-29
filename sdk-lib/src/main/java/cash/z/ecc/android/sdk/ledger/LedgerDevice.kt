@@ -79,10 +79,11 @@ class LedgerDevice internal constructor(
      * the key.
      *
      * The reads before the export (the app version and the device's identity) each have
-     * [readTimeout] to answer; nothing waits on the user there, so a device that does not answer
-     * within it is stalled. When one of them fails on the connection — [LedgerException.Timeout],
-     * [LedgerException.Disconnected], [LedgerException.ConnectionFailed] or
-     * [LedgerException.DeviceNotFound] — and [reconnect] is given, the failed transport is closed,
+     * [readTimeout] to answer. Nothing waits on the user there, so a device that does not answer
+     * within [DEFAULT_PAIRING_READ_TIMEOUT] is stalled; the default is still the engine's normal
+     * timeout, as for every other read. When one of them fails on the connection —
+     * [LedgerException.Timeout], [LedgerException.Disconnected], [LedgerException.ConnectionFailed]
+     * or [LedgerException.DeviceNotFound] — and [reconnect] is given, the failed transport is closed,
      * [reconnect] is called once for a fresh one, and both reads are asked again over it before
      * anything else is sent. A second failure propagates. Once the export command has been sent,
      * nothing is retried: the export waits on the user with no timeout, its continuation keeps the
@@ -95,7 +96,8 @@ class LedgerDevice internal constructor(
      * Import the returned key with [Account.LEDGER_KEY_SOURCE] as its key source, and persist the
      * binding next to the imported account; see [LedgerAccountPairing].
      *
-     * @param readTimeout How long each read before the export may take.
+     * @param readTimeout How long each read before the export may take; the engine's normal timeout
+     *        by default. Pass [DEFAULT_PAIRING_READ_TIMEOUT] to detect a stalled device early.
      * @param reconnect Opens a fresh connection to the same device, for one retry of the reads
      *        before the export; `null` for no retry. It runs while this device holds its lock, which
      *        is not reentrant: it must not call this device, directly or through anything that waits
@@ -108,7 +110,7 @@ class LedgerDevice internal constructor(
      */
     suspend fun pairAccount(
         zip32AccountIndex: Zip32AccountIndex,
-        readTimeout: Duration = DEFAULT_PAIRING_READ_TIMEOUT,
+        readTimeout: Duration = backend.policy.normalTimeout,
         reconnect: (suspend () -> LedgerApduTransport)? = null
     ): LedgerAccountPairing =
         mutex.withLock {
@@ -238,8 +240,9 @@ class LedgerDevice internal constructor(
 
     companion object {
         /**
-         * The default for [pairAccount]'s `readTimeout`: the reads before the export answer at once
-         * on a healthy link, so a device silent this long is stalled.
+         * A [pairAccount] `readTimeout` suited to a pairing: the reads before the export answer at
+         * once on a healthy link, so a device silent this long is stalled. It is not the default,
+         * which is the engine's normal timeout.
          */
         val DEFAULT_PAIRING_READ_TIMEOUT: Duration = 10.seconds
 

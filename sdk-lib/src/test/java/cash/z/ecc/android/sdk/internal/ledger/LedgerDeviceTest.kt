@@ -36,8 +36,6 @@ import kotlin.time.Duration.Companion.seconds
 class LedgerDeviceTest {
     private val account = Zip32AccountIndex.new(0)
 
-    private val pairingReadTimeout = LedgerDevice.DEFAULT_PAIRING_READ_TIMEOUT
-
     private fun pairingReplies(tag: Char = 'a') =
         listOf(ok(1), ok(tag.code.toByte()), ok(), ok(), ok(tag.code.toByte()))
 
@@ -85,9 +83,9 @@ class LedgerDeviceTest {
                 transport.sent.map { it.single() }
             )
             assertEquals(
-                listOf(pairingReadTimeout, pairingReadTimeout, null, NORMAL_TIMEOUT),
+                listOf(NORMAL_TIMEOUT, NORMAL_TIMEOUT, null, NORMAL_TIMEOUT),
                 transport.timeouts,
-                "the reads before the export have the pairing deadline, the export request waits on the user"
+                "the reads before the export keep the engine's timeout by default, the export request waits on the user"
             )
             assertEquals(1, backend.exportsClosed)
             assertFalse(transport.closed)

@@ -111,16 +111,22 @@ val zip32AccountIndex = pairing.binding.zip32AccountIndex.index
 ```
 
 The reads before the export (the app version and the device's identity) answer at once on a healthy
-link, so each gets `readTimeout` (default `LedgerDevice.DEFAULT_PAIRING_READ_TIMEOUT`, 10 s) rather than
-the engine's two minutes. Pass `reconnect`, a function that opens a fresh connection to the same device,
-and a read that fails on the connection (`Timeout`, `Disconnected`, `ConnectionFailed`,
-`DeviceNotFound`) is asked once more over a new transport before anything else is sent; a second failure
-propagates. Nothing is retried once the export command has been sent.
+link, so pass `readTimeout = LedgerDevice.DEFAULT_PAIRING_READ_TIMEOUT` (10 s) to give each of them
+that long rather than the engine's two minutes, the default. Pass `reconnect`, a function that opens a
+fresh connection to the same device, and a read that fails on the connection (`Timeout`,
+`Disconnected`, `ConnectionFailed`, `DeviceNotFound`) is asked once more over a new transport before
+anything else is sent; a second failure propagates. Nothing is retried once the export command has been
+sent.
 
 ```kotlin
 val device = LedgerDevice.new(scanner.connect(ledger), synchronizer.network)
 try {
-    val pairing = device.pairAccount(Zip32AccountIndex.new(0), reconnect = { scanner.connect(ledger) })
+    val pairing =
+        device.pairAccount(
+            Zip32AccountIndex.new(0),
+            readTimeout = LedgerDevice.DEFAULT_PAIRING_READ_TIMEOUT,
+            reconnect = { scanner.connect(ledger) }
+        )
 } finally {
     device.transport.close() // the reconnected transport, if pairAccount reconnected
 }

@@ -66,9 +66,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LedgerException.AppNotInstalled`, when the device has no Zcash app to open, and
   `LedgerException.AppOpenRejected` (restartable), when the user declines opening it on the device.
   A device that does not reach the Zcash app in time fails with `WrongApp`.
-- `LedgerDevice.pairAccount` takes an optional `readTimeout` (default
-  `LedgerDevice.DEFAULT_PAIRING_READ_TIMEOUT`, 10 seconds) for the app version and device identity reads
-  before the export, and an optional `reconnect` function. When one of those reads fails on the
+- `LedgerDevice.pairAccount` takes an optional `readTimeout` for the app version and device identity
+  reads before the export, and an optional `reconnect` function. `readTimeout` defaults to the engine's
+  normal timeout, as those reads had before; `LedgerDevice.DEFAULT_PAIRING_READ_TIMEOUT` (10 seconds)
+  is the value to pass to detect a stalled device early. When one of those reads fails on the
   connection (`Timeout`, `Disconnected`, `ConnectionFailed`, `DeviceNotFound`), the failed transport is
   closed and both reads are asked once more over a transport from `reconnect`; nothing is retried once
   the export command has been sent. The app owns every transport, the reconnected ones included, and
