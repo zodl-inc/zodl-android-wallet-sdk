@@ -256,6 +256,7 @@ internal class VotingDbSessionImpl(
 
     override suspend fun openRoundSession(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         proposals: List<VotingProposalRosterEntry>,
         hotkeySecret: ByteArray?,
@@ -280,7 +281,7 @@ internal class VotingDbSessionImpl(
                     voteTreeNodeUrls = voteTreeNodeUrls,
                     ceremonyStartSeconds = ceremonyStartSeconds ?: UNKNOWN_TIME_SECONDS,
                     voteEndTimeSeconds = voteEndTimeSeconds ?: UNKNOWN_TIME_SECONDS,
-                    isCustomServer = false
+                    isCustomServer = isCustomServer
                 ),
             torLease = torLease
         )

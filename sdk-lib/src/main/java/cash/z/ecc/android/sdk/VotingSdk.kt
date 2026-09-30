@@ -350,6 +350,7 @@ interface VotingDbSession {
     @Suppress("LongParameterList")
     suspend fun openRoundSession(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         proposals: List<VotingProposalRosterEntry>,
         hotkeySecret: ByteArray?,

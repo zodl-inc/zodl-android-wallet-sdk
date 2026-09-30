@@ -334,7 +334,8 @@ class TypesafeVotingBackendImplTest {
                 configuredHelperUrls = listOf("https://helper.example"),
                 voteTreeNodeUrls = listOf("https://tree.example"),
                 ceremonyStartSeconds = -1,
-                voteEndTimeSeconds = -1
+                voteEndTimeSeconds = -1,
+                isCustomServer = false
             )
 
             assertEquals(7L, dbBackend.openRoundSessionTorRuntime)
@@ -372,7 +373,8 @@ class TypesafeVotingBackendImplTest {
                     configuredHelperUrls = emptyList(),
                     voteTreeNodeUrls = emptyList(),
                     ceremonyStartSeconds = -1,
-                    voteEndTimeSeconds = -1
+                    voteEndTimeSeconds = -1,
+                    isCustomServer = false
                 )
 
             assertEquals(plan, session.getRoundPlan())
