@@ -937,12 +937,8 @@ mod tests {
     #[test]
     fn resolve_session_route_tor_off_pir_with_trailing_slash() {
         // Host parsing must tolerate trailing slashes in URLs
-        let route = resolve_session_route(
-            0,
-            false,
-            "https://lb-pir-primary.valargroup.org/",
-        )
-        .expect("should handle trailing slash");
+        let route = resolve_session_route(0, false, "https://lb-pir-primary.valargroup.org/")
+            .expect("should handle trailing slash");
         assert!(matches!(route, SessionRoute::Ohttp(_)));
     }
 }
