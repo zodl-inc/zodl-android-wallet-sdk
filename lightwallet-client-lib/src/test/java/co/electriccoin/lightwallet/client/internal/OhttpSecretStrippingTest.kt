@@ -70,6 +70,25 @@ class OhttpSecretStrippingTest {
     }
 
     @Test
+    fun `stripSecretsForGateway strips secret headers regardless of casing`() {
+        // HTTP header names are case-insensitive (RFC 9110 §5.1) -- a caller sending a
+        // differently-cased variant of a secret header must still be caught.
+        val headers =
+            listOf(
+                "content-type" to "application/json",
+                "authorization" to "Bearer secret-token",
+                "x-cmc_pro_api_key" to "secret-key",
+            )
+        val logged = mutableListOf<String>()
+        val stripped = stripSecretsForGateway("near.zodl.com", headers) { logged.add(it) }
+
+        assertEquals(1, stripped.size)
+        assertEquals("content-type", stripped[0].first)
+        assertEquals(1, logged.size)
+        assert(logged[0].contains("authorization"))
+    }
+
+    @Test
     fun `stripSecretsForGateway removes both secrets when both present`() {
         val headers =
             listOf(

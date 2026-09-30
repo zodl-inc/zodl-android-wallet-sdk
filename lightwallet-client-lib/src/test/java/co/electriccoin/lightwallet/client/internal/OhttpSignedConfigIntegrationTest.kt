@@ -130,6 +130,8 @@ class OhttpSignedConfigIntegrationTest {
         private var getIndex = 0
         private var postIndex = 0
 
+        override suspend fun dispose() = Unit
+
         override suspend fun get(
             url: String,
             headers: List<Pair<String, String>>,

@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.JniHttpHeader
+import cash.z.ecc.android.sdk.internal.model.JniHttpResponseBytes
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.internal.OhttpException
@@ -25,8 +26,11 @@ class TorOhttpSender(
         // want the Tor client retrying on top of that (would multiply total attempts).
         val response = torClient.httpPost(url, jniHeaders, body, retryLimit = 0)
         if (response.status != HttpURLConnection.HTTP_OK) {
+            // The error body carries the gateway's problem-details JSON (e.g. type "ohttp-key"),
+            // which OhttpTransport.roundTrip's 422 branch matches on via the message text -- omitting
+            // it here (as this used to) silently broke key-rotation recovery on the Tor path only.
             throw OhttpException(
-                "Relay/gateway returned HTTP ${response.status} (Tor path)",
+                "Relay/gateway returned HTTP ${response.status} (Tor path)${response.errorDetail()}",
                 response.status
             )
         }
@@ -43,12 +47,31 @@ class TorOhttpSender(
         val response = torClient.httpGet(url, jniHeaders, retryLimit = 0)
         if (response.status != HttpURLConnection.HTTP_OK) {
             throw OhttpException(
-                "GET request failed: HTTP ${response.status} (Tor path)",
+                "GET request failed: HTTP ${response.status} (Tor path)${response.errorDetail()}",
                 response.status
             )
         }
         return response.body.requireWithinResponseSizeLimit()
     }
+
+    /**
+     * Releases the isolated [TorClient] this sender wraps (see [cash.z.ecc.android.sdk.Synchronizer.getTorClient]
+     * -- each call creates a fresh isolated native Tor handle). The caller of
+     * [cash.z.ecc.android.sdk.Synchronizer.ohttpSenderOverTor] owns this sender and must dispose it
+     * once it is replaced (e.g. the Tor preference toggles) or no longer needed, or the underlying
+     * native Tor runtime handle leaks for the rest of the process lifetime.
+     */
+    override suspend fun dispose() = torClient.dispose()
+
+    /**
+     * Renders the JNI response body as `": <detail>"` for use in an [OhttpException] message, or
+     * "" if empty. Mirrors [co.electriccoin.lightwallet.client.internal.DirectOhttpSender]'s
+     * error-stream handling so callers (e.g. [co.electriccoin.lightwallet.client.internal.OhttpTransport]'s
+     * 422 ohttp-key retry branch, which matches on message text) see the same gateway error detail
+     * regardless of whether Tor is on.
+     */
+    private fun JniHttpResponseBytes.errorDetail(): String =
+        body.toString(Charsets.UTF_8).take(ERROR_MESSAGE_MAX_LENGTH).let { if (it.isEmpty()) "" else ": $it" }
 
     /**
      * `torClient.httpPost`/`httpGet` cross the JNI boundary as an already-fully-materialized
@@ -67,5 +90,8 @@ class TorOhttpSender(
     private companion object {
         // Matches DirectOhttpSender.MAX_RESPONSE_SIZE_BYTES.
         const val MAX_RESPONSE_SIZE_BYTES = 64 * 1024 * 1024
+
+        // Matches DirectOhttpSender.ERROR_MESSAGE_MAX_LENGTH.
+        const val ERROR_MESSAGE_MAX_LENGTH = 200
     }
 }

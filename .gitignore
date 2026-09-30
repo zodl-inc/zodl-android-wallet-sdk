@@ -105,3 +105,7 @@ backup-dbs/
 # Design docs, implementation plans, and other working notes. These are
 # conversation artifacts rather than repository history.
 .plans/
+
+# Standalone ktlint CLI binary/jar, sometimes downloaded to the repo root for local ad-hoc
+# formatting. Never meant to be committed (accidentally tracked once, ~71MB).
+/ktlint

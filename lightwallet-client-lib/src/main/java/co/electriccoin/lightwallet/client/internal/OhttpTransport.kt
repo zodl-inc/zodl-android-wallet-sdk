@@ -213,9 +213,12 @@ internal fun stripSecretsForGateway(
     logger: (String) -> Unit,
 ): List<Pair<String, String>> {
     if (authority !in SECRET_INJECTING_GATEWAY_HOSTS) return headers
-    val stripped = headers.filter { (key, _) -> key !in SECRET_HEADERS }
+    // HTTP header names are case-insensitive (RFC 9110 §5.1) -- a caller sending e.g.
+    // "authorization" or "x-cmc_pro_api_key" must be caught the same as the canonical casing.
+    val isSecretHeader = { key: String -> SECRET_HEADERS.any { it.equals(key, ignoreCase = true) } }
+    val stripped = headers.filterNot { (key, _) -> isSecretHeader(key) }
     if (stripped.size < headers.size) {
-        val removed = headers.filter { (key, _) -> key in SECRET_HEADERS }.map { it.first }
+        val removed = headers.filter { (key, _) -> isSecretHeader(key) }.map { it.first }
         logger(
             "OHTTP: stripped secret headers $removed for gateway-mapped host $authority " +
                 "(gateway injects server-side)",

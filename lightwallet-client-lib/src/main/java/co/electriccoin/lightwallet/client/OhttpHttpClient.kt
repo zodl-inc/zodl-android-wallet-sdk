@@ -10,6 +10,7 @@ import co.electriccoin.lightwallet.client.internal.PROXY_RELAY_URL
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import co.electriccoin.lightwallet.client.internal.proxyGatewayHostFor
 import co.electriccoin.lightwallet.client.internal.stripSecretsForGateway
+import co.electriccoin.lightwallet.client.util.Disposable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URI
@@ -22,7 +23,7 @@ class OhttpHttpClient private constructor(
      * for details.
      */
     private val ohttpClientTraceIdPrefix: String? = null,
-) {
+) : Disposable {
     // F-07 fix: Reuse OhttpTransport instance to share key cache across requests
     private val transport =
         OhttpTransport(
@@ -132,4 +133,12 @@ class OhttpHttpClient private constructor(
         )
         return Response(status = bRes.status, body = bRes.body)
     }
+
+    /**
+     * Releases the underlying [sender] (e.g. a Tor-backed sender's isolated native `TorClient`).
+     * Callers that cache an [OhttpHttpClient] and rebuild it on a Tor-preference change (see
+     * `HttpClientProviderImpl.createOhttp` in the app) must dispose the outgoing instance before
+     * dropping their reference, or the previous sender's native resources leak.
+     */
+    override suspend fun dispose() = sender.dispose()
 }

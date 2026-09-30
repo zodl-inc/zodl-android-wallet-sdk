@@ -1915,6 +1915,23 @@ class SlipstreamSynchronizer internal constructor(
              * path, so its creation (~1s) is deferred to first use via [LazyTorClient].
              */
             val lazyTorClient = LazyTorClient { TorClient.new(Files.getTorDir(applicationContext), backend, ohttpClientTraceIdPrefix) }
+
+            // With Tor on, Sapling params (up to 50MB) must not leak the real IP to GitHub right
+            // before a spend/proof -- see SaplingParams.ensureDownloaded's doc comment.
+            val saplingParamsTorHttpClientProvider: (suspend () -> HttpClient)? =
+                if (isTorEnabled) {
+                    {
+                        val isolatedTor = lazyTorClient.getOrCreate().isolatedTorClient()
+                        HttpClient(TorHttp) {
+                            engine {
+                                tor = isolatedTor
+                                retryLimit = 1
+                            }
+                        }
+                    }
+                } else {
+                    null
+                }
             val exchangeRateFetcher =
                 if (isExchangeRateEnabled) {
                     UsdExchangeRateFetcher(
@@ -1949,7 +1966,9 @@ class SlipstreamSynchronizer internal constructor(
                     walletClient = walletClient,
                     engine = engine,
                     sdkFlags = sdkFlags,
-                    ensureSaplingParams = { SaplingParams.ensureDownloaded(saplingParamsDir) },
+                    ensureSaplingParams = {
+                        SaplingParams.ensureDownloaded(saplingParamsDir, saplingParamsTorHttpClientProvider)
+                    },
                     readRawTransaction = transactionReader::readRawTransaction
                 )
 
@@ -1966,7 +1985,8 @@ class SlipstreamSynchronizer internal constructor(
                     engine = engine,
                     planStore = SubmitPlanStore(submitPlanPreferences),
                     saplingParamsDir = saplingParamsDir,
-                    transactionReader = transactionReader
+                    transactionReader = transactionReader,
+                    saplingParamsTorHttpClientProvider = saplingParamsTorHttpClientProvider
                 )
 
             val resubmissionTicker =

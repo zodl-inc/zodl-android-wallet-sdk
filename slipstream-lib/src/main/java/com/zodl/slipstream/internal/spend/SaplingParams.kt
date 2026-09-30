@@ -3,6 +3,10 @@
 package com.zodl.slipstream.internal.spend
 
 import androidx.annotation.VisibleForTesting
+import io.ktor.client.HttpClient
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.utils.io.jvm.javaio.toInputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -10,6 +14,7 @@ import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.channels.Channels
 import java.security.MessageDigest
 
 /** Where the Sapling proving parameters live once fetched, for [Backend][cash.z.ecc.android.sdk.internal.Backend] construction. */
@@ -39,25 +44,36 @@ internal object SaplingParams {
     private const val MAX_DOWNLOAD_ATTEMPTS = 3
     private const val INITIAL_RETRY_BACKOFF_MS = 1_000L
 
-    suspend fun ensureDownloaded(destinationDir: File): SaplingParamPaths =
+    /**
+     * @param torHttpClientProvider when non-null (Tor enabled), the download is routed through
+     * Tor instead of direct HTTPS -- matching [cash.z.ecc.android.sdk.internal.SaplingParamTool]'s
+     * behavior. This runs right before proving/tx creation, so with Tor on and this left
+     * unset it would silently leak the user's real IP to GitHub at exactly the moment a spend is
+     * being prepared -- a strong, precisely-timed deanonymization signal.
+     */
+    suspend fun ensureDownloaded(
+        destinationDir: File,
+        torHttpClientProvider: (suspend () -> HttpClient)? = null
+    ): SaplingParamPaths =
         withContext(Dispatchers.IO) {
             destinationDir.mkdirs()
             val spendFile = File(destinationDir, SPEND_FILE_NAME)
             val outputFile = File(destinationDir, OUTPUT_FILE_NAME)
-            ensureFile(spendFile, SPEND_SHA256, SPEND_MAX_SIZE_BYTES)
-            ensureFile(outputFile, OUTPUT_SHA256, OUTPUT_MAX_SIZE_BYTES)
+            ensureFile(spendFile, SPEND_SHA256, SPEND_MAX_SIZE_BYTES, torHttpClientProvider)
+            ensureFile(outputFile, OUTPUT_SHA256, OUTPUT_MAX_SIZE_BYTES, torHttpClientProvider)
             SaplingParamPaths(spendFile, outputFile)
         }
 
     private suspend fun ensureFile(
         file: File,
         expectedSha256: String,
-        maxSizeBytes: Long
+        maxSizeBytes: Long,
+        torHttpClientProvider: (suspend () -> HttpClient)?
     ) {
         if (file.exists() && file.length() in 1..maxSizeBytes && sha256Of(file).equals(expectedSha256, ignoreCase = true)) {
             return
         }
-        retryOnIOException { download(file, maxSizeBytes) }
+        retryOnIOException { download(file, maxSizeBytes, torHttpClientProvider) }
         check(sha256Of(file).equals(expectedSha256, ignoreCase = true)) {
             "SHA-256 mismatch downloading ${file.name}: expected $expectedSha256"
         }
@@ -96,27 +112,53 @@ internal object SaplingParams {
         }
     }
 
-    private fun download(
+    private suspend fun download(
         file: File,
-        maxSizeBytes: Long
+        maxSizeBytes: Long,
+        torHttpClientProvider: (suspend () -> HttpClient)?
     ) {
-        val connection = URL(BASE_URL + file.name).openConnection() as HttpURLConnection
+        val partialFile = File(file.parentFile, "${file.name}.part")
+        val copied =
+            if (torHttpClientProvider != null) {
+                downloadViaTor(torHttpClientProvider(), file.name, partialFile, maxSizeBytes)
+            } else {
+                downloadDirect(file.name, partialFile)
+            }
+        check(copied <= maxSizeBytes) { "${file.name} exceeded its expected maximum size" }
+        check(partialFile.renameTo(file)) { "Failed to move downloaded ${file.name} into place" }
+    }
+
+    private fun downloadDirect(
+        fileName: String,
+        partialFile: File
+    ): Long {
+        val connection = URL(BASE_URL + fileName).openConnection() as HttpURLConnection
         try {
             connection.connectTimeout = CONNECT_TIMEOUT_MS
             connection.readTimeout = READ_TIMEOUT_MS
             check(connection.responseCode == HttpURLConnection.HTTP_OK) {
-                "Unexpected response ${connection.responseCode} downloading ${file.name}"
+                "Unexpected response ${connection.responseCode} downloading $fileName"
             }
-            val partialFile = File(file.parentFile, "${file.name}.part")
-            connection.inputStream.use { input ->
-                partialFile.outputStream().use { output ->
-                    val copied = input.copyTo(output)
-                    check(copied <= maxSizeBytes) { "${file.name} exceeded its expected maximum size" }
-                }
+            return connection.inputStream.use { input ->
+                partialFile.outputStream().use { output -> input.copyTo(output) }
             }
-            check(partialFile.renameTo(file)) { "Failed to move downloaded ${file.name} into place" }
         } finally {
             connection.disconnect()
+        }
+    }
+
+    private suspend fun downloadViaTor(
+        client: HttpClient,
+        fileName: String,
+        partialFile: File,
+        maxSizeBytes: Long
+    ): Long {
+        val response = client.get(BASE_URL + fileName)
+        val readableByteChannel = Channels.newChannel(response.bodyAsChannel().toInputStream())
+        // +1 lets a too-large response still fail the caller's size check above instead of
+        // silently truncating at exactly maxSizeBytes.
+        return readableByteChannel.use { source ->
+            partialFile.outputStream().channel.use { destination -> destination.transferFrom(source, 0, maxSizeBytes + 1) }
         }
     }
 

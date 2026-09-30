@@ -98,6 +98,8 @@ class OhttpHttpClientTest {
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
             object : OhttpSender {
+                override suspend fun dispose() = Unit
+
                 override suspend fun post(
                     url: String,
                     body: ByteArray,
@@ -151,6 +153,8 @@ class OhttpHttpClientTest {
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
             object : OhttpSender {
+                override suspend fun dispose() = Unit
+
                 override suspend fun post(
                     url: String,
                     body: ByteArray,
@@ -234,6 +238,8 @@ class OhttpHttpClientTest {
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
             object : OhttpSender {
+                override suspend fun dispose() = Unit
+
                 override suspend fun post(
                     url: String,
                     body: ByteArray,
@@ -300,6 +306,8 @@ class OhttpHttpClientTest {
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
             object : OhttpSender {
+                override suspend fun dispose() = Unit
+
                 override suspend fun post(
                     url: String,
                     body: ByteArray,
@@ -359,6 +367,8 @@ class OhttpHttpClientTest {
         val capturedGetHeaders = mutableListOf<List<Pair<String, String>>>()
         val mockSender =
             object : OhttpSender {
+                override suspend fun dispose() = Unit
+
                 override suspend fun post(
                     url: String,
                     body: ByteArray,
@@ -411,6 +421,8 @@ class OhttpHttpClientTest {
         var postCallCount = 0
         val mockSender =
             object : OhttpSender {
+                override suspend fun dispose() = Unit
+
                 override suspend fun post(
                     url: String,
                     body: ByteArray,

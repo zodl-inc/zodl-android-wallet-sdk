@@ -16,6 +16,7 @@ import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
+import io.ktor.client.HttpClient
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -44,13 +45,15 @@ internal class SlipstreamBroadcaster(
     private val engine: SlipstreamEngine,
     private val planStore: SubmitPlanStore,
     private val saplingParamsDir: File,
-    private val transactionReader: SlipstreamTransactionReader
+    private val transactionReader: SlipstreamTransactionReader,
+    /** Non-null when Tor is enabled; see [SaplingParams.ensureDownloaded]. */
+    private val saplingParamsTorHttpClientProvider: (suspend () -> HttpClient)? = null
 ) : Broadcaster {
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey
     ): List<CreatedTransaction> {
-        SaplingParams.ensureDownloaded(saplingParamsDir)
+        SaplingParams.ensureDownloaded(saplingParamsDir, saplingParamsTorHttpClientProvider)
         val txIds = backend.createProposedTransactions(proposal.toUnsafe(), usk.copyBytes())
         val created = txIds.map { txId -> storeAsAwaitingSubmission(FirstClassByteArray(txId)) }
         engine.notifyTxChange()

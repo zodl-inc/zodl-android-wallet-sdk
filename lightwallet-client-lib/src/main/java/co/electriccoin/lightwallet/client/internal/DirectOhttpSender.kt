@@ -70,6 +70,10 @@ class DirectOhttpSender : OhttpSender {
         }
     }
 
+    // Each connection is already closed in its own request's `finally { connection.disconnect() }`
+    // -- there is no cross-request resource to release, unlike TorOhttpSender's wrapped TorClient.
+    override suspend fun dispose() = Unit
+
     private fun open(
         url: String,
         timeoutMs: Int,
