@@ -6,6 +6,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **OHTTP transport for voting round driver.** When Tor is OFF and the round uses
+  predefined vote servers (not custom user-added servers), the round driver now
+  routes HTTP requests (vote commitments, shares, delegation, tree sync) through
+  the OHTTP gateway for privacy (the vote/helper servers see only the gateway's IP,
+  not the user's). Custom servers continue to use direct routing by design (user
+  decision to use a custom endpoint implies accepting direct routing). This mirrors
+  the app's existing OHTTP routing for voting read operations and matches iOS's
+  upcoming implementation. `openRoundSessionNative` gains a new `is_custom_server`
+  parameter (`jboolean`) to distinguish predefined from custom servers; callers
+  must pass `true` for custom servers (from `pinnedSource` config field) or `false`
+  for predefined servers. PIR delegation endpoints are NOT yet OHTTP-routed (they
+  require separate gateway BACKENDS entries).
+
 ## [5.0.0] - 2026-09-25
 
 ### Added

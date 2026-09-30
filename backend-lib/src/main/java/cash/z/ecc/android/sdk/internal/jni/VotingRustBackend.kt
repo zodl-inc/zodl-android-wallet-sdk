@@ -563,12 +563,17 @@ class VotingRustBackend private constructor() {
 
         /**
          * Opens a round session: binds a `RoundExecutor` to [roundId]'s roster and hotkey, wires
-         * its chain-submission and helper transports through [torRuntime], and registers it.
+         * its chain-submission and helper transports, and registers it.
          * See `openRoundSessionNative`'s doc comment in
          * `backend-lib/src/main/rust/voting/round_session.rs`.
          *
          * [hotkeySecret] may be `null` before a hotkey is bound. [ceremonyStartSeconds]/
          * [voteEndTimeSeconds] `< 0` decode to "not yet known".
+         *
+         * [isCustomServer]: `true` if the vote servers are from a user-selected custom voting config
+         * (pinnedSource field), `false` if they're predefined (bundled static config + ZODL's dynamic
+         * config). Determines routing when Tor is OFF: custom servers use direct clearnet routing
+         * (user decision), predefined servers use OHTTP gateway routing for privacy.
          */
         @Suppress("LongParameterList")
         @Throws(RuntimeException::class)
@@ -583,7 +588,8 @@ class VotingRustBackend private constructor() {
             configuredHelperUrls: List<String>,
             voteTreeNodeUrls: List<String>,
             ceremonyStartSeconds: Long,
-            voteEndTimeSeconds: Long
+            voteEndTimeSeconds: Long,
+            isCustomServer: Boolean
         ): RoundSession =
             withHandle { handle ->
                 openRoundSessionNative(
@@ -598,7 +604,8 @@ class VotingRustBackend private constructor() {
                     configuredHelperUrls.toTypedArray(),
                     voteTreeNodeUrls.toTypedArray(),
                     ceremonyStartSeconds,
-                    voteEndTimeSeconds
+                    voteEndTimeSeconds,
+                    isCustomServer
                 ).let { sessionHandle ->
                     check(sessionHandle != 0L) {
                         "openRoundSession failed for roundId=$roundId"
@@ -1201,7 +1208,8 @@ class VotingRustBackend private constructor() {
             configuredHelperUrls: Array<String>,
             voteTreeNodeUrls: Array<String>,
             ceremonyStartSeconds: Long,
-            voteEndTimeSeconds: Long
+            voteEndTimeSeconds: Long,
+            isCustomServer: Boolean
         ): Long
 
         @JvmStatic
