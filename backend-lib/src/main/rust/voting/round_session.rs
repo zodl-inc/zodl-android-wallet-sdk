@@ -941,4 +941,29 @@ mod tests {
             .expect("should handle trailing slash");
         assert!(matches!(route, SessionRoute::Ohttp(_)));
     }
+
+    #[test]
+    fn resolve_session_route_tor_off_custom_server_pir_not_in_list_uses_direct() {
+        // Custom voting configs can have PIR endpoints not in OHTTP_VOTE_HOSTS.
+        // With Tor OFF + is_custom_server=true, these must route to Direct (user decision
+        // to use custom server), not fail closed. This is the privacy/usability tradeoff
+        // for custom servers: user accepts direct routing by choosing a custom endpoint.
+        let custom_pir_url = "https://custom-pir.example.com/api/pir";
+        let route = resolve_session_route(
+            0,    // Tor OFF
+            true, // is_custom_server (from custom voting config)
+            custom_pir_url,
+        )
+        .expect("custom server PIR endpoint should resolve to Direct when Tor OFF");
+
+        assert!(
+            matches!(route, SessionRoute::Direct(_)),
+            "Custom server PIR endpoint with Tor OFF must use Direct, got {}",
+            match route {
+                SessionRoute::Tor(_) => "Tor",
+                SessionRoute::Ohttp(_) => "Ohttp",
+                SessionRoute::Direct(_) => "Direct",
+            }
+        );
+    }
 }

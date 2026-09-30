@@ -248,6 +248,7 @@ interface VotingDbSession {
      */
     suspend fun precomputePirProofs(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -281,6 +282,7 @@ interface VotingDbSession {
      */
     suspend fun precomputeSnapshotBundles(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,

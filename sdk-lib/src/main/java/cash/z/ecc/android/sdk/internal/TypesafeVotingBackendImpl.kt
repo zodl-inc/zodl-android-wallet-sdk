@@ -392,6 +392,7 @@ private class RustVotingDbBackend(
 
     override suspend fun precomputePirProofs(
         torRuntime: Long,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -401,6 +402,7 @@ private class RustVotingDbBackend(
     ): JniPirPrecomputeResult =
         votingDb.precomputePirProofs(
             torRuntime,
+            isCustomServer,
             pirServerUrl,
             pirDepth,
             pirTier0Layers,
@@ -411,6 +413,7 @@ private class RustVotingDbBackend(
 
     override suspend fun precomputeSnapshotBundles(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -421,6 +424,7 @@ private class RustVotingDbBackend(
     ): JniSnapshotBundlePrecomputeReport =
         votingDb.precomputeSnapshotBundles(
             torRuntime,
+            isCustomServer,
             roundId,
             pirServerUrl,
             pirDepth,
@@ -634,6 +638,7 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun precomputePirProofs(
         torRuntime: Long,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -644,6 +649,7 @@ internal class TypesafeVotingDbImpl(
         votingDb
             .precomputePirProofs(
                 torRuntime,
+                isCustomServer,
                 pirServerUrl,
                 pirDepth,
                 pirTier0Layers,
@@ -654,6 +660,7 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun precomputeSnapshotBundles(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -665,6 +672,7 @@ internal class TypesafeVotingDbImpl(
         votingDb
             .precomputeSnapshotBundles(
                 torRuntime,
+                isCustomServer,
                 roundId,
                 pirServerUrl,
                 pirDepth,

@@ -435,6 +435,7 @@ class VotingRustBackend private constructor() {
         @Throws(RuntimeException::class)
         suspend fun precomputePirProofs(
             torRuntime: Long,
+            isCustomServer: Boolean,
             pirServerUrl: String,
             pirDepth: Int,
             pirTier0Layers: Int,
@@ -446,6 +447,7 @@ class VotingRustBackend private constructor() {
                 precomputePirProofsNative(
                     handle,
                     torRuntime,
+                    isCustomServer,
                     pirServerUrl,
                     pirDepth,
                     pirTier0Layers,
@@ -480,6 +482,7 @@ class VotingRustBackend private constructor() {
         @Throws(RuntimeException::class)
         suspend fun precomputeSnapshotBundles(
             torRuntime: Long,
+            isCustomServer: Boolean,
             roundId: String,
             pirServerUrl: String,
             pirDepth: Int,
@@ -492,6 +495,7 @@ class VotingRustBackend private constructor() {
                 precomputeSnapshotBundlesNative(
                     handle,
                     torRuntime,
+                    isCustomServer,
                     roundId,
                     pirServerUrl,
                     pirDepth,
@@ -1120,6 +1124,7 @@ class VotingRustBackend private constructor() {
         private external fun precomputePirProofsNative(
             dbHandle: Long,
             torRuntime: Long,
+            isCustomServer: Boolean,
             pirServerUrl: String,
             pirDepth: Int,
             pirTier0Layers: Int,
@@ -1133,6 +1138,7 @@ class VotingRustBackend private constructor() {
         private external fun precomputeSnapshotBundlesNative(
             dbHandle: Long,
             torRuntime: Long,
+            isCustomServer: Boolean,
             roundId: String,
             pirServerUrl: String,
             pirDepth: Int,

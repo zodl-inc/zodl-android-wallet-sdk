@@ -188,6 +188,7 @@ internal class VotingDbSessionImpl(
 
     override suspend fun precomputePirProofs(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -198,6 +199,7 @@ internal class VotingDbSessionImpl(
         db
             .precomputePirProofs(
                 torLease.rawHandle(),
+                isCustomServer,
                 pirServerUrl,
                 pirDepth,
                 pirTier0Layers,
@@ -208,6 +210,7 @@ internal class VotingDbSessionImpl(
 
     override suspend fun precomputeSnapshotBundles(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -219,6 +222,7 @@ internal class VotingDbSessionImpl(
         db
             .precomputeSnapshotBundles(
                 torLease.rawHandle(),
+                isCustomServer,
                 roundId,
                 pirServerUrl,
                 pirDepth,
