@@ -900,4 +900,49 @@ mod tests {
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("Cannot reach predefined vote server"));
     }
+
+    #[test]
+    fn resolve_session_route_tor_off_pir_endpoints_use_ohttp() {
+        // PIR endpoints with Tor OFF must route through OHTTP, never Direct.
+        // This is the privacy guarantee: Tor-off predefined-server delegation
+        // traffic must not expose the user's IP to PIR servers.
+        let pir_endpoints = vec![
+            "https://lb-pir-primary.valargroup.org/root",
+            "https://lb-pir-backup.valargroup.org/api",
+            "https://zpir-1.stardust.rest/pir",
+        ];
+
+        for endpoint in pir_endpoints {
+            let route = resolve_session_route(
+                0,     // Tor OFF
+                false, // is_custom_server (predefined PIR endpoint)
+                endpoint,
+            )
+            .unwrap_or_else(|e| panic!("PIR endpoint {} should resolve to OHTTP: {}", endpoint, e));
+
+            // Must be OHTTP, never Direct
+            assert!(
+                matches!(route, SessionRoute::Ohttp(_)),
+                "PIR endpoint {} with Tor OFF must use SessionRoute::Ohttp, got {:?}",
+                endpoint,
+                match route {
+                    SessionRoute::Tor(_) => "Tor",
+                    SessionRoute::Ohttp(_) => "Ohttp",
+                    SessionRoute::Direct(_) => "Direct",
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_session_route_tor_off_pir_with_trailing_slash() {
+        // Host parsing must tolerate trailing slashes in URLs
+        let route = resolve_session_route(
+            0,
+            false,
+            "https://lb-pir-primary.valargroup.org/",
+        )
+        .expect("should handle trailing slash");
+        assert!(matches!(route, SessionRoute::Ohttp(_)));
+    }
 }
