@@ -242,8 +242,8 @@ crate-type = ["staticlib", "cdylib"]
 # The slipstream engine's OHTTP transport lives in slipstream-internal until upstreamed to
 # the public repo and published. Git dependency on the feature/ohttp-http-round-trip branch (PR #19).
 # Once 0.3.0 is published to crates.io, revert to a version pin.
-# Rev 79c26a8f: http_round_trip() relay-only test + clean rustdoc warnings
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "79c26a8f931ee1f1e679a83b5c7d3f3c42e5c753" }
+# Branch feature/ohttp-http-round-trip (PR #19): http_round_trip() + behavioral relay-only test
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", branch = "feature/ohttp-http-round-trip" }
 # `slipstream-core` is deliberately absent here: since the engine's history rewrite to the
 # published `zodl-slipstream` 0.1.x line, the dependency above resolves from crates.io like
 # the rest of the released family — the old git pin was not dropped by accident.
