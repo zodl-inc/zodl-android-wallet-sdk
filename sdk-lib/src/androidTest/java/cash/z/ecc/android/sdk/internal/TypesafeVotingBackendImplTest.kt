@@ -124,6 +124,7 @@ class TypesafeVotingBackendImplTest {
             val result =
                 db.precomputePirProofs(
                     torRuntime = 0,
+                    isCustomServer = false,
                     pirServerUrl = "https://pir.example",
                     pirDepth = 1,
                     pirTier0Layers = 1,
@@ -172,6 +173,7 @@ class TypesafeVotingBackendImplTest {
             val result =
                 db.precomputeSnapshotBundles(
                     torRuntime = 0,
+                    isCustomServer = false,
                     roundId = "round-1",
                     pirServerUrl = "https://pir.example",
                     pirDepth = 1,
@@ -753,7 +755,8 @@ class TypesafeVotingBackendImplTest {
             configuredHelperUrls: List<String>,
             voteTreeNodeUrls: List<String>,
             ceremonyStartSeconds: Long,
-            voteEndTimeSeconds: Long
+            voteEndTimeSeconds: Long,
+            isCustomServer: Boolean
         ): RoundSessionBackend {
             openRoundSessionTorRuntime = torRuntime
             openRoundSessionRoundId = roundId
