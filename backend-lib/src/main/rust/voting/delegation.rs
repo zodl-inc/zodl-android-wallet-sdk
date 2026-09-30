@@ -25,7 +25,9 @@ fn connect_pir_client(
     pir_layout: voting::config::PirLayout,
     tor_runtime: jlong,
 ) -> anyhow::Result<voting::PirClientBlocking> {
-    let route = super::round_session::resolve_session_route(tor_runtime);
+    // PIR endpoints are predefined (not custom user servers), so is_custom_server=false.
+    // With Tor OFF, predefined PIR endpoints route through OHTTP for privacy.
+    let route = super::round_session::resolve_session_route(tor_runtime, false, pir_url)?;
     voting::connect_pir_blocking(
         pir_layout,
         pir_url,

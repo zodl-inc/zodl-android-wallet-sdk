@@ -897,7 +897,7 @@ mod tests {
             "https://unsupported.example.com/api/vote",
         );
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = result.err().unwrap().to_string();
         assert!(err_msg.contains("Cannot reach predefined vote server"));
     }
 
@@ -923,7 +923,7 @@ mod tests {
             // Must be OHTTP, never Direct
             assert!(
                 matches!(route, SessionRoute::Ohttp(_)),
-                "PIR endpoint {} with Tor OFF must use SessionRoute::Ohttp, got {:?}",
+                "PIR endpoint {} with Tor OFF must use SessionRoute::Ohttp, got {}",
                 endpoint,
                 match route {
                     SessionRoute::Tor(_) => "Tor",
