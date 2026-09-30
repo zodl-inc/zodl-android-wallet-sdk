@@ -21,15 +21,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same policy (predefined → OHTTP when Tor OFF, custom → Direct).
 
 ### Changed
-- **Breaking: `VotingSdk.precomputePirProofs` and `VotingSdk.precomputeSnapshotBundles`
-  gain a required `isCustomServer: Boolean` parameter.** Callers must pass `true` for
-  custom voting configs (with custom PIR endpoints from `pinnedSource`) or `false` for
-  predefined servers. This routes PIR delegation traffic the same way as voting traffic:
-  Tor OFF + predefined server → OHTTP (the relay sees the client IP but not the request;
-  the gateway and PIR server never see the client IP); Tor OFF + custom server → Direct
-  (user decision to use custom endpoint implies accepting direct routing). Without this
-  parameter, custom configs with PIR endpoints not in the gateway's allowlist would fail
-  closed instead of routing Direct.
+- **Breaking: `VotingSdk.precomputeDelegationPir`, `VotingSdk.precomputePirProofs`, and
+  `VotingSdk.precomputeSnapshotBundles` gain a required `isCustomServer: Boolean` parameter.**
+  Callers must pass `true` for custom voting configs (with custom PIR endpoints from
+  `pinnedSource`) or `false` for predefined servers. This routes PIR delegation traffic the
+  same way as voting traffic: Tor OFF + predefined server → OHTTP (the relay sees the client
+  IP but not the request; the gateway and PIR server never see the client IP); Tor OFF +
+  custom server → Direct (user decision to use custom endpoint implies accepting direct
+  routing). Without this parameter, custom configs with PIR endpoints not in the gateway's
+  allowlist would fail closed instead of routing Direct.
 
 ## [5.0.0] - 2026-09-25
 

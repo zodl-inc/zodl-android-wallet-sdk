@@ -263,6 +263,7 @@ internal interface VotingDbBackend {
 
     suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -369,6 +370,7 @@ private class RustVotingDbBackend(
 
     override suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -380,6 +382,7 @@ private class RustVotingDbBackend(
     ): JniDelegationPirPrecomputeResult =
         votingDb.precomputeDelegationPir(
             torRuntime,
+            isCustomServer,
             roundId,
             bundleIndex,
             pirServerUrl,
@@ -614,6 +617,7 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -626,6 +630,7 @@ internal class TypesafeVotingDbImpl(
         votingDb
             .precomputeDelegationPir(
                 torRuntime,
+                isCustomServer,
                 roundId,
                 bundleIndex,
                 pirServerUrl,

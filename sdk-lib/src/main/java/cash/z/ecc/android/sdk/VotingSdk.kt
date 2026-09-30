@@ -213,6 +213,7 @@ interface VotingDbSession {
      */
     suspend fun precomputeDelegationPir(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,

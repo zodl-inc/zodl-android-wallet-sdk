@@ -146,6 +146,7 @@ internal interface TypesafeVotingDb {
 
     suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,

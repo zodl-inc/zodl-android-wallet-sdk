@@ -164,6 +164,7 @@ internal class VotingDbSessionImpl(
 
     override suspend fun precomputeDelegationPir(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -176,6 +177,7 @@ internal class VotingDbSessionImpl(
         db
             .precomputeDelegationPir(
                 torLease.rawHandle(),
+                isCustomServer,
                 roundId,
                 bundleIndex,
                 pirServerUrl,

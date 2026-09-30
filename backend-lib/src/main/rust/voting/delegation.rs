@@ -28,7 +28,8 @@ fn connect_pir_client(
 ) -> anyhow::Result<voting::PirClientBlocking> {
     // Thread is_custom_server from caller so custom voting config PIR endpoints
     // (not in OHTTP_VOTE_HOSTS) route to Direct when Tor OFF, not fail closed.
-    let route = super::round_session::resolve_session_route(tor_runtime, is_custom_server, pir_url)?;
+    let route =
+        super::round_session::resolve_session_route(tor_runtime, is_custom_server, pir_url)?;
     voting::connect_pir_blocking(
         pir_layout,
         pir_url,
@@ -100,6 +101,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
     _: JClass<'local>,
     db_handle: jlong,
     tor_runtime: jlong,
+    is_custom_server: jboolean,
     round_id: JString<'local>,
     bundle_index: jint,
     pir_server_url: JString<'local>,
@@ -133,7 +135,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_layout =
             pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
-        let pir_client = connect_pir_client(&pir_url, pir_layout, tor_runtime)?;
+        let pir_client =
+            connect_pir_client(&pir_url, pir_layout, tor_runtime, is_custom_server != 0)?;
 
         // The precompute itself writes through the shared connection and is
         // short, so it takes the access lock again.
@@ -206,7 +209,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_layout =
             pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
-        let pir_client = connect_pir_client(&pir_url, pir_layout, tor_runtime, is_custom_server != 0)?;
+        let pir_client =
+            connect_pir_client(&pir_url, pir_layout, tor_runtime, is_custom_server != 0)?;
         let report = voting::precompute::precompute_pir_proofs_with_report(
             &db,
             &notes,
@@ -272,7 +276,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_pre
         let pir_url = java_string_to_rust(env, &pir_server_url)?;
         let pir_layout =
             pir_layout_from_jni(pir_depth, pir_tier0_layers, pir_tier1_layers, pir_poly_len)?;
-        let pir_client = connect_pir_client(&pir_url, pir_layout, tor_runtime, is_custom_server != 0)?;
+        let pir_client =
+            connect_pir_client(&pir_url, pir_layout, tor_runtime, is_custom_server != 0)?;
         let report = voting::precompute::precompute_snapshot_bundles_with_report(
             &db,
             &round_id,

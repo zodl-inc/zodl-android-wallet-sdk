@@ -387,6 +387,7 @@ class VotingRustBackend private constructor() {
         @Throws(RuntimeException::class)
         suspend fun precomputeDelegationPir(
             torRuntime: Long,
+            isCustomServer: Boolean,
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
@@ -400,6 +401,7 @@ class VotingRustBackend private constructor() {
                 precomputeDelegationPirNative(
                     handle,
                     torRuntime,
+                    isCustomServer,
                     roundId,
                     bundleIndex,
                     pirServerUrl,
@@ -1109,6 +1111,7 @@ class VotingRustBackend private constructor() {
         private external fun precomputeDelegationPirNative(
             dbHandle: Long,
             torRuntime: Long,
+            isCustomServer: Boolean,
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,

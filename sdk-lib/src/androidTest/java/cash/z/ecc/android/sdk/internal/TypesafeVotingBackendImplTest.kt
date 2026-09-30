@@ -86,6 +86,7 @@ class TypesafeVotingBackendImplTest {
             val result =
                 db.precomputeDelegationPir(
                     torRuntime = 5L,
+                    isCustomServer = false,
                     roundId = "round-1",
                     bundleIndex = 2,
                     pirServerUrl = "https://pir.example",
@@ -660,6 +661,7 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun precomputeDelegationPir(
             torRuntime: Long,
+            isCustomServer: Boolean,
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
