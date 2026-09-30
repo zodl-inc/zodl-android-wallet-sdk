@@ -15,9 +15,11 @@ const OHTTP_GATEWAY_HOST_MAINNET: &str = "ohttp-gateway.example";
 /// OHTTP gateway hostname for voting traffic (testnet).
 const OHTTP_GATEWAY_HOST_TESTNET: &str = "ohttp-gateway-testnet.example";
 
-/// Exact vote hosts in gateway BACKENDS (mainnet).
+/// Exact vote and PIR hosts in gateway BACKENDS (mainnet).
 /// Gateway removed suffix routing and uses exact host matching only.
+/// MUST match `/work/infra/kubernetes/apps/ohttp-gateway/deployment.yaml` BACKENDS list.
 const OHTTP_VOTE_HOSTS: &[&str] = &[
+    // Vote servers
     "vote.zodl.com",
     "prod.vote-chain-primary.valargroup.org",
     "voting.valargroup.dev",
@@ -30,6 +32,10 @@ const OHTTP_VOTE_HOSTS: &[&str] = &[
     "zvote.keplr.app",
     "zvote.zfnd.org",
     "v.ombie.cash",
+    // PIR endpoints (delegation) — fail closed through OHTTP when Tor OFF + predefined servers
+    "lb-pir-primary.valargroup.org",
+    "lb-pir-backup.valargroup.org",
+    "zpir-1.stardust.rest",
 ];
 
 /// 64 MiB response cap (matches gateway MAX_UPSTREAM_RESPONSE_BYTES default).
@@ -291,6 +297,7 @@ mod tests {
 
     #[test]
     fn ohttp_route_accepts_supported_hosts() {
+        // Vote servers
         let result = ZodlOhttpRoute::new("https://voting.valargroup.dev/api/vote");
         assert!(result.is_ok());
 
@@ -299,15 +306,23 @@ mod tests {
 
         let result = ZodlOhttpRoute::new("https://zvote.zodl.com/api/v1/round");
         assert!(result.is_ok());
+
+        // PIR endpoints
+        let result = ZodlOhttpRoute::new("https://lb-pir-primary.valargroup.org/root");
+        assert!(result.is_ok());
+
+        let result = ZodlOhttpRoute::new("https://zpir-1.stardust.rest/api/pir");
+        assert!(result.is_ok());
     }
 
     #[test]
     fn ohttp_vote_hosts_matches_gateway_backends() {
-        // This test documents the 12 vote hosts in gateway BACKENDS (mainnet).
+        // This test documents the hosts in gateway BACKENDS (mainnet):
+        // 12 vote servers + 3 PIR endpoints.
         // If the gateway adds/removes hosts, this list must be updated.
-        assert_eq!(OHTTP_VOTE_HOSTS.len(), 12);
+        assert_eq!(OHTTP_VOTE_HOSTS.len(), 15);
 
-        let expected = vec![
+        let expected_vote = vec![
             "vote.zodl.com",
             "prod.vote-chain-primary.valargroup.org",
             "voting.valargroup.dev",
@@ -322,9 +337,15 @@ mod tests {
             "v.ombie.cash",
         ];
 
-        for host in expected {
+        let expected_pir = vec![
+            "lb-pir-primary.valargroup.org",
+            "lb-pir-backup.valargroup.org",
+            "zpir-1.stardust.rest",
+        ];
+
+        for host in expected_vote.iter().chain(expected_pir.iter()) {
             assert!(
-                OHTTP_VOTE_HOSTS.contains(&host),
+                OHTTP_VOTE_HOSTS.contains(host),
                 "Expected host {} not in OHTTP_VOTE_HOSTS",
                 host
             );
