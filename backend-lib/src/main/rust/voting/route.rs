@@ -221,7 +221,8 @@ impl RouteHttp for ZodlOhttpRoute {
             // The relay sees the device IP, the gateway does not
             let dialer = Dialer::Direct;
 
-            let result = http_round_trip(&gateway_host, dialer, &method, &url, &headers, &body).await;
+            let result =
+                http_round_trip(&gateway_host, dialer, &method, &url, &headers, &body).await;
 
             match result {
                 Ok((status, response_headers, response_body)) => {
@@ -240,7 +241,10 @@ impl RouteHttp for ZodlOhttpRoute {
                         body: response_body,
                     })
                 }
-                Err(e) => Err(RouteError::after_dispatch(format!("OHTTP transport: {}", e))),
+                Err(e) => Err(RouteError::after_dispatch(format!(
+                    "OHTTP transport: {}",
+                    e
+                ))),
             }
         })
     }

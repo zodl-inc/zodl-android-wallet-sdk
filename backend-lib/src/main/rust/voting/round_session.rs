@@ -868,10 +868,11 @@ mod tests {
         // Custom servers with Tor OFF use direct routing (user decision to use
         // a custom endpoint implies accepting direct routing)
         let route = resolve_session_route(
-            0, // Tor OFF
+            0,    // Tor OFF
             true, // is_custom_server
-            "https://custom.example.com/api/vote"
-        ).expect("should succeed for custom server");
+            "https://custom.example.com/api/vote",
+        )
+        .expect("should succeed for custom server");
         assert!(matches!(route, SessionRoute::Direct(_)));
     }
 
@@ -879,10 +880,11 @@ mod tests {
     fn resolve_session_route_tor_off_predefined_ohttp_eligible_uses_ohttp() {
         // Predefined servers with Tor OFF that are OHTTP-eligible use OHTTP routing
         let route = resolve_session_route(
-            0, // Tor OFF
+            0,     // Tor OFF
             false, // is_custom_server (predefined)
-            "https://voting.valargroup.dev/api/vote"
-        ).expect("should succeed for OHTTP-eligible predefined server");
+            "https://voting.valargroup.dev/api/vote",
+        )
+        .expect("should succeed for OHTTP-eligible predefined server");
         assert!(matches!(route, SessionRoute::Ohttp(_)));
     }
 
@@ -890,9 +892,9 @@ mod tests {
     fn resolve_session_route_tor_off_predefined_not_ohttp_eligible_fails() {
         // Predefined servers with Tor OFF that are NOT OHTTP-eligible fail closed
         let result = resolve_session_route(
-            0, // Tor OFF
+            0,     // Tor OFF
             false, // is_custom_server (predefined)
-            "https://unsupported.example.com/api/vote"
+            "https://unsupported.example.com/api/vote",
         );
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
