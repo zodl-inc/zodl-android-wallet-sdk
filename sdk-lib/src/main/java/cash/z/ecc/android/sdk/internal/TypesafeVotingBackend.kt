@@ -271,7 +271,8 @@ internal interface TypesafeVotingDb {
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): TypesafeRoundSession
 }
 

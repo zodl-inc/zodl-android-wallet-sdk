@@ -326,7 +326,8 @@ internal interface VotingDbBackend {
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): RoundSessionBackend
 }
 
@@ -474,7 +475,8 @@ private class RustVotingDbBackend(
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): RoundSessionBackend =
         RustRoundSessionBackend(
             votingDb.openRoundSession(
@@ -488,7 +490,8 @@ private class RustVotingDbBackend(
                 configuredHelperUrls,
                 voteTreeNodeUrls,
                 ceremonyStartSeconds,
-                voteEndTimeSeconds
+                voteEndTimeSeconds,
+                isCustomServer
             )
         )
 }
@@ -724,7 +727,8 @@ internal class TypesafeVotingDbImpl(
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): TypesafeRoundSession =
         TypesafeRoundSessionImpl(
             votingDb.openRoundSession(
@@ -738,7 +742,8 @@ internal class TypesafeVotingDbImpl(
                 configuredHelperUrls,
                 voteTreeNodeUrls,
                 ceremonyStartSeconds,
-                voteEndTimeSeconds
+                voteEndTimeSeconds,
+                isCustomServer
             )
         )
 }

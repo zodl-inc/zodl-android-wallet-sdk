@@ -279,7 +279,8 @@ internal class VotingDbSessionImpl(
                     configuredHelperUrls = configuredHelperUrls,
                     voteTreeNodeUrls = voteTreeNodeUrls,
                     ceremonyStartSeconds = ceremonyStartSeconds ?: UNKNOWN_TIME_SECONDS,
-                    voteEndTimeSeconds = voteEndTimeSeconds ?: UNKNOWN_TIME_SECONDS
+                    voteEndTimeSeconds = voteEndTimeSeconds ?: UNKNOWN_TIME_SECONDS,
+                    isCustomServer = false
                 ),
             torLease = torLease
         )
