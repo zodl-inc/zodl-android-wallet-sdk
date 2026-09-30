@@ -681,6 +681,7 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun precomputePirProofs(
             torRuntime: Long,
+            isCustomServer: Boolean,
             pirServerUrl: String,
             pirDepth: Int,
             pirTier0Layers: Int,
@@ -696,6 +697,7 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun precomputeSnapshotBundles(
             torRuntime: Long,
+            isCustomServer: Boolean,
             roundId: String,
             pirServerUrl: String,
             pirDepth: Int,

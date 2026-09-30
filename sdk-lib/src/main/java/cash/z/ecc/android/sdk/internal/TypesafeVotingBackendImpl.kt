@@ -276,6 +276,7 @@ internal interface VotingDbBackend {
 
     suspend fun precomputePirProofs(
         torRuntime: Long,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -286,6 +287,7 @@ internal interface VotingDbBackend {
 
     suspend fun precomputeSnapshotBundles(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,

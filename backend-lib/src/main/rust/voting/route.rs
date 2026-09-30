@@ -13,6 +13,8 @@ use slipstream_core::ohttp::{Dialer, http_round_trip};
 const OHTTP_GATEWAY_HOST_MAINNET: &str = "ohttp-gateway.example";
 
 /// OHTTP gateway hostname for voting traffic (testnet).
+/// TODO: use when network-aware gateway selection is implemented (route.rs:190-192)
+#[allow(dead_code)]
 const OHTTP_GATEWAY_HOST_TESTNET: &str = "ohttp-gateway-testnet.example";
 
 /// Exact vote and PIR hosts in gateway BACKENDS (mainnet).
@@ -337,7 +339,7 @@ mod tests {
             "v.ombie.cash",
         ];
 
-        let expected_pir = vec![
+        let expected_pir = [
             "lb-pir-primary.valargroup.org",
             "lb-pir-backup.valargroup.org",
             "zpir-1.stardust.rest",
