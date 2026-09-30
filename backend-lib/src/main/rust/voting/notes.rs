@@ -2,55 +2,14 @@ use super::db::*;
 use super::helpers::*;
 use super::*;
 
-/// Validate that a cached lightwalletd TreeState is anchored to the voting
-/// round it will be used for.
+use voting::{SqliteWalletDbOpener, WalletDbOpener};
+
+/// Fails loudly if the wallet has not been scanned through `snapshot_height`.
 ///
-/// Witness generation trusts the cached Ironwood frontier as the historical
-/// checkpoint input (voting notes are Ironwood/V3 notes, not Orchard/V2 — see
-/// `validate_tree_state_bytes_for_round`, this function's only caller, for where the
-/// Ironwood root is actually extracted). The generated Merkle path can verify against
-/// that frontier's own root, so also enforce that the frontier is exactly the round
-/// snapshot: same block height and same note commitment tree root.
-fn validate_cached_tree_state_for_round(
-    tree_state: &zcash_client_backend::proto::service::TreeState,
-    nc_root: &[u8],
-    params: &voting::types::VotingRoundParams,
-) -> anyhow::Result<()> {
-    if tree_state.height != params.snapshot_height {
-        return Err(anyhow!(
-            "cached TreeState height {} does not match round snapshot_height {}",
-            tree_state.height,
-            params.snapshot_height
-        ));
-    }
-
-    if nc_root != params.nc_root.as_slice() {
-        return Err(anyhow!(
-            "cached TreeState note commitment root does not match round nc_root"
-        ));
-    }
-
-    Ok(())
-}
-
-fn validate_tree_state_bytes_for_round(
-    tree_state_bytes: &[u8],
-    params: &voting::types::VotingRoundParams,
-) -> anyhow::Result<()> {
-    use prost::Message;
-    use zcash_client_backend::proto::service::TreeState;
-
-    let tree_state =
-        TreeState::decode(tree_state_bytes).map_err(|e| anyhow!("decode TreeState: {}", e))?;
-    // Voting notes are Ironwood/V3 notes; the round's nc_root is anchored to
-    // the Ironwood tree, not the (Orchard/V2) orchard_tree field.
-    let ironwood_ct = tree_state
-        .ironwood_tree()
-        .map_err(|e| anyhow!("parse ironwood_tree: {}", e))?;
-    let ironwood_root = ironwood_ct.root().to_bytes();
-    validate_cached_tree_state_for_round(&tree_state, &ironwood_root[..], params)
-}
-
+/// Historical-height note queries (`get_unspent_ironwood_notes_at_historical_height`,
+/// under `select_snapshot_note_infos` below) do not themselves distinguish "not yet
+/// scanned that far" from "genuinely no notes" -- both read as an empty/short result.
+/// Checking this explicitly turns a silently-wrong empty note list into a clear error.
 fn require_fully_scanned_to_snapshot(
     fully_scanned_height: Option<zcash_protocol::consensus::BlockHeight>,
     snapshot_height: zcash_protocol::consensus::BlockHeight,
@@ -72,29 +31,66 @@ fn require_fully_scanned_to_snapshot(
     Ok(())
 }
 
-pub(super) type ReadOnlyWalletDb = zcash_client_sqlite::WalletDb<
-    rusqlite::Connection,
-    Network,
-    zcash_client_sqlite::util::SystemClock,
-    rand::rngs::OsRng,
->;
+/// Reads the account's voting-eligible note plaintexts from the MAIN wallet database at a
+/// historical snapshot height -- the input [`computeBundleSetupNative`]/[`setupBundlesNative`]
+/// need before any round/`DelegationPipeline` exists.
+///
+/// A narrower re-addition of the pre-4.0 SDK port's deleted `getWalletNotesNative` (see this
+/// repo's `.superpowers/sdd/2026-09-11-voting-5.0.0-sdk-port/symbol-map.md`, `notes.rs:150` row,
+/// for the original deletion rationale): the *delegation* pipeline now selects its own notes
+/// internally once a round is running (`DelegationPipeline::select_notes`, via
+/// `SqliteWalletDbOpener` in `delegation_driver.rs`'s `build_pipeline`), but
+/// `computeBundleSetupNative`/`setupBundlesNative` are an earlier, pre-round step that still
+/// takes an explicit `notes` array from the caller -- this is how the caller sources it.
+///
+/// Reuses the same crate mechanism the delegation pipeline uses to open the wallet DB
+/// ([`SqliteWalletDbOpener`]) and the crate's own proof-input-shaped selection helper
+/// (`zcash_voting::selection::select_snapshot_note_infos`) rather than re-deriving note
+/// selection from scratch, so this narrower function tracks the delegation step's own
+/// eligibility rules (Ironwood/V3 pool, unspent as of the snapshot) instead of drifting from
+/// them independently.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getWalletNotesNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    wallet_db_path: JString<'local>,
+    snapshot_height: jlong,
+    network_id: jint,
+    account_uuid_bytes: JByteArray<'local>,
+) -> jobjectArray {
+    let res = catch_unwind(&mut env, |env| {
+        use zcash_client_backend::data_api::WalletRead;
+        use zcash_protocol::consensus::BlockHeight;
 
-pub(super) fn open_wallet_db_read_only(
-    path: &str,
-    network: Network,
-) -> anyhow::Result<ReadOnlyWalletDb> {
-    let conn =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|e| anyhow!("open wallet DB read-only: {}", e))?;
-    rusqlite::vtab::array::load_module(&conn)
-        .map_err(|e| anyhow!("load sqlite array module: {}", e))?;
+        let path = java_string_to_rust(env, &wallet_db_path)?;
+        let network = voting_network_from_id(network_id)?;
+        let height = BlockHeight::from_u32(jlong_to_u32(snapshot_height, "snapshot_height")?);
+        let account_uuid_bytes =
+            java_fixed_bytes::<ACCOUNT_UUID_BYTES>(env, &account_uuid_bytes, "accountUuidBytes")?;
+        let account_uuid = uuid::Uuid::from_bytes(account_uuid_bytes).to_string();
 
-    Ok(zcash_client_sqlite::WalletDb::from_connection(
-        conn,
-        network,
-        zcash_client_sqlite::util::SystemClock,
-        rand::rngs::OsRng,
-    ))
+        let wallet_db = SqliteWalletDbOpener::new(path, network)
+            .open_for_read()
+            .map_err(|e| anyhow!("open wallet database: {}", e))?;
+
+        let fully_scanned_height = wallet_db
+            .block_fully_scanned()
+            .map_err(|e| anyhow!("block_fully_scanned: {}", e))?
+            .map(|metadata| metadata.block_height());
+        require_fully_scanned_to_snapshot(fully_scanned_height, height)?;
+
+        let notes = voting::selection::select_snapshot_note_infos(
+            &wallet_db,
+            &account_uuid,
+            u64::from(u32::from(height)),
+        )
+        .map_err(|e| anyhow!("select_snapshot_note_infos: {}", e))?;
+
+        make_jni_note_info_array(env, notes)
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
 // =============================================================================
@@ -111,142 +107,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_com
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let notes = java_note_info_array(env, &notes, "notes")?;
-        let (count, weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
+        let (count, weight, bundle_weights) =
+            bundle_setup_from_notes(&notes, voting::BundlePolicy::default())?;
         make_jni_bundle_setup_result(env, count, weight, &bundle_weights)
     });
     unwrap_exc_or(&mut env, res, JObject::null().into_raw())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_storeTreeStateNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_handle: jlong,
-    round_id: JString<'local>,
-    tree_state_bytes: JByteArray<'local>,
-) {
-    let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        let bytes = java_bytes(env, &tree_state_bytes, "treeStateBytes")?;
-        let round_id = java_string_to_rust(env, &round_id)?;
-        let params = {
-            let conn = db.conn();
-            let wallet_id = db.wallet_id();
-            voting::storage::queries::load_round_params(&conn, &round_id, &wallet_id)
-                .map_err(|e| anyhow!("load_round_params: {}", e))?
-        };
-        validate_tree_state_bytes_for_round(&bytes, &params)?;
-        db.store_tree_state(&round_id, &bytes)
-            .map_err(|e| anyhow!("store_tree_state: {}", e))?;
-        Ok(())
-    });
-    unwrap_exc_or(&mut env, res, ())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_getWalletNotesNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    wallet_db_path: JString<'local>,
-    snapshot_height: jlong,
-    network_id: jint,
-    account_uuid_bytes: JByteArray<'local>,
-) -> jobjectArray {
-    let res = catch_unwind(&mut env, |env| {
-        use zcash_client_backend::data_api::{Account, WalletRead};
-        use zcash_protocol::consensus::BlockHeight;
-
-        let path = java_string_to_rust(env, &wallet_db_path)?;
-        let network = network_from_id(network_id)?;
-        let height = BlockHeight::from_u32(jlong_to_u32(snapshot_height, "snapshot_height")?);
-        let account_uuid_bytes =
-            java_fixed_bytes::<ACCOUNT_UUID_BYTES>(env, &account_uuid_bytes, "accountUuidBytes")?;
-        let account_uuid =
-            zcash_client_sqlite::AccountUuid::from_uuid(uuid::Uuid::from_bytes(account_uuid_bytes));
-
-        let mut wallet_db = open_wallet_db_read_only(&path, network)?;
-        let notes = wallet_db.transactionally(|wallet_db| {
-            let fully_scanned_height = wallet_db
-                .block_fully_scanned()
-                .map_err(|e| anyhow!("block_fully_scanned: {}", e))?
-                .map(|metadata| metadata.block_height());
-            require_fully_scanned_to_snapshot(fully_scanned_height, height)?;
-
-            let account = wallet_db
-                .get_account(account_uuid)
-                .map_err(|e| anyhow!("get_account: {}", e))?
-                .ok_or_else(|| anyhow!("account not found in wallet DB"))?;
-            let ufvk = account
-                .ufvk()
-                .ok_or_else(|| anyhow!("account has no UFVK"))?
-                .clone();
-
-            // Upstream interprets "unspent" at the requested height: spends mined
-            // after the snapshot remain eligible for that snapshot. Voting notes
-            // are Ironwood/V3 notes, so this selects from the Ironwood pool.
-            let notes = wallet_db
-                .get_unspent_ironwood_notes_at_historical_height(account_uuid, height)
-                .map_err(|e| anyhow!("get_unspent_ironwood_notes_at_historical_height: {}", e))?;
-
-            notes
-                .iter()
-                .map(|note| received_note_to_note_info(note, &ufvk, &network))
-                .collect::<anyhow::Result<Vec<_>>>()
-        })?;
-
-        make_jni_note_info_array(env, notes)
-    });
-    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_generateNoteWitnessesNative<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    db_handle: jlong,
-    round_id: JString<'local>,
-    bundle_index: jint,
-    wallet_db_path: JString<'local>,
-    network_id: jint,
-    notes: JObjectArray<'local>,
-) -> jobjectArray {
-    let res = catch_unwind(&mut env, |env| {
-        let db = db_from_handle(db_handle)?;
-        let _access_lock = db.access_lock()?;
-        let round_id = java_string_to_rust(env, &round_id)?;
-        let wallet_path = java_string_to_rust(env, &wallet_db_path)?;
-        let bundle_index = jint_to_u32(bundle_index, "bundle_index")?;
-        let network = network_from_id(network_id)?;
-
-        let core_notes = java_note_info_array(env, &notes, "notes")?;
-
-        let bundle_notes = {
-            let conn = db.conn();
-            let wallet_id = db.wallet_id();
-            select_bundle_notes(&conn, &round_id, &wallet_id, bundle_index, &core_notes)?
-        };
-
-        let wallet_db = open_wallet_db_read_only(&wallet_path, network)?;
-        // zcash_voting 1.0.0 owns tree-state loading, root validation, and
-        // Ironwood-pool witness generation for the round snapshot; this JNI
-        // entrypoint only selects the bundle's notes and persists the result.
-        let witnesses =
-            voting::witness::generate_note_witnesses(&db, &round_id, &bundle_notes, &wallet_db)
-                .map_err(|e| anyhow!("generate_note_witnesses: {}", e))?;
-
-        db.replace_bundle_witnesses(&round_id, bundle_index, &witnesses)
-            .map_err(|e| anyhow!("replace_bundle_witnesses: {}", e))?;
-
-        make_jni_witness_data_array(env, witnesses)
-    });
-    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
@@ -263,14 +128,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_set
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
         let notes = java_note_info_array(env, &notes, "notes")?;
-        let (expected_count, expected_weight, bundle_weights) = bundle_setup_from_notes(&notes)?;
+        let policy = voting::BundlePolicy::default();
+        let (expected_count, expected_weight, bundle_weights) =
+            bundle_setup_from_notes(&notes, policy)?;
         let round_id = java_string_to_rust(env, &round_id)?;
         let layout = db
-            .ensure_bundles_with_skipped_suffix_with_policy(
-                &round_id,
-                &notes,
-                voting::BundlePolicy::default(),
-            )
+            .ensure_bundles_with_skipped_suffix_with_policy(&round_id, &notes, policy)
             .map_err(|e| anyhow!("ensure_bundles_with_skipped_suffix_with_policy: {}", e))?;
         if layout.bundle_count != expected_count || layout.eligible_weight != expected_weight {
             // ensure_bundles_with_skipped_suffix_with_policy has already persisted the
@@ -327,33 +190,287 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_gen
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zcash_protocol::consensus::BlockHeight;
+    use orchard::{
+        keys::FullViewingKey,
+        note::{Note, NoteVersion, RandomSeed, Rho},
+        value::NoteValue,
+    };
+    use rusqlite::{Connection, params};
+    use zcash_client_backend::data_api::{
+        AccountBirthday, WalletRead, WalletWrite, chain::ChainState,
+    };
+    use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
+    use zcash_primitives::block::BlockHash;
+    use zcash_protocol::consensus::{NetworkUpgrade, Parameters};
+    use zip32::Scope;
 
+    /// Real-data proof for `getWalletNotesNative`'s actual logic: builds a real, on-disk
+    /// wallet DB with one account and one real, mined, unspent Ironwood note, then exercises
+    /// exactly the sequence the JNI entrypoint above runs after decoding its JNI arguments
+    /// ([`SqliteWalletDbOpener::open_for_read`], [`require_fully_scanned_to_snapshot`],
+    /// `voting::selection::select_snapshot_note_infos`) and asserts a real, sane note comes
+    /// back -- not a mock standing in for "does the function exist".
     #[test]
-    fn fully_scanned_guard_allows_snapshot_height() {
-        require_fully_scanned_to_snapshot(
-            Some(BlockHeight::from_u32(100)),
-            BlockHeight::from_u32(100),
+    fn get_wallet_notes_returns_a_real_unspent_ironwood_note() {
+        // Regtest, not Testnet/Mainnet: `zcash_voting::selection::select_snapshot_note_infos`
+        // (via `VotingShieldedProtocol::for_height`) only recognizes the Ironwood/V3 pool from
+        // the NU6.3 activation height onward, and this pin's real Testnet/Mainnet consensus
+        // params have no NU6.3 activation height yet (unreleased upgrade) -- Regtest is the
+        // only network this pin lets a test force to a specific NU6.3 height, matching how
+        // `zcash_voting`'s own `selection.rs` unit tests do the same thing.
+        let network = voting::types::Network::Regtest;
+        let db_path = unique_test_db_path();
+        const EXPECTED_VALUE: u64 = 12_345;
+        const COMMITMENT_TREE_POSITION: u64 = 7;
+        // `zcash_voting`'s own Regtest NU6.3 activation height for this crate pin
+        // (`types::REGTEST_NU6_3_ACTIVATION_HEIGHT`, not itself `pub`) -- snapshot_height must
+        // be at or above it for the Ironwood pool to be recognized at all.
+        const NU6_3_ACTIVATION_HEIGHT: u32 = 10;
+
+        let sapling_height = network
+            .activation_height(NetworkUpgrade::Sapling)
+            .expect("regtest has a Sapling activation height");
+        let mined_height = NU6_3_ACTIVATION_HEIGHT;
+        let snapshot_height = u64::from(mined_height);
+
+        let mut conn = Connection::open(&db_path).expect("open fresh wallet db file");
+        let account_uuid = {
+            let mut db =
+                WalletDb::from_connection(&mut conn, network, SystemClock, rand::rngs::OsRng);
+            init_wallet_db(&mut db, Some(SecretVec::new(vec![7u8; 32])))
+                .expect("init wallet schema");
+
+            let birthday = AccountBirthday::from_parts(
+                ChainState::empty(sapling_height - 1, BlockHash([0; 32])),
+                None,
+            );
+            let (account_uuid, usk) = db
+                .create_account("voter", &SecretVec::new(vec![7u8; 32]), &birthday, None)
+                .expect("create test account");
+            let orchard_fvk = usk
+                .to_unified_full_viewing_key()
+                .orchard()
+                .expect("test account has an Orchard viewing key")
+                .clone();
+
+            let account_ref: i64 = conn
+                .query_row(
+                    "SELECT id FROM accounts WHERE uuid = ?1",
+                    params![account_uuid.expose_uuid().as_bytes()],
+                    |row| row.get(0),
+                )
+                .expect("look up internal account id");
+            insert_real_ironwood_note(
+                &conn,
+                account_ref,
+                &orchard_fvk,
+                mined_height,
+                EXPECTED_VALUE,
+                COMMITMENT_TREE_POSITION,
+            );
+            mark_scanned_through(&conn, u32::from(sapling_height - 1), snapshot_height);
+
+            account_uuid
+        };
+        drop(conn);
+
+        let wallet_db = SqliteWalletDbOpener::new(
+            db_path
+                .to_str()
+                .expect("test db path is valid UTF-8")
+                .to_string(),
+            network,
         )
-        .unwrap();
+        .open_for_read()
+        .expect("reopen wallet db read-only");
+
+        let fully_scanned_height = wallet_db
+            .block_fully_scanned()
+            .expect("read fully scanned height")
+            .map(|metadata| metadata.block_height());
         require_fully_scanned_to_snapshot(
-            Some(BlockHeight::from_u32(101)),
-            BlockHeight::from_u32(100),
+            fully_scanned_height,
+            zcash_protocol::consensus::BlockHeight::from_u32(snapshot_height as u32),
         )
-        .unwrap();
+        .expect("wallet is scanned through the snapshot height");
+
+        let notes = voting::selection::select_snapshot_note_infos(
+            &wallet_db,
+            &account_uuid.expose_uuid().to_string(),
+            snapshot_height,
+        )
+        .expect("select a real, sane note list");
+
+        assert_eq!(notes.len(), 1, "exactly one real note was inserted");
+        let note = &notes[0];
+        assert_eq!(note.value, EXPECTED_VALUE);
+        assert_eq!(note.position, COMMITMENT_TREE_POSITION);
+        assert_eq!(note.commitment.len(), PROTOCOL_FIELD_BYTES);
+        assert_eq!(note.nullifier.len(), PROTOCOL_FIELD_BYTES);
+        assert_eq!(note.scope, 0, "note was received at the external scope");
+        assert!(!note.ufvk_str.is_empty());
+
+        let _ = std::fs::remove_file(&db_path);
     }
 
     #[test]
-    fn fully_scanned_guard_rejects_missing_or_low_height() {
-        let missing =
-            require_fully_scanned_to_snapshot(None, BlockHeight::from_u32(100)).unwrap_err();
-        assert!(missing.to_string().contains("no fully scanned height"));
-
-        let low = require_fully_scanned_to_snapshot(
-            Some(BlockHeight::from_u32(99)),
-            BlockHeight::from_u32(100),
+    fn require_fully_scanned_to_snapshot_rejects_a_wallet_scanned_below_the_snapshot() {
+        let err = require_fully_scanned_to_snapshot(
+            Some(zcash_protocol::consensus::BlockHeight::from_u32(9)),
+            zcash_protocol::consensus::BlockHeight::from_u32(10),
         )
         .unwrap_err();
-        assert!(low.to_string().contains("below snapshot_height"));
+
+        assert!(
+            err.to_string()
+                .contains("wallet DB fully scanned height 9 is below snapshot_height 10")
+        );
+    }
+
+    #[test]
+    fn require_fully_scanned_to_snapshot_rejects_a_wallet_with_no_scanned_height() {
+        let err = require_fully_scanned_to_snapshot(
+            None,
+            zcash_protocol::consensus::BlockHeight::from_u32(10),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("wallet DB has no fully scanned height")
+        );
+    }
+
+    #[test]
+    fn require_fully_scanned_to_snapshot_accepts_a_wallet_scanned_through_the_snapshot() {
+        require_fully_scanned_to_snapshot(
+            Some(zcash_protocol::consensus::BlockHeight::from_u32(10)),
+            zcash_protocol::consensus::BlockHeight::from_u32(10),
+        )
+        .expect("scanned exactly through the snapshot height must be accepted");
+    }
+
+    fn unique_test_db_path() -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("current time is after UNIX_EPOCH")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "zcash-android-voting-get-wallet-notes-test-{}-{nanos}.sqlite",
+            std::process::id()
+        ))
+    }
+
+    /// Directly inserts one real, mined, unspent Ironwood/V3 note row, mirroring
+    /// `zcash_voting`'s own `selection.rs` test fixtures (same schema, same crate pin) --
+    /// there is no higher-level "receive a note" API to drive here without a full synthetic
+    /// chain-scan harness, so this matches the pinned crate's own approach to the same problem.
+    fn insert_real_ironwood_note(
+        conn: &Connection,
+        account_ref: i64,
+        orchard_fvk: &FullViewingKey,
+        mined_height: u32,
+        value_zatoshi: u64,
+        commitment_tree_position: u64,
+    ) {
+        let note_tag: u8 = 1;
+        let transaction_id = insert_transaction(conn, note_tag, mined_height);
+        let note = test_orchard_note(orchard_fvk, note_tag, value_zatoshi);
+        let nullifier = note.nullifier(orchard_fvk);
+
+        conn.execute(
+            "INSERT INTO ironwood_received_notes (
+                transaction_id, action_index, account_id, diversifier, value, rho, rseed,
+                nf, is_change, commitment_tree_position, recipient_key_scope, note_version
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, 0, ?10)",
+            params![
+                transaction_id,
+                i64::from(note_tag),
+                account_ref,
+                note.recipient().diversifier().as_array(),
+                value_zatoshi,
+                note.rho().to_bytes(),
+                note.rseed().as_bytes(),
+                nullifier.to_bytes(),
+                commitment_tree_position,
+                3, // NoteVersion::V3
+            ],
+        )
+        .expect("insert real ironwood note fixture");
+    }
+
+    fn insert_transaction(conn: &Connection, txid_tag: u8, mined_height: u32) -> i64 {
+        let txid = [txid_tag; PROTOCOL_FIELD_BYTES];
+        conn.execute(
+            "INSERT INTO transactions (txid, mined_height, min_observed_height)
+             VALUES (?1, ?2, ?3)",
+            params![txid, mined_height, mined_height],
+        )
+        .expect("insert transaction fixture");
+        conn.last_insert_rowid()
+    }
+
+    fn mark_scanned_through(conn: &Connection, start_height: u32, scanned_height: u64) {
+        let scanned_height = u32::try_from(scanned_height).expect("scanned height fits in u32");
+        conn.execute("DELETE FROM scan_queue", [])
+            .expect("clear scan queue fixture");
+        conn.execute("DELETE FROM blocks", [])
+            .expect("clear blocks fixture");
+        conn.execute(
+            "INSERT INTO scan_queue (block_range_start, block_range_end, priority)
+             VALUES (?1, ?2, 10)",
+            params![start_height, scanned_height + 1],
+        )
+        .expect("insert scan_queue fixture");
+        for height in start_height..=scanned_height {
+            conn.execute(
+                "INSERT INTO blocks (
+                    height, hash, time, sapling_tree, sapling_commitment_tree_size,
+                    orchard_commitment_tree_size, sapling_output_count, orchard_action_count
+                 )
+                 VALUES (?1, ?2, ?3, ?4, 0, 0, 0, 0)",
+                params![
+                    height,
+                    [height as u8; PROTOCOL_FIELD_BYTES],
+                    height,
+                    Vec::<u8>::new()
+                ],
+            )
+            .expect("insert blocks fixture");
+        }
+    }
+
+    /// Generates a real, validly-encoded Orchard note for [orchard_fvk], receivable at the
+    /// external scope -- the same trial-seed technique `zcash_voting`'s own test fixtures use,
+    /// since [`RandomSeed::from_bytes`]/[`orchard::Note::from_parts`] can reject a seed.
+    fn test_orchard_note(
+        orchard_fvk: &FullViewingKey,
+        note_tag: u8,
+        value_zatoshi: u64,
+    ) -> orchard::Note {
+        let recipient = orchard_fvk.address_at(u64::from(note_tag), Scope::External);
+        let mut rho_bytes = [0u8; PROTOCOL_FIELD_BYTES];
+        rho_bytes[..8].copy_from_slice(&(u64::from(note_tag) + 1).to_le_bytes());
+        let rho = Option::<Rho>::from(Rho::from_bytes(&rho_bytes))
+            .expect("small integers are valid pallas base field elements");
+
+        for seed_nonce in 1..10_000u64 {
+            let mut seed = [0u8; PROTOCOL_FIELD_BYTES];
+            seed[..8].copy_from_slice(&(seed_nonce + u64::from(note_tag) * 10_000).to_le_bytes());
+            if let Some(rseed) = Option::<RandomSeed>::from(RandomSeed::from_bytes(seed, &rho))
+                && let Some(note) = Option::<Note>::from(Note::from_parts(
+                    recipient,
+                    NoteValue::from_raw(value_zatoshi),
+                    rho,
+                    rseed,
+                    NoteVersion::V3,
+                ))
+            {
+                return note;
+            }
+        }
+
+        panic!("failed to generate valid shielded note fixture");
     }
 }

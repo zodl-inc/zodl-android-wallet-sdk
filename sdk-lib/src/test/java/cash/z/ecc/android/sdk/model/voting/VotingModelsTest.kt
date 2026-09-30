@@ -37,44 +37,51 @@ class VotingModelsTest {
         assertFalse(text.contains("ufvk-fixture"))
     }
 
+    // Task 10 (voting-5.0.0 SDK port): the pre-4.0 mirror types this test used to redaction-test
+    // (VotingSharePayload/VotingEncryptedShare/VotingShareDelegationRecord) were deleted --
+    // their backing native calls (buildSharePayloadsNative/recordShareDelegationNative) are gone.
+    // The port's own sensitive carrier is VotingDelegationInputs (softwareSeed/keystoneSig/
+    // keystoneSighash), tested below in its place.
     @Test
-    fun votingSharePayload_to_string_omits_primary_blind() {
+    fun votingDelegationInputs_to_string_omits_signing_secrets() {
         val text =
-            VotingSharePayload(
-                sharesHash = byteArrayOf(1),
-                proposalId = 2,
-                voteDecision = 3,
-                encShare = VotingEncryptedShare(c1 = byteArrayOf(4), c2 = byteArrayOf(5), shareIndex = 0),
-                treePosition = 6,
-                allEncShares =
-                    listOf(VotingEncryptedShare(c1 = byteArrayOf(4), c2 = byteArrayOf(5), shareIndex = 0)),
-                shareComms = listOf(byteArrayOf(7)),
-                primaryBlind = byteArrayOf(101),
-                voteRoundId = "aa".repeat(32)
+            VotingDelegationInputs(
+                walletDbPath = "wallet.db",
+                accountUuid = "account-uuid-fixture",
+                anchorTreeStateBytes = byteArrayOf(1),
+                hotkeySecret = byteArrayOf(2),
+                pirEndpoints = listOf("https://pir.example"),
+                pirDepth = 1,
+                pirTier0Layers = 1,
+                pirTier1Layers = 1,
+                pirPolyLen = 1,
+                keystone = false,
+                softwareSeed = byteArrayOf(101),
+                keystoneSig = byteArrayOf(102),
+                keystoneSighash = byteArrayOf(103),
+                snapshotHeight = 10,
+                eaPk = byteArrayOf(4),
+                ncRoot = byteArrayOf(5),
+                nullifierImtRoot = byteArrayOf(6)
             ).toString()
 
-        assertEquals("VotingSharePayload(redacted)", text)
-        assertFalse(text.contains("primaryBlind"))
+        assertEquals("VotingDelegationInputs(redacted)", text)
         assertFalse(text.contains("101"))
+        assertFalse(text.contains("102"))
+        assertFalse(text.contains("103"))
     }
 
     @Test
-    fun votingShareDelegationRecord_to_string_omits_nullifier() {
+    fun votingHotkey_to_string_omits_stored_secret() {
         val text =
-            VotingShareDelegationRecord(
-                roundId = "round-recovery",
-                bundleIndex = 1,
-                proposalId = 2,
-                shareIndex = 3,
-                sentToUrls = listOf("https://helper.example"),
-                nullifier = byteArrayOf(101),
-                confirmed = false,
-                submitAt = 4,
-                createdAt = 5
+            VotingHotkey(
+                storedSecret = byteArrayOf(101),
+                rawAddress = byteArrayOf(1),
+                address = "address-fixture"
             ).toString()
 
-        assertEquals("VotingShareDelegationRecord(redacted)", text)
-        assertFalse(text.contains("nullifier"))
+        assertEquals("VotingHotkey(redacted)", text)
         assertFalse(text.contains("101"))
+        assertFalse(text.contains("address-fixture"))
     }
 }
