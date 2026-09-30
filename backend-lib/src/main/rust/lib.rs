@@ -2255,17 +2255,27 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransa
 /// account.
 pub(crate) const LEDGER_KEY_SOURCE: &str = "ledger";
 
+/// Whether an account with the given source is tagged as Ledger-imported: its key source is
+/// [`LEDGER_KEY_SOURCE`], compared ignoring ASCII case.
+///
+/// This one predicate decides both which change split policy the account's proposals get
+/// ([`change_split_policy`]) and whether a Ledger signing session may be built for it
+/// (`ledger::session::new_sign_session`), so an account the device may sign for always gets the
+/// single change output the device can sign.
+pub(crate) fn is_ledger_key_source(source: &AccountSource) -> bool {
+    source
+        .key_source()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case(LEDGER_KEY_SOURCE))
+}
+
 /// Returns the change split policy for proposals built for an account with the given source.
 ///
 /// The Ledger Zcash app signs exactly one change output per transaction, and `pczt-ledger`
 /// refuses a second one before the first command goes out. A Ledger-tagged account
-/// ([`LEDGER_KEY_SOURCE`]) therefore gets [`SplitPolicy::single_output`]; every other account
+/// ([`is_ledger_key_source`]) therefore gets [`SplitPolicy::single_output`]; every other account
 /// keeps splitting change into up to four outputs of at least 0.1 ZEC.
 pub(crate) fn change_split_policy(source: Option<&AccountSource>) -> SplitPolicy {
-    let is_ledger = source
-        .and_then(|source| source.key_source())
-        .is_some_and(|tag| tag.eq_ignore_ascii_case(LEDGER_KEY_SOURCE));
-    if is_ledger {
+    if source.is_some_and(is_ledger_key_source) {
         SplitPolicy::single_output()
     } else {
         SplitPolicy::with_min_output_value(
@@ -4598,6 +4608,41 @@ mod tests {
                 "source {source:?}"
             );
         }
+    }
+
+    /// The Ledger signing session and the change split policy read one predicate, so every
+    /// account a Ledger may sign for gets the single change output the device can sign, and no
+    /// other account does.
+    #[test]
+    fn the_ledger_signing_check_and_the_change_policy_agree() {
+        let mut sources = vec![view_only_source(None)];
+        for tag in [
+            "ledger",
+            "Ledger",
+            "LEDGER",
+            "zashi",
+            "keystone",
+            " ledger",
+            "ledgers",
+            "Ledger Nano",
+        ] {
+            sources.push(view_only_source(Some(tag)));
+        }
+        for source in &sources {
+            let single_output = change_split_policy(Some(source))
+                .target_output_count()
+                .get()
+                == 1;
+            assert_eq!(
+                is_ledger_key_source(source),
+                single_output,
+                "source {source:?}"
+            );
+        }
+        assert!(is_ledger_key_source(&view_only_source(Some("Ledger"))));
+        assert!(!is_ledger_key_source(&view_only_source(Some(
+            "Ledger Nano"
+        ))));
     }
 
     /// The wallet the end-to-end change-output tests propose from. A Ledger-tagged account signs

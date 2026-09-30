@@ -71,8 +71,8 @@ pub(crate) enum Kind {
     /// A reply or a frame did not have the shape the protocol promises.
     MalformedReply = 9,
     /// A caller-supplied value was refused before any device I/O: a device identity string, an
-    /// account or address index, a network, a PCZT that does not parse, or an account that is not
-    /// in the wallet.
+    /// account or address index, a network, a PCZT that does not parse, an account that is not
+    /// in the wallet, or an account that is not tagged as Ledger-imported.
     InvalidInput = 10,
     /// `0x6901`: the device SDK refused the frame before the app saw it. Resend the same command.
     CmdNotAccepted = 11,

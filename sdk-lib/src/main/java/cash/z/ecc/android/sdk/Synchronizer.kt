@@ -640,7 +640,9 @@ interface Synchronizer {
      *
      * @param pczt The PCZT to sign, as [createPcztFromProposal] returned it.
      * @param accountUuid The account [pczt] spends from; an account imported from the device with
-     *        [cash.z.ecc.android.sdk.ledger.LedgerDevice.pairAccount].
+     *        [cash.z.ecc.android.sdk.ledger.LedgerDevice.pairAccount] under
+     *        [cash.z.ecc.android.sdk.model.Account.LEDGER_KEY_SOURCE]. Any other account fails with
+     *        [LedgerException.InvalidInput] before any device I/O.
      * @param binding The device and ZIP 32 account index the account was paired with.
      * @param transport An open channel to the device.
      * @param onProgress Called on the calling coroutine as the ceremony advances. Keep it cheap.

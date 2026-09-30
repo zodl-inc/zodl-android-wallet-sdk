@@ -196,7 +196,10 @@ outputs fails with `LedgerException.TransactionNotSignable` before anything is s
 `Synchronizer.proposeTransfer`, `Synchronizer.proposeFulfillingPaymentUri` and
 `Synchronizer.proposeShielding` therefore build at most one change output for an account whose key
 source is `Account.LEDGER_KEY_SOURCE` (compared case-insensitively). Every other account keeps
-splitting change into up to four outputs of at least 0.1 ZEC.
+splitting change into up to four outputs of at least 0.1 ZEC. `Synchronizer.signPcztWithLedger`
+refuses every other account with `LedgerException.InvalidInput` before any device I/O, under the
+same comparison, so import a Ledger account under exactly that tag (as `accountImportSetup` does)
+and never under another one, such as the device model.
 
 ### Failures
 
@@ -226,7 +229,7 @@ command". A refusal by the device leaves the transport open; a failure on the tr
 | `DeviceRefused` | Any other refusal; `statusWord` and `isTransient` describe it (a locked device is transient). | As reported | When restartable, ask the user to unlock the device and try again; otherwise report the status word. |
 | `TransactionNotSignable` | A rule refuses the transaction before anything is sent: Sapling funds, too many outputs to review, an account without an Orchard key. `reason` names it. | No | Explain `reason`; the user has to change the transaction (for example, shield or migrate the funds first). |
 | `MalformedReply` | A reply did not have the promised shape, did not reassemble, or a returned signature did not verify. | No | Connect again and start over; if it persists, report it. |
-| `InvalidInput` | A value passed in was refused before any device I/O: a stored identity, an index, an unknown account. | No | A bug or corrupt stored data in the app; do not retry unchanged. |
+| `InvalidInput` | A value passed in was refused before any device I/O: a stored identity, an index, an unknown account, an account not imported under `Account.LEDGER_KEY_SOURCE`. | No | A bug or corrupt stored data in the app; do not retry unchanged. |
 | `BluetoothUnavailable` | The phone has no Bluetooth LE, or a scan could not be started (`scanErrorCode`). | No | Hide the Bluetooth option, or retry the scan later. |
 | `BluetoothUnauthorized` | A Bluetooth permission is not granted (`missingPermissions`), or the Bluetooth stack refused a call for lack of one while connecting. | No | Request the permissions, then scan or connect again. |
 | `BluetoothDisabled` | Bluetooth is off. | No | Ask the user to turn Bluetooth on. |

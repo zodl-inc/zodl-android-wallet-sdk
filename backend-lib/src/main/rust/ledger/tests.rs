@@ -354,7 +354,7 @@ type TestWallet = TestState<BlockCache, zcash_client_sqlite::testing::db::TestDb
 const DEVICE_SEED: [u8; 32] = [7; 32];
 
 /// A wallet holding one account imported from the device's UFVK, the way a Ledger pairing
-/// imports it: no ZIP 32 derivation, key source `"ledger"`.
+/// imports it: no ZIP 32 derivation, key source `"ledger"` unless [`tagged_wallet`] says otherwise.
 struct LedgerWallet {
     st: TestWallet,
     account: AccountUuid,
@@ -362,6 +362,11 @@ struct LedgerWallet {
 }
 
 fn ledger_wallet() -> LedgerWallet {
+    tagged_wallet(Some("ledger"))
+}
+
+/// A [`LedgerWallet`] whose account is imported under `key_source` instead of `"ledger"`.
+fn tagged_wallet(key_source: Option<&str>) -> LedgerWallet {
     // Past Canopy's ZIP 212 grace period, so the Sapling fixture can be built as a PCZT at all,
     // and past NU5, so Orchard notes can be received; the upstream `pczt_single_step` test sets
     // its chain up the same way.
@@ -406,7 +411,7 @@ fn ledger_wallet() -> LedgerWallet {
             &ufvk,
             &birthday,
             AccountPurpose::Spending { derivation: None },
-            Some("ledger"),
+            key_source,
         )
         .expect("the UFVK imports");
     let account = zcash_client_backend::data_api::Account::id(&account);
@@ -781,6 +786,49 @@ fn a_session_is_refused_for_an_app_that_predates_pczt_signing() {
     .err()
     .expect("refused");
     assert_eq!(err.kind, Kind::AppTooOld);
+}
+
+/// A session is built only for an account tagged as Ledger-imported, under the comparison that
+/// also gives its proposals a single change output: an account imported under any other tag,
+/// or none, is refused before any device I/O, so a mis-tagged account fails at its first
+/// signature rather than on a transaction the device cannot sign.
+#[test]
+fn a_session_is_built_only_for_a_ledger_tagged_account() {
+    let identity = device_identity().to_string();
+    let firmware = firmware_version_reply((3, 9, 3));
+
+    for tag in ["ledger", "Ledger"] {
+        let mut wallet = tagged_wallet(Some(tag));
+        let bytes = orchard_transfer_pczt(&mut wallet, 100_000)
+            .serialize()
+            .expect("serializes");
+        let prepared = new_sign_session(
+            wallet.st.wallet(),
+            request(&wallet, &bytes, &identity, &firmware),
+        );
+        if let Err(err) = prepared {
+            panic!("a {tag:?}-tagged account must start a session: {err:?}");
+        }
+    }
+
+    for tag in [None, Some("Ledger Nano"), Some("keystone")] {
+        let mut wallet = tagged_wallet(tag);
+        let bytes = orchard_transfer_pczt(&mut wallet, 100_000)
+            .serialize()
+            .expect("serializes");
+        let err = new_sign_session(
+            wallet.st.wallet(),
+            request(&wallet, &bytes, &identity, &firmware),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("a {tag:?}-tagged account must be refused"));
+        assert_eq!(err.kind, Kind::InvalidInput, "tag {tag:?}");
+        assert_eq!(
+            err.reason.as_deref(),
+            Some("the account is not a Ledger account"),
+            "tag {tag:?}"
+        );
+    }
 }
 
 /// A PCZT spending Sapling funds cannot be reviewed or signed by the device, and is refused

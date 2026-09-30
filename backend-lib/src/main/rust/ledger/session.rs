@@ -31,6 +31,7 @@ use zcash_client_backend::{
 use zcash_client_sqlite::AccountUuid;
 
 use super::error::LedgerError;
+use crate::is_ledger_key_source;
 
 /// The BIP 44 purpose component, hardened on the wire.
 const BIP44_PURPOSE: u32 = 44;
@@ -56,10 +57,11 @@ pub(crate) struct SessionRequest<'a> {
 ///
 /// In order: the stored device identity is parsed; the device's `GET_FIRMWARE_VERSION` reply is
 /// turned into its capabilities, and an app without PCZT support is refused; the account is
-/// loaded and its UFVK must carry an Orchard key; the PCZT is redacted to
-/// `SignerView::Full`; transparent inputs the wallet created without a derivation get one from
-/// the wallet's address metadata; the transparent change output, if the wallet knows one, is
-/// described; and the engine builds the session, which runs the full pre-flight.
+/// loaded, must be tagged as Ledger-imported ([`is_ledger_key_source`], the same predicate that
+/// gives its proposals a single change output), and its UFVK must carry an Orchard key; the PCZT
+/// is redacted to `SignerView::Full`; transparent inputs the wallet created without a derivation
+/// get one from the wallet's address metadata; the transparent change output, if the wallet knows
+/// one, is described; and the engine builds the session, which runs the full pre-flight.
 pub(crate) fn new_sign_session<W>(
     wallet: &W,
     request: SessionRequest<'_>,
@@ -80,6 +82,11 @@ where
         .get_account(request.account)
         .map_err(|_| LedgerError::internal("the wallet database could not be read"))?
         .ok_or_else(|| LedgerError::invalid_input("the account is not in this wallet"))?;
+    if !is_ledger_key_source(account.source()) {
+        return Err(LedgerError::invalid_input(
+            "the account is not a Ledger account",
+        ));
+    }
     let ufvk = account
         .ufvk()
         .ok_or_else(|| LedgerError::not_signable("the account has no unified full viewing key"))?;

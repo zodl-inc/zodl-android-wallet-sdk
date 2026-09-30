@@ -38,6 +38,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LedgerSigningProgress` values (`IdentifyingDevice`, `Streaming(sent, total)`, `AwaitingReviewOnDevice`,
   `Signing`, `Complete`). A failed exchange or a cancellation closes the transport. `Synchronizer` gains
   the member as abstract, so any implementer or test fake must now provide it.
+- `signPcztWithLedger` fails with `LedgerException.InvalidInput` before any device I/O for an account
+  whose key source is not `Account.LEDGER_KEY_SOURCE` (compared case-insensitively), the same check that
+  gives its proposals a single change output.
 - `LedgerException`, a sealed `SdkException` every Ledger operation fails with: `UserRejected`,
   `WrongApp`, `AppTooOld`, `DeviceMismatch`, `CapsMismatch`, `DerivationBudgetExhausted`,
   `DeviceRefused` (with `statusWord` and `isTransient`), `TransactionNotSignable`, `MalformedReply`,
