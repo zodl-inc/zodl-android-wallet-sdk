@@ -2417,12 +2417,12 @@ where
     <DbT as InputSource>::NoteRef: Copy + Eq + Ord + std::fmt::Display,
     P: Parameters + Clone,
 {
-    let account = db_data.get_account(account_uuid)?;
+    let account = db_data
+        .get_account(account_uuid)?
+        .ok_or_else(|| anyhow!("Unknown account."))?;
 
-    let (change_strategy, input_selector) = zip317_helper(
-        None,
-        change_split_policy(account.as_ref().map(|a| a.source())),
-    );
+    let (change_strategy, input_selector) =
+        zip317_helper(None, change_split_policy(Some(account.source())));
 
     let request = TransactionRequest::from_uri(payment_uri)
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
@@ -2465,13 +2465,13 @@ where
     <DbT as InputSource>::NoteRef: Copy + Eq + Ord + std::fmt::Display,
     P: Parameters + Clone,
 {
-    let account = db_data.get_account(account_uuid)?;
+    let account = db_data
+        .get_account(account_uuid)?
+        .ok_or_else(|| anyhow!("Unknown account."))?;
 
     // Always use ZIP 317 fees
-    let (change_strategy, input_selector) = zip317_helper(
-        None,
-        change_split_policy(account.as_ref().map(|a| a.source())),
-    );
+    let (change_strategy, input_selector) =
+        zip317_helper(None, change_split_policy(Some(account.source())));
 
     let request = TransactionRequest::new(vec![
         Payment::new(to, Some(value), memo, None, None, vec![])
@@ -2679,12 +2679,12 @@ where
         .transpose()
         .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
 
-    let account = db_data.get_account(account_uuid)?;
+    let account = db_data
+        .get_account(account_uuid)?
+        .ok_or_else(|| anyhow!("Unknown account."))?;
 
-    let (change_strategy, input_selector) = zip317_helper(
-        memo,
-        change_split_policy(account.as_ref().map(|a| a.source())),
-    );
+    let (change_strategy, input_selector) =
+        zip317_helper(memo, change_split_policy(Some(account.source())));
 
     let proposal = propose_shielding::<_, _, _, _, Infallible>(
         db_data,
