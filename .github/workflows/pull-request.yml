@@ -209,7 +209,7 @@ jobs:
       - name: Android Lint
         # 120 minutes for cold-cache first run (seeds Rust cache: vendored zodl-slipstream +
         # arti/hpke deps take ~45+ min to cross-compile for 4 ABIs). Warm-cache runs complete
-        # in <30 min. Swatinem/rust-cache in setup action now caches compiled artifacts.
+        # in <30 min. the Rust cache step in the setup action caches compiled artifacts.
         timeout-minutes: 120
         env:
           # Disable minify, since it makes lint run faster
@@ -403,7 +403,7 @@ jobs:
       # turns on orchard's `unstable-voting-circuits` and pulls the halo2 voting circuits
       # into the native build. `make test-unit` builds the crate for all four ABIs, so that
       # lands four times over. Additionally includes vendored zodl-slipstream + arti/hpke deps.
-      # Warm-cache runs (after Swatinem/rust-cache seeds artifacts) complete in <45 min.
+      # Warm-cache runs (after the setup action Rust cache seeds artifacts) complete in <45 min.
       - name: Build and test
         timeout-minutes: 120
         run: |
