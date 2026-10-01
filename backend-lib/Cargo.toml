@@ -102,6 +102,15 @@ serde_json = "1"
 # lightwalletd
 tonic = "0.14"
 
+# Oblivious HTTP (RFC 9458) client core shared with the iOS and Slipstream clients: key
+# selection, signed key-configuration envelopes, Binary HTTP, HPKE, outer-status
+# classification and size caps, as pure functions (`ClientProfile::ANDROID`). Without default
+# features the networked `Client` (reqwest, tokio) is not compiled: the Kotlin transport does
+# the I/O. The JNI surface is `src/main/rust/ohttp.rs`. The repository is private (CI's App
+# token must include `ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
+# it only to a commit that is on the `main` of zodl-inc/ohttp.
+zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "18ef6f31f81d8245ede04599f4bfbe3fb9bb7d9d", default-features = false }
+
 # Logging
 log-panics = "2.0.0"
 paranoid-android = "0.2"
@@ -213,6 +222,16 @@ ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package
 tracing-android = { version = "0.2", optional = true }
 
 [dev-dependencies]
+# Test-only: the gateway side of an OHTTP exchange and a signed key-configuration envelope, so
+# the JNI glue in `ohttp.rs` is tested against real HPKE and Ed25519 (the versions the core
+# already links, so they add no second copy to the lock).
+aes-gcm = "0.10"
+base64 = "0.22"
+ed25519-dalek = "2"
+hkdf = "0.12"
+hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
+sha2 = "0.10"
+
 # Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
 # which needs a real UnifiedSpendingKey to exercise the in-process-signing path
 # (`commit_preparation`) against a real wallet DB fixture — the app itself never uses this crate

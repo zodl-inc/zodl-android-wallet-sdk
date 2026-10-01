@@ -45,6 +45,29 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same policy (predefined → OHTTP when Tor OFF, custom → Direct).
 
 ### Changed
+- **Shared OHTTP core.** The protocol half of the OHTTP client (key selection, the signed key
+  configuration envelope, Binary HTTP, HPKE, the classification of the relay's answer and the size caps)
+  now runs on the Rust library `zodl-ohttp-client` (zodl-inc/ohttp, `ClientProfile::ANDROID`) that the iOS
+  and Slipstream clients share, through the JNI object `RustOhttpTool` in `backend-lib`. The response
+  secret stays in native memory (the JVM only holds an opaque handle). The Kotlin HPKE, Binary HTTP, key
+  config and envelope code, and the BouncyCastle and `kotlinx-serialization` dependencies of
+  `lightwallet-client`, are gone; the transport, the senders, the relay tables and the gRPC channel are
+  unchanged. `lightwallet-client` reaches the core through the new `OhttpCodec` interface. **Breaking:**
+  `OhttpHttpClient.create` takes an `OhttpCodec` as its first parameter and `LightWalletClient.new` takes an
+  optional `ohttpCodec` (required for an OHTTP gateway endpoint); get the native one from
+  `cash.z.ecc.android.sdk.util.OhttpCodecFactory.create()`. Behavior that changes with the core, as decided
+  for all three wallet clients:
+  - a key configuration entry with a KEM other than X25519 is skipped instead of failing the document;
+  - every attempt is sealed afresh (the gateway answers a repeated nonce with 409);
+  - an outer 400 or 422 refetches the key configuration and retries once, whatever the response body says
+    (422 used to need `ohttp-key` or `HPKE` in it), and the cached key is discarded before that refetch;
+  - key configuration fetches are capped at 64 KiB (was 64 MiB), sealed responses at 256 MiB plus 64 KiB
+    (was 64 MiB) and sealed requests at 10 MiB (was unbounded);
+  - error messages of a failed exchange come from the core (for example "the gateway's answer does not
+    open"), and an unknown gateway host now fails when its key configuration is first fetched rather than
+    when the channel is created.
+  The cargo dependency is a private git repository: the CI GitHub App token used by
+  `.github/actions/setup` now also covers `zodl-inc/ohttp`.
 - **Breaking:** `OhttpSender` and `OhttpHttpClient` extend `Disposable`. Implementers of `OhttpSender` must
   implement `dispose()`; a `TorOhttpSender` releases its isolated `TorClient` there.
 - Sapling parameters are downloaded from `https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/`

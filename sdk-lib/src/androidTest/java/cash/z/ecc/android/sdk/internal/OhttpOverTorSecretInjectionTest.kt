@@ -3,6 +3,7 @@ package cash.z.ecc.android.sdk.internal
 import androidx.test.platform.app.InstrumentationRegistry
 import cash.z.ecc.android.sdk.internal.jni.FakeRustBackend
 import cash.z.ecc.android.sdk.internal.model.TorClient
+import cash.z.ecc.android.sdk.util.OhttpCodecFactory
 import co.electriccoin.lightwallet.client.OhttpHttpClient
 import kotlinx.coroutines.test.runTest
 import org.junit.Assume.assumeTrue
@@ -48,7 +49,7 @@ class OhttpOverTorSecretInjectionTest {
 
             // Create OHTTP client with Tor sender
             val torSender = TorOhttpSender(isolatedTor)
-            val ohttpClient = OhttpHttpClient.create(sender = torSender)
+            val ohttpClient = OhttpHttpClient.create(codec = OhttpCodecFactory.create(), sender = torSender)
 
             // CMC key/info endpoint — gateway injects X-CMC_PRO_API_KEY server-side
             val url = "https://pro-api.coinmarketcap.com/v1/key/info"
@@ -86,7 +87,7 @@ class OhttpOverTorSecretInjectionTest {
 
             // Create OHTTP client with Tor sender
             val torSender = TorOhttpSender(isolatedTor)
-            val ohttpClient = OhttpHttpClient.create(sender = torSender)
+            val ohttpClient = OhttpHttpClient.create(codec = OhttpCodecFactory.create(), sender = torSender)
 
             // NEAR 1click tokens endpoint — gateway injects Authorization server-side
             val url = "https://1click.chaindefuser.com/v0/tokens"

@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.internal.model.JniHttpResponseBytes
 import cash.z.ecc.android.sdk.internal.model.TorHttpTimeoutException
 import cash.z.ecc.android.sdk.internal.model.TorHttpTransportException
 import co.electriccoin.lightwallet.client.OhttpException
+import co.electriccoin.lightwallet.client.OhttpSender
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import kotlin.test.assertContentEquals
@@ -98,7 +99,7 @@ class TorOhttpSenderTest {
         }
 
     @Test
-    fun `422 ohttp-key response carries status and problem body so key rotation recovery can fire`(): Unit =
+    fun `422 ohttp-key response carries status and problem body`(): Unit =
         runBlocking {
             val problem = """{"type":"https://zodl.com/problems/ohttp-key","status":422}"""
             val transport = FakeTransport { jniResponse(422, problem.toByteArray()) }
@@ -108,8 +109,9 @@ class TorOhttpSenderTest {
                     TorOhttpSender(transport).post("https://relay.example/relay", byteArrayOf(), emptyList(), 1_000)
                 }
 
+            // OhttpTransport asks the native core about this status to decide on a key refresh; the
+            // problem body is only quoted in the message.
             assertEquals(422, thrown.httpStatus)
-            // OhttpTransport.roundTrip matches the 422 ohttp-key branch on this message text.
             assertTrue(assertNotNull(thrown.message).contains("ohttp-key", ignoreCase = true))
         }
 
@@ -125,5 +127,20 @@ class TorOhttpSenderTest {
 
             assertEquals(503, thrown.httpStatus)
             assertTrue(assertNotNull(thrown.message).contains("unavailable"))
+        }
+
+    @Test
+    fun `a key config larger than the cap is refused but a sealed response of that size is not`(): Unit =
+        runBlocking {
+            val oversized = ByteArray(OhttpSender.MAX_KEY_CONFIG_BYTES + 1)
+            val transport = FakeTransport { jniResponse(200, oversized) }
+
+            assertFailsWith<OhttpException> {
+                TorOhttpSender(transport).get("https://relay.example/ohttp-configs/signed", emptyList(), 1_000)
+            }
+            assertEquals(
+                oversized.size,
+                TorOhttpSender(transport).post("https://relay.example/relay", byteArrayOf(), emptyList(), 1_000).size
+            )
         }
 }

@@ -113,6 +113,7 @@ mod migration_engine;
 mod migration_keystone;
 mod migration_plan_cache;
 mod migration_send_max;
+mod ohttp;
 mod payment_uri;
 mod tor;
 mod tor_http;

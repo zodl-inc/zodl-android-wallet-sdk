@@ -1,5 +1,7 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.OhttpCodecRequest
+import co.electriccoin.lightwallet.client.OhttpCodecResponse
 import co.electriccoin.lightwallet.client.OhttpException
 import io.grpc.CallOptions
 import io.grpc.ClientCall
@@ -12,6 +14,7 @@ import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.SocketTimeoutException
+import java.nio.ByteBuffer
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
@@ -26,8 +29,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * A gRPC [ManagedChannel] that carries every RPC as one Oblivious HTTP (RFC 9458) exchange.
  *
  * Each call is serialised as gRPC-over-HTTP/2 framing (`application/grpc`), wrapped in Binary HTTP,
- * HPKE-encrypted and POSTed to the relay by [OhttpTransport]. The gateway forwards the inner request
- * to lightwalletd over h2c, buffers the (possibly streaming) response and returns it in a single
+ * HPKE-encrypted (by the shared native OHTTP core) and POSTed to the relay by [OhttpTransport]. The
+ * gateway forwards the inner request to lightwalletd over h2c, buffers the (possibly streaming) response
+ * and returns it in a single
  * encrypted Binary HTTP response with the gRPC trailers folded into the header section. Server
  * streaming RPCs therefore work unchanged from the stub's point of view: all messages arrive at once
  * and are delivered respecting the listener's flow-control requests.
@@ -230,7 +234,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         // gRPC length-prefixed message framing: 1 byte compressed flag + 4 byte big-endian length.
         val bytes = method.requestMarshaller.stream(message).use { it.readBytes() }
         requestBody.write(GRPC_UNCOMPRESSED_FLAG)
-        requestBody.write(Hpke.i2osp(bytes.size, GRPC_LENGTH_FIELD_SIZE))
+        requestBody.write(ByteBuffer.allocate(GRPC_LENGTH_FIELD_SIZE).putInt(bytes.size).array())
         requestBody.write(bytes)
     }
 
@@ -249,7 +253,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
                     add("grpc-timeout" to "${timeoutMs}m")
                 }
             val request =
-                BinaryHttp.Request(
+                OhttpCodecRequest(
                     method = "POST",
                     scheme = "https",
                     authority = authority,
@@ -275,7 +279,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     }
 
     @Suppress("ReturnCount") // Early returns for validation errors make control flow clearer
-    private fun onResponse(response: BinaryHttp.Response) {
+    private fun onResponse(response: OhttpCodecResponse) {
         val validationResult = validateResponse(response)
         if (validationResult != null) {
             finish(validationResult.first, validationResult.second)
@@ -314,7 +318,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         deliver()
     }
 
-    private fun validateResponse(response: BinaryHttp.Response): Pair<Status, Metadata>? =
+    private fun validateResponse(response: OhttpCodecResponse): Pair<Status, Metadata>? =
         when {
             response.status != HTTP_OK -> {
                 val statusMessage = "gateway/lightwalletd returned HTTP ${response.status}"

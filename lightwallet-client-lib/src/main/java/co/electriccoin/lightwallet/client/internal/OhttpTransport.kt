@@ -1,20 +1,30 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.OhttpCodec
+import co.electriccoin.lightwallet.client.OhttpCodecRequest
+import co.electriccoin.lightwallet.client.OhttpCodecResponse
+import co.electriccoin.lightwallet.client.OhttpCompletion
 import co.electriccoin.lightwallet.client.OhttpException
+import co.electriccoin.lightwallet.client.OhttpProfileInfo
 import co.electriccoin.lightwallet.client.OhttpSender
-import java.net.HttpURLConnection
 
 /**
- * OHTTP (RFC 9458) client transport: encapsulates a Binary HTTP request with HPKE, POSTs it to the
- * relay and decapsulates the gateway's response.
+ * OHTTP (RFC 9458) client transport: seals a request to the gateway's key, POSTs it to the relay
+ * and opens the gateway's response.
  *
- * Pure JVM (`HttpURLConnection`) so that the whole OHTTP path can be exercised from a plain unit
- * test against the real gateway before it is wired into gRPC.
+ * The protocol itself (signed key configuration, Binary HTTP, HPKE, outer-status classification,
+ * size caps) is done by the shared native core behind [codec]; this class keeps the I/O, the key
+ * cache, the retry loop and the trace id.
+ *
+ * Pure JVM apart from [codec] (`HttpURLConnection` through the default [sender]) so that the whole
+ * OHTTP path can be exercised from a plain unit test with a fake [codec].
  */
 @Suppress("LongParameterList") // Network config + test/debug overrides
 internal class OhttpTransport(
     private val relayUrl: String,
-    private val network: String,
+    /** The gateway's host, which the codec maps to a network and so to the signing key it trusts. */
+    private val gatewayHost: String,
+    private val codec: OhttpCodec,
     private val sender: OhttpSender = DirectOhttpSender(),
     private val logger: (String) -> Unit = {},
     /**
@@ -28,24 +38,18 @@ internal class OhttpTransport(
      */
     ohttpClientTraceIdPrefix: String? = null,
     /**
-     * Optional pre-cached key configuration for testing. When set, skips the initial HTTP GET.
+     * Optional pre-cached gateway key (an [co.electriccoin.lightwallet.client.OhttpVerifiedKey.key])
+     * for testing. When set, skips the initial HTTP GET. Production code should leave this null.
+     */
+    initialKey: ByteArray? = null,
+    /**
+     * Optional pre-cached key expiry timestamp (seconds). Only used when [initialKey] is set.
      * Production code should leave this null.
      */
-    initialKeyConfig: OhttpKeyConfig? = null,
-    /**
-     * Optional pre-cached key configuration expiry timestamp (seconds). Only used when
-     * [initialKeyConfig] is set. Production code should leave this null.
-     */
     initialExpirySeconds: Long? = null,
-    /**
-     * Optional Ed25519 public key that replaces the embedded ZODL signing key when verifying the
-     * signed key configuration, so tests can sign envelopes with a fresh key. Production code
-     * must leave this null.
-     */
-    private val trustedSigningKey: ByteArray? = null,
 ) {
     private val lock = Any()
-    private var cachedKeyConfig: OhttpKeyConfig? = initialKeyConfig
+    private var cachedKey: ByteArray? = initialKey
     private var cachedExpiry: Long? = initialExpirySeconds
     private val clientTrace: OhttpClientTrace? =
         if (OhttpDebugFlags.allowTracePrefix) {
@@ -53,140 +57,127 @@ internal class OhttpTransport(
         } else {
             null
         }
+    private val profile: OhttpProfileInfo by lazy { codec.profileInfo() }
+    private val signedConfigUrl: String by lazy { codec.signedConfigUrl(relayUrl) }
 
-    /** Fetches (or returns the cached) gateway key configuration. */
-    suspend fun keyConfig(forceRefresh: Boolean = false): OhttpKeyConfig {
+    /**
+     * Fetches (or returns the cached) gateway key. A key is used until the `not_after` of its signed
+     * configuration (less the codec's refresh margin); a forced refresh discards the cached key
+     * before the fetch, when the codec's cache rules say so.
+     */
+    suspend fun keyConfig(forceRefresh: Boolean = false): ByteArray {
         val nowSeconds = System.currentTimeMillis() / MILLIS_PER_SECOND
         synchronized(lock) {
-            if (!forceRefresh) {
-                val cached = cachedKeyConfig
-                val expiry = cachedExpiry
-                // A pre-seeded config without an expiry (test-only) never expires.
-                if (cached != null && (expiry == null || nowSeconds < expiry)) {
-                    return cached
-                }
+            if (forceRefresh && profile.dropBeforeRefetch) {
+                cachedKey = null
+                cachedExpiry = null
+            }
+            val cached = cachedKey
+            val expiry = cachedExpiry
+            // A pre-seeded key without an expiry (test-only) never expires.
+            val fresh = expiry == null || expiry - nowSeconds > profile.cacheRefreshMarginSecs
+            if (!forceRefresh && cached != null && fresh) {
+                return cached
             }
         }
 
-        // Derive signed config URL from relay URL
-        val signedUrl = deriveSignedConfigUrl(relayUrl)
-        val headers = listOf("Accept" to "application/json")
-        val jsonBytes = sender.get(signedUrl, headers, KEY_FETCH_TIMEOUT_MS)
-        val json = jsonBytes.toString(Charsets.UTF_8)
+        val headers = profile.keyFetchHeaders + traceHeaders(profile.traceOnKeyFetch)
+        val json = sender.get(signedConfigUrl, headers, KEY_FETCH_TIMEOUT_MS)
 
-        // Verify and parse
-        val (parsed, expiry) =
-            OhttpSignedConfigVerifier.verifyAndParse(json, network, trustedPublicKey = trustedSigningKey)
-        logger("OHTTP signed key config verified: key_id=${parsed.keyId}, network=$network, valid_until=$expiry")
+        val verified = codec.verifyKeyConfig(gatewayHost, json, nowSeconds)
+        logger("OHTTP signed key config verified: network=${verified.network}, valid_until=${verified.notAfter}")
 
         synchronized(lock) {
-            cachedKeyConfig = parsed
-            cachedExpiry = expiry
+            cachedKey = verified.key
+            cachedExpiry = verified.notAfter
         }
-        return parsed
+        return verified.key
     }
 
     /**
-     * Performs one OHTTP round trip. A gateway rejection (HTTP 400 from the relay/gateway pair) is
-     * retried once after refreshing the key configuration, which handles gateway key rotation.
+     * Performs one OHTTP round trip. When the relay or gateway rejects the sealed request as
+     * unreadable (outer HTTP 400 or 422, which handles gateway key rotation), the key configuration
+     * is refetched and the request is **sealed afresh** and sent once more: the gateway answers a
+     * repeated nonce with 409, so a ciphertext is never posted twice.
      */
     suspend fun roundTrip(
-        request: BinaryHttp.Request,
+        request: OhttpCodecRequest,
         timeoutMs: Int,
-    ): BinaryHttp.Response {
-        var keyConfig = keyConfig()
-        return try {
-            roundTripWith(keyConfig, request, timeoutMs)
-        } catch (e: OhttpException) {
-            when {
-                e.httpStatus == HttpURLConnection.HTTP_BAD_REQUEST -> {
-                    logger("OHTTP gateway rejected request (${e.message}); refreshing key config and retrying")
-                    keyConfig = keyConfig(forceRefresh = true)
-                    roundTripWith(keyConfig, request, timeoutMs)
-                }
-
-                e.httpStatus == HTTP_UNPROCESSABLE_ENTITY && (
-                    e.message?.contains("ohttp-key", ignoreCase = true) == true ||
-                        e.message?.contains("HPKE", ignoreCase = true) == true
-                ) -> {
-                    // 422 with problem type ohttp-key: invalidate cache and refetch
-                    logger("OHTTP gateway 422 ohttp-key error (${e.message}); invalidating cache and retrying")
-                    keyConfig = keyConfig(forceRefresh = true)
-                    roundTripWith(keyConfig, request, timeoutMs)
-                }
-
-                else -> {
-                    throw e
-                }
-            }
-        }
+    ): OhttpCodecResponse {
+        exchange(keyConfig(), request, timeoutMs, FIRST_ATTEMPT)?.let { return it }
+        logger("OHTTP gateway rejected the request; refreshing the key config and retrying")
+        return exchange(keyConfig(forceRefresh = true), request, timeoutMs, RETRY_ATTEMPT)
+            ?: throw OhttpException("OHTTP gateway rejected the request again after a key config refresh")
     }
 
-    private suspend fun roundTripWith(
-        keyConfig: OhttpKeyConfig,
-        request: BinaryHttp.Request,
+    /**
+     * One sealing and one post. Returns the response, or null if the gateway asked for a new key
+     * configuration. The native opener is spent by the codec's `complete` or freed here, whichever
+     * way this ends (an exception or a cancelled coroutine included).
+     */
+    private suspend fun exchange(
+        key: ByteArray,
+        request: OhttpCodecRequest,
         timeoutMs: Int,
-    ): BinaryHttp.Response {
-        // RFC 9458 §4.3 — Encapsulation of Requests
-        val header = keyConfig.header()
-        val info = REQUEST_LABEL + byteArrayOf(0x00) + header
-        val context = Hpke.setupBaseS(keyConfig.publicKey, info)
-        val plaintext = BinaryHttp.encodeRequest(request)
-        val ciphertext = context.seal(ByteArray(0), plaintext)
-        val encapsulatedRequest = header + context.enc + ciphertext
-
-        val relayHeaders =
-            buildList {
-                add("Content-Type" to REQUEST_MEDIA_TYPE)
-                add("Accept" to RESPONSE_MEDIA_TYPE)
-                add("Accept-Encoding" to "identity")
-                clientTrace?.let { trace ->
-                    add("X-Client-Trace-Id" to trace.next())
+        attempt: Int,
+    ): OhttpCodecResponse? {
+        val sealed = codec.encapsulate(key, request)
+        return OhttpPending(codec, sealed.opener).use { pending ->
+            val answer =
+                try {
+                    sender.post(relayUrl, sealed.body, profile.postHeaders + traceHeaders(true), timeoutMs)
+                } catch (e: OhttpException) {
+                    // The senders only return the body of a 200, and throw the relay's other
+                    // statuses: let the codec decide whether this one asks for a new key.
+                    val status = e.httpStatus ?: throw e
+                    return@use refusal(pending.complete(status, null, ByteArray(0), attempt), e)
                 }
-            }
-        val encapsulatedResponse = sender.post(relayUrl, encapsulatedRequest, relayHeaders, timeoutMs)
-
-        // RFC 9458 §4.4 — Encapsulation of Responses (client side: decapsulate)
-        val nonceLength = maxOf(Hpke.N_N, Hpke.N_K)
-        if (encapsulatedResponse.size < nonceLength + Hpke.N_T) {
-            throw OhttpException("OHTTP response too short (${encapsulatedResponse.size} bytes)")
-        }
-        val responseNonce = encapsulatedResponse.copyOfRange(0, nonceLength)
-        val responseCiphertext = encapsulatedResponse.copyOfRange(nonceLength, encapsulatedResponse.size)
-
-        val secret = context.export(RESPONSE_LABEL, Hpke.N_K)
-        val salt = context.enc + responseNonce
-        val prk = Hpke.hkdfExtract(salt, secret)
-        val aeadKey = Hpke.hkdfExpand(prk, "key".toByteArray(Charsets.US_ASCII), Hpke.N_K)
-        val aeadNonce = Hpke.hkdfExpand(prk, "nonce".toByteArray(Charsets.US_ASCII), Hpke.N_N)
-
-        val decrypted =
-            try {
-                Hpke.aesGcmOpen(aeadKey, aeadNonce, ByteArray(0), responseCiphertext)
-            } catch (e: org.bouncycastle.crypto.InvalidCipherTextException) {
-                throw OhttpException("OHTTP response authentication failed", cause = e)
-            }
-        return BinaryHttp.decodeResponse(decrypted)
-    }
-
-    private fun deriveSignedConfigUrl(relayUrl: String): String {
-        val base = relayUrl.trimEnd('/')
-        return if (base.endsWith("/relay")) {
-            base.removeSuffix("/relay") + "/ohttp-configs/signed"
-        } else {
-            // Fallback: just append /ohttp-configs/signed
-            "$base/ohttp-configs/signed"
+            interpret(pending.complete(HTTP_OK, null, answer, attempt))
         }
     }
+
+    private fun refusal(
+        completion: OhttpCompletion,
+        refused: OhttpException,
+    ): OhttpCodecResponse? =
+        when (completion) {
+            OhttpCompletion.RefetchKeyConfig -> null
+            else -> throw refused
+        }
+
+    private fun interpret(completion: OhttpCompletion): OhttpCodecResponse? =
+        when (completion) {
+            is OhttpCompletion.Response -> {
+                completion.response
+            }
+
+            OhttpCompletion.RefetchKeyConfig -> {
+                null
+            }
+
+            is OhttpCompletion.Refused -> {
+                throw OhttpException(
+                    "Relay/gateway returned HTTP ${completion.status}: ${completion.detail}",
+                    completion.status,
+                )
+            }
+
+            is OhttpCompletion.WrongMediaType -> {
+                throw OhttpException("Relay answered ${completion.contentType}, not $RESPONSE_MEDIA_TYPE")
+            }
+        }
+
+    /** The trace id header, if a trace prefix is set and [wanted]. */
+    private fun traceHeaders(wanted: Boolean): List<Pair<String, String>> =
+        clientTrace?.takeIf { wanted }?.let { listOf(TRACE_HEADER to it.next()) } ?: emptyList()
 
     companion object {
-        const val REQUEST_MEDIA_TYPE = "message/ohttp-req"
         const val RESPONSE_MEDIA_TYPE = "message/ohttp-res"
+        const val TRACE_HEADER = "X-Client-Trace-Id"
         private const val MILLIS_PER_SECOND = 1000L
-        private const val HTTP_UNPROCESSABLE_ENTITY = 422
-
-        private val REQUEST_LABEL = "message/bhttp request".toByteArray(Charsets.US_ASCII)
-        private val RESPONSE_LABEL = "message/bhttp response".toByteArray(Charsets.US_ASCII)
+        private const val HTTP_OK = 200
+        private const val FIRST_ATTEMPT = 0
+        private const val RETRY_ATTEMPT = 1
 
         private const val KEY_FETCH_TIMEOUT_MS = 15_000
     }

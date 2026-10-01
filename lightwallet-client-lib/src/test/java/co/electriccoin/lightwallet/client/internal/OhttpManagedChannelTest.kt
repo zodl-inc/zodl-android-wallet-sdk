@@ -27,7 +27,12 @@ class OhttpManagedChannelTest {
         val channel =
             OhttpManagedChannel(
                 authority = "ohttp-gateway.example",
-                transport = OhttpTransport("https://relay.example/relay", "mainnet"),
+                transport =
+                    OhttpTransport(
+                        relayUrl = "https://relay.example/relay",
+                        gatewayHost = "ohttp-gateway.example",
+                        codec = FakeOhttpCodec(),
+                    ),
             )
 
         val call = channel.newCall(method, CallOptions.DEFAULT)

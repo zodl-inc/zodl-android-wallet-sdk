@@ -1,6 +1,7 @@
 package co.electriccoin.lightwallet.client.internal
 
 import android.util.Log
+import co.electriccoin.lightwallet.client.OhttpCodec
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import io.grpc.ManagedChannel
 
@@ -17,6 +18,7 @@ import io.grpc.ManagedChannel
  */
 internal class OhttpChannelFactory(
     private val relayUrl: String,
+    private val codec: OhttpCodec,
     /**
      * Optional client trace ID prefix. When set, every outer OHTTP POST to the relay carries
      * `X-Client-Trace-Id: <prefix>-<uuid>`. See [OhttpTransport.ohttpClientTraceIdPrefix] for details.
@@ -26,12 +28,12 @@ internal class OhttpChannelFactory(
     override fun newChannel(endpoint: LightWalletEndpoint): ManagedChannel {
         require(endpoint.isSecure) { "OHTTP endpoints must be secure (https)" }
         val logger: (String) -> Unit = { Log.i(Constants.LOG_TAG, it) }
-        val network = OhttpEndpoints.networkFor(endpoint.host)
-        Log.i(Constants.LOG_TAG, "OHTTP channel: gateway=${endpoint.host} relay=$relayUrl network=$network")
+        Log.i(Constants.LOG_TAG, "OHTTP channel: gateway=${endpoint.host} relay=$relayUrl")
         val transport =
             OhttpTransport(
                 relayUrl = relayUrl,
-                network = network,
+                gatewayHost = endpoint.host,
+                codec = codec,
                 logger = logger,
                 ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
             )

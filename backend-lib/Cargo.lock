@@ -7794,14 +7794,19 @@ dependencies = [
 name = "zcash-android-wallet-sdk"
 version = "5.0.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
+ "base64",
  "bip0039",
  "bitflags 2.13.1",
  "bytes",
  "dlopen2",
+ "ed25519-dalek",
  "ff",
  "fs-mistrust",
  "hex",
+ "hkdf",
+ "hpke",
  "http",
  "http-body-util",
  "incrementalmerkletree",
@@ -7823,6 +7828,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "shardtree",
  "tokio",
  "tonic",
@@ -7847,6 +7853,7 @@ dependencies = [
  "zcash_voting",
  "zeroize",
  "zip32",
+ "zodl-ohttp-client",
  "zodl-slipstream",
 ]
 
@@ -8367,6 +8374,25 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zodl-ohttp-client"
+version = "0.1.0"
+source = "git+https://github.com/zodl-inc/ohttp.git?rev=18ef6f31f81d8245ede04599f4bfbe3fb9bb7d9d#18ef6f31f81d8245ede04599f4bfbe3fb9bb7d9d"
+dependencies = [
+ "aes-gcm",
+ "base64",
+ "ed25519-dalek",
+ "hex",
+ "hkdf",
+ "hpke",
+ "rand_core 0.9.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "zeroize",
+]
 
 [[package]]
 name = "zodl-slipstream"

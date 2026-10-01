@@ -17,13 +17,18 @@ interface LightWalletClient : WalletClient {
          * @param ohttpClientTraceIdPrefix Optional client trace ID prefix for end-to-end tracing
          *        in OHTTP requests. When set, every outer OHTTP POST carries `X-Client-Trace-Id: <prefix>-<uuid>`.
          *        **Privacy warning:** makes requests linkable. DEBUG ONLY. Off by default.
+         * @param ohttpCodec the native OHTTP protocol implementation, required (and only used) when
+         *        [lightWalletEndpoint] is a ZODL OHTTP gateway. `cash.z.ecc.android.sdk.util.WalletClientFactory`
+         *        supplies it for the SDK's own clients.
          */
+        @Suppress("LongParameterList")
         fun new(
             context: Context,
             lightWalletEndpoint: LightWalletEndpoint,
             singleRequestTimeout: Duration = 10.seconds,
             streamingRequestTimeout: Duration = 90.seconds,
             ohttpClientTraceIdPrefix: String? = null,
+            ohttpCodec: OhttpCodec? = null,
         ): LightWalletClient =
             LightWalletClientImpl(
                 // Endpoints that are ZODL OHTTP gateways are reached through an OHTTP relay
@@ -32,6 +37,9 @@ interface LightWalletClient : WalletClient {
                     if (OhttpEndpoints.isOhttpGateway(lightWalletEndpoint.host)) {
                         OhttpChannelFactory(
                             OhttpEndpoints.relayUrlFor(lightWalletEndpoint.host),
+                            requireNotNull(ohttpCodec) {
+                                "An OhttpCodec is required for the OHTTP gateway ${lightWalletEndpoint.host}"
+                            },
                             ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
                         )
                     } else {

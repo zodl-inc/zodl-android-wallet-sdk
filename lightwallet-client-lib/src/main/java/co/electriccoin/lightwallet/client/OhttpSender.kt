@@ -41,4 +41,21 @@ interface OhttpSender : Disposable {
         headers: List<Pair<String, String>>,
         timeoutMs: Int,
     ): ByteArray
+
+    companion object {
+        /**
+         * The largest sealed response a sender reads: the gateway's 256 MiB backend body limit plus
+         * 64 KiB of framing, encryption overhead and header fields. Mirrors
+         * `GATEWAY_MAX_SEALED_RESPONSE_BYTES` of the native OHTTP core, which enforces it again on
+         * the whole body before decrypting; a sender uses it to stop reading a hostile relay's
+         * answer early. (`RustOhttpToolTest` checks that the two agree.)
+         */
+        const val MAX_SEALED_RESPONSE_BYTES: Int = 268_435_456 + 65_536
+
+        /**
+         * The largest key configuration document a sender reads (64 KiB). Mirrors `MAX_KEY_CONFIG_BYTES`
+         * of the native OHTTP core, which enforces it again before parsing the envelope.
+         */
+        const val MAX_KEY_CONFIG_BYTES: Int = 64 * 1024
+    }
 }

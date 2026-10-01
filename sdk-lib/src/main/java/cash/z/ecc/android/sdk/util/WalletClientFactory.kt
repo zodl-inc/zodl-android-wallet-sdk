@@ -36,7 +36,8 @@ class WalletClientFactory(
                 LightWalletClient.new(
                     context,
                     endpoint,
-                    ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+                    ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
+                    ohttpCodec = OhttpCodecFactory.create()
                 ),
             isolatedTorClient = torClient?.let { holder -> LazyTorClient { holder.getOrCreate().isolatedTorClient() } },
         )

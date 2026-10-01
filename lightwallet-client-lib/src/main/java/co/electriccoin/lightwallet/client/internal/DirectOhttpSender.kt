@@ -29,7 +29,7 @@ class DirectOhttpSender : OhttpSender {
             if (status != HttpURLConnection.HTTP_OK) {
                 val detail =
                     connection.errorStream
-                        ?.use { it.readFully(MAX_RESPONSE_SIZE_BYTES) }
+                        ?.use { it.readFully(MAX_ERROR_BODY_BYTES) }
                         ?.toString(Charsets.UTF_8)
                         ?.take(ERROR_MESSAGE_MAX_LENGTH)
                 throw OhttpException(
@@ -37,7 +37,7 @@ class DirectOhttpSender : OhttpSender {
                     status,
                 )
             }
-            return connection.inputStream.use { it.readFully(MAX_RESPONSE_SIZE_BYTES) }
+            return connection.inputStream.use { it.readFully(OhttpSender.MAX_SEALED_RESPONSE_BYTES) }
         } finally {
             connection.disconnect()
         }
@@ -57,7 +57,7 @@ class DirectOhttpSender : OhttpSender {
             if (status != HttpURLConnection.HTTP_OK) {
                 val detail =
                     connection.errorStream
-                        ?.use { it.readFully(MAX_RESPONSE_SIZE_BYTES) }
+                        ?.use { it.readFully(MAX_ERROR_BODY_BYTES) }
                         ?.toString(Charsets.UTF_8)
                         ?.take(ERROR_MESSAGE_MAX_LENGTH)
                 throw OhttpException(
@@ -65,7 +65,7 @@ class DirectOhttpSender : OhttpSender {
                     status,
                 )
             }
-            return connection.inputStream.use { it.readFully(MAX_RESPONSE_SIZE_BYTES) }
+            return connection.inputStream.use { it.readFully(OhttpSender.MAX_KEY_CONFIG_BYTES) }
         } finally {
             connection.disconnect()
         }
@@ -116,9 +116,8 @@ class DirectOhttpSender : OhttpSender {
         private const val ERROR_MESSAGE_MAX_LENGTH = 200
         private const val READ_BUFFER_SIZE = 16 * 1024
 
-        // Generous enough for the largest legitimate response (a bulk GetBlockRange chunk,
-        // capped at 2k blocks -- see slipstream-internal's TOR_OHTTP_MAX_CHUNK_BLOCKS), while
-        // still bounding memory against a malicious/compromised relay or gateway.
-        private const val MAX_RESPONSE_SIZE_BYTES = 64 * 1024 * 1024
+        // Only the first ERROR_MESSAGE_MAX_LENGTH characters of an error body are quoted, but the
+        // whole stream is drained up to this bound (unchanged from before the shared OHTTP core).
+        private const val MAX_ERROR_BODY_BYTES = 64 * 1024 * 1024
     }
 }

@@ -1,11 +1,11 @@
 package co.electriccoin.lightwallet.client
 
 import android.util.Log
-import co.electriccoin.lightwallet.client.internal.BinaryHttp
 import co.electriccoin.lightwallet.client.internal.Constants
 import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.OHTTP_PROXY_ALLOWED_SUFFIXES
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
+import co.electriccoin.lightwallet.client.internal.PROXY_GATEWAY_HOST
 import co.electriccoin.lightwallet.client.internal.PROXY_RELAY_URL
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import co.electriccoin.lightwallet.client.internal.proxyGatewayHostFor
@@ -16,6 +16,7 @@ import kotlinx.coroutines.withContext
 import java.net.URI
 
 class OhttpHttpClient private constructor(
+    codec: OhttpCodec,
     private val sender: OhttpSender,
     /**
      * Optional client trace ID prefix. When set, every outer OHTTP POST to the relay carries
@@ -27,9 +28,10 @@ class OhttpHttpClient private constructor(
     // F-07 fix: Reuse OhttpTransport instance to share key cache across requests
     private val transport =
         OhttpTransport(
-            PROXY_RELAY_URL,
-            PROXY_NETWORK,
-            sender,
+            relayUrl = PROXY_RELAY_URL,
+            gatewayHost = PROXY_GATEWAY_HOST,
+            codec = codec,
+            sender = sender,
             ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
         )
 
@@ -47,7 +49,6 @@ class OhttpHttpClient private constructor(
 
     companion object {
         private const val DEFAULT_TIMEOUT_MS = 30_000
-        private const val PROXY_NETWORK = "mainnet" // All proxy hosts use mainnet relay
 
         /**
          * Creates an OHTTP client for external API requests (NEAR, CMC, voting).
@@ -62,12 +63,15 @@ class OhttpHttpClient private constructor(
          * The returned client takes ownership of [sender]: [dispose] disposes it, so do not share one
          * sender between two clients.
          *
+         * @param codec the native OHTTP protocol implementation; in an app that uses the SDK, get it from
+         *   `cash.z.ecc.android.sdk.util.OhttpCodecFactory`.
          * @param ohttpClientTraceIdPrefix Optional client trace ID prefix for end-to-end tracing.
          */
         fun create(
+            codec: OhttpCodec,
             sender: OhttpSender = DirectOhttpSender(),
             ohttpClientTraceIdPrefix: String? = null,
-        ): OhttpHttpClient = OhttpHttpClient(sender, ohttpClientTraceIdPrefix)
+        ): OhttpHttpClient = OhttpHttpClient(codec, sender, ohttpClientTraceIdPrefix)
     }
 
     /**
@@ -115,7 +119,7 @@ class OhttpHttpClient private constructor(
                     uri.rawQuery?.let { q -> "$p?$q" } ?: p
                 }.ifEmpty { "/" }
         val bReq =
-            BinaryHttp.Request(
+            OhttpCodecRequest(
                 method = request.method,
                 scheme = uri.scheme ?: "https",
                 authority = innerAuthority,

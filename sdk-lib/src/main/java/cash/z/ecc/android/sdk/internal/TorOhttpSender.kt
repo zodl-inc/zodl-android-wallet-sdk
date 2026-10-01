@@ -35,7 +35,7 @@ class TorOhttpSender internal constructor(
                 response.status
             )
         }
-        return response.body.requireWithinResponseSizeLimit()
+        return response.body.requireWithinSizeLimit(OhttpSender.MAX_SEALED_RESPONSE_BYTES)
     }
 
     override suspend fun get(
@@ -51,7 +51,7 @@ class TorOhttpSender internal constructor(
                 response.status
             )
         }
-        return response.body.requireWithinResponseSizeLimit()
+        return response.body.requireWithinSizeLimit(OhttpSender.MAX_KEY_CONFIG_BYTES)
     }
 
     /**
@@ -68,9 +68,7 @@ class TorOhttpSender internal constructor(
      * Renders the JNI response body as `": <detail>"` for use in an [OhttpException] message, or
      * "" if empty. The body carries the gateway's problem-details JSON (e.g. type "ohttp-key").
      * Mirrors [co.electriccoin.lightwallet.client.internal.DirectOhttpSender]'s error-stream
-     * handling so callers (e.g. [co.electriccoin.lightwallet.client.internal.OhttpTransport]'s
-     * 422 ohttp-key retry branch, which matches on message text) see the same gateway error
-     * detail regardless of whether Tor is on.
+     * handling so callers see the same gateway error detail regardless of whether Tor is on.
      */
     private fun JniHttpResponseBytes.errorDetail(): String =
         body.toString(Charsets.UTF_8).take(ERROR_MESSAGE_MAX_LENGTH).let { if (it.isEmpty()) "" else ": $it" }
@@ -79,20 +77,18 @@ class TorOhttpSender internal constructor(
      * `torClient.httpPost`/`httpGet` cross the JNI boundary as an already-fully-materialized
      * [ByteArray] -- unlike [co.electriccoin.lightwallet.client.internal.DirectOhttpSender], there
      * is no streaming read to bound here, so this can only reject an oversized response after the
-     * fact, not prevent the Rust side from buffering it. Kept for parity: a malicious/compromised
-     * relay or gateway should not get a bigger blast radius just because Tor is on.
+     * fact, not prevent the Rust side from buffering it. Kept for parity with
+     * [co.electriccoin.lightwallet.client.internal.DirectOhttpSender] (same limits, see [OhttpSender]): a
+     * malicious/compromised relay or gateway should not get a bigger blast radius just because Tor is on.
      */
-    private fun ByteArray.requireWithinResponseSizeLimit(): ByteArray {
-        if (size > MAX_RESPONSE_SIZE_BYTES) {
-            throw OhttpException("Response exceeded the $MAX_RESPONSE_SIZE_BYTES byte limit (Tor path)")
+    private fun ByteArray.requireWithinSizeLimit(maxBytes: Int): ByteArray {
+        if (size > maxBytes) {
+            throw OhttpException("Response exceeded the $maxBytes byte limit (Tor path)")
         }
         return this
     }
 
     private companion object {
-        // Matches DirectOhttpSender.MAX_RESPONSE_SIZE_BYTES.
-        const val MAX_RESPONSE_SIZE_BYTES = 64 * 1024 * 1024
-
         const val ERROR_MESSAGE_MAX_LENGTH = 200
     }
 }

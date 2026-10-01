@@ -8,21 +8,11 @@ package co.electriccoin.lightwallet.client.internal
  *
  *   app ──HPKE-encrypted──▶ relay (sees IP, not content) ──▶ gateway (sees content, not IP) ──▶ lightwalletd
  *
- * The gateway's HPKE key configuration is fetched through the relay at `https://<relay-host>/ohttp-configs`
- * (the relay passes it through from the gateway).
+ * The gateway's signed HPKE key configuration is fetched through the relay (see
+ * [co.electriccoin.lightwallet.client.OhttpCodec.signedConfigUrl]); which network a gateway host serves,
+ * and so which signing key is trusted for it, is decided by the same codec.
  */
 internal object OhttpEndpoints {
-    fun networkFor(gatewayHost: String): String =
-        when (gatewayHost) {
-            "ohttp-gateway-testnet.example" -> "testnet"
-
-            "ohttp-gateway.example" -> "mainnet"
-
-            // Fails closed like relayUrlFor below, rather than silently verifying a future third
-            // gateway host's signed key config against the mainnet signing key by default.
-            else -> throw IllegalArgumentException("No OHTTP network configured for gateway host $gatewayHost")
-        }
-
     private val relayByGatewayHost: Map<String, String> =
         mapOf(
             "ohttp-gateway-testnet.example" to "https://ohttp-relay-testnet.example/relay",
@@ -41,62 +31,6 @@ internal object OhttpEndpoints {
     fun relayUrlFor(gatewayHost: String): String =
         relayByGatewayHost[gatewayHost]
             ?: throw IllegalArgumentException("No OHTTP relay configured for gateway host $gatewayHost")
-}
-
-/**
- * One HPKE key configuration from an `application/ohttp-keys` document (RFC 9458 §3.1).
- */
-internal class OhttpKeyConfig(
-    val keyId: Int,
-    val kemId: Int,
-    val publicKey: ByteArray,
-    val kdfId: Int,
-    val aeadId: Int,
-) {
-    /** `hdr = key_id || kem_id || kdf_id || aead_id` (RFC 9458 §4.3). */
-    fun header(): ByteArray =
-        byteArrayOf(keyId.toByte()) + Hpke.i2osp(kemId, 2) +
-            Hpke.i2osp(kdfId, 2) + Hpke.i2osp(aeadId, 2)
-
-    companion object {
-        /**
-         * Parses an `application/ohttp-keys` body and returns the first key config that uses the
-         * suite this client implements (X25519 / HKDF-SHA256 / AES-128-GCM).
-         * Binary format parsing per RFC 9458 §3.1 — bit shifts are mandated by the spec.
-         */
-        @Suppress("MagicNumber")
-        fun parseSupported(bytes: ByteArray): OhttpKeyConfig {
-            var pos = 0
-
-            fun u8(): Int = bytes[pos++].toInt() and 0xFF
-
-            fun u16(): Int = (u8() shl 8) or u8()
-
-            while (pos + 2 <= bytes.size) {
-                val configLength = u16()
-                val end = pos + configLength
-                require(end <= bytes.size) { "Truncated OHTTP key config" }
-
-                val keyId = u8()
-                val kemId = u16()
-                require(kemId == Hpke.KEM_ID) { "Unsupported KEM 0x${kemId.toString(16)}" }
-                val publicKey = bytes.copyOfRange(pos, pos + Hpke.N_PK)
-                pos += Hpke.N_PK
-                val suitesLength = u16()
-                val suitesEnd = pos + suitesLength
-                require(suitesEnd <= end) { "Truncated OHTTP symmetric suites" }
-                while (pos + 4 <= suitesEnd) {
-                    val kdfId = u16()
-                    val aeadId = u16()
-                    if (kdfId == Hpke.KDF_ID && aeadId == Hpke.AEAD_ID) {
-                        return OhttpKeyConfig(keyId, kemId, publicKey, kdfId, aeadId)
-                    }
-                }
-                pos = end
-            }
-            throw IllegalArgumentException("No supported HPKE suite in OHTTP key configuration")
-        }
-    }
 }
 
 // =============================================================================
@@ -156,3 +90,9 @@ internal fun isOhttpProxyAllowedHost(host: String): Boolean {
  * COR-1830: Switch to ohttp-relay once it serves /ohttp-configs
  */
 internal const val PROXY_RELAY_URL = "https://relay-simulator.example/relay"
+
+/**
+ * The gateway host whose signed key configuration the proxy requests are sealed to: the mainnet
+ * gateway (every proxy host uses the mainnet relay).
+ */
+internal const val PROXY_GATEWAY_HOST = "ohttp-gateway.example"

@@ -1,32 +1,77 @@
 package co.electriccoin.lightwallet.client
 
-import co.electriccoin.lightwallet.client.internal.SignedEnvelopeTestVectors
-import co.electriccoin.lightwallet.client.internal.TestSigningKey
+import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
+import co.electriccoin.lightwallet.client.internal.FakeOhttpCodec
+import co.electriccoin.lightwallet.client.internal.OhttpDebugFlags
+import co.electriccoin.lightwallet.client.internal.OhttpEndpoints
+import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 @Suppress("ktlint:standard:max-line-length", "ktlint:standard:chain-method-continuation")
 class OhttpHttpClientTest {
-    /**
-     * Creates a dummy OHTTP key config for testing. Uses a valid cipher suite (X25519 + HKDF-SHA256
-     * + AES-128-GCM) but a dummy public key. Since the tests abort before HPKE crypto runs, the
-     * invalid key doesn't matter.
-     */
-    private fun dummyKeyConfig(): co.electriccoin.lightwallet.client.internal.OhttpKeyConfig =
-        co.electriccoin.lightwallet.client.internal.OhttpKeyConfig(
-            keyId = 1,
-            kemId = 0x0020, // X25519
-            publicKey = ByteArray(32) { 1 }, // Dummy 32-byte key
-            kdfId = 0x0001, // HKDF-SHA256
-            aeadId = 0x0001, // AES-128-GCM
+    private val codec = FakeOhttpCodec()
+
+    private fun client() = OhttpHttpClient.create(codec)
+
+    /** A transport whose every post fails after being captured, with a key cached so that no fetch happens. */
+    private fun capturingTransport(
+        capturedHeaders: MutableList<List<Pair<String, String>>>,
+        ohttpClientTraceIdPrefix: String?,
+    ): OhttpTransport {
+        val mockSender =
+            object : OhttpSender {
+                override suspend fun dispose() = Unit
+
+                override suspend fun post(
+                    url: String,
+                    body: ByteArray,
+                    headers: List<Pair<String, String>>,
+                    timeoutMs: Int,
+                ): ByteArray {
+                    capturedHeaders.add(headers)
+                    throw OhttpException("test abort")
+                }
+
+                override suspend fun get(
+                    url: String,
+                    headers: List<Pair<String, String>>,
+                    timeoutMs: Int,
+                ): ByteArray = throw NotImplementedError("GET not used in this test (initialKey provided)")
+            }
+        return OhttpTransport(
+            relayUrl = "https://relay.zodl.com/relay",
+            gatewayHost = "ohttp-gateway-testnet.example",
+            codec = codec,
+            sender = mockSender,
+            ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
+            initialKey = FakeOhttpCodec.KEY,
         )
+    }
+
+    private fun roundTripAndIgnoreFailure(transport: OhttpTransport): Throwable? =
+        runCatching {
+            runBlocking {
+                transport.roundTrip(
+                    OhttpCodecRequest(
+                        method = "GET",
+                        scheme = "https",
+                        authority = "example.zodl.com",
+                        path = "/test",
+                        headers = emptyList(),
+                        body = ByteArray(0),
+                    ),
+                    timeoutMs = 5000,
+                )
+            }
+        }.exceptionOrNull()
 
     @Test
     fun `canHandle returns true for static proxy mappings`() {
-        val client = OhttpHttpClient.create()
+        val client = client()
         assertTrue(client.canHandle("https://1click.chaindefuser.com/v0/tokens"))
         assertTrue(client.canHandle("https://voting.valargroup.dev/prod/dynamic-voting-config.json"))
         assertTrue(client.canHandle("https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol=ZEC"))
@@ -34,7 +79,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `canHandle returns true for zodl OHTTP gateway aliases`() {
-        val client = OhttpHttpClient.create()
+        val client = client()
         assertTrue(client.canHandle("https://near.zodl.com/v0/tokens"))
         assertTrue(client.canHandle("https://cmc.zodl.com/v1/cryptocurrency/quotes/latest"))
         assertTrue(client.canHandle("https://vote.zodl.com/prod/dynamic-voting-config.json"))
@@ -42,7 +87,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `canHandle returns true for allowlisted suffixes`() {
-        val client = OhttpHttpClient.create()
+        val client = client()
         assertTrue(client.canHandle("https://voting-prod.valargroup.org/shielded-vote/v1/rounds"))
         assertTrue(client.canHandle("https://voting-prod-2.valargroup.org/shielded-vote/v1/rounds/active"))
         assertTrue(client.canHandle("https://api.valargroup.dev/config"))
@@ -51,7 +96,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `canHandle returns false for non-allowlisted hosts`() {
-        val client = OhttpHttpClient.create()
+        val client = client()
         assertFalse(client.canHandle("https://example.com/path"))
         assertFalse(client.canHandle("https://valargroup.com/path"))
         assertFalse(client.canHandle("https://malicious-valargroup.org/path"))
@@ -87,7 +132,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `canHandle handles invalid URLs gracefully`() {
-        val client = OhttpHttpClient.create()
+        val client = client()
         assertFalse(client.canHandle("not a url"))
         assertFalse(client.canHandle(""))
         assertFalse(client.canHandle("://missing-scheme"))
@@ -96,51 +141,9 @@ class OhttpHttpClientTest {
     @Test
     fun `client trace ID header is absent when prefix not set`() {
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
-        val mockSender =
-            object : OhttpSender {
-                override suspend fun dispose() = Unit
-
-                override suspend fun post(
-                    url: String,
-                    body: ByteArray,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray {
-                    capturedHeaders.add(headers)
-                    throw co.electriccoin.lightwallet.client.OhttpException("test abort")
-                }
-
-                override suspend fun get(
-                    url: String,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray = throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
-            }
-        val transport =
-            co.electriccoin.lightwallet.client.internal.OhttpTransport(
-                relayUrl = "https://relay.zodl.com/relay",
-                network = "testnet",
-                sender = mockSender,
-                ohttpClientTraceIdPrefix = null,
-                initialKeyConfig = dummyKeyConfig(),
-            )
-        val exceptionThrown =
-            runCatching {
-                kotlinx.coroutines.runBlocking {
-                    transport.roundTrip(
-                        co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
-                            method = "GET",
-                            scheme = "https",
-                            authority = "example.zodl.com",
-                            path = "/test",
-                            headers = emptyList(),
-                            body = ByteArray(0),
-                        ),
-                        timeoutMs = 5000,
-                    )
-                }
-            }.exceptionOrNull()
-        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.OhttpException)
+        val transport = capturingTransport(capturedHeaders, ohttpClientTraceIdPrefix = null)
+        val exceptionThrown = roundTripAndIgnoreFailure(transport)
+        assertTrue(exceptionThrown is OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val headerKeys = capturedHeaders.first().map { it.first }
         assertFalse(headerKeys.contains("X-Client-Trace-Id"))
@@ -149,54 +152,11 @@ class OhttpHttpClientTest {
 
     @Test
     fun `client trace ID header is present and well-formed when prefix set`() {
-        co.electriccoin.lightwallet.client.internal.OhttpDebugFlags.allowTracePrefix = true
+        OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
-        val mockSender =
-            object : OhttpSender {
-                override suspend fun dispose() = Unit
-
-                override suspend fun post(
-                    url: String,
-                    body: ByteArray,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray {
-                    capturedHeaders.add(headers)
-                    throw co.electriccoin.lightwallet.client.OhttpException("test abort")
-                }
-
-                override suspend fun get(
-                    url: String,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray = throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
-            }
-        val transport =
-            co.electriccoin.lightwallet.client.internal.OhttpTransport(
-                relayUrl = "https://relay.zodl.com/relay",
-                network = "testnet",
-                sender = mockSender,
-                ohttpClientTraceIdPrefix = "test-wallet",
-                initialKeyConfig = dummyKeyConfig(),
-            )
+        val transport = capturingTransport(capturedHeaders, ohttpClientTraceIdPrefix = "test-wallet")
         // Make two requests to verify sequence counter increments
-        repeat(2) {
-            runCatching {
-                kotlinx.coroutines.runBlocking {
-                    transport.roundTrip(
-                        co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
-                            method = "GET",
-                            scheme = "https",
-                            authority = "example.zodl.com",
-                            path = "/test",
-                            headers = emptyList(),
-                            body = ByteArray(0),
-                        ),
-                        timeoutMs = 5000,
-                    )
-                }
-            }
-        }
+        repeat(2) { roundTripAndIgnoreFailure(transport) }
         assertTrue("Must have captured two requests", capturedHeaders.size == 2)
         // Check first request
         val headers1 = capturedHeaders[0]
@@ -234,53 +194,11 @@ class OhttpHttpClientTest {
 
     @Test
     fun `client trace ID sanitises invalid characters`() {
-        co.electriccoin.lightwallet.client.internal.OhttpDebugFlags.allowTracePrefix = true
+        OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
-        val mockSender =
-            object : OhttpSender {
-                override suspend fun dispose() = Unit
-
-                override suspend fun post(
-                    url: String,
-                    body: ByteArray,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray {
-                    capturedHeaders.add(headers)
-                    throw co.electriccoin.lightwallet.client.OhttpException("test abort")
-                }
-
-                override suspend fun get(
-                    url: String,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray = throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
-            }
-        val transport =
-            co.electriccoin.lightwallet.client.internal.OhttpTransport(
-                relayUrl = "https://relay.zodl.com/relay",
-                network = "testnet",
-                sender = mockSender,
-                ohttpClientTraceIdPrefix = "test@wallet#123",
-                initialKeyConfig = dummyKeyConfig(),
-            )
-        val exceptionThrown =
-            runCatching {
-                kotlinx.coroutines.runBlocking {
-                    transport.roundTrip(
-                        co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
-                            method = "GET",
-                            scheme = "https",
-                            authority = "example.zodl.com",
-                            path = "/test",
-                            headers = emptyList(),
-                            body = ByteArray(0),
-                        ),
-                        timeoutMs = 5000,
-                    )
-                }
-            }.exceptionOrNull()
-        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.OhttpException)
+        val transport = capturingTransport(capturedHeaders, ohttpClientTraceIdPrefix = "test@wallet#123")
+        val exceptionThrown = roundTripAndIgnoreFailure(transport)
+        assertTrue(exceptionThrown is OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
         assertTrue(traceIdHeader != null)
@@ -302,55 +220,12 @@ class OhttpHttpClientTest {
 
     @Test
     fun `client trace ID truncates to 64 chars`() {
-        co.electriccoin.lightwallet.client.internal.OhttpDebugFlags.allowTracePrefix = true
+        OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
-        val mockSender =
-            object : OhttpSender {
-                override suspend fun dispose() = Unit
-
-                override suspend fun post(
-                    url: String,
-                    body: ByteArray,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray {
-                    capturedHeaders.add(headers)
-                    throw co.electriccoin.lightwallet.client.OhttpException("test abort")
-                }
-
-                override suspend fun get(
-                    url: String,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray = throw NotImplementedError("GET not used in this test (initialKeyConfig provided)")
-            }
         // Long prefix: 60 'a' + 1 '-' + 36 UUID + 1 '-' + 6 digits = 104 chars → truncated to 64
-        val longPrefix = "a".repeat(60)
-        val transport =
-            co.electriccoin.lightwallet.client.internal.OhttpTransport(
-                relayUrl = "https://relay.zodl.com/relay",
-                network = "testnet",
-                sender = mockSender,
-                ohttpClientTraceIdPrefix = longPrefix,
-                initialKeyConfig = dummyKeyConfig(),
-            )
-        val exceptionThrown =
-            runCatching {
-                kotlinx.coroutines.runBlocking {
-                    transport.roundTrip(
-                        co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
-                            method = "GET",
-                            scheme = "https",
-                            authority = "example.zodl.com",
-                            path = "/test",
-                            headers = emptyList(),
-                            body = ByteArray(0),
-                        ),
-                        timeoutMs = 5000,
-                    )
-                }
-            }.exceptionOrNull()
-        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.OhttpException)
+        val transport = capturingTransport(capturedHeaders, ohttpClientTraceIdPrefix = "a".repeat(60))
+        val exceptionThrown = roundTripAndIgnoreFailure(transport)
+        assertTrue(exceptionThrown is OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
         assertTrue(traceIdHeader != null)
@@ -361,127 +236,8 @@ class OhttpHttpClientTest {
     }
 
     @Test
-    fun `key config fetch uses sender GET from signed endpoint`() {
-        val signingKey = TestSigningKey()
-        val capturedGetUrls = mutableListOf<String>()
-        val capturedGetHeaders = mutableListOf<List<Pair<String, String>>>()
-        val mockSender =
-            object : OhttpSender {
-                override suspend fun dispose() = Unit
-
-                override suspend fun post(
-                    url: String,
-                    body: ByteArray,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray = throw NotImplementedError("POST not used in this test")
-
-                override suspend fun get(
-                    url: String,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray {
-                    capturedGetUrls.add(url)
-                    capturedGetHeaders.add(headers)
-                    // Envelope signed in-test with a fresh key; the transport trusts that key below.
-                    val nowSeconds = System.currentTimeMillis() / 1000
-                    val envelope =
-                        SignedEnvelopeTestVectors.signedEnvelope(
-                            key = signingKey,
-                            notBefore = nowSeconds - 3600,
-                            notAfter = nowSeconds + 3600,
-                        )
-                    return envelope.toByteArray(Charsets.UTF_8)
-                }
-            }
-        val transport =
-            co.electriccoin.lightwallet.client.internal.OhttpTransport(
-                relayUrl = "https://relay.zodl.com/relay",
-                network = "testnet",
-                sender = mockSender,
-                trustedSigningKey = signingKey.publicKey,
-            )
-        kotlinx.coroutines.runBlocking {
-            val keyConfig = transport.keyConfig()
-            assertTrue("GET must be called", capturedGetUrls.isNotEmpty())
-            assertTrue(
-                "GET must fetch from /ohttp-configs/signed",
-                capturedGetUrls.first().endsWith("/ohttp-configs/signed"),
-            )
-            assertTrue("GET headers must include Accept", capturedGetHeaders.first().any { it.first == "Accept" })
-            assertNotNull("keyConfig must parse successfully", keyConfig)
-            assertTrue("keyConfig must carry the signed key_id", keyConfig.keyId == 1)
-        }
-    }
-
-    @Test
-    fun `key config refresh on 400 uses sender GET`() {
-        val signingKey = TestSigningKey()
-        var getCallCount = 0
-        var postCallCount = 0
-        val mockSender =
-            object : OhttpSender {
-                override suspend fun dispose() = Unit
-
-                override suspend fun post(
-                    url: String,
-                    body: ByteArray,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray {
-                    postCallCount++
-                    // First POST returns 400 to trigger key config refresh
-                    throw co.electriccoin.lightwallet.client.OhttpException("Bad Request", 400)
-                }
-
-                override suspend fun get(
-                    url: String,
-                    headers: List<Pair<String, String>>,
-                    timeoutMs: Int,
-                ): ByteArray {
-                    getCallCount++
-                    // Each GET returns a freshly signed envelope (initial fetch, then refresh).
-                    val nowSeconds = System.currentTimeMillis() / 1000
-                    val envelope =
-                        SignedEnvelopeTestVectors.signedEnvelope(
-                            key = signingKey,
-                            notBefore = nowSeconds - 3600,
-                            notAfter = nowSeconds + 3600,
-                        )
-                    return envelope.toByteArray(Charsets.UTF_8)
-                }
-            }
-        val transport =
-            co.electriccoin.lightwallet.client.internal.OhttpTransport(
-                relayUrl = "https://relay.zodl.com/relay",
-                network = "testnet",
-                sender = mockSender,
-                trustedSigningKey = signingKey.publicKey,
-            )
-        val exceptionThrown =
-            runCatching {
-                kotlinx.coroutines.runBlocking {
-                    transport.roundTrip(
-                        co.electriccoin.lightwallet.client.internal.BinaryHttp.Request(
-                            method = "GET",
-                            scheme = "https",
-                            authority = "example.zodl.com",
-                            path = "/test",
-                            headers = emptyList(),
-                            body = ByteArray(0),
-                        ),
-                        timeoutMs = 5000,
-                    )
-                }
-            }.exceptionOrNull()
-        assertTrue("Must fail with 400", exceptionThrown is co.electriccoin.lightwallet.client.OhttpException)
-        assertTrue("Initial key fetch + refresh must call GET twice", getCallCount == 2)
-        assertTrue("Must attempt POST twice (initial + retry)", postCallCount == 2)
-    }
-
-    @Test
     fun `DirectOhttpSender disables redirects`() {
-        val sender = co.electriccoin.lightwallet.client.internal.DirectOhttpSender()
+        val sender = DirectOhttpSender()
         // This test verifies that DirectOhttpSender.open() sets instanceFollowRedirects=false.
         // Since we can't directly test HttpURLConnection behavior without a real server,
         // we rely on code review: the open() method MUST set instanceFollowRedirects=false.
@@ -490,7 +246,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `isOhttpGateway matches only exact configured gateway hosts`() {
-        val endpoints = co.electriccoin.lightwallet.client.internal.OhttpEndpoints
+        val endpoints = OhttpEndpoints
         assertTrue(endpoints.isOhttpGateway("ohttp-gateway.example"))
         assertTrue(endpoints.isOhttpGateway("ohttp-gateway-testnet.example"))
         assertFalse(endpoints.isOhttpGateway("ohttp-gateway.example.org"))
