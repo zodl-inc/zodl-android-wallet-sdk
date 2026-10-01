@@ -505,4 +505,13 @@ class OhttpHttpClientTest {
             )
         org.junit.Assert.assertEquals("https://relay-simulator.example/ohttp-configs", url)
     }
+
+    @Test
+    fun `isOhttpGateway matches only exact configured gateway hosts`() {
+        val endpoints = co.electriccoin.lightwallet.client.internal.OhttpEndpoints
+        assertTrue(endpoints.isOhttpGateway("ohttp-gateway.example"))
+        assertTrue(endpoints.isOhttpGateway("ohttp-gateway-testnet.example"))
+        assertFalse(endpoints.isOhttpGateway("ohttp-gateway.example.org"))
+        assertFalse(endpoints.isOhttpGateway("ohttp-gateway"))
+    }
 }

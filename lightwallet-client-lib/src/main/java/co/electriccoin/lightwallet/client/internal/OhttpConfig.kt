@@ -12,8 +12,6 @@ package co.electriccoin.lightwallet.client.internal
  * (the relay passes it through from the gateway).
  */
 internal object OhttpEndpoints {
-    private const val GATEWAY_HOST_PREFIX = "ohttp-gateway"
-
     fun networkFor(gatewayHost: String): String =
         when (gatewayHost) {
             "ohttp-gateway-testnet.example" -> "testnet"
@@ -34,7 +32,11 @@ internal object OhttpEndpoints {
             "ohttp-gateway.example" to "https://relay-simulator.example/relay",
         )
 
-    fun isOhttpGateway(host: String): Boolean = host.startsWith(GATEWAY_HOST_PREFIX)
+    /**
+     * True only for the exact gateway hosts we have a relay for. A prefix match would route a custom
+     * server such as `ohttp-gateway.example.org` into [relayUrlFor], which throws.
+     */
+    fun isOhttpGateway(host: String): Boolean = relayByGatewayHost.containsKey(host)
 
     fun relayUrlFor(gatewayHost: String): String =
         relayByGatewayHost[gatewayHost]
