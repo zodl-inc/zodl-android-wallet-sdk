@@ -26,6 +26,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ohttpClientTraceIdPrefix: String? = null` parameter on `Synchronizer.new`, `LightWalletClient.new`,
   `OhttpHttpClient.create`, `WalletCoordinator` and the Slipstream synchronizer factory. When set, every
   outer OHTTP POST carries `X-Client-Trace-Id: <prefix>-<uuid>`. Debug only: it makes requests linkable.
+- The `timeoutMs` of an OHTTP call over Tor is now honored: it is an overall deadline enforced inside the
+  native HTTP-over-Tor call (`TorClient.httpGet`/`httpPost` gained a `timeoutMs` parameter; the default keeps
+  the previous no-deadline behavior). Expiry throws `TorHttpTimeoutException`; network/transport failures
+  throw `TorHttpTransportException` (both extend `TorHttpException`).
 - **OHTTP transport for voting round driver.** When Tor is OFF and the round uses
   predefined vote servers (not custom user-added servers), the round driver now
   routes HTTP requests (vote commitments, shares, delegation, tree sync) through

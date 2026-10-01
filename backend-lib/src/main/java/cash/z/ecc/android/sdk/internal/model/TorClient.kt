@@ -126,7 +126,22 @@ class TorClient private constructor(
             }
         }
 
-    suspend fun httpGet(url: String, headers: List<JniHttpHeader>, retryLimit: Int): JniHttpResponseBytes =
+    /**
+     * Makes an HTTP GET request over Tor.
+     *
+     * @param timeoutMs overall deadline for the whole call, retries included, enforced inside the
+     * native call (so it really interrupts the request and releases this client's mutex). The
+     * default [NO_TIMEOUT_MS] (or any value `<= 0`) keeps the previous behavior: no caller-supplied
+     * deadline, only the Tor HTTP client's own per-phase timeouts.
+     * @throws TorHttpTimeoutException if [timeoutMs] elapsed
+     * @throws TorHttpTransportException on a network/transport failure
+     */
+    suspend fun httpGet(
+        url: String,
+        headers: List<JniHttpHeader>,
+        retryLimit: Int,
+        timeoutMs: Long = NO_TIMEOUT_MS
+    ): JniHttpResponseBytes =
         accessMutex.withLock {
             withContext(Dispatchers.IO) {
                 checkNotNull(nativeHandle) { "TorClient is disposed" }
@@ -134,16 +149,21 @@ class TorClient private constructor(
                     nativeHandle!!,
                     url,
                     headers.toTypedArray(),
-                    retryLimit
+                    retryLimit,
+                    timeoutMs
                 )
             }
         }
 
+    /**
+     * Makes an HTTP POST request over Tor. See [httpGet] for [timeoutMs] and the exceptions.
+     */
     suspend fun httpPost(
         url: String,
         headers: List<JniHttpHeader>,
         body: ByteArray,
-        retryLimit: Int
+        retryLimit: Int,
+        timeoutMs: Long = NO_TIMEOUT_MS
     ): JniHttpResponseBytes =
         accessMutex.withLock {
             withContext(Dispatchers.IO) {
@@ -153,7 +173,8 @@ class TorClient private constructor(
                     url,
                     headers.toTypedArray(),
                     body,
-                    retryLimit
+                    retryLimit,
+                    timeoutMs
                 )
             }
         }
@@ -204,6 +225,9 @@ class TorClient private constructor(
         }
 
     companion object {
+        /** No caller-supplied deadline for [httpGet] / [httpPost] (the previous behavior). */
+        const val NO_TIMEOUT_MS = 0L
+
         suspend fun new(torDir: File, backend: Backend, clientTracePrefix: String? = null): TorClient =
             withContext(Dispatchers.IO) {
                 RustBackend.loadLibrary()
@@ -247,7 +271,9 @@ class TorClient private constructor(
         private external fun setDormant(nativeHandle: Long, mode: Int)
 
         /**
-         * @throws RuntimeException as a common indicator of the operation failure
+         * @throws TorHttpTimeoutException if [timeoutMs] elapsed
+         * @throws TorHttpTransportException on a network/transport failure
+         * @throws RuntimeException as a common indicator of any other operation failure
          */
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -255,11 +281,14 @@ class TorClient private constructor(
             nativeHandle: Long,
             url: String,
             headers: Array<JniHttpHeader>,
-            retryLimit: Int
+            retryLimit: Int,
+            timeoutMs: Long
         ): JniHttpResponseBytes
 
         /**
-         * @throws RuntimeException as a common indicator of the operation failure
+         * @throws TorHttpTimeoutException if [timeoutMs] elapsed
+         * @throws TorHttpTransportException on a network/transport failure
+         * @throws RuntimeException as a common indicator of any other operation failure
          */
         @JvmStatic
         @Throws(RuntimeException::class)
@@ -268,7 +297,8 @@ class TorClient private constructor(
             url: String,
             headers: Array<JniHttpHeader>,
             body: ByteArray,
-            retryLimit: Int
+            retryLimit: Int,
+            timeoutMs: Long
         ): JniHttpResponseBytes
 
         /**

@@ -11,10 +11,16 @@ import java.net.HttpURLConnection
  * Tor-backed OHTTP sender: routes the relay POST through an isolated Tor circuit. Used when
  * Tor is ON and the request targets a gateway-mapped external API (CMC, NEAR), ensuring the
  * relay never sees the app's clearnet IP. The gateway injects the API secret server-side.
+ *
+ * The `timeoutMs` of each call is an overall deadline enforced inside the native call (a
+ * [cash.z.ecc.android.sdk.internal.model.TorHttpTimeoutException] is thrown on expiry); a
+ * Kotlin-side `withTimeout` could not interrupt the blocking JNI call.
  */
-class TorOhttpSender(
-    private val torClient: TorClient
+class TorOhttpSender internal constructor(
+    private val transport: TorHttpTransport
 ) : OhttpSender {
+    constructor(torClient: TorClient) : this(TorClientTransport(torClient))
+
     override suspend fun post(
         url: String,
         body: ByteArray,
@@ -22,9 +28,7 @@ class TorOhttpSender(
         timeoutMs: Int
     ): ByteArray {
         val jniHeaders = headers.map { (key, value) -> JniHttpHeader(key, value) }
-        // Retry limit 0: OHTTP already has its own retry-on-400 logic (key rotation); we don't
-        // want the Tor client retrying on top of that (would multiply total attempts).
-        val response = torClient.httpPost(url, jniHeaders, body, retryLimit = 0)
+        val response = transport.post(url, jniHeaders, body, timeoutMs.toLong())
         if (response.status != HttpURLConnection.HTTP_OK) {
             throw OhttpException(
                 "Relay/gateway returned HTTP ${response.status} (Tor path)${response.errorDetail()}",
@@ -40,8 +44,7 @@ class TorOhttpSender(
         timeoutMs: Int
     ): ByteArray {
         val jniHeaders = headers.map { (key, value) -> JniHttpHeader(key, value) }
-        // Retry limit 0: consistent with post() — no additional retries at the Tor layer.
-        val response = torClient.httpGet(url, jniHeaders, retryLimit = 0)
+        val response = transport.get(url, jniHeaders, timeoutMs.toLong())
         if (response.status != HttpURLConnection.HTTP_OK) {
             throw OhttpException(
                 "GET request failed: HTTP ${response.status} (Tor path)${response.errorDetail()}",
@@ -53,19 +56,21 @@ class TorOhttpSender(
 
     /**
      * Releases the isolated [TorClient] this sender wraps (each
-     * [cash.z.ecc.android.sdk.Synchronizer.ohttpSenderOverTor] call creates a fresh isolated native Tor handle). The caller of
+     * [cash.z.ecc.android.sdk.Synchronizer.ohttpSenderOverTor] call creates a fresh isolated
+     * native Tor handle). The caller of
      * [cash.z.ecc.android.sdk.Synchronizer.ohttpSenderOverTor] owns this sender and must dispose it
      * once it is replaced (e.g. the Tor preference toggles) or no longer needed, or the underlying
      * native Tor runtime handle leaks for the rest of the process lifetime.
      */
-    override suspend fun dispose() = torClient.dispose()
+    override suspend fun dispose() = transport.dispose()
 
     /**
      * Renders the JNI response body as `": <detail>"` for use in an [OhttpException] message, or
-     * "" if empty. The body carries the gateway's problem-details JSON (e.g. type "ohttp-key"). Mirrors [co.electriccoin.lightwallet.client.internal.DirectOhttpSender]'s
-     * error-stream handling so callers (e.g. [co.electriccoin.lightwallet.client.internal.OhttpTransport]'s
-     * 422 ohttp-key retry branch, which matches on message text) see the same gateway error detail
-     * regardless of whether Tor is on.
+     * "" if empty. The body carries the gateway's problem-details JSON (e.g. type "ohttp-key").
+     * Mirrors [co.electriccoin.lightwallet.client.internal.DirectOhttpSender]'s error-stream
+     * handling so callers (e.g. [co.electriccoin.lightwallet.client.internal.OhttpTransport]'s
+     * 422 ohttp-key retry branch, which matches on message text) see the same gateway error
+     * detail regardless of whether Tor is on.
      */
     private fun JniHttpResponseBytes.errorDetail(): String =
         body.toString(Charsets.UTF_8).take(ERROR_MESSAGE_MAX_LENGTH).let { if (it.isEmpty()) "" else ": $it" }
@@ -90,4 +95,50 @@ class TorOhttpSender(
 
         const val ERROR_MESSAGE_MAX_LENGTH = 200
     }
+}
+
+/**
+ * The slice of [TorClient] that [TorOhttpSender] needs. A seam so the sender's behavior (timeout
+ * pass-through, error-body handling) can be unit tested without a native Tor runtime.
+ */
+internal interface TorHttpTransport {
+    suspend fun post(
+        url: String,
+        headers: List<JniHttpHeader>,
+        body: ByteArray,
+        timeoutMs: Long
+    ): JniHttpResponseBytes
+
+    suspend fun get(
+        url: String,
+        headers: List<JniHttpHeader>,
+        timeoutMs: Long
+    ): JniHttpResponseBytes
+
+    suspend fun dispose()
+}
+
+/**
+ * OHTTP already has its own retry-on-400/422 logic (key rotation); no additional retries at the Tor
+ * layer (would multiply total attempts).
+ */
+private const val NO_TOR_RETRIES = 0
+
+private class TorClientTransport(
+    private val torClient: TorClient
+) : TorHttpTransport {
+    override suspend fun post(
+        url: String,
+        headers: List<JniHttpHeader>,
+        body: ByteArray,
+        timeoutMs: Long
+    ) = torClient.httpPost(url, headers, body, retryLimit = NO_TOR_RETRIES, timeoutMs = timeoutMs)
+
+    override suspend fun get(
+        url: String,
+        headers: List<JniHttpHeader>,
+        timeoutMs: Long
+    ) = torClient.httpGet(url, headers, retryLimit = NO_TOR_RETRIES, timeoutMs = timeoutMs)
+
+    override suspend fun dispose() = torClient.dispose()
 }

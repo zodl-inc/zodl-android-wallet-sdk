@@ -115,6 +115,7 @@ mod migration_plan_cache;
 mod migration_send_max;
 mod payment_uri;
 mod tor;
+mod tor_http;
 mod utils;
 mod voting;
 
@@ -3326,10 +3327,30 @@ fn encode_http_response_bytes<'a>(
     )?)
 }
 
+/// Raises the typed Kotlin exception matching `e` (`TorHttpTimeoutException` /
+/// `TorHttpTransportException`) and returns the `anyhow` error for the generic path. As with
+/// `map_proposal_error`, the typed throw wins when it succeeds and the generic
+/// `RuntimeException` remains the fallback when it does not (or for non-retryable failures).
+fn throw_tor_http_error(env: &mut JNIEnv, e: crate::tor_http::TorHttpError) -> anyhow::Error {
+    if let Some(class) = e.exception_class() {
+        let message = e.message().to_owned();
+        utils::exception::throw_object(env, class, |env| {
+            let message = env.new_string(&message)?;
+            env.new_object(class, "(Ljava/lang/String;)V", &[JValue::Object(&message)])
+        });
+    }
+    e.into_anyhow()
+}
+
 /// Makes an HTTP GET request over Tor.
 ///
 /// `retry_limit` is the maximum number of times that a failed request should be retried.
 /// You can disable retries by setting this to 0.
+///
+/// `timeout_ms` is an overall deadline for the whole call, retries included; `<= 0` means no
+/// caller-supplied deadline (the client's own per-phase timeouts still apply). On expiry a
+/// `TorHttpTimeoutException` is thrown; network/transport failures throw
+/// `TorHttpTransportException`; anything else throws a plain `RuntimeException`.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'local>(
     mut env: JNIEnv<'local>,
@@ -3338,6 +3359,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
     url: JString<'local>,
     headers: JObjectArray<'local>,
     retry_limit: jint,
+    timeout_ms: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let tor_runtime =
@@ -3352,10 +3374,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
         let retry_limit =
             u8::try_from(retry_limit).map_err(|e| anyhow!("retryLimit is too large: {e}"))?;
 
-        let response = tor_runtime.runtime().block_on(async {
-            tor_runtime
-                .client()
-                .http_get(
+        let runtime = tor_runtime.runtime();
+        let response = runtime
+            .block_on(crate::tor_http::with_deadline(
+                runtime,
+                timeout_ms,
+                tor_runtime.client().http_get(
                     url,
                     |builder| {
                         headers
@@ -3368,9 +3392,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
                         res.is_err()
                             .then_some(zcash_client_backend::tor::http::Retry::Same)
                     },
-                )
-                .await
-        })?;
+                ),
+            ))
+            .map_err(|e| throw_tor_http_error(env, e))?;
 
         Ok(encode_http_response_bytes(env, response)?.into_raw())
     });
@@ -3381,6 +3405,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
 ///
 /// `retry_limit` is the maximum number of times that a failed request should be retried.
 /// You can disable retries by setting this to 0.
+///
+/// `timeout_ms` is an overall deadline for the whole call, retries included; `<= 0` means no
+/// caller-supplied deadline (the client's own per-phase timeouts still apply). On expiry a
+/// `TorHttpTimeoutException` is thrown; network/transport failures throw
+/// `TorHttpTransportException`; anything else throws a plain `RuntimeException`.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<'local>(
     mut env: JNIEnv<'local>,
@@ -3390,6 +3419,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
     headers: JObjectArray<'local>,
     body: JByteArray<'local>,
     retry_limit: jint,
+    timeout_ms: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let tor_runtime =
@@ -3405,10 +3435,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
         let retry_limit =
             u8::try_from(retry_limit).map_err(|e| anyhow!("retryLimit is too large: {e}"))?;
 
-        let response = tor_runtime.runtime().block_on(async {
-            tor_runtime
-                .client()
-                .http_post(
+        let runtime = tor_runtime.runtime();
+        let response = runtime
+            .block_on(crate::tor_http::with_deadline(
+                runtime,
+                timeout_ms,
+                tor_runtime.client().http_post(
                     url,
                     |builder| {
                         headers
@@ -3422,9 +3454,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
                         res.is_err()
                             .then_some(zcash_client_backend::tor::http::Retry::Same)
                     },
-                )
-                .await
-        })?;
+                ),
+            ))
+            .map_err(|e| throw_tor_http_error(env, e))?;
 
         Ok(encode_http_response_bytes(env, response)?.into_raw())
     });
