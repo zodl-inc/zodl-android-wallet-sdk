@@ -147,20 +147,29 @@ internal object SaplingParams {
         }
     }
 
+    /**
+     * Downloads [fileName] over Tor and closes [client] afterwards, which releases the isolated native
+     * Tor client behind it. Transfers up to `maxSizeBytes + 1` bytes so a too-large response still fails
+     * the caller's size check instead of being silently truncated at exactly [maxSizeBytes].
+     */
     private suspend fun downloadViaTor(
         client: HttpClient,
         fileName: String,
         partialFile: File,
         maxSizeBytes: Long
-    ): Long {
-        val response = client.get(BASE_URL + fileName)
-        val readableByteChannel = Channels.newChannel(response.bodyAsChannel().toInputStream())
-        // +1 lets a too-large response still fail the caller's size check above instead of
-        // silently truncating at exactly maxSizeBytes.
-        return readableByteChannel.use { source ->
-            partialFile.outputStream().channel.use { destination -> destination.transferFrom(source, 0, maxSizeBytes + 1) }
+    ): Long =
+        client.use {
+            val response = it.get(BASE_URL + fileName)
+            check(response.status.value == HttpURLConnection.HTTP_OK) {
+                "Unexpected response ${response.status.value} downloading $fileName"
+            }
+            val readableByteChannel = Channels.newChannel(response.bodyAsChannel().toInputStream())
+            readableByteChannel.use { source ->
+                partialFile.outputStream().channel.use { destination ->
+                    destination.transferFrom(source, 0, maxSizeBytes + 1)
+                }
+            }
         }
-    }
 
     private fun sha256Of(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")

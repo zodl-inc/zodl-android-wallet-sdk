@@ -59,6 +59,9 @@ class OhttpHttpClient private constructor(
          *   relay sees only a Tor exit; the gateway still injects secrets server-side. The app MUST
          *   NOT send secrets in either mode (they are stripped with a warning if present).
          *
+         * The returned client takes ownership of [sender]: [dispose] disposes it, so do not share one
+         * sender between two clients.
+         *
          * @param ohttpClientTraceIdPrefix Optional client trace ID prefix for end-to-end tracing.
          */
         fun create(

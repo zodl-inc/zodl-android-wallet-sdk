@@ -46,7 +46,7 @@ internal class SlipstreamSpendService(
     private val walletClient: CombinedWalletClient,
     private val engine: SlipstreamEngine,
     private val sdkFlags: SdkFlags,
-    /** Production: `{ SaplingParams.ensureDownloaded(dir) }`. Injected so tests never trigger a real download. */
+    /** Production: `SaplingParams.ensureDownloaded` (over Tor when enabled). Injected so tests never download. */
     private val ensureSaplingParams: suspend () -> Unit,
     private val readRawTransaction: suspend (FirstClassByteArray) -> FirstClassByteArray
 ) {

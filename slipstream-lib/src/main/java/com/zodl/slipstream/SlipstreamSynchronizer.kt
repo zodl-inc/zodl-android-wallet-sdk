@@ -1904,8 +1904,6 @@ class SlipstreamSynchronizer internal constructor(
              */
             val lazyTorClient = LazyTorClient { TorClient.new(Files.getTorDir(applicationContext), backend, ohttpClientTraceIdPrefix) }
 
-            // With Tor on, Sapling params (up to 50MB) must not leak the real IP to GitHub right
-            // before a spend/proof -- see SaplingParams.ensureDownloaded's doc comment.
             val saplingParamsTorHttpClientProvider: (suspend () -> HttpClient)? =
                 if (isTorEnabled) {
                     {

@@ -20,6 +20,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.channels.Channels
 import kotlin.time.Duration.Companion.milliseconds
@@ -324,15 +325,19 @@ internal class SaplingParamTool(
         runCatching {
             val torProvider = torHttpClientProvider
             if (torProvider != null) {
-                // Download via Tor
                 Twig.debug { "Sapling params: downloading ${url.file.substringAfterLast('/')} via Tor" }
-                val client = torProvider()
-                val response = client.get(url.toString())
-                response.bodyAsChannel().toInputStream().use { inputStream ->
-                    temporaryFile.outputStream().use { fileOutputStream ->
-                        fileOutputStream.channel.use { fileChannel ->
-                            Channels.newChannel(inputStream).use { readableByteChannel ->
-                                fileChannel.transferFrom(readableByteChannel, 0, maxSizeBytes)
+                // Closing the client closes its engine, which releases the isolated native Tor client.
+                torProvider().use { client ->
+                    val response = client.get(url.toString())
+                    if (response.status.value != HttpURLConnection.HTTP_OK) {
+                        throw IOException("Unexpected HTTP ${response.status.value} downloading ${url.file}")
+                    }
+                    response.bodyAsChannel().toInputStream().use { inputStream ->
+                        temporaryFile.outputStream().use { fileOutputStream ->
+                            fileOutputStream.channel.use { fileChannel ->
+                                Channels.newChannel(inputStream).use { readableByteChannel ->
+                                    fileChannel.transferFrom(readableByteChannel, 0, maxSizeBytes)
+                                }
                             }
                         }
                     }

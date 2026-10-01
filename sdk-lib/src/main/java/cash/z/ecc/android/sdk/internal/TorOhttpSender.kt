@@ -26,9 +26,6 @@ class TorOhttpSender(
         // want the Tor client retrying on top of that (would multiply total attempts).
         val response = torClient.httpPost(url, jniHeaders, body, retryLimit = 0)
         if (response.status != HttpURLConnection.HTTP_OK) {
-            // The error body carries the gateway's problem-details JSON (e.g. type "ohttp-key"),
-            // which OhttpTransport.roundTrip's 422 branch matches on via the message text -- omitting
-            // it here (as this used to) silently broke key-rotation recovery on the Tor path only.
             throw OhttpException(
                 "Relay/gateway returned HTTP ${response.status} (Tor path)${response.errorDetail()}",
                 response.status
@@ -65,7 +62,7 @@ class TorOhttpSender(
 
     /**
      * Renders the JNI response body as `": <detail>"` for use in an [OhttpException] message, or
-     * "" if empty. Mirrors [co.electriccoin.lightwallet.client.internal.DirectOhttpSender]'s
+     * "" if empty. The body carries the gateway's problem-details JSON (e.g. type "ohttp-key"). Mirrors [co.electriccoin.lightwallet.client.internal.DirectOhttpSender]'s
      * error-stream handling so callers (e.g. [co.electriccoin.lightwallet.client.internal.OhttpTransport]'s
      * 422 ohttp-key retry branch, which matches on message text) see the same gateway error detail
      * regardless of whether Tor is on.
@@ -91,7 +88,6 @@ class TorOhttpSender(
         // Matches DirectOhttpSender.MAX_RESPONSE_SIZE_BYTES.
         const val MAX_RESPONSE_SIZE_BYTES = 64 * 1024 * 1024
 
-        // Matches DirectOhttpSender.ERROR_MESSAGE_MAX_LENGTH.
         const val ERROR_MESSAGE_MAX_LENGTH = 200
     }
 }
