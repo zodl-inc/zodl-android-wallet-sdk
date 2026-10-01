@@ -213,9 +213,7 @@ internal fun stripSecretsForGateway(
     headers: List<Pair<String, String>>,
     logger: (String) -> Unit,
 ): List<Pair<String, String>> {
-    if (authority !in SECRET_INJECTING_GATEWAY_HOSTS) return headers
-    // HTTP header names are case-insensitive (RFC 9110 §5.1) -- a caller sending e.g.
-    // "authorization" or "x-cmc_pro_api_key" must be caught the same as the canonical casing.
+    if (authority.lowercase() !in SECRET_INJECTING_GATEWAY_HOSTS) return headers
     val isSecretHeader = { key: String -> SECRET_HEADERS.any { it.equals(key, ignoreCase = true) } }
     val stripped = headers.filterNot { (key, _) -> isSecretHeader(key) }
     if (stripped.size < headers.size) {

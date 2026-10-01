@@ -80,7 +80,7 @@ class OhttpHttpClient private constructor(
         }
         val mapped = proxyGatewayHostFor(host) != null
         val allowlisted = isOhttpProxyAllowedHost(host)
-        Log.i(
+        Log.d(
             Constants.LOG_TAG,
             "OHTTP canHandle host=$host mapped=$mapped allowlisted=$allowlisted suffixes=$OHTTP_PROXY_ALLOWED_SUFFIXES",
         )
@@ -122,12 +122,12 @@ class OhttpHttpClient private constructor(
             )
         val mode = if (proxyHost != null) "mapped" else "allowlist"
         val senderType = if (sender is DirectOhttpSender) "direct" else "Tor"
-        Log.i(
+        Log.d(
             Constants.LOG_TAG,
             "OHTTP proxy ${request.method} host=$originalHost authority=$innerAuthority mode=$mode sender=$senderType",
         )
         val bRes = withContext(Dispatchers.IO) { transport.roundTrip(bReq, DEFAULT_TIMEOUT_MS) }
-        Log.i(
+        Log.d(
             Constants.LOG_TAG,
             "OHTTP proxy ${request.method} host=$originalHost -> http=${bRes.status} (${bRes.body.size} bytes)",
         )

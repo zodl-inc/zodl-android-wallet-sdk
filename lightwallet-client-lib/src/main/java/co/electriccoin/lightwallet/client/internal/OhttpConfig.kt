@@ -41,20 +41,6 @@ internal object OhttpEndpoints {
     fun relayUrlFor(gatewayHost: String): String =
         relayByGatewayHost[gatewayHost]
             ?: throw IllegalArgumentException("No OHTTP relay configured for gateway host $gatewayHost")
-
-    /**
-     * Returns the key config URL for a gateway, derived from its relay URL.
-     * The relay proxies `/ohttp-configs` to the gateway's key endpoint.
-     */
-    fun keyConfigUrlFor(gatewayHost: String): String {
-        val relayUrl = relayUrlFor(gatewayHost)
-        // Replace only the path suffix, not the hostname (relay-simulator stays relay-simulator)
-        return if (relayUrl.endsWith("/relay")) {
-            relayUrl.removeSuffix("/relay") + "/ohttp-configs"
-        } else {
-            relayUrl.replace("/relay", "/ohttp-configs")
-        }
-    }
 }
 
 /**

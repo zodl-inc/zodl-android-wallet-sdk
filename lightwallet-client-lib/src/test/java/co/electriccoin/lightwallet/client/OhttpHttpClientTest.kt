@@ -489,24 +489,6 @@ class OhttpHttpClientTest {
     }
 
     @Test
-    fun `keyConfigUrlFor derives from relay URL for testnet gateway`() {
-        val url =
-            co.electriccoin.lightwallet.client.internal.OhttpEndpoints.keyConfigUrlFor(
-                "ohttp-gateway-testnet.example",
-            )
-        org.junit.Assert.assertEquals("https://ohttp-relay-testnet.example/ohttp-configs", url)
-    }
-
-    @Test
-    fun `keyConfigUrlFor derives from relay URL for mainnet gateway`() {
-        val url =
-            co.electriccoin.lightwallet.client.internal.OhttpEndpoints.keyConfigUrlFor(
-                "ohttp-gateway.example",
-            )
-        org.junit.Assert.assertEquals("https://relay-simulator.example/ohttp-configs", url)
-    }
-
-    @Test
     fun `isOhttpGateway matches only exact configured gateway hosts`() {
         val endpoints = co.electriccoin.lightwallet.client.internal.OhttpEndpoints
         assertTrue(endpoints.isOhttpGateway("ohttp-gateway.example"))

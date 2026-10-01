@@ -89,6 +89,16 @@ class OhttpSecretStrippingTest {
     }
 
     @Test
+    fun `stripSecretsForGateway matches the gateway host case-insensitively`() {
+        val headers = listOf("Authorization" to "Bearer secret-token", "Accept" to "application/json")
+        val logged = mutableListOf<String>()
+        val stripped = stripSecretsForGateway("NEAR.zodl.com", headers) { logged.add(it) }
+
+        assertEquals(listOf("Accept"), stripped.map { it.first })
+        assertEquals(1, logged.size)
+    }
+
+    @Test
     fun `stripSecretsForGateway removes both secrets when both present`() {
         val headers =
             listOf(

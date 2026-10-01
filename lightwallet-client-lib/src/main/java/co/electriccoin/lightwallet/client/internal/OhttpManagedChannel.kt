@@ -184,12 +184,15 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         responseListener: Listener<ResponseT>,
         headers: Metadata,
     ) {
+        val countAsActive: Boolean
         synchronized(lock) {
             check(!started) { "already started" }
             started = true
             listener = responseListener
+            // A call cancelled before start() is already closed and never decrements the counter.
+            countAsActive = !closed
         }
-        activeCalls.incrementAndGet()
+        if (countAsActive) activeCalls.incrementAndGet()
         if (callOptions.deadline?.isExpired == true) {
             finish(Status.DEADLINE_EXCEEDED.withDescription("deadline expired before call started"), Metadata())
         }
@@ -399,7 +402,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             closed = true
             pending.clear()
             currentListener = listener ?: run {
-                activeCalls.decrementAndGet()
+                // Not started yet, so the counter was never incremented for this call.
                 callRegistry.remove(this)
                 return
             }
