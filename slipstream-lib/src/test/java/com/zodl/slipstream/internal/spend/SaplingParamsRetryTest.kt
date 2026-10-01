@@ -1,5 +1,7 @@
 package com.zodl.slipstream.internal.spend
 
+import cash.z.ecc.android.sdk.internal.model.TorHttpTimeoutException
+import cash.z.ecc.android.sdk.internal.model.TorHttpTransportException
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import java.net.SocketTimeoutException
@@ -58,6 +60,70 @@ class SaplingParamsRetryTest {
                 SaplingParams.retryOnIOException(maxAttempts = 3, initialBackoffMs = 1_000L) {
                     callCount++
                     check(false) { "not an IOException" }
+                }
+            }
+
+            assertEquals(1, callCount)
+        }
+
+    @Test
+    fun `retries a Tor transport failure and succeeds on the next attempt`() =
+        runTest {
+            var callCount = 0
+
+            SaplingParams.retryOnIOException(maxAttempts = 3, initialBackoffMs = 1_000L) {
+                callCount++
+                if (callCount == 1) {
+                    throw TorHttpTransportException("circuit failed")
+                }
+            }
+
+            assertEquals(2, callCount)
+        }
+
+    @Test
+    fun `a persistent Tor transport failure is retried at most twice with the default attempts`() =
+        runTest {
+            var callCount = 0
+            val originalException = TorHttpTransportException("circuit failed")
+
+            val thrown =
+                assertFailsWith<TorHttpTransportException> {
+                    SaplingParams.retryOnIOException {
+                        callCount++
+                        throw originalException
+                    }
+                }
+
+            // 1 initial attempt + 2 retries.
+            assertEquals(3, callCount)
+            assertSame(originalException, thrown)
+        }
+
+    @Test
+    fun `a Tor timeout is not retried`() =
+        runTest {
+            var callCount = 0
+
+            assertFailsWith<TorHttpTimeoutException> {
+                SaplingParams.retryOnIOException(maxAttempts = 3, initialBackoffMs = 1_000L) {
+                    callCount++
+                    throw TorHttpTimeoutException("timed out")
+                }
+            }
+
+            assertEquals(1, callCount)
+        }
+
+    @Test
+    fun `a generic RuntimeException is not retried`() =
+        runTest {
+            var callCount = 0
+
+            assertFailsWith<RuntimeException> {
+                SaplingParams.retryOnIOException(maxAttempts = 3, initialBackoffMs = 1_000L) {
+                    callCount++
+                    throw RuntimeException("native failure")
                 }
             }
 

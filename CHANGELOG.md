@@ -29,7 +29,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `timeoutMs` of an OHTTP call over Tor is now honored: it is an overall deadline enforced inside the
   native HTTP-over-Tor call (`TorClient.httpGet`/`httpPost` gained a `timeoutMs` parameter; the default keeps
   the previous no-deadline behavior). Expiry throws `TorHttpTimeoutException`; network/transport failures
-  throw `TorHttpTransportException` (both extend `TorHttpException`).
+  throw `TorHttpTransportException` (both extend `TorHttpException`). Slipstream's Sapling parameter download
+  retries `TorHttpTransportException` (at most 2 retries); a timeout is not retried.
 - **OHTTP transport for voting round driver.** When Tor is OFF and the round uses
   predefined vote servers (not custom user-added servers), the round driver now
   routes HTTP requests (vote commitments, shares, delegation, tree sync) through

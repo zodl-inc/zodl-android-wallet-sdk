@@ -3,6 +3,7 @@
 package com.zodl.slipstream.internal.spend
 
 import androidx.annotation.VisibleForTesting
+import cash.z.ecc.android.sdk.internal.model.TorHttpTransportException
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsChannel
@@ -80,11 +81,21 @@ internal object SaplingParams {
     }
 
     /**
-     * Retries [block] on [IOException] (covers both `SocketTimeoutException` and transient
-     * `UnknownHostException` DNS failures, MOB-1744) up to [maxAttempts] attempts total, with
-     * exponential backoff between attempts. Once attempts are exhausted, the original exception is
-     * rethrown as-is - never wrapped or swallowed - so callers can still distinguish a timeout
-     * from a DNS failure from any other I/O error.
+     * Retries [block] on a transient network failure up to [maxAttempts] attempts total (so at most
+     * `maxAttempts - 1`, by default 2, retries), with exponential backoff between attempts:
+     * - [IOException] (direct path: covers both `SocketTimeoutException` and transient
+     *   `UnknownHostException` DNS failures, MOB-1744);
+     * - [TorHttpTransportException] (Tor path: a Tor circuit/stream or connection failure. These
+     *   arrive from the JNI layer as this typed exception, not as [IOException], so without this
+     *   case a transient circuit failure would never be retried over Tor).
+     *
+     * Deliberately NOT retried: every other exception, including the Tor layer's
+     * `TorHttpTimeoutException` (the caller's whole time budget is spent, so a retry would at least
+     * double the latency it asked for) and non-transport native failures.
+     *
+     * Once attempts are exhausted, the original exception is rethrown as-is - never wrapped or
+     * swallowed - so callers can still distinguish a timeout from a DNS failure from any other
+     * error.
      *
      * Extracted as its own function (rather than inlined into [ensureFile]) so retry/backoff
      * behavior can be unit tested directly against a fake failing/succeeding [block], without a
@@ -102,14 +113,25 @@ internal object SaplingParams {
                 block()
                 return
             } catch (e: IOException) {
-                if (attempt >= maxAttempts) {
-                    throw e
-                }
-                // Exponential backoff: 1s, 2s, 4s, ...
-                delay(initialBackoffMs shl (attempt - 1))
-                attempt++
+                backOffOrRethrow(e, attempt, maxAttempts, initialBackoffMs)
+            } catch (e: TorHttpTransportException) {
+                backOffOrRethrow(e, attempt, maxAttempts, initialBackoffMs)
             }
+            attempt++
         }
+    }
+
+    private suspend fun backOffOrRethrow(
+        failure: Exception,
+        attempt: Int,
+        maxAttempts: Int,
+        initialBackoffMs: Long
+    ) {
+        if (attempt >= maxAttempts) {
+            throw failure
+        }
+        // Exponential backoff: 1s, 2s, 4s, ...
+        delay(initialBackoffMs shl (attempt - 1))
     }
 
     private suspend fun download(
