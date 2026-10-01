@@ -23,6 +23,7 @@ import java.security.SecureRandom
  * Only what OHTTP (RFC 9458) needs is implemented: `SetupBaseS`, `Seal` and `Export`.
  * Pure JVM (BouncyCastle lightweight API) so it can be unit tested outside Android.
  */
+@Suppress("TooManyFunctions")
 internal object Hpke {
     const val KEM_ID: Int = 0x0020
     const val KDF_ID: Int = 0x0001

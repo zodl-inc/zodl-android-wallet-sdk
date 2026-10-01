@@ -123,6 +123,7 @@ class SaplingParamsRetryTest {
             assertFailsWith<RuntimeException> {
                 SaplingParams.retryOnIOException(maxAttempts = 3, initialBackoffMs = 1_000L) {
                     callCount++
+                    @Suppress("TooGenericExceptionThrown")
                     throw RuntimeException("native failure")
                 }
             }

@@ -51,7 +51,7 @@ class TorOhttpSenderTest {
     ) = JniHttpResponseBytes(status = status, version = "HTTP/1.1", headers = emptyArray(), body = body)
 
     @Test
-    fun `post passes the configured timeout to the native call`() =
+    fun `post passes the configured timeout to the native call`(): Unit =
         runBlocking {
             val transport = FakeTransport { jniResponse(200, byteArrayOf(1, 2, 3)) }
 
@@ -63,7 +63,7 @@ class TorOhttpSenderTest {
         }
 
     @Test
-    fun `get passes the configured timeout to the native call`() =
+    fun `get passes the configured timeout to the native call`(): Unit =
         runBlocking {
             val transport = FakeTransport { jniResponse(200, byteArrayOf(4)) }
 
@@ -73,7 +73,7 @@ class TorOhttpSenderTest {
         }
 
     @Test
-    fun `a native timeout propagates unchanged and is not retried`() =
+    fun `a native timeout propagates unchanged and is not retried`(): Unit =
         runBlocking {
             val timeout = TorHttpTimeoutException("HTTP request over Tor timed out after 50 ms")
             val transport = FakeTransport { throw timeout }
@@ -88,7 +88,7 @@ class TorOhttpSenderTest {
         }
 
     @Test
-    fun `a native transport failure propagates unchanged`() =
+    fun `a native transport failure propagates unchanged`(): Unit =
         runBlocking {
             val transport = FakeTransport { throw TorHttpTransportException("circuit failed") }
 
@@ -98,7 +98,7 @@ class TorOhttpSenderTest {
         }
 
     @Test
-    fun `422 ohttp-key response carries status and problem body so key rotation recovery can fire`() =
+    fun `422 ohttp-key response carries status and problem body so key rotation recovery can fire`(): Unit =
         runBlocking {
             val problem = """{"type":"https://zodl.com/problems/ohttp-key","status":422}"""
             val transport = FakeTransport { jniResponse(422, problem.toByteArray()) }
@@ -114,7 +114,7 @@ class TorOhttpSenderTest {
         }
 
     @Test
-    fun `non-200 GET response carries status and body`() =
+    fun `non-200 GET response carries status and body`(): Unit =
         runBlocking {
             val transport = FakeTransport { jniResponse(503, "unavailable".toByteArray()) }
 

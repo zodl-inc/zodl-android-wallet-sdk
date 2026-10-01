@@ -292,6 +292,7 @@ class TorClient private constructor(
          */
         @JvmStatic
         @Throws(RuntimeException::class)
+        @Suppress("LongParameterList")
         private external fun httpPost(
             nativeHandle: Long,
             url: String,
