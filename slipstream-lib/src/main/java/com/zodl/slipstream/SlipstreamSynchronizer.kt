@@ -1591,19 +1591,18 @@ class SlipstreamSynchronizer internal constructor(
     }
 
     @Suppress("TooGenericExceptionCaught")
-    override suspend fun getTorClient(): cash.z.ecc.android.sdk.internal.model.TorClient {
+    override suspend fun ohttpSenderOverTor(): OhttpSender {
         if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
-        val client = lazyTorClient
-        return try {
-            client.getOrCreate().isolatedTorClient()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            throw TorInitializationErrorException(e)
-        }
+        val isolated =
+            try {
+                lazyTorClient.getOrCreate().isolatedTorClient()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw TorInitializationErrorException(e)
+            }
+        return TorOhttpSender(isolated)
     }
-
-    override suspend fun ohttpSenderOverTor(): OhttpSender = TorOhttpSender(getTorClient())
 
     @Suppress("TooGenericExceptionCaught")
     override suspend fun acquireVotingTorLease(): VotingTorLease {

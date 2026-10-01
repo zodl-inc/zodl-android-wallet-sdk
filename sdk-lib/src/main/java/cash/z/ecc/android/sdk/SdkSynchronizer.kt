@@ -35,7 +35,6 @@ import cash.z.ecc.android.sdk.internal.ext.requireSingleStepForPczt
 import cash.z.ecc.android.sdk.internal.ext.tryNull
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
-import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.TorDormantMode
 import cash.z.ecc.android.sdk.internal.model.TorHttp
 import cash.z.ecc.android.sdk.internal.model.TreeState
@@ -755,13 +754,14 @@ class SdkSynchronizer private constructor(
         }
 
     @Suppress("TooGenericExceptionCaught")
-    override suspend fun getTorClient(): TorClient =
-        if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
-            if (lazyTorClient == null) {
-                throw TorInitializationErrorException(
-                    NullPointerException("Tor has not been initialized during synchronizer setup")
-                )
-            }
+    override suspend fun ohttpSenderOverTor(): OhttpSender {
+        if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
+        if (lazyTorClient == null) {
+            throw TorInitializationErrorException(
+                NullPointerException("Tor has not been initialized during synchronizer setup")
+            )
+        }
+        val isolated =
             try {
                 lazyTorClient.getOrCreate().isolatedTorClient()
             } catch (e: CancellationException) {
@@ -769,13 +769,9 @@ class SdkSynchronizer private constructor(
             } catch (e: Exception) {
                 throw TorInitializationErrorException(e)
             }
-        } else {
-            throw TorUnavailableException()
-        }
-
-    override suspend fun ohttpSenderOverTor(): OhttpSender =
-        cash.z.ecc.android.sdk.internal
-            .TorOhttpSender(getTorClient())
+        return cash.z.ecc.android.sdk.internal
+            .TorOhttpSender(isolated)
+    }
 
     @Suppress("TooGenericExceptionCaught")
     override suspend fun acquireVotingTorLease(): VotingTorLease =

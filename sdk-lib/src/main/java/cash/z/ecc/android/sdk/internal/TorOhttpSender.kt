@@ -52,8 +52,8 @@ class TorOhttpSender(
     }
 
     /**
-     * Releases the isolated [TorClient] this sender wraps (see [cash.z.ecc.android.sdk.Synchronizer.getTorClient]
-     * -- each call creates a fresh isolated native Tor handle). The caller of
+     * Releases the isolated [TorClient] this sender wraps (each
+     * [cash.z.ecc.android.sdk.Synchronizer.ohttpSenderOverTor] call creates a fresh isolated native Tor handle). The caller of
      * [cash.z.ecc.android.sdk.Synchronizer.ohttpSenderOverTor] owns this sender and must dispose it
      * once it is replaced (e.g. the Tor preference toggles) or no longer needed, or the underlying
      * native Tor runtime handle leaks for the rest of the process lifetime.

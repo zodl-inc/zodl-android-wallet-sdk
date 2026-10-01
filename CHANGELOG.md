@@ -19,10 +19,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `KeyConfigVerificationFailedException` (signed key config rejected), both in `co.electriccoin.lightwallet.client`.
 - `OhttpSender` (package `co.electriccoin.lightwallet.client`): transport abstraction for the OHTTP relay leg,
   with a direct implementation and a Tor-backed one.
-- `Synchronizer.getTorClient()` and `Synchronizer.ohttpSenderOverTor()`: an isolated `TorClient` and an
-  `OhttpSender` that sends the relay leg over Tor. Both default to throwing `TorUnavailableException`, so
-  existing `Synchronizer` implementers still compile. Each call creates a new native Tor client; release it
-  by calling `dispose()` on the sender (or the `OhttpHttpClient` wrapping it).
+- `Synchronizer.ohttpSenderOverTor()`: an `OhttpSender` that sends the relay leg over Tor. It defaults to
+  throwing `TorUnavailableException`, so existing `Synchronizer` implementers still compile. Each call creates
+  a new native Tor client owned by the sender; release it by calling `dispose()` on the sender (or the
+  `OhttpHttpClient` wrapping it). The internal `TorClient` type is deliberately not exposed on the public API.
 - `ohttpClientTraceIdPrefix: String? = null` parameter on `Synchronizer.new`, `LightWalletClient.new`,
   `OhttpHttpClient.create`, `WalletCoordinator` and the Slipstream synchronizer factory. When set, every
   outer OHTTP POST carries `X-Client-Trace-Id: <prefix>-<uuid>`. Debug only: it makes requests linkable.

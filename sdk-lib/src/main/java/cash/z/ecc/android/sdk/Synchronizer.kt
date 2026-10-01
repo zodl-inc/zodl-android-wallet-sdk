@@ -905,25 +905,17 @@ interface Synchronizer {
     suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit = {}): HttpClient
 
     /**
-     * Returns an isolated TorClient handle for use with OHTTP external API calls (NEAR, CMC).
-     * Used by OhttpHttpClient to route the relay leg over Tor when Tor is enabled, ensuring
-     * the relay never sees the app's clearnet IP (the gateway injects secrets server-side).
-     *
-     * @throws TorInitializationErrorException if Tor bootstrapping failed
-     * @throws TorUnavailableException if Tor is not enabled
-     */
-    @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
-    suspend fun getTorClient(): TorClient = throw TorUnavailableException()
-
-    /**
      * Creates an OhttpSender that routes relay traffic through Tor, for use with OhttpHttpClient.
      * Used when Tor is enabled in the app and the target is a gateway-mapped external API (CMC, NEAR).
      * The relay leg goes over Tor, hiding the app's IP from the relay, and the gateway injects the
      * secret server-side.
      *
-     * Defaults to [getTorClient]'s same [TorUnavailableException] so an implementer that hasn't
-     * (yet) provided a real OHTTP-over-Tor path fails the same way as Tor itself being off,
-     * rather than a compile error breaking every existing implementer of this interface.
+     * Defaults to throwing [TorUnavailableException] so an implementer that hasn't (yet) provided
+     * a real OHTTP-over-Tor path fails the same way as Tor itself being off, rather than a compile
+     * error breaking every existing implementer of this interface.
+     *
+     * Each call creates a new isolated native Tor client owned by the returned sender; call
+     * [OhttpSender.dispose] on it (or on the `OhttpHttpClient` wrapping it) to release it.
      *
      * @return TorOhttpSender wrapping an isolated TorClient
      * @throws TorInitializationErrorException if Tor bootstrapping failed
