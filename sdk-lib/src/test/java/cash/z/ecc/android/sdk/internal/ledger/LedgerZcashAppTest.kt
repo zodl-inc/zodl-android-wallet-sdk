@@ -41,7 +41,8 @@ class LedgerZcashAppTest {
             pollTimeout = pollTimeout,
             pollInterval = 1.milliseconds,
             transitionTimeout = 200.milliseconds,
-            reconnectPolicy = reconnectPolicy()
+            reconnectPolicy = reconnectPolicy(),
+            switchOverallTimeout = 60.seconds
         )
 
     private val getApp = byteArrayOf(0xB0.toByte(), 0x01, 0x00, 0x00, 0x00)
@@ -74,7 +75,8 @@ class LedgerZcashAppTest {
     /** [cash.z.ecc.android.sdk.ledger.LedgerZcashApp]'s own timings, on [timeSource]. */
     private fun productionTimedLauncher(
         timeSource: TimeSource,
-        pollTimeout: Duration = 3.seconds
+        pollTimeout: Duration = 3.seconds,
+        switchOverallTimeout: Duration = 60.seconds
     ) = LedgerAppLauncher(
         queryTimeout = 10.seconds,
         pollTimeout = pollTimeout,
@@ -87,6 +89,7 @@ class LedgerZcashAppTest {
                 firstBackoff = 500.milliseconds,
                 maxBackoff = 2.seconds
             ),
+        switchOverallTimeout = switchOverallTimeout,
         timeSource = timeSource
     )
 
@@ -361,7 +364,8 @@ class LedgerZcashAppTest {
                     pollTimeout = pollTimeout,
                     pollInterval = 1.milliseconds,
                     transitionTimeout = 200.milliseconds,
-                    reconnectPolicy = reconnectPolicy(attemptTimeout = 50.milliseconds)
+                    reconnectPolicy = reconnectPolicy(attemptTimeout = 50.milliseconds),
+                    switchOverallTimeout = 60.seconds
                 ).ensureZcashAppOpen(original) {
                     reconnects++
                     if (reconnects == 1) awaitCancellation()
@@ -393,6 +397,7 @@ class LedgerZcashAppTest {
                             firstBackoff = 500.milliseconds,
                             maxBackoff = 2.seconds
                         ),
+                    switchOverallTimeout = 60.seconds,
                     timeSource = testScheduler.timeSource
                 )
 
@@ -482,6 +487,107 @@ class LedgerZcashAppTest {
                 attemptsAt,
                 "the failure after the recovery waits the first backoff, in a window of its own"
             )
+        }
+
+    /**
+     * Reconnects that alternate failing and succeeding, starting with a failure, each fresh link
+     * failing its first poll as [freshLink] makes it. Past [maxAttempts] it throws an
+     * [IllegalStateException], so a wait that never ends fails the test instead of hanging it.
+     */
+    private class FlappingReconnect(
+        private val freshLink: () -> ScriptedTransport,
+        private val maxAttempts: Int = 1_000
+    ) {
+        val failures = mutableListOf<LedgerException>()
+        val links = mutableListOf<ScriptedTransport>()
+        var attempts = 0
+            private set
+
+        val reconnect: suspend () -> LedgerApduTransport = {
+            attempts++
+            check(attempts <= maxAttempts) { "the app switch wait never ended" }
+            if (attempts % 2 == 1) {
+                throw LedgerException.ConnectionFailed(reason = null).also { failures += it }
+            }
+            freshLink().also { links += it }
+        }
+    }
+
+    @Test
+    fun a_link_that_keeps_flapping_ends_the_app_switch_after_the_overall_cap() =
+        runTest {
+            val original =
+                ScriptedTransport(
+                    listOf(dashboard, sw(0x9000)),
+                    failAt = 2 to LedgerException.Timeout(),
+                    stallBeforeFailing = true
+                )
+            val flapping =
+                FlappingReconnect(
+                    freshLink = {
+                        ScriptedTransport(
+                            emptyList(),
+                            failAt = 0 to LedgerException.Timeout(),
+                            stallBeforeFailing = true
+                        )
+                    }
+                )
+            val start = testScheduler.timeSource.markNow()
+
+            val error =
+                assertFailsWith<LedgerException.WrongApp> {
+                    productionTimedLauncher(testScheduler.timeSource).ensureZcashAppOpen(original, flapping.reconnect)
+                }
+
+            assertNull(error.statusWord)
+            assertEquals(34, flapping.attempts, "the last reconnect succeeded, and its poll stalled past the cap")
+            assertEquals(62.5.seconds, start.elapsedNow(), "the cap ends the wait at the next turn of the loop")
+            assertEquals(1, original.closes)
+            flapping.links.forEach { assertEquals(1, it.closes, "every replaced link is closed once") }
+        }
+
+    @Test
+    fun a_flapping_link_whose_last_reconnect_failed_propagates_that_failure_at_the_overall_cap() =
+        runTest {
+            val original =
+                ScriptedTransport(listOf(dashboard, sw(0x9000)), failAt = 2 to LedgerException.Disconnected())
+            val flapping =
+                FlappingReconnect(
+                    freshLink = { ScriptedTransport(emptyList(), failAt = 0 to LedgerException.Disconnected()) }
+                )
+            val start = testScheduler.timeSource.markNow()
+
+            val error =
+                assertFailsWith<LedgerException.ConnectionFailed> {
+                    productionTimedLauncher(testScheduler.timeSource).ensureZcashAppOpen(original, flapping.reconnect)
+                }
+
+            assertSame(flapping.failures.last(), error, "the last reconnect's failure propagates")
+            assertEquals(239, flapping.attempts)
+            assertEquals(60.seconds, start.elapsedNow(), "the backoff does not run past the cap")
+            flapping.links.forEach { assertEquals(1, it.closes, "every replaced link is closed once") }
+        }
+
+    @Test
+    fun the_backoff_before_a_reconnect_is_cut_short_by_the_overall_cap() =
+        runTest {
+            val original =
+                ScriptedTransport(listOf(dashboard, sw(0x9000)), failAt = 2 to LedgerException.Disconnected())
+            val flapping =
+                FlappingReconnect(
+                    freshLink = { ScriptedTransport(emptyList(), failAt = 0 to LedgerException.Disconnected()) }
+                )
+            val start = testScheduler.timeSource.markNow()
+
+            val error =
+                assertFailsWith<LedgerException.ConnectionFailed> {
+                    productionTimedLauncher(testScheduler.timeSource, switchOverallTimeout = 59.8.seconds)
+                        .ensureZcashAppOpen(original, flapping.reconnect)
+                }
+
+            assertSame(flapping.failures.last(), error)
+            assertEquals(239, flapping.attempts, "no reconnect starts after the cap")
+            assertEquals(59.8.seconds, start.elapsedNow())
         }
 
     @Test

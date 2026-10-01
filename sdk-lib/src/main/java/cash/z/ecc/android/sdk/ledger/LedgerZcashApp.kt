@@ -35,6 +35,7 @@ object LedgerZcashApp {
     private val SWITCH_RECONNECT_WINDOW = 10.seconds
     private val SWITCH_RECONNECT_FIRST_BACKOFF = 500.milliseconds
     private val SWITCH_RECONNECT_MAX_BACKOFF = 2.seconds
+    private val APP_SWITCH_OVERALL_TIMEOUT = 60.seconds
 
     private fun launcher() =
         LedgerAppLauncher(
@@ -48,7 +49,8 @@ object LedgerZcashApp {
                     retryWindow = SWITCH_RECONNECT_WINDOW,
                     firstBackoff = SWITCH_RECONNECT_FIRST_BACKOFF,
                     maxBackoff = SWITCH_RECONNECT_MAX_BACKOFF
-                )
+                ),
+            switchOverallTimeout = APP_SWITCH_OVERALL_TIMEOUT
         )
 
     /**
@@ -89,7 +91,10 @@ object LedgerZcashApp {
      * reconnects that failed in a row. The first reconnect that fails once those 10 seconds have
      * passed propagates its failure; one that succeeds ends the row, and the next failure starts over
      * from 500 milliseconds and a new 10 seconds. A reconnect that fails also starts the 10 seconds
-     * of polling over. The reconnect after a failed first query also has 10 seconds, and is not
+     * of polling over. However the link behaves, waiting for the device to switch apps ends 60
+     * seconds after the wait started, at the next poll or reconnect: with the failure of the last
+     * reconnect if it failed, and with [LedgerException.WrongApp] otherwise; no backoff runs past
+     * those 60 seconds. The reconnect after a failed first query also has 10 seconds, and is not
      * retried.
      *
      * A transport whose link fails during the call is closed when it fails, before it is replaced.
@@ -106,7 +111,7 @@ object LedgerZcashApp {
      *         open it; the user has to open it on the device.
      * @throws LedgerException.ConnectionFailed if the reconnect after a failed first query, or the
      *         last reconnect during the switch, runs out of its 10 seconds; another link failure from
-     *         [reconnect] propagates as it is.
+     *         [reconnect] propagates as it is, also when the switch ends after its 60 seconds.
      * @throws LedgerException for any other failure.
      */
     suspend fun ensureZcashAppOpen(
@@ -132,12 +137,14 @@ internal data class SwitchReconnectPolicy(
 /**
  * [LedgerZcashApp]'s orchestration, with its timings and its clock as parameters.
  */
+@Suppress("LongParameterList")
 internal class LedgerAppLauncher(
     private val queryTimeout: Duration,
     private val pollTimeout: Duration,
     private val pollInterval: Duration,
     private val transitionTimeout: Duration,
     private val reconnectPolicy: SwitchReconnectPolicy,
+    private val switchOverallTimeout: Duration,
     private val timeSource: TimeSource = TimeSource.Monotonic
 ) {
     suspend fun currentApp(transport: LedgerApduTransport): LedgerRunningApp = queryApp(transport, queryTimeout)
@@ -195,17 +202,27 @@ internal class LedgerAppLauncher(
      * and doubles up to its maximum. Once the policy's retry window has passed since the first of
      * the failed reconnects in a row, the next failed reconnect propagates its failure. A reconnect
      * that succeeds ends the row: the next failure starts a new window, with the first backoff.
+     *
+     * Neither the deadline nor the window bounds the wait on its own: a failed reconnect starts the
+     * deadline over and a successful one ends the row, so a link that keeps alternating the two
+     * never reaches either. [switchOverallTimeout], from the wait's start and never moved, ends it
+     * through [throwIfOverallTimePassed], and no backoff runs past it.
      */
     private inner class SwitchWait {
         private var deadline = deadline()
+        private val overallDeadline = timeSource.markNow() + switchOverallTimeout
         private var failingSince: TimeMark? = null
         private var backoff = reconnectPolicy.firstBackoff
+        private var lastReconnectFailure: LedgerException? = null
 
         /** Whether the link was last replaced once the deadline had passed; it then gets one poll. */
         var replacedPastDeadline = false
             private set
 
-        /** Throws once the deadline has passed, and otherwise waits the poll interval. */
+        /**
+         * Throws once the deadline has passed, and otherwise waits the poll interval, never past
+         * [switchOverallTimeout].
+         */
         suspend fun beforeNextPoll() {
             if (deadline.hasPassedNow()) {
                 throw LedgerException.WrongApp(
@@ -213,11 +230,27 @@ internal class LedgerAppLauncher(
                     reason = "the device did not switch apps in time"
                 )
             }
-            delay(pollInterval)
+            delay(minOf(pollInterval, overallRemaining()))
+        }
+
+        private fun overallRemaining() = -overallDeadline.elapsedNow()
+
+        /**
+         * Throws once [switchOverallTimeout] has passed since the wait started: the last reconnect's
+         * failure if it failed, and [LedgerException.WrongApp] otherwise.
+         */
+        fun throwIfOverallTimePassed() {
+            if (overallDeadline.hasPassedNow()) {
+                throw lastReconnectFailure ?: LedgerException.WrongApp(
+                    statusWord = null,
+                    reason = "the device did not switch apps within the overall time"
+                )
+            }
         }
 
         /** Ends the run of failures, and moves the deadline by the time the reconnect [took]. */
         fun reconnected(took: Duration) {
+            lastReconnectFailure = null
             failingSince = null
             backoff = reconnectPolicy.firstBackoff
             deadline += took
@@ -225,12 +258,13 @@ internal class LedgerAppLauncher(
         }
 
         /**
-         * Throws [failure] once the retry window has passed; otherwise starts the deadline over and
-         * waits the backoff, never past the end of the window.
+         * Throws [failure] once the retry window or [switchOverallTimeout] has passed; otherwise
+         * starts the deadline over and waits the backoff, never past the end of either.
          */
         suspend fun reconnectFailed(failure: LedgerException) {
+            lastReconnectFailure = failure
             val since = failingSince ?: timeSource.markNow().also { failingSince = it }
-            val remaining = reconnectPolicy.retryWindow - since.elapsedNow()
+            val remaining = minOf(reconnectPolicy.retryWindow - since.elapsedNow(), overallRemaining())
             if (!remaining.isPositive()) {
                 throw failure
             }
@@ -289,10 +323,16 @@ internal class LedgerAppLauncher(
          * gets one poll. A reconnect that fails starts that time over from the failure, because the
          * device may still be rebooting into the app, and is tried again after a backoff; see
          * [SwitchWait].
+         *
+         * Whatever the link does, the wait ends once [switchOverallTimeout] has passed since the
+         * call, checked before each poll and each reconnect: with the last reconnect's failure if it
+         * failed, and [LedgerException.WrongApp] otherwise. A reconnect already under way keeps its
+         * own attempt timeout.
          */
         suspend fun awaitApp(reached: (LedgerRunningApp) -> Boolean) {
             val wait = SwitchWait()
             while (true) {
+                wait.throwIfOverallTimePassed()
                 if (usable) {
                     val running = queryAllowingDisconnect(pollTimeout)
                     if (running != null && reached(running)) {

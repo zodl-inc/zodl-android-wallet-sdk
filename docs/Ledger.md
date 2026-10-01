@@ -101,9 +101,11 @@ Zcash app after the user confirms, polled every 200 ms with up to 3 seconds for 
 loses the link or gets no answer is always followed by a reconnect, and the time a reconnect that
 succeeds takes does not count towards the 10 seconds. While the device switches, each reconnect has 10
 seconds, and a failed one is tried again after 500 ms, then after twice the previous wait (at most 2 s),
-for 10 seconds from the first of the failures in a row; a reconnect that succeeds ends the row. The
-call itself has no overall timeout: the open command waits for the user's confirmation on the device,
-so bound the whole call with a timeout of the app's own if it needs one.
+for 10 seconds from the first of the failures in a row; a reconnect that succeeds ends the row. Each
+wait for the device to switch apps ends 60 seconds after it started, however the link behaves: with
+the last reconnect's failure if it failed, and with `WrongApp` otherwise. The call itself has no
+overall timeout: the open command waits for the user's confirmation on the device, so bound the whole
+call with a timeout of the app's own if it needs one.
 
 ## Pairing an account
 

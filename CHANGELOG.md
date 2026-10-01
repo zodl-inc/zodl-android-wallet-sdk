@@ -71,7 +71,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is tried again after 500 milliseconds, then after twice the previous wait, at most 2 seconds. It keeps
   trying for 10 seconds from the first of the reconnects that failed in a row, and the first one that
   fails once they have passed propagates its failure (`ConnectionFailed` for one that ran out of time);
-  a reconnect that succeeds ends the row, so a later failure starts again from 500 milliseconds. The first app query
+  a reconnect that succeeds ends the row, so a later failure starts again from 500 milliseconds. A link
+  that keeps dropping and coming back no longer keeps it waiting: each wait for the device to switch
+  apps ends 60 seconds after it started, with the last reconnect's failure if it failed and with
+  `WrongApp` otherwise. The first app query
   waits up to 10 seconds; if it stalls or the link fails, it is asked once more on a fresh connection,
   which `reconnect` has 10 seconds to open, before anything else is sent, and the open command is never
   sent twice.
