@@ -34,7 +34,7 @@ class WalletClientFactory(
         // library in pure-JVM unit tests that use non-OHTTP endpoints (the codec is only required
         // when the endpoint is an OHTTP gateway; LightWalletClient.new throws if missing).
         val ohttpCodec =
-            if (isKnownOhttpGateway(endpoint.host)) {
+            if (LightWalletClient.isOhttpGateway(endpoint)) {
                 OhttpCodecFactory.create()
             } else {
                 null
@@ -51,12 +51,4 @@ class WalletClientFactory(
             isolatedTorClient = torClient?.let { holder -> LazyTorClient { holder.getOrCreate().isolatedTorClient() } },
         )
     }
-
-    /**
-     * Returns true for the exact ZODL OHTTP gateway hosts that require the native codec.
-     * This mirrors the check in co.electriccoin.lightwallet.client.internal.OhttpEndpoints
-     * (which is internal to lightwallet-client-lib).
-     */
-    private fun isKnownOhttpGateway(host: String): Boolean =
-        host == "ohttp-gateway.example" || host == "ohttp-gateway-testnet.example"
 }

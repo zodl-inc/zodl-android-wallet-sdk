@@ -12,6 +12,13 @@ import kotlin.time.Duration.Companion.seconds
 interface LightWalletClient : WalletClient {
     companion object {
         /**
+         * True when [lightWalletEndpoint] is a ZODL OHTTP gateway, i.e. when [new] needs an [OhttpCodec].
+         * Callers can use it to create the native codec only when it is used.
+         */
+        fun isOhttpGateway(lightWalletEndpoint: LightWalletEndpoint): Boolean =
+            OhttpEndpoints.isOhttpGateway(lightWalletEndpoint.host)
+
+        /**
          * Creates a new LightWalletClient for the given endpoint.
          *
          * @param ohttpClientTraceIdPrefix Optional client trace ID prefix for end-to-end tracing
@@ -34,7 +41,7 @@ interface LightWalletClient : WalletClient {
                 // Endpoints that are ZODL OHTTP gateways are reached through an OHTTP relay
                 // (RFC 9458) instead of a direct gRPC connection.
                 channelFactory =
-                    if (OhttpEndpoints.isOhttpGateway(lightWalletEndpoint.host)) {
+                    if (isOhttpGateway(lightWalletEndpoint)) {
                         OhttpChannelFactory(
                             OhttpEndpoints.relayUrlFor(lightWalletEndpoint.host),
                             requireNotNull(ohttpCodec) {
