@@ -26,6 +26,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ohttpClientTraceIdPrefix: String? = null` parameter on `Synchronizer.new`, `LightWalletClient.new`,
   `OhttpHttpClient.create`, `WalletCoordinator` and the Slipstream synchronizer factory. When set, every
   outer OHTTP POST carries `X-Client-Trace-Id: <prefix>-<uuid>`. Debug only: it makes requests linkable.
+- **OHTTP transport for voting round driver.** When Tor is OFF and the round uses
+  predefined vote servers (not custom user-added servers), the round driver now
+  routes HTTP requests (vote commitments, shares, delegation, tree sync) through
+  the OHTTP gateway for privacy (the vote/helper servers see only the gateway's IP,
+  not the user's). Custom servers continue to use direct routing by design (user
+  decision to use a custom endpoint implies accepting direct routing). This mirrors
+  the app's existing OHTTP routing for voting read operations and matches iOS's
+  upcoming implementation. `openRoundSessionNative` gains a new `is_custom_server`
+  parameter (`jboolean`) to distinguish predefined from custom servers; callers
+  must pass `true` for custom servers (from `pinnedSource` config field) or `false`
+  for predefined servers. PIR delegation endpoints are now also OHTTP-routed with the
+  same policy (predefined → OHTTP when Tor OFF, custom → Direct).
 
 ### Changed
 - **Breaking:** `OhttpSender` and `OhttpHttpClient` extend `Disposable`. Implementers of `OhttpSender` must
@@ -33,6 +45,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sapling parameters are downloaded from `https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/`
   instead of `download.z.cash`, and verified by SHA-256 instead of SHA-1. With Tor enabled, the download
   goes over Tor (sdk-lib and Slipstream).
+- **Breaking: `VotingSdk.precomputeDelegationPir`, `VotingSdk.precomputePirProofs`,
+  `VotingSdk.precomputeSnapshotBundles`, and `VotingSdk.openRoundSession` gain a required
+  `isCustomServer: Boolean` parameter.** Callers must pass `true` for custom voting configs
+  (with custom PIR endpoints or chain endpoints from `pinnedSource`) or `false` for predefined
+  servers. This routes both PIR delegation traffic and voting driver HTTP traffic the same way:
+  Tor OFF + predefined server → OHTTP (the relay sees the client IP but not the request; the
+  gateway and backend servers never see the client IP); Tor OFF + custom server → Direct (user
+  decision to use custom endpoint implies accepting direct routing). Without this parameter,
+  custom configs with endpoints not in the gateway's allowlist would fail closed instead of
+  routing Direct.
 
 ## [5.0.0] - 2026-09-25
 

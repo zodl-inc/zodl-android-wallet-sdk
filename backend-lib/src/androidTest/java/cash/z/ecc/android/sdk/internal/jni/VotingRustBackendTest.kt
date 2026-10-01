@@ -412,6 +412,7 @@ class VotingRustBackendTest {
                 assertFailsWith<RuntimeException> {
                     db.precomputeDelegationPir(
                         torRuntime = 0,
+                        isCustomServer = false,
                         roundId = ROUND_ID,
                         bundleIndex = 0,
                         pirServerUrl = "not-a-valid-url",
@@ -439,6 +440,7 @@ class VotingRustBackendTest {
                 assertFailsWith<RuntimeException> {
                     db.precomputePirProofs(
                         torRuntime = 0,
+                        isCustomServer = false,
                         pirServerUrl = "not-a-valid-url",
                         pirDepth = 1,
                         pirTier0Layers = 1,
@@ -466,6 +468,7 @@ class VotingRustBackendTest {
                 assertFailsWith<RuntimeException> {
                     db.precomputeSnapshotBundles(
                         torRuntime = 0,
+                        isCustomServer = false,
                         roundId = ROUND_ID,
                         pirServerUrl = "not-a-valid-url",
                         pirDepth = 1,
@@ -612,7 +615,8 @@ class VotingRustBackendTest {
                         configuredHelperUrls = emptyList(),
                         voteTreeNodeUrls = emptyList(),
                         ceremonyStartSeconds = -1,
-                        voteEndTimeSeconds = -1
+                        voteEndTimeSeconds = -1,
+                        isCustomServer = false
                     )
                 try {
                     // No ballot decisions exist yet, so RoundDriver::run determines there is
@@ -737,7 +741,8 @@ class VotingRustBackendTest {
                         configuredHelperUrls = emptyList(),
                         voteTreeNodeUrls = emptyList(),
                         ceremonyStartSeconds = -1,
-                        voteEndTimeSeconds = -1
+                        voteEndTimeSeconds = -1,
+                        isCustomServer = false
                     )
                 try {
                     // A real (if otherwise-unused) temp path: SqliteWalletDbOpener::open_for_read

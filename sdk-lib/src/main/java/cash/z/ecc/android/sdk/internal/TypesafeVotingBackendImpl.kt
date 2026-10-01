@@ -263,6 +263,7 @@ internal interface VotingDbBackend {
 
     suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -275,6 +276,7 @@ internal interface VotingDbBackend {
 
     suspend fun precomputePirProofs(
         torRuntime: Long,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -285,6 +287,7 @@ internal interface VotingDbBackend {
 
     suspend fun precomputeSnapshotBundles(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -323,7 +326,8 @@ internal interface VotingDbBackend {
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): RoundSessionBackend
 }
 
@@ -369,6 +373,7 @@ private class RustVotingDbBackend(
 
     override suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -380,6 +385,7 @@ private class RustVotingDbBackend(
     ): JniDelegationPirPrecomputeResult =
         votingDb.precomputeDelegationPir(
             torRuntime,
+            isCustomServer,
             roundId,
             bundleIndex,
             pirServerUrl,
@@ -392,6 +398,7 @@ private class RustVotingDbBackend(
 
     override suspend fun precomputePirProofs(
         torRuntime: Long,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -401,6 +408,7 @@ private class RustVotingDbBackend(
     ): JniPirPrecomputeResult =
         votingDb.precomputePirProofs(
             torRuntime,
+            isCustomServer,
             pirServerUrl,
             pirDepth,
             pirTier0Layers,
@@ -411,6 +419,7 @@ private class RustVotingDbBackend(
 
     override suspend fun precomputeSnapshotBundles(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -421,6 +430,7 @@ private class RustVotingDbBackend(
     ): JniSnapshotBundlePrecomputeReport =
         votingDb.precomputeSnapshotBundles(
             torRuntime,
+            isCustomServer,
             roundId,
             pirServerUrl,
             pirDepth,
@@ -465,7 +475,8 @@ private class RustVotingDbBackend(
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): RoundSessionBackend =
         RustRoundSessionBackend(
             votingDb.openRoundSession(
@@ -479,7 +490,8 @@ private class RustVotingDbBackend(
                 configuredHelperUrls,
                 voteTreeNodeUrls,
                 ceremonyStartSeconds,
-                voteEndTimeSeconds
+                voteEndTimeSeconds,
+                isCustomServer
             )
         )
 }
@@ -610,6 +622,7 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -622,6 +635,7 @@ internal class TypesafeVotingDbImpl(
         votingDb
             .precomputeDelegationPir(
                 torRuntime,
+                isCustomServer,
                 roundId,
                 bundleIndex,
                 pirServerUrl,
@@ -634,6 +648,7 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun precomputePirProofs(
         torRuntime: Long,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -644,6 +659,7 @@ internal class TypesafeVotingDbImpl(
         votingDb
             .precomputePirProofs(
                 torRuntime,
+                isCustomServer,
                 pirServerUrl,
                 pirDepth,
                 pirTier0Layers,
@@ -654,6 +670,7 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun precomputeSnapshotBundles(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -665,6 +682,7 @@ internal class TypesafeVotingDbImpl(
         votingDb
             .precomputeSnapshotBundles(
                 torRuntime,
+                isCustomServer,
                 roundId,
                 pirServerUrl,
                 pirDepth,
@@ -709,7 +727,8 @@ internal class TypesafeVotingDbImpl(
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): TypesafeRoundSession =
         TypesafeRoundSessionImpl(
             votingDb.openRoundSession(
@@ -723,7 +742,8 @@ internal class TypesafeVotingDbImpl(
                 configuredHelperUrls,
                 voteTreeNodeUrls,
                 ceremonyStartSeconds,
-                voteEndTimeSeconds
+                voteEndTimeSeconds,
+                isCustomServer
             )
         )
 }

@@ -315,7 +315,8 @@ class VotingSdkImplTest {
                     configuredHelperUrls = emptyList(),
                     voteTreeNodeUrls = emptyList(),
                     ceremonyStartSeconds = -1L,
-                    voteEndTimeSeconds = -1L
+                    voteEndTimeSeconds = -1L,
+                    isCustomServer = false
                 )
             ).thenReturn(roundSession)
             val session = VotingSdkImpl(backend).openDb("path", "wallet-1", 0)
@@ -323,6 +324,7 @@ class VotingSdkImplTest {
             val roundSessionPublic =
                 session.openRoundSession(
                     torLease = torLease(7L),
+                    isCustomServer = false,
                     roundId = "round-1",
                     proposals =
                         listOf(

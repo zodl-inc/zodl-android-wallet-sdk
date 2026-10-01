@@ -146,6 +146,7 @@ internal interface TypesafeVotingDb {
 
     suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -178,6 +179,7 @@ internal interface TypesafeVotingDb {
      */
     suspend fun precomputePirProofs(
         torRuntime: Long,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -209,6 +211,7 @@ internal interface TypesafeVotingDb {
      */
     suspend fun precomputeSnapshotBundles(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -268,7 +271,8 @@ internal interface TypesafeVotingDb {
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): TypesafeRoundSession
 }
 
