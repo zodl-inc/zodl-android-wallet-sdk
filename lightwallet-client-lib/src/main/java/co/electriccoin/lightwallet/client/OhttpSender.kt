@@ -21,7 +21,7 @@ import co.electriccoin.lightwallet.client.util.Disposable
 interface OhttpSender : Disposable {
     /**
      * POSTs [body] to [url] with the given [headers] and [timeoutMs], returning the response body.
-     * @throws co.electriccoin.lightwallet.client.internal.OhttpException on failure (network, HTTP error, timeout).
+     * @throws OhttpException on failure (network, HTTP error, timeout).
      */
     suspend fun post(
         url: String,
@@ -34,7 +34,7 @@ interface OhttpSender : Disposable {
      * GETs [url] with the given [headers] and [timeoutMs], returning the response body.
      * Used for fetching the gateway key configuration. With Tor enabled, this ensures the key
      * config fetch also goes over Tor, preventing the client IP from being exposed to the gateway.
-     * @throws co.electriccoin.lightwallet.client.internal.OhttpException on failure (network, HTTP error, timeout).
+     * @throws OhttpException on failure (network, HTTP error, timeout).
      */
     suspend fun get(
         url: String,

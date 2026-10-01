@@ -107,7 +107,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int,
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
+                    throw co.electriccoin.lightwallet.client.OhttpException("test abort")
                 }
 
                 override suspend fun get(
@@ -140,7 +140,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
+        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val headerKeys = capturedHeaders.first().map { it.first }
         assertFalse(headerKeys.contains("X-Client-Trace-Id"))
@@ -162,7 +162,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int,
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
+                    throw co.electriccoin.lightwallet.client.OhttpException("test abort")
                 }
 
                 override suspend fun get(
@@ -247,7 +247,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int,
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
+                    throw co.electriccoin.lightwallet.client.OhttpException("test abort")
                 }
 
                 override suspend fun get(
@@ -280,7 +280,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
+        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
         assertTrue(traceIdHeader != null)
@@ -315,7 +315,7 @@ class OhttpHttpClientTest {
                     timeoutMs: Int,
                 ): ByteArray {
                     capturedHeaders.add(headers)
-                    throw co.electriccoin.lightwallet.client.internal.OhttpException("test abort")
+                    throw co.electriccoin.lightwallet.client.OhttpException("test abort")
                 }
 
                 override suspend fun get(
@@ -350,7 +350,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
+        assertTrue(exceptionThrown is co.electriccoin.lightwallet.client.OhttpException)
         assertTrue(capturedHeaders.isNotEmpty())
         val traceIdHeader = capturedHeaders.first().find { it.first == "X-Client-Trace-Id" }
         assertTrue(traceIdHeader != null)
@@ -431,7 +431,7 @@ class OhttpHttpClientTest {
                 ): ByteArray {
                     postCallCount++
                     // First POST returns 400 to trigger key config refresh
-                    throw co.electriccoin.lightwallet.client.internal.OhttpException("Bad Request", 400)
+                    throw co.electriccoin.lightwallet.client.OhttpException("Bad Request", 400)
                 }
 
                 override suspend fun get(
@@ -474,7 +474,7 @@ class OhttpHttpClientTest {
                     )
                 }
             }.exceptionOrNull()
-        assertTrue("Must fail with 400", exceptionThrown is co.electriccoin.lightwallet.client.internal.OhttpException)
+        assertTrue("Must fail with 400", exceptionThrown is co.electriccoin.lightwallet.client.OhttpException)
         assertTrue("Initial key fetch + refresh must call GET twice", getCallCount == 2)
         assertTrue("Must attempt POST twice (initial + retry)", postCallCount == 2)
     }

@@ -1,5 +1,6 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpSender
 import java.net.HttpURLConnection
 

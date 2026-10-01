@@ -1,5 +1,6 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
@@ -40,14 +41,6 @@ internal data class SignedOhttpConfigEnvelope(
     @SerialName("sig")
     val signature: String,
 )
-
-/**
- * Exception thrown when signed config verification fails.
- */
-class KeyConfigVerificationFailedException(
-    message: String,
-    cause: Throwable? = null,
-) : Exception(message, cause)
 
 /**
  * Pure verification of signed OHTTP key configurations.

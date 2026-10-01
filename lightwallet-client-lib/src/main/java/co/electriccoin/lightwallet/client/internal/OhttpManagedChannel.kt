@@ -1,5 +1,6 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.OhttpException
 import io.grpc.CallOptions
 import io.grpc.ClientCall
 import io.grpc.ConnectivityState

@@ -3,8 +3,8 @@ package cash.z.ecc.android.sdk.internal
 import cash.z.ecc.android.sdk.internal.model.JniHttpHeader
 import cash.z.ecc.android.sdk.internal.model.JniHttpResponseBytes
 import cash.z.ecc.android.sdk.internal.model.TorClient
+import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpSender
-import co.electriccoin.lightwallet.client.internal.OhttpException
 import java.net.HttpURLConnection
 
 /**

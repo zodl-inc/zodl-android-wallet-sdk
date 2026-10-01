@@ -1,5 +1,7 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
+import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.internal.SignedEnvelopeTestVectors.ONE_DAY_SECONDS
 import co.electriccoin.lightwallet.client.internal.SignedEnvelopeTestVectors.ONE_HOUR_SECONDS

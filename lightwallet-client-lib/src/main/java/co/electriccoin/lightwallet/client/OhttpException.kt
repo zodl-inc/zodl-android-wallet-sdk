@@ -1,4 +1,4 @@
-package co.electriccoin.lightwallet.client.internal
+package co.electriccoin.lightwallet.client
 
 import java.io.IOException
 
