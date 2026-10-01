@@ -240,7 +240,7 @@ crate-type = ["staticlib", "cdylib"]
 
 [patch.crates-io]
 # The slipstream engine's OHTTP transport lives in slipstream-internal until upstreamed to
-# the public repo and published. Git dependency on the feature/ohttp-http-round-trip branch (PR #19).
+# the public repo and published. Git dependency on the feature/ohttp-connector branch (slipstream PR #16).
 # Once 0.3.0 is published to crates.io, revert to a version pin.
 # Branch feature/ohttp-connector (slipstream PR #16, includes the former #19): http_round_trip() for the
 # voting OHTTP route + behavioral relay-only test. Cargo.lock pins ee135255; switch to `rev =` on
