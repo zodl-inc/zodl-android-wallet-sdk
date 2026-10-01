@@ -51,8 +51,9 @@ class OhttpOverTorSecretInjectionTest {
             val torSender = TorOhttpSender(isolatedTor)
             val ohttpClient = OhttpHttpClient.create(codec = OhttpCodecFactory.create(), sender = torSender)
 
-            // CMC key/info endpoint — gateway injects X-CMC_PRO_API_KEY server-side
-            val url = "https://pro-api.coinmarketcap.com/v1/key/info"
+            // CMC quotes endpoint — gateway injects X-CMC_PRO_API_KEY server-side. The mainnet
+            // alias policy allows only quotes/latest and fiat/map (key/info is testnet-only).
+            val url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol=ZEC"
             assertTrue(ohttpClient.canHandle(url), "OHTTP client should handle CMC host")
 
             // Execute without app secret (stripped if present)
@@ -70,7 +71,7 @@ class OhttpOverTorSecretInjectionTest {
 
             // Parse and verify structure (optional: decode JSON and check it's a valid CMC response)
             val json = response.body.decodeToString()
-            assertTrue(json.contains("\"usage\""), "CMC key/info should contain usage field")
+            assertTrue(json.contains("\"ZEC\""), "CMC quotes should contain the ZEC quote")
 
             torClient.dispose()
         }
