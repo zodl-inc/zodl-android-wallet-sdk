@@ -80,12 +80,27 @@ internal object Hpke {
     ): SenderContext {
         require(recipientPublicKey.size == N_PK) { "Recipient public key must be $N_PK bytes" }
 
-        // DHKEM(X25519).Encap(pkR) — RFC 9180 §4.1
         val generator = X25519KeyPairGenerator()
         generator.init(X25519KeyGenerationParameters(random))
         val ephemeral = generator.generateKeyPair()
         val skE = ephemeral.private as X25519PrivateKeyParameters
-        val pkE = ephemeral.public as X25519PublicKeyParameters
+        return setupBaseS(recipientPublicKey, info, skE.encoded)
+    }
+
+    /**
+     * [setupBaseS] with a caller-supplied ephemeral private key, so the RFC 9180 Appendix A test vectors
+     * (which fix `skEm`) can be checked. Production code must use the random-ephemeral overload.
+     */
+    internal fun setupBaseS(
+        recipientPublicKey: ByteArray,
+        info: ByteArray,
+        ephemeralPrivateKey: ByteArray,
+    ): SenderContext {
+        require(recipientPublicKey.size == N_PK) { "Recipient public key must be $N_PK bytes" }
+
+        // DHKEM(X25519).Encap(pkR) — RFC 9180 §4.1
+        val skE = X25519PrivateKeyParameters(ephemeralPrivateKey, 0)
+        val pkE = skE.generatePublicKey()
         val pkR = X25519PublicKeyParameters(recipientPublicKey, 0)
 
         val dh = ByteArray(N_SECRET)
