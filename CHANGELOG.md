@@ -15,6 +15,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `OhttpHttpClient` (package `co.electriccoin.lightwallet.client`): routes calls to allowlisted external
   APIs (NEAR, CoinMarketCap, voting) through the OHTTP gateway. `OhttpHttpClient.create(sender,
   ohttpClientTraceIdPrefix)` takes ownership of the given sender and disposes it on `dispose()`.
+  Failures surface as `OhttpException` (network, HTTP status, decapsulation) or
+  `KeyConfigVerificationFailedException` (signed key config rejected), both in `co.electriccoin.lightwallet.client`.
 - `OhttpSender` (package `co.electriccoin.lightwallet.client`): transport abstraction for the OHTTP relay leg,
   with a direct implementation and a Tor-backed one.
 - `Synchronizer.getTorClient()` and `Synchronizer.ohttpSenderOverTor()`: an isolated `TorClient` and an
