@@ -6,6 +6,32 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- OHTTP (RFC 9458) transport for lightwalletd and selected external APIs. A `LightWalletEndpoint` whose
+  host is one of the ZODL OHTTP gateways (`ohttp-gateway.example`, `ohttp-gateway-testnet.example`) is
+  now served through an OHTTP relay instead of a direct gRPC connection; the gateway's HPKE key
+  configuration is fetched through the relay and verified against a signed envelope, and verification
+  fails closed.
+- `OhttpHttpClient` (package `co.electriccoin.lightwallet.client`): routes calls to allowlisted external
+  APIs (NEAR, CoinMarketCap, voting) through the OHTTP gateway. `OhttpHttpClient.create(sender,
+  ohttpClientTraceIdPrefix)` takes ownership of the given sender and disposes it on `dispose()`.
+- `OhttpSender` (package `co.electriccoin.lightwallet.client`): transport abstraction for the OHTTP relay leg,
+  with a direct implementation and a Tor-backed one.
+- `Synchronizer.getTorClient()` and `Synchronizer.ohttpSenderOverTor()`: an isolated `TorClient` and an
+  `OhttpSender` that sends the relay leg over Tor. Both default to throwing `TorUnavailableException`, so
+  existing `Synchronizer` implementers still compile. Each call creates a new native Tor client; release it
+  by calling `dispose()` on the sender (or the `OhttpHttpClient` wrapping it).
+- `ohttpClientTraceIdPrefix: String? = null` parameter on `Synchronizer.new`, `LightWalletClient.new`,
+  `OhttpHttpClient.create`, `WalletCoordinator` and the Slipstream synchronizer factory. When set, every
+  outer OHTTP POST carries `X-Client-Trace-Id: <prefix>-<uuid>`. Debug only: it makes requests linkable.
+
+### Changed
+- **Breaking:** `OhttpSender` and `OhttpHttpClient` extend `Disposable`. Implementers of `OhttpSender` must
+  implement `dispose()`; a `TorOhttpSender` releases its isolated `TorClient` there.
+- Sapling parameters are downloaded from `https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/`
+  instead of `download.z.cash`, and verified by SHA-256 instead of SHA-1. With Tor enabled, the download
+  goes over Tor (sdk-lib and Slipstream).
+
 ## [5.0.0] - 2026-09-25
 
 ### Added
