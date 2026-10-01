@@ -5,7 +5,7 @@ plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
     id("zcash-sdk.android-conventions")
-    kotlin("plugin.serialization") version "2.3.20"
+    id("org.jetbrains.kotlin.plugin.serialization")
 
     id("org.jetbrains.dokka")
     id("com.google.protobuf")
@@ -131,11 +131,10 @@ dependencies {
     implementation(libs.kotlin.stdlib)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
+    implementation(libs.kotlinx.serialization.json)
 
     // OHTTP (RFC 9458): HPKE (RFC 9180) via BouncyCastle lightweight API
-    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation(libs.bouncycastle.bcprov)
 
     // Tests
     testImplementation(libs.kotlin.reflect)
