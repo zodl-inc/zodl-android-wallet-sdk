@@ -33,11 +33,12 @@ class WalletClientFactory(
         // Only create the native codec for known OHTTP gateways. This avoids loading the native
         // library in pure-JVM unit tests that use non-OHTTP endpoints (the codec is only required
         // when the endpoint is an OHTTP gateway; LightWalletClient.new throws if missing).
-        val ohttpCodec = if (isKnownOhttpGateway(endpoint.host)) {
-            OhttpCodecFactory.create()
-        } else {
-            null
-        }
+        val ohttpCodec =
+            if (isKnownOhttpGateway(endpoint.host)) {
+                OhttpCodecFactory.create()
+            } else {
+                null
+            }
         return CombinedWalletClientImpl.new(
             endpoint = endpoint,
             lightWalletClient =
@@ -56,7 +57,6 @@ class WalletClientFactory(
      * This mirrors the check in co.electriccoin.lightwallet.client.internal.OhttpEndpoints
      * (which is internal to lightwallet-client-lib).
      */
-    private fun isKnownOhttpGateway(host: String): Boolean {
-        return host == "ohttp-gateway.example" || host == "ohttp-gateway-testnet.example"
-    }
+    private fun isKnownOhttpGateway(host: String): Boolean =
+        host == "ohttp-gateway.example" || host == "ohttp-gateway-testnet.example"
 }
