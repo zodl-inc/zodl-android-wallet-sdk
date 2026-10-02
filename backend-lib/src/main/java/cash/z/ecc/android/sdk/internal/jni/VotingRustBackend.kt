@@ -509,9 +509,14 @@ class VotingRustBackend private constructor() {
             }
 
         @Throws(RuntimeException::class)
-        suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long =
+        suspend fun syncVoteTree(
+            torRuntime: Long,
+            isCustomServer: Boolean,
+            roundId: String,
+            nodeUrl: String
+        ): Long =
             withHandle { handle ->
-                syncVoteTreeNative(handle, roundId, nodeUrl).also { height ->
+                syncVoteTreeNative(handle, torRuntime, isCustomServer, roundId, nodeUrl).also { height ->
                     check(height >= 0) {
                         "syncVoteTree failed for roundId=$roundId"
                     }
@@ -881,11 +886,18 @@ class VotingRustBackend private constructor() {
         @Throws(RuntimeException::class)
         suspend fun run(
             torRuntime: Long,
+            isCustomServer: Boolean,
             helperUrls: List<String>,
             voteEndTimeSeconds: Long
         ): JniShareTrackingRunReport? =
             withHandle { handle ->
-                runShareTrackingSessionNative(handle, torRuntime, helperUrls.toTypedArray(), voteEndTimeSeconds)
+                runShareTrackingSessionNative(
+                    handle,
+                    torRuntime,
+                    isCustomServer,
+                    helperUrls.toTypedArray(),
+                    voteEndTimeSeconds
+                )
             }
 
         private suspend fun <T> withHandle(block: (Long) -> T): T {
@@ -1155,6 +1167,8 @@ class VotingRustBackend private constructor() {
         @Throws(RuntimeException::class)
         private external fun syncVoteTreeNative(
             dbHandle: Long,
+            torRuntime: Long,
+            isCustomServer: Boolean,
             roundId: String,
             nodeUrl: String
         ): Long
@@ -1190,6 +1204,7 @@ class VotingRustBackend private constructor() {
         private external fun runShareTrackingSessionNative(
             sessionHandle: Long,
             torRuntime: Long,
+            isCustomServer: Boolean,
             helperUrls: Array<String>,
             voteEndTimeSeconds: Long
         ): JniShareTrackingRunReport?

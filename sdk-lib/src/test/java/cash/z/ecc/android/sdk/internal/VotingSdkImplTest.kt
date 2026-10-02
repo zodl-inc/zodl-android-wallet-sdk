@@ -232,13 +232,13 @@ class VotingSdkImplTest {
             val trackingSession = mock(TypesafeShareTrackingSession::class.java)
             `when`(backend.openVotingDb("path", "wallet-1", 0)).thenReturn(votingDb)
             `when`(votingDb.openShareTrackingSession("round-1")).thenReturn(trackingSession)
-            `when`(trackingSession.run(7L, listOf("https://helper.example"), -1L)).thenReturn(
+            `when`(trackingSession.run(7L, false, listOf("https://helper.example"), -1L)).thenReturn(
                 shareTrackingReportFixture()
             )
             val dbSession = VotingSdkImpl(backend).openDb("path", "wallet-1", 0)
 
             val session = dbSession.openShareTrackingSession("round-1")
-            val report = session.run(torLease(7L), listOf("https://helper.example"), -1L)
+            val report = session.run(torLease(7L), false, listOf("https://helper.example"), -1L)
 
             assertEquals(VotingShareTrackingQuiescence.AllConfirmed, report?.quiescence)
             assertEquals(2, report?.passes)
@@ -248,22 +248,22 @@ class VotingSdkImplTest {
     fun shareTrackingSession_run_returns_null_when_backend_returns_null() =
         runBlocking {
             val trackingSession = mock(TypesafeShareTrackingSession::class.java)
-            `when`(trackingSession.run(7L, listOf("https://helper.example"), -1L)).thenReturn(null)
+            `when`(trackingSession.run(7L, false, listOf("https://helper.example"), -1L)).thenReturn(null)
             val session = VotingShareTrackingSessionImpl(trackingSession)
 
-            assertNull(session.run(torLease(7L), listOf("https://helper.example"), -1L))
+            assertNull(session.run(torLease(7L), false, listOf("https://helper.example"), -1L))
         }
 
     @Test
     fun shareTrackingSession_run_with_a_null_lease_passes_the_no_tor_sentinel() =
         runBlocking {
             val trackingSession = mock(TypesafeShareTrackingSession::class.java)
-            `when`(trackingSession.run(0L, listOf("https://helper.example"), -1L)).thenReturn(
+            `when`(trackingSession.run(0L, false, listOf("https://helper.example"), -1L)).thenReturn(
                 shareTrackingReportFixture()
             )
             val session = VotingShareTrackingSessionImpl(trackingSession)
 
-            val report = session.run(null, listOf("https://helper.example"), -1L)
+            val report = session.run(null, false, listOf("https://helper.example"), -1L)
 
             assertEquals(VotingShareTrackingQuiescence.AllConfirmed, report?.quiescence)
         }
@@ -277,7 +277,7 @@ class VotingSdkImplTest {
             val session = VotingShareTrackingSessionImpl(trackingSession)
 
             assertFailsWith<IllegalStateException> {
-                session.run(VotingTorLease(released), listOf("https://helper.example"), -1L)
+                session.run(VotingTorLease(released), false, listOf("https://helper.example"), -1L)
             }
             verifyNoInteractions(trackingSession)
         }

@@ -293,7 +293,12 @@ interface VotingDbSession {
         notes: List<VotingNoteInfo>
     ): VotingSnapshotBundlePrecomputeReport
 
-    suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
+    suspend fun syncVoteTree(
+        torLease: VotingTorLease?,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long
 
     suspend fun resetTreeClient(roundId: String)
 
@@ -455,11 +460,14 @@ interface VotingShareTrackingSession {
      * [voteEndTimeSeconds] `< 0` decodes to "no vote-end boundary known yet".
      *
      * [torLease] is a lease on the synchronizer's shared Tor runtime from
-     * [Synchronizer.acquireVotingTorLease], or `null` when Tor is disabled (plain HTTP). Keep it
-     * unreleased until this call returns.
+     * [Synchronizer.acquireVotingTorLease], or `null` when Tor is disabled. [isCustomServer]
+     * indicates whether [helperUrls] are custom user-added servers (true) or predefined servers
+     * (false); with Tor OFF, predefined servers route through OHTTP (fail closed), while custom
+     * servers use direct routing by design.
      */
     suspend fun run(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
     ): VotingShareTrackingReport?

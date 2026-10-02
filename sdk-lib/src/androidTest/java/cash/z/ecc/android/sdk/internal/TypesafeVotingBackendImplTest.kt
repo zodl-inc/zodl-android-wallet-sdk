@@ -301,12 +301,14 @@ class TypesafeVotingBackendImplTest {
             val result =
                 session.run(
                     torRuntime = 42L,
+                    isCustomServer = false,
                     helperUrls = listOf("https://helper.example"),
                     voteEndTimeSeconds = -1
                 )
 
             assertEquals(report, result)
             assertEquals(42L, sessionBackend.runTorRuntime)
+            assertEquals(false, sessionBackend.runIsCustomServer)
             assertEquals(listOf("https://helper.example"), sessionBackend.runHelperUrls)
             assertEquals(-1L, sessionBackend.runVoteEndTimeSeconds)
 
@@ -717,7 +719,12 @@ class TypesafeVotingBackendImplTest {
             return snapshotBundlePrecomputeReport
         }
 
-        override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long = unused()
+        override suspend fun syncVoteTree(
+            torRuntime: Long,
+            isCustomServer: Boolean,
+            roundId: String,
+            nodeUrl: String
+        ): Long = unused()
 
         override suspend fun resetTreeClient(roundId: String) = unused()
 
@@ -833,6 +840,7 @@ class TypesafeVotingBackendImplTest {
         var closeCalls = 0
         var cancelCalls = 0
         var runTorRuntime: Long? = null
+        var runIsCustomServer: Boolean? = null
         var runHelperUrls: List<String>? = null
         var runVoteEndTimeSeconds: Long? = null
 
@@ -846,10 +854,12 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun run(
             torRuntime: Long,
+            isCustomServer: Boolean,
             helperUrls: List<String>,
             voteEndTimeSeconds: Long
         ): JniShareTrackingRunReport? {
             runTorRuntime = torRuntime
+            runIsCustomServer = isCustomServer
             runHelperUrls = helperUrls
             runVoteEndTimeSeconds = voteEndTimeSeconds
             return runReport

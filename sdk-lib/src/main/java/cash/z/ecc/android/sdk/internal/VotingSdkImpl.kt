@@ -234,7 +234,12 @@ internal class VotingDbSessionImpl(
                 notes.map { it.toInternal() }
             ).toPublic()
 
-    override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long = db.syncVoteTree(roundId, nodeUrl)
+    override suspend fun syncVoteTree(
+        torLease: VotingTorLease?,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long = db.syncVoteTree(torLease.rawHandle(), isCustomServer, roundId, nodeUrl)
 
     override suspend fun resetTreeClient(roundId: String) = db.resetTreeClient(roundId)
 
@@ -340,7 +345,9 @@ internal class VotingShareTrackingSessionImpl(
 
     override suspend fun run(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
-    ): VotingShareTrackingReport? = session.run(torLease.rawHandle(), helperUrls, voteEndTimeSeconds)?.toPublic()
+    ): VotingShareTrackingReport? =
+        session.run(torLease.rawHandle(), isCustomServer, helperUrls, voteEndTimeSeconds)?.toPublic()
 }
