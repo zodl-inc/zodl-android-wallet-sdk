@@ -25,14 +25,14 @@ use std::ptr;
 
 use anyhow::anyhow;
 use jni::{
-    JNIEnv,
     objects::{JByteArray, JClass, JObject, JString, JValue},
-    sys::{JNI_FALSE, JNI_TRUE, jint, jlong, jobject, jstring},
+    sys::{jint, jlong, jobject, jstring, JNI_FALSE, JNI_TRUE},
+    JNIEnv,
 };
 use zodl_ohttp_client::{
-    BhttpRequest, ClientProfile, Completed, Error, Field, KEY_BYTES, KeyConfig, ResponseOpener,
     complete_exchange_in_place, encapsulate_request, pack_fields, signed_config_url, unpack_fields,
-    verify_signed_config, verify_signed_config_with,
+    verify_signed_config, verify_signed_config_with, BhttpRequest, ClientProfile, Completed, Error,
+    Field, KeyConfig, ResponseOpener, KEY_BYTES,
 };
 
 use crate::utils::{
@@ -496,7 +496,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_signedC
 /// The built-in mapping can be overridden at build time via environment variables
 /// `ZODL_OHTTP_RELAY_URL_MAINNET` and `ZODL_OHTTP_RELAY_URL_TESTNET`.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeRelayUrlFor<'local>(
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeRelayUrlFor<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     gateway_host: JString<'local>,
@@ -550,18 +552,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_profile
 #[cfg(test)]
 mod tests {
     use aes_gcm::{
-        Aes128Gcm, Nonce,
         aead::{Aead, KeyInit, Payload},
+        Aes128Gcm, Nonce,
     };
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     use ed25519_dalek::{Signer, SigningKey};
     use hkdf::Hkdf;
     use hpke::{
-        Deserializable, Kem, OpModeR, Serializable, aead::AesGcm128, kdf::HkdfSha256,
-        kem::X25519HkdfSha256,
+        aead::AesGcm128, kdf::HkdfSha256, kem::X25519HkdfSha256, Deserializable, Kem, OpModeR,
+        Serializable,
     };
     use sha2::{Digest, Sha256};
-    use zodl_ohttp_client::{EncodeOptions, encode_bhttp_request};
+    use zodl_ohttp_client::{encode_bhttp_request, EncodeOptions};
 
     use super::*;
 
