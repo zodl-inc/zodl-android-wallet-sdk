@@ -44,7 +44,7 @@ class DirectOhttpSender : OhttpSender {
                 } catch (e: OutOfMemoryError) {
                     // A hostile or huge response: convert to OhttpException so the transport
                     // handles it as a failed request instead of crashing the app.
-                    throw OhttpException("Response too large: out of memory reading sealed response")
+                    throw OhttpException("Response too large: out of memory reading sealed response", cause = e)
                 }
             }
         } finally {
@@ -79,7 +79,7 @@ class DirectOhttpSender : OhttpSender {
                 try {
                     it.readFully(OhttpSender.MAX_KEY_CONFIG_BYTES, connection.contentLength)
                 } catch (e: OutOfMemoryError) {
-                    throw OhttpException("Key config too large: out of memory")
+                    throw OhttpException("Key config too large: out of memory", cause = e)
                 }
             }
         } finally {

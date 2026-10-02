@@ -71,7 +71,8 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
     override fun relayUrlFor(gatewayHost: String): String? = nativeRelayUrlFor(gatewayHost)
 
-    override fun signedConfigUrl(relayUrl: String): String = translating { Companion.signedConfigUrl(PROFILE_ANDROID, relayUrl) }
+    override fun signedConfigUrl(relayUrl: String): String =
+        translating { Companion.signedConfigUrl(PROFILE_ANDROID, relayUrl) }
 
     override fun verifyKeyConfig(
         gatewayHost: String,
