@@ -259,13 +259,13 @@ crate-type = ["staticlib", "cdylib"]
 
 [patch.crates-io]
 # The slipstream engine's OHTTP transport lives in slipstream-internal until upstreamed to
-# the public repo. Rev pin on slipstream-internal main (slipstream PR #16 merged).
+# the public repo. Rev pin on slipstream-internal feature/ohttp-connector branch.
 # This patch can be removed once a published version containing the OHTTP transport
 # (0.3.1 or later) exists on crates.io. The dependency on 0.3.0-alpha.1 avoids
 # colliding with the public 0.3.0 release (grpc-only, no OHTTP, published 2026-10-01).
 # The rev must be repinned to the slipstream-internal main commit after PR #16 merges.
-# Pinned to 62f1799f (relay_for delegation + zodl-ohttp-client addee9ef).
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "62f1799fbdec638a387828604612257826b15e22" }
+# Pinned to 26543559 (http_round_trip_with_dispatch).
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "2654355969f98f3fd6998a2761f7b11247228e71" }
 # `slipstream-core` is deliberately absent here: since the engine's history rewrite to the
 # published `zodl-slipstream` 0.1.x line, the dependency above resolves from crates.io like
 # the rest of the released family — the old git pin was not dropped by accident.
