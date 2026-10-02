@@ -568,6 +568,7 @@ internal interface ShareTrackingSessionBackend {
 
     suspend fun run(
         torRuntime: Long,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
     ): JniShareTrackingRunReport?
@@ -582,9 +583,10 @@ private class RustShareTrackingSessionBackend(
 
     override suspend fun run(
         torRuntime: Long,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
-    ): JniShareTrackingRunReport? = session.run(torRuntime, helperUrls, voteEndTimeSeconds)
+    ): JniShareTrackingRunReport? = session.run(torRuntime, isCustomServer, helperUrls, voteEndTimeSeconds)
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -801,9 +803,10 @@ internal class TypesafeShareTrackingSessionImpl(
 
     override suspend fun run(
         torRuntime: Long,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
-    ): JniShareTrackingRunReport? = session.run(torRuntime, helperUrls, voteEndTimeSeconds)
+    ): JniShareTrackingRunReport? = session.run(torRuntime, isCustomServer, helperUrls, voteEndTimeSeconds)
 }
 
 internal fun JniDelegationPirPrecomputeResult.toDelegationPirPrecomputeResult() =

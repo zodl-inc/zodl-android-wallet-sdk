@@ -346,6 +346,7 @@ internal interface TypesafeShareTrackingSession {
 
     suspend fun run(
         torRuntime: Long,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
     ): JniShareTrackingRunReport?
