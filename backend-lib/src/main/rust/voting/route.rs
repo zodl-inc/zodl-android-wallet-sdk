@@ -7,7 +7,7 @@ use zcash_voting::{RouteError, RouteFuture, RouteHttp, RouteRequest, RouteRespon
 use crate::tor::TorRuntime;
 
 #[cfg(feature = "slipstream")]
-use slipstream_core::ohttp::{Dialer, http_round_trip, http_round_trip_with_dispatch};
+use slipstream_core::ohttp::{Dialer, http_round_trip_with_dispatch};
 
 /// OHTTP gateway hostname for voting traffic (mainnet).
 const OHTTP_GATEWAY_HOST_MAINNET: &str = "ohttp-gateway.example";
@@ -242,7 +242,7 @@ impl RouteHttp for ZodlOhttpRoute {
                 &url,
                 &headers,
                 &body,
-                || on_dispatch(),
+                on_dispatch,
             )
             .await;
 
