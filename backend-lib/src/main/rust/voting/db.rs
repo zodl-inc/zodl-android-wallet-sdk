@@ -18,6 +18,14 @@ struct DbKey {
 /// Route key discriminator for vote tree sync routing. When the route policy
 /// changes between calls (Tor on→off, server predefined→custom, etc.), the
 /// tree sync client is recreated to match the new policy.
+///
+/// **Caveat:** `Tor(jlong)` keys on the raw TorRuntime pointer address. If a
+/// runtime is freed and a new one is allocated at the same address, the old
+/// sync slot would be reused. In practice, this results in failed requests
+/// (stale but valid client → connection errors), not UB or data corruption,
+/// because the old client's circuits are gone. A generation counter would
+/// avoid this, but TorRuntime does not expose one, and the failure mode is
+/// recoverable (user retries, gets a fresh sync with the new runtime).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum TreeRouteKey {
     Tor(jlong),
