@@ -37,7 +37,16 @@ class DirectOhttpSender : OhttpSender {
                     status,
                 )
             }
-            return connection.inputStream.use { it.readFully(OhttpSender.MAX_SEALED_RESPONSE_BYTES) }
+            return connection.inputStream.use {
+                @Suppress("TooGenericExceptionCaught")
+                try {
+                    it.readFully(OhttpSender.MAX_SEALED_RESPONSE_BYTES, connection.contentLength)
+                } catch (e: OutOfMemoryError) {
+                    // A hostile or huge response: convert to OhttpException so the transport
+                    // handles it as a failed request instead of crashing the app.
+                    throw OhttpException("Response too large: out of memory reading sealed response")
+                }
+            }
         } finally {
             connection.disconnect()
         }
@@ -65,7 +74,14 @@ class DirectOhttpSender : OhttpSender {
                     status,
                 )
             }
-            return connection.inputStream.use { it.readFully(OhttpSender.MAX_KEY_CONFIG_BYTES) }
+            return connection.inputStream.use {
+                @Suppress("TooGenericExceptionCaught")
+                try {
+                    it.readFully(OhttpSender.MAX_KEY_CONFIG_BYTES, connection.contentLength)
+                } catch (e: OutOfMemoryError) {
+                    throw OhttpException("Key config too large: out of memory")
+                }
+            }
         } finally {
             connection.disconnect()
         }
@@ -92,11 +108,22 @@ class DirectOhttpSender : OhttpSender {
     /**
      * Reads the whole stream, refusing past [maxBytes]. The relay/gateway is untrusted (a
      * malicious or compromised one could return an arbitrarily large body regardless of what was
-     * requested), so this must never buffer without a bound — the bulk-sync path in particular
-     * relies on this to not OOM the client.
+     * requested), so this must never buffer without a bound. The hard cap is 256 MiB + 64 KiB
+     * ([OhttpSender.MAX_SEALED_RESPONSE_BYTES]): the gateway legitimately returns >64 MiB
+     * GetBlockRange responses for the 2022 spam blocks, so the cap cannot be lowered.
      */
-    private fun InputStream.readFully(maxBytes: Int): ByteArray {
-        val out = ByteArrayOutputStream()
+    private fun InputStream.readFully(
+        maxBytes: Int,
+        contentLength: Int = -1
+    ): ByteArray {
+        // Pre-size from Content-Length when available and within the cap to avoid
+        // repeated allocations and copies.
+        val out =
+            if (contentLength in 1..maxBytes) {
+                ByteArrayOutputStream(contentLength)
+            } else {
+                ByteArrayOutputStream()
+            }
         val buffer = ByteArray(READ_BUFFER_SIZE)
         var total = 0
         while (true) {
