@@ -69,10 +69,12 @@ class OhttpSecretStrippingTest {
         assertEquals(0, logged.size)
     }
 
+    /**
+     * HTTP header names are case-insensitive (RFC 9110 §5.1): a caller sending a
+     * differently-cased variant of a secret header must still be caught.
+     */
     @Test
     fun `stripSecretsForGateway strips secret headers regardless of casing`() {
-        // HTTP header names are case-insensitive (RFC 9110 §5.1) -- a caller sending a
-        // differently-cased variant of a secret header must still be caught.
         val headers =
             listOf(
                 "content-type" to "application/json",
