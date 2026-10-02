@@ -43,12 +43,12 @@ class RustOhttpTool private constructor() : OhttpCodec {
         ): OhttpCompletion {
             val spent = handle.getAndSet(0)
             check(spent != 0L) { "The OHTTP response opener is already spent" }
-            return complete(spent, outerStatus, contentType, body, attempt)
+            return this@RustOhttpTool.complete(spent, outerStatus, contentType, body, attempt)
         }
 
         override fun close() {
             val abandoned = handle.getAndSet(0)
-            if (abandoned != 0L) openerFree(abandoned)
+            if (abandoned != 0L) this@RustOhttpTool.openerFree(abandoned)
         }
     }
 
