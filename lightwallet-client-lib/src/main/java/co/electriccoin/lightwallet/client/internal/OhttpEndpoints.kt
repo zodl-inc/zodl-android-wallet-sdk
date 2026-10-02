@@ -1,6 +1,6 @@
 package co.electriccoin.lightwallet.client.internal
 
-import cash.z.ecc.android.sdk.internal.jni.RustOhttpTool
+import co.electriccoin.lightwallet.client.RelayUrlMapper
 
 /**
  * Static OHTTP (RFC 9458) endpoint mapping.
@@ -16,16 +16,45 @@ import cash.z.ecc.android.sdk.internal.jni.RustOhttpTool
  *
  * Relay URLs come from the native `zodl-ohttp-client` library and can be overridden at build time
  * via environment variables `ZODL_OHTTP_RELAY_URL_MAINNET` and `ZODL_OHTTP_RELAY_URL_TESTNET`.
+ *
+ * **Initialization:** Must be initialized via [initialize] before use (typically at SDK init time).
  */
 internal object OhttpEndpoints {
+    @Volatile
+    private var mapper: RelayUrlMapper? = null
+
+    /**
+     * Initializes the relay URL mapper. Must be called before any other function in this object.
+     * Idempotent: subsequent calls with the same mapper are no-ops; calls with a different mapper throw.
+     *
+     * @throws IllegalStateException if called with a different mapper after initialization
+     */
+    fun initialize(relayUrlMapper: RelayUrlMapper) {
+        val current = mapper
+        if (current != null) {
+            check(current === relayUrlMapper) {
+                "OhttpEndpoints already initialized with a different mapper"
+            }
+            return
+        }
+        synchronized(this) {
+            if (mapper == null) {
+                mapper = relayUrlMapper
+            }
+        }
+    }
+
+    private fun requireMapper(): RelayUrlMapper =
+        mapper ?: error("OhttpEndpoints not initialized. Call OhttpEndpoints.initialize() first.")
+
     /**
      * True only for the exact gateway hosts we have a relay for. A prefix match would route a custom
      * server such as `ohttp-gateway.example.org` into [relayUrlFor], which throws.
      */
-    fun isOhttpGateway(host: String): Boolean = RustOhttpTool.relayUrlFor(host) != null
+    fun isOhttpGateway(host: String): Boolean = requireMapper().relayUrlFor(host) != null
 
     fun relayUrlFor(gatewayHost: String): String =
-        RustOhttpTool.relayUrlFor(gatewayHost)
+        requireMapper().relayUrlFor(gatewayHost)
             ?: throw IllegalArgumentException("No OHTTP relay configured for gateway host $gatewayHost")
 }
 
@@ -85,8 +114,8 @@ internal fun isOhttpProxyAllowedHost(host: String): Boolean {
  * Relay URL for proxy gateway hosts — all share the mainnet relay.
  */
 internal val PROXY_RELAY_URL: String
-    get() = RustOhttpTool.relayUrlFor(PROXY_GATEWAY_HOST)
-        ?: error("Mainnet relay URL not found")
+    get() =
+        OhttpEndpoints.relayUrlFor(PROXY_GATEWAY_HOST)
 
 /**
  * The gateway host whose signed key configuration the proxy requests are sealed to: the mainnet

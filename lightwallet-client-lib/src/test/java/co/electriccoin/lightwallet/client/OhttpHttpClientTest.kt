@@ -13,6 +13,20 @@ import org.junit.Test
 
 @Suppress("ktlint:standard:max-line-length", "ktlint:standard:chain-method-continuation")
 class OhttpHttpClientTest {
+    init {
+        // Initialize OhttpEndpoints with a fake relay URL mapper for testing
+        OhttpEndpoints.initialize(
+            object : RelayUrlMapper {
+                override fun relayUrlFor(gatewayHost: String): String? =
+                    when (gatewayHost) {
+                        "ohttp-gateway.example" -> "https://relay-prod.zodl.com/relay"
+                        "ohttp-gateway-testnet.example" -> "https://relay-dev.zodl.com/relay"
+                        else -> null
+                    }
+            },
+        )
+    }
+
     private val codec = FakeOhttpCodec()
 
     private fun client() = OhttpHttpClient.create(codec)
