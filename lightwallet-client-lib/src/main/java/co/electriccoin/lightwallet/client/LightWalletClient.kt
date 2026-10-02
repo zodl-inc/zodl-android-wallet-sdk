@@ -37,16 +37,21 @@ interface LightWalletClient : WalletClient {
             ohttpClientTraceIdPrefix: String? = null,
             ohttpCodec: OhttpCodec? = null,
         ): LightWalletClient =
-            LightWalletClientImpl(
+LightWalletClientImpl(
                 // Endpoints that are ZODL OHTTP gateways are reached through an OHTTP relay
                 // (RFC 9458) instead of a direct gRPC connection.
                 channelFactory =
                     if (isOhttpGateway(lightWalletEndpoint)) {
-                        OhttpChannelFactory(
-                            OhttpEndpoints.relayUrlFor(lightWalletEndpoint.host),
+                        val codec =
                             requireNotNull(ohttpCodec) {
                                 "An OhttpCodec is required for the OHTTP gateway ${lightWalletEndpoint.host}"
-                            },
+                            }
+                        val relayUrl =
+                            codec.relayUrlFor(lightWalletEndpoint.host)
+                                ?: error("No OHTTP relay configured for gateway host ${lightWalletEndpoint.host}")
+                        OhttpChannelFactory(
+                            relayUrl,
+                            codec,
                             ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
                         )
                     } else {

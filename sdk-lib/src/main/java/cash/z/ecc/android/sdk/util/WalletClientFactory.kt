@@ -7,7 +7,6 @@ import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.LightWalletClient
 import co.electriccoin.lightwallet.client.PartialTorWalletClient
 import co.electriccoin.lightwallet.client.WalletClient
-import co.electriccoin.lightwallet.client.internal.OhttpEndpoints
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 
 /**
@@ -31,10 +30,6 @@ class WalletClientFactory(
         endpoint: LightWalletEndpoint,
         ohttpClientTraceIdPrefix: String? = null
     ): CombinedWalletClient {
-        // Initialize OHTTP endpoints with the native relay URL mapper.
-        // Idempotent: subsequent calls are no-ops if already initialized.
-        OhttpEndpoints.initialize(RelayUrlMapperFactory.create())
-
         // Only create the native codec for known OHTTP gateways. This avoids loading the native
         // library in pure-JVM unit tests that use non-OHTTP endpoints (the codec is only required
         // when the endpoint is an OHTTP gateway; LightWalletClient.new throws if missing).

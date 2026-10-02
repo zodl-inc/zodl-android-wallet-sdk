@@ -6,7 +6,6 @@ import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.OHTTP_PROXY_ALLOWED_SUFFIXES
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.PROXY_GATEWAY_HOST
-import co.electriccoin.lightwallet.client.internal.PROXY_RELAY_URL
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import co.electriccoin.lightwallet.client.internal.proxyGatewayHostFor
 import co.electriccoin.lightwallet.client.internal.stripSecretsForGateway
@@ -28,7 +27,9 @@ class OhttpHttpClient private constructor(
     // F-07 fix: Reuse OhttpTransport instance to share key cache across requests
     private val transport =
         OhttpTransport(
-            relayUrl = PROXY_RELAY_URL,
+            relayUrl =
+                codec.relayUrlFor(PROXY_GATEWAY_HOST)
+                    ?: error("No OHTTP relay configured for gateway host $PROXY_GATEWAY_HOST"),
             gatewayHost = PROXY_GATEWAY_HOST,
             codec = codec,
             sender = sender,

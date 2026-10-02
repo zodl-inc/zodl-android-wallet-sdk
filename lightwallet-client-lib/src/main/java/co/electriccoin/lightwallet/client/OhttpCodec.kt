@@ -21,6 +21,12 @@ interface OhttpCodec {
     /** The preset's headers, size caps and key cache rules. Constant for the lifetime of the codec. */
     fun profileInfo(): OhttpProfileInfo
 
+    /**
+     * Returns the relay URL for a given gateway host, or null if the host is not a known gateway.
+     * The built-in mapping can be overridden at build time via environment variables.
+     */
+    fun relayUrlFor(gatewayHost: String): String?
+
     /** The URL of the signed key configuration of the relay at [relayUrl]. */
     fun signedConfigUrl(relayUrl: String): String
 

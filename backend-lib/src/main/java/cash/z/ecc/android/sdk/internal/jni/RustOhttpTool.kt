@@ -40,6 +40,8 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
     override fun profileInfo(): OhttpProfileInfo = profile
 
+    override fun relayUrlFor(gatewayHost: String): String? = Companion.relayUrlFor(gatewayHost)
+
     override fun signedConfigUrl(relayUrl: String): String =
         translating { Companion.signedConfigUrl(PROFILE_ANDROID, relayUrl) }
 

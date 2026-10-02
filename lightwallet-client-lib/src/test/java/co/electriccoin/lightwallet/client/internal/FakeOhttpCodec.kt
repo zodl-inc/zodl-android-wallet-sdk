@@ -46,6 +46,13 @@ internal class FakeOhttpCodec(
 
     override fun profileInfo(): OhttpProfileInfo = profile
 
+    override fun relayUrlFor(gatewayHost: String): String? =
+        when (gatewayHost) {
+            "ohttp-gateway.example" -> "https://relay-prod.zodl.com/relay"
+            "ohttp-gateway-testnet.example" -> "https://relay-dev.zodl.com/relay"
+            else -> null
+        }
+
     override fun signedConfigUrl(relayUrl: String): String {
         signedConfigUrls.add(relayUrl)
         return relayUrl.removeSuffix("/relay") + "/ohttp-configs/signed"
