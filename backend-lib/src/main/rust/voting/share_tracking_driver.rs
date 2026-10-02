@@ -34,10 +34,10 @@ use super::round_session::{
     fallback_runtime, optional_seconds, resolve_session_route, resolve_tor_runtime,
     unix_now_seconds,
 };
-use super::route::{SessionRoute, ZodlOhttpRoute};
+use super::route::ZodlOhttpRoute;
 
-use crate::tor::TorRuntime;
 use super::*;
+use crate::tor::TorRuntime;
 
 use tor_rtcompat::ToplevelBlockOn;
 
@@ -138,7 +138,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
     _: JClass<'local>,
     session_handle: jlong,
     tor_runtime: jlong,
-    is_custom_server: jlong,
+    is_custom_server: jboolean,
     helper_urls: JObjectArray<'local>,
     vote_end_time_seconds: jlong,
 ) -> jobject {
@@ -192,20 +192,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
 
         // Run with the appropriate runtime: Tor's tokio runtime if Tor ON, fallback otherwise
         let report = match resolved_tor_runtime {
-            Ok(tor_rt) => {
-                tor_rt.runtime().block_on(async {
-                    driver
-                        .run(&host, &session.control, &NoopShareTrackingReporter {})
-                        .await
-                })
-            }
-            Err(_) => {
-                fallback_runtime()?.block_on(async {
-                    driver
-                        .run(&host, &session.control, &NoopShareTrackingReporter {})
-                        .await
-                })
-            }
+            Ok(tor_rt) => tor_rt.runtime().block_on(async {
+                driver
+                    .run(&host, &session.control, &NoopShareTrackingReporter {})
+                    .await
+            }),
+            Err(_) => fallback_runtime()?.block_on(async {
+                driver
+                    .run(&host, &session.control, &NoopShareTrackingReporter {})
+                    .await
+            }),
         };
 
         Ok(encode_share_tracking_report(env, &report)?.into_raw())

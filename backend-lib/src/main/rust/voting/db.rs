@@ -28,9 +28,9 @@ pub(super) enum TreeRouteKey {
 /// Holds a VoteTreeSync and the route key it was created for. Sync clients
 /// are recreated when the route key changes, so multi-device or wallet-config
 /// switches (Tor toggle, custom server toggle) start from a fresh sync state.
-struct TreeSyncSlot {
-    route_key: TreeRouteKey,
-    sync: Arc<VoteTreeSync>,
+pub(super) struct TreeSyncSlot {
+    pub(super) route_key: TreeRouteKey,
+    pub(super) sync: Arc<VoteTreeSync>,
 }
 
 pub(super) struct VotingDbHandle {

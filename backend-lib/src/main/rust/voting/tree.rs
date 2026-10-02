@@ -1,7 +1,7 @@
 use super::db::*;
 use super::helpers::*;
+use super::round_session::SessionRoute;
 use super::round_session::resolve_session_route;
-use super::route::SessionRoute;
 use super::*;
 
 use voting::HyperTransport;
@@ -20,7 +20,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_syn
     _: JClass<'local>,
     db_handle: jlong,
     tor_runtime: jlong,
-    is_custom_server: jlong,
+    is_custom_server: jboolean,
     round_id: JString<'local>,
     node_url: JString<'local>,
 ) -> jlong {
@@ -41,7 +41,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_syn
         };
 
         // Lock the tree_sync_slot and check if the route key has changed
-        let mut slot = db.tree_sync_slot
+        let mut slot = db
+            .tree_sync_slot
             .lock()
             .map_err(|_| anyhow!("tree_sync_slot mutex poisoned"))?;
 
@@ -57,7 +58,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_syn
         // Call sync() directly (blocking, not async). The HyperTransport's
         // BlockingRuntime handles the async internally (tree_sync.rs:456,
         // http_transport.rs:1269).
-        let height = slot.sync
+        let height = slot
+            .sync
             .sync(&db, &round_id, &node_url_string)
             .map_err(|e| anyhow!("sync_vote_tree: {}", e))?;
 
@@ -78,7 +80,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_res
     let res = catch_unwind(&mut env, |env| {
         let db = db_from_handle(db_handle)?;
         let _access_lock = db.access_lock()?;
-        let slot = db.tree_sync_slot
+        let slot = db
+            .tree_sync_slot
             .lock()
             .map_err(|_| anyhow!("tree_sync_slot mutex poisoned"))?;
         slot.sync
