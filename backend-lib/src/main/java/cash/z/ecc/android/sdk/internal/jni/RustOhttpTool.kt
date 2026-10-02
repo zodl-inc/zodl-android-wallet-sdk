@@ -48,7 +48,7 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
         override fun close() {
             val abandoned = handle.getAndSet(0)
-            if (abandoned != 0L) this@RustOhttpTool.openerFree(abandoned)
+            if (abandoned != 0L) this@RustOhttpTool.freeOpener(abandoned)
         }
     }
 
@@ -109,7 +109,11 @@ class RustOhttpTool private constructor() : OhttpCodec {
         translating { Companion.complete(PROFILE_ANDROID, opener, outerStatus, contentType, body, attempt) }
             .let(::completion)
 
-    private fun openerFree(opener: Long) = Companion.openerFree(opener)
+    /**
+     * Not named `openerFree`: the companion's `@JvmStatic external fun openerFree(Long)` already puts a
+     * static `openerFree(J)V` on this class, and an instance method with the same JVM signature clashes.
+     */
+    private fun freeOpener(opener: Long) = Companion.openerFree(opener)
 
     private inline fun <T> translating(block: () -> T): T =
         try {
