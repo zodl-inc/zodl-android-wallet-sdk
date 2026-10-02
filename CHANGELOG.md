@@ -38,11 +38,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not the user's). Custom servers continue to use direct routing by design (user
   decision to use a custom endpoint implies accepting direct routing). This mirrors
   the app's existing OHTTP routing for voting read operations and matches iOS's
-  upcoming implementation. `openRoundSessionNative` gains a new `is_custom_server`
-  parameter (`jboolean`) to distinguish predefined from custom servers; callers
-  must pass `true` for custom servers (from `pinnedSource` config field) or `false`
-  for predefined servers. PIR delegation endpoints are now also OHTTP-routed with the
-  same policy (predefined → OHTTP when Tor OFF, custom → Direct).
+  upcoming implementation. PIR delegation endpoints are now also OHTTP-routed with the
+  same policy (predefined → OHTTP when Tor OFF, custom → Direct). With `IS_SLIPSTREAM_ENABLED=false`,
+  Tor-off voting against predefined servers is unavailable (fails closed).
 
 ### Changed
 - **Shared OHTTP core.** The protocol half of the OHTTP client (key selection, the signed key
@@ -68,7 +66,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     when the channel is created.
   The cargo dependency is a private git repository: the CI GitHub App token used by
   `.github/actions/setup` now also covers `zodl-inc/ohttp`.
-- **Breaking:** `OhttpSender` and `OhttpHttpClient` extend `Disposable`. Implementers of `OhttpSender` must
+- `OhttpSender` and `OhttpHttpClient` extend `Disposable`. Implementers of `OhttpSender` must
   implement `dispose()`; a `TorOhttpSender` releases its isolated `TorClient` there.
 - Sapling parameters are downloaded from `https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/`
   instead of `download.z.cash`, and verified by SHA-256 instead of SHA-1. With Tor enabled, the download
