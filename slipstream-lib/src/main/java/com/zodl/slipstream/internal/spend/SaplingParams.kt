@@ -158,8 +158,8 @@ internal object SaplingParams {
         try {
             connection.connectTimeout = CONNECT_TIMEOUT_MS
             connection.readTimeout = READ_TIMEOUT_MS
-            check(connection.responseCode == HttpURLConnection.HTTP_OK) {
-                "Unexpected response ${connection.responseCode} downloading $fileName"
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                throw IOException("Unexpected response ${connection.responseCode} downloading $fileName")
             }
             return connection.inputStream.use { input ->
                 partialFile.outputStream().use { output -> input.copyTo(output) }
@@ -171,7 +171,13 @@ internal object SaplingParams {
 
     /**
      * Downloads [fileName] over Tor and closes [client] afterwards, which releases the isolated native
-     * Tor client behind it. Transfers up to `maxSizeBytes + 1` bytes so a too-large response still fails
+     * Tor client behind it.
+     *
+     * The download is bounded by zcash_client_backend's default HTTP-over-Tor timeout (60 seconds
+     * whole-body), so the 50 MB spend params need ~0.85 MB/s. zcash_client_backend 0.24 does not
+     * expose a create_with_timeouts API to override this, so slower Tor circuits may time out.
+     *
+     * Transfers up to `maxSizeBytes + 1` bytes so a too-large response still fails
      * the caller's size check instead of being silently truncated at exactly [maxSizeBytes].
      */
     private suspend fun downloadViaTor(
@@ -182,8 +188,8 @@ internal object SaplingParams {
     ): Long =
         client.use {
             val response = it.get(BASE_URL + fileName)
-            check(response.status.value == HttpURLConnection.HTTP_OK) {
-                "Unexpected response ${response.status.value} downloading $fileName"
+            if (response.status.value != HttpURLConnection.HTTP_OK) {
+                throw IOException("Unexpected response ${response.status.value} downloading $fileName")
             }
             val readableByteChannel = Channels.newChannel(response.bodyAsChannel().toInputStream())
             readableByteChannel.use { source ->
