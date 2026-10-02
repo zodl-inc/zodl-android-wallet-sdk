@@ -30,7 +30,7 @@ class RustOhttpTool private constructor() : OhttpCodec {
      * before it is used, so it is spent or freed exactly once even if a coroutine is cancelled
      * between sealing and opening.
      */
-    private class ResponseOpenerImpl(
+    private inner class ResponseOpenerImpl(
         opener: Long,
     ) : OhttpResponseOpener {
         private val handle = AtomicLong(opener)
