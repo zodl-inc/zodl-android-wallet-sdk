@@ -37,7 +37,7 @@ interface LightWalletClient : WalletClient {
             ohttpClientTraceIdPrefix: String? = null,
             ohttpCodec: OhttpCodec? = null,
         ): LightWalletClient =
-LightWalletClientImpl(
+            LightWalletClientImpl(
                 // Endpoints that are ZODL OHTTP gateways are reached through an OHTTP relay
                 // (RFC 9458) instead of a direct gRPC connection.
                 channelFactory =
