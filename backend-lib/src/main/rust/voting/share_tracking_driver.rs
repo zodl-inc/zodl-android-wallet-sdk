@@ -25,8 +25,8 @@
 //! cadence each pass itself computes until the round's shares are
 //! quiescent.
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::OnceLock;
 
 use super::db::db_from_handle;
 use super::helpers::*;
@@ -37,13 +37,12 @@ use super::round_session::{
 use super::route::ZodlOhttpRoute;
 
 use super::*;
-use crate::tor::TorRuntime;
 
 use tor_rtcompat::ToplevelBlockOn;
 
 use voting::{
-    ChainSubmissionControl, DirectRoute, HelperClient, HelperHealth, HelperTransport,
-    HyperTransport, NoopShareTrackingReporter, ShareTrackingDriver, ShareTrackingHostContext,
+    ChainSubmissionControl, HelperClient, HelperHealth, HelperTransport, HyperTransport,
+    NoopShareTrackingReporter, ShareTrackingDriver, ShareTrackingHostContext,
     ShareTrackingHostSourceBridge,
 };
 
@@ -162,15 +161,21 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
 
         let is_custom = is_custom_server != 0;
 
-        // Resolve Tor runtime separately so we know which async runtime to use for block_on
-        let resolved_tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) };
+        let network = db.network;
 
-        // When Tor is OFF and server is not custom, every configured helper URL must be
-        // OHTTP-eligible (matches Swift SDK's all-endpoint check in route.rs:517-540). The
-        // route itself carries no per-endpoint state, but eligibility is a per-URL property.
-        if resolved_tor_runtime.is_err() && !is_custom {
+        // Build route using the first helper URL. When Tor is OFF and server is not custom,
+        // every configured helper URL must be OHTTP-eligible.
+        let helper_sample = configured_helper_urls
+            .first()
+            .ok_or_else(|| anyhow!("At least one helper_url is required"))?;
+        let route = resolve_session_route(tor_runtime, is_custom, helper_sample, network)?;
+
+        // When Tor is OFF and server is not custom, verify all endpoints are OHTTP-eligible
+        // (not just the first). The route itself carries no per-endpoint state, but eligibility
+        // is a per-URL property.
+        if tor_runtime == 0 && !is_custom {
             for url in &configured_helper_urls {
-                ZodlOhttpRoute::new(url).map_err(|e| {
+                ZodlOhttpRoute::new(url, network).map_err(|e| {
                     anyhow!(
                         "cannot reach predefined helper at {} with Tor disabled: {}",
                         url,
@@ -180,11 +185,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
             }
         }
 
-        // Build route using the first helper URL (they're homogeneous in eligibility)
-        let helper_sample = configured_helper_urls
-            .first()
-            .ok_or_else(|| anyhow!("At least one helper_url is required"))?;
-        let route = resolve_session_route(tor_runtime, is_custom, helper_sample)?;
+        // Resolve Tor runtime to decide which async runtime to use for block_on
+        let resolved_tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) };
 
         let transport: Arc<dyn HelperTransport> = Arc::new(HyperTransport::with_route(route));
         let client = HelperClient::new(transport, HelperHealth::default());
