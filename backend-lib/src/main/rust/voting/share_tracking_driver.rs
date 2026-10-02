@@ -34,7 +34,7 @@ use super::round_session::{
     fallback_runtime, optional_seconds, resolve_session_route, resolve_tor_runtime,
     unix_now_seconds,
 };
-use super::route::SessionRoute;
+use super::route::{SessionRoute, ZodlOhttpRoute};
 
 use crate::tor::TorRuntime;
 use super::*;
@@ -160,19 +160,30 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
             ctx
         });
 
-        // SAFETY: see resolve_session_route's doc comment in round_session.rs.
-        // Use the first helper URL to determine OHTTP eligibility, matching
-        // openRoundSessionNative's endpoint_sample logic. Helper URLs in share
-        // tracking are typically homogeneous (all predefined or all custom).
-        let helper_sample = configured_helper_urls
-            .first()
-            .ok_or_else(|| anyhow!("At least one helper_url is required"))?;
         let is_custom = is_custom_server != 0;
 
         // Resolve Tor runtime separately so we know which async runtime to use for block_on
         let resolved_tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) };
 
-        // Build route using the same logic as openRoundSessionNative
+        // When Tor is OFF and server is not custom, every configured helper URL must be
+        // OHTTP-eligible (matches Swift SDK's all-endpoint check in route.rs:517-540). The
+        // route itself carries no per-endpoint state, but eligibility is a per-URL property.
+        if resolved_tor_runtime.is_err() && !is_custom {
+            for url in &configured_helper_urls {
+                ZodlOhttpRoute::new(url).map_err(|e| {
+                    anyhow!(
+                        "cannot reach predefined helper at {} with Tor disabled: {}",
+                        url,
+                        e
+                    )
+                })?;
+            }
+        }
+
+        // Build route using the first helper URL (they're homogeneous in eligibility)
+        let helper_sample = configured_helper_urls
+            .first()
+            .ok_or_else(|| anyhow!("At least one helper_url is required"))?;
         let route = resolve_session_route(tor_runtime, is_custom, helper_sample)?;
 
         let transport: Arc<dyn HelperTransport> = Arc::new(HyperTransport::with_route(route));

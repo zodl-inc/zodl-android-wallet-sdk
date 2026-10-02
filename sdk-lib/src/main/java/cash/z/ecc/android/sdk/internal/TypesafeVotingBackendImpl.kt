@@ -297,7 +297,12 @@ internal interface VotingDbBackend {
         notes: List<JniNoteInfo>
     ): JniSnapshotBundlePrecomputeReport
 
-    suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
+    suspend fun syncVoteTree(
+        torRuntime: Long,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long
 
     suspend fun resetTreeClient(roundId: String)
 
@@ -440,8 +445,13 @@ private class RustVotingDbBackend(
             notes
         )
 
-    override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long =
-        votingDb.syncVoteTree(roundId, nodeUrl)
+    override suspend fun syncVoteTree(
+        torRuntime: Long,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long =
+        votingDb.syncVoteTree(torRuntime, isCustomServer, roundId, nodeUrl)
 
     override suspend fun resetTreeClient(roundId: String) =
         votingDb.resetTreeClient(roundId)
@@ -692,8 +702,13 @@ internal class TypesafeVotingDbImpl(
                 notes.toJniNoteInfos()
             ).toSnapshotBundlePrecomputeReport()
 
-    override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long =
-        votingDb.syncVoteTree(roundId, nodeUrl)
+    override suspend fun syncVoteTree(
+        torRuntime: Long,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long =
+        votingDb.syncVoteTree(torRuntime, isCustomServer, roundId, nodeUrl)
 
     override suspend fun resetTreeClient(roundId: String) =
         votingDb.resetTreeClient(roundId)

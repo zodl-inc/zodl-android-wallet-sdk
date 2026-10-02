@@ -537,7 +537,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
         )
         .map_err(|e| anyhow!("RoundExecutor::with_transport: {}", e))?
         .with_binding(binding)
-        .map_err(|e| anyhow!("RoundExecutor::with_binding: {}", e))?;
+        .map_err(|e| anyhow!("RoundExecutor::with_binding: {}", e))?
+        .with_tree_transport(Arc::clone(&transport) as Arc<dyn vote_commitment_tree_client::transport::Transport>);
 
         let session = Arc::new(RoundSessionHandle {
             executor,

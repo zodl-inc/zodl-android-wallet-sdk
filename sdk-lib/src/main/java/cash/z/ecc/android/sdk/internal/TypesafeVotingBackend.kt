@@ -221,7 +221,12 @@ internal interface TypesafeVotingDb {
         notes: List<VotingNoteInfo>
     ): SnapshotBundlePrecomputeReport
 
-    suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
+    suspend fun syncVoteTree(
+        torRuntime: Long,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long
 
     suspend fun resetTreeClient(roundId: String)
 
