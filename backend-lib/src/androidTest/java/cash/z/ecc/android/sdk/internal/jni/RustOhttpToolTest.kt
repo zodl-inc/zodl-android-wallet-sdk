@@ -171,6 +171,6 @@ class RustOhttpToolTest {
 
             // The key id and suite header is the only plain part.
             assertContentEquals(byteArrayOf(1, 0, 0x20, 0, 1, 0, 1), sealed.body.copyOf(7))
-            codec.free(sealed.opener)
+            sealed.opener.close()
         }
 }
