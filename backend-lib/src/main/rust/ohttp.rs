@@ -466,12 +466,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_complet
 /// Frees an opener whose `complete` will never be called (the post failed). 0 is a no-op.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_openerFree<'local>(
-    _: JNIEnv<'local>,
+    mut env: JNIEnv<'local>,
     _: JClass<'local>,
     opener: jlong,
 ) {
-    // SAFETY: the Kotlin wrapper passes each handle once (see `take_opener`).
-    drop(unsafe { take_opener(opener) });
+    let res = catch_unwind(&mut env, |_| {
+        // SAFETY: the Kotlin wrapper passes each handle once (see `take_opener`).
+        drop(unsafe { take_opener(opener) });
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
 }
 
 /// The URL of the signed key configuration of the relay at `relay_url`.
