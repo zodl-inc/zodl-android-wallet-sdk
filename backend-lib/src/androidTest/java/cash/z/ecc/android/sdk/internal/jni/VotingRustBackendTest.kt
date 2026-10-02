@@ -573,7 +573,8 @@ class VotingRustBackendTest {
                         session.run(
                             torRuntime = torClient.torRuntimeHandleForTesting(),
                             helperUrls = listOf("https://helper.example"),
-                            voteEndTimeSeconds = -1
+                            voteEndTimeSeconds = -1,
+                            isCustomServer = false
                         )
                     }.onFailure { error ->
                         assertTrue(error is RuntimeException, "expected RuntimeException, got $error")
