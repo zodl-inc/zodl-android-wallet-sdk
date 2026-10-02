@@ -489,7 +489,7 @@ class VotingRustBackendTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             try {
                 assertFailsWith<RuntimeException> {
-                    db.syncVoteTree(torRuntime = 0, isCustomServer = false, ROUND_ID, "not-a-url")
+                    db.syncVoteTree(torRuntime = 0, isCustomServer = true, ROUND_ID, "not-a-url")
                 }
                 // resetTreeClient succeeds even for a round with no cached tree client -- it is
                 // a pure cache-drop, not a lookup.
