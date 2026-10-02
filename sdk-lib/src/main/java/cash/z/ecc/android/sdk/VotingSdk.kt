@@ -351,6 +351,11 @@ interface VotingDbSession {
      * [Synchronizer.acquireVotingTorLease], or `null` when Tor is disabled (plain HTTP). The
      * session uses the runtime for its whole lifetime, including every [VotingRoundSession.run]
      * call, so the caller must keep the lease unreleased until after [VotingRoundSession.close].
+     *
+     * @param isCustomServer `true` if the voting config uses custom servers (from `pinnedSource`),
+     *        `false` for predefined servers. Routes HTTP traffic: Tor OFF + predefined → OHTTP
+     *        (privacy: relay sees client IP but not request, gateway/backend never see client IP);
+     *        Tor OFF + custom → Direct (user accepts direct routing by using a custom endpoint).
      */
     @Suppress("LongParameterList")
     suspend fun openRoundSession(
