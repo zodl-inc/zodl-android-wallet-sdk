@@ -193,7 +193,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             check(!started) { "already started" }
             started = true
             listener = responseListener
-            /** Call cancelled before start() is already closed and never decrements the counter. */
+            // Call cancelled before start() is already closed and never decrements the counter.
             countAsActive = !closed
         }
         if (countAsActive) activeCalls.incrementAndGet()
