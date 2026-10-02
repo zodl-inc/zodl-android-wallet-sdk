@@ -7,7 +7,7 @@ use zcash_voting::{RouteError, RouteFuture, RouteHttp, RouteRequest, RouteRespon
 use crate::tor::TorRuntime;
 
 #[cfg(feature = "slipstream")]
-use slipstream_core::ohttp::{http_round_trip, Dialer};
+use slipstream_core::ohttp::{Dialer, http_round_trip, http_round_trip_with_dispatch};
 
 /// OHTTP gateway hostname for voting traffic (mainnet).
 const OHTTP_GATEWAY_HOST_MAINNET: &str = "ohttp-gateway.example";
@@ -231,14 +231,20 @@ impl RouteHttp for ZodlOhttpRoute {
 
             let gateway_host = self.gateway_host.clone();
 
-            on_dispatch();
-
             // Send via OHTTP using direct dialer (clearnet)
             // The relay sees the device IP, the gateway does not
             let dialer = Dialer::Direct;
 
-            let result =
-                http_round_trip(&gateway_host, dialer, &method, &url, &headers, &body).await;
+            let result = http_round_trip_with_dispatch(
+                &gateway_host,
+                dialer,
+                &method,
+                &url,
+                &headers,
+                &body,
+                || on_dispatch(),
+            )
+            .await;
 
             match result {
                 Ok((status, response_headers, response_body)) => {
