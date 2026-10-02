@@ -64,6 +64,35 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust-cache: true
+      # Fail if build-time relay override env vars are set, or if the built .so files
+      # do not contain the production relay URL (guards against accidental override).
+      - name: Guard against relay URL override in release
+        timeout-minutes: 5
+        run: |
+          if [ -n "$ZODL_OHTTP_RELAY_URL_MAINNET" ] || [ -n "$ZODL_OHTTP_RELAY_URL_TESTNET" ]; then
+            echo "ERROR: Build-time relay override env vars (ZODL_OHTTP_RELAY_URL_MAINNET / _TESTNET) are set."
+            echo "These are for debug/test builds only. Release builds must use the embedded URLs."
+            exit 1
+          fi
+
+          ./gradlew :backend-lib:assembleRelease
+
+          PROD_RELAY_URL="https://ohttp-relay.example/relay"
+          SO_FILES=$(find backend-lib/build/intermediates -name "*.so" -type f)
+          if [ -z "$SO_FILES" ]; then
+            echo "ERROR: No .so files found after assembleRelease"
+            exit 1
+          fi
+
+          for so in $SO_FILES; do
+            if ! grep -a -F -q "$PROD_RELAY_URL" "$so"; then
+              echo "ERROR: $so does not contain the production relay URL: $PROD_RELAY_URL"
+              echo "This indicates a build-time override or incorrect relay URL embedding."
+              exit 1
+            fi
+          done
+
+          echo "Relay URL guard passed: all .so files contain $PROD_RELAY_URL"
       # Note that GitHub Actions appears to have issues with environment variables that contain periods,
       # so the GPG variables are done as command line arguments instead.
       - name: Deploy to Maven Central
