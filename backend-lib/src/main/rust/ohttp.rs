@@ -492,6 +492,25 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_signedC
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// Returns the relay URL for a given gateway host, or null if the host is not a known gateway.
+/// The built-in mapping can be overridden at build time via environment variables
+/// `ZODL_OHTTP_RELAY_URL_MAINNET` and `ZODL_OHTTP_RELAY_URL_TESTNET`.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_relayUrlFor<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    gateway_host: JString<'local>,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        let gateway_host = java_string_to_rust(env, &gateway_host)?;
+        match zodl_ohttp_client::relay_for(&gateway_host) {
+            Some(relay_url) => Ok(env.new_string(relay_url)?.into_raw()),
+            None => Ok(ptr::null_mut()),
+        }
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
 /// The preset's headers, limits and cache rules:
 /// `JniOhttpProfile(postHeaders, keyFetchHeaders, maxSealedResponse, maxKeyConfig,
 /// cacheRefreshMarginSecs, dropBeforeRefetch, traceOnKeyFetch, bodyWindow)`, a limit of -1

@@ -197,6 +197,13 @@ class RustOhttpTool private constructor() : OhttpCodec {
             relayUrl: String,
         ): String
 
+        /**
+         * Returns the relay URL for a given gateway host, or null if the host is not a known gateway.
+         * The built-in mapping can be overridden at build time via environment variables.
+         */
+        @JvmStatic
+        external fun relayUrlFor(gatewayHost: String): String?
+
         @JvmStatic
         private external fun profileInfo(profile: Int): JniOhttpProfile
     }

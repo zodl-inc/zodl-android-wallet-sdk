@@ -1,5 +1,7 @@
 package co.electriccoin.lightwallet.client.internal
 
+import cash.z.ecc.android.sdk.internal.jni.RustOhttpTool
+
 /**
  * Static OHTTP (RFC 9458) endpoint mapping.
  *
@@ -11,22 +13,19 @@ package co.electriccoin.lightwallet.client.internal
  * The gateway's signed HPKE key configuration is fetched through the relay (see
  * [co.electriccoin.lightwallet.client.OhttpCodec.signedConfigUrl]); which network a gateway host serves,
  * and so which signing key is trusted for it, is decided by the same codec.
+ *
+ * Relay URLs come from the native `zodl-ohttp-client` library and can be overridden at build time
+ * via environment variables `ZODL_OHTTP_RELAY_URL_MAINNET` and `ZODL_OHTTP_RELAY_URL_TESTNET`.
  */
 internal object OhttpEndpoints {
-    private val relayByGatewayHost: Map<String, String> =
-        mapOf(
-            "ohttp-gateway-testnet.example" to "https://ohttp-relay-testnet.example/relay",
-            "ohttp-gateway.example" to "https://ohttp-relay.example/relay",
-        )
-
     /**
      * True only for the exact gateway hosts we have a relay for. A prefix match would route a custom
      * server such as `ohttp-gateway.example.org` into [relayUrlFor], which throws.
      */
-    fun isOhttpGateway(host: String): Boolean = relayByGatewayHost.containsKey(host)
+    fun isOhttpGateway(host: String): Boolean = RustOhttpTool.relayUrlFor(host) != null
 
     fun relayUrlFor(gatewayHost: String): String =
-        relayByGatewayHost[gatewayHost]
+        RustOhttpTool.relayUrlFor(gatewayHost)
             ?: throw IllegalArgumentException("No OHTTP relay configured for gateway host $gatewayHost")
 }
 
@@ -85,7 +84,9 @@ internal fun isOhttpProxyAllowedHost(host: String): Boolean {
 /**
  * Relay URL for proxy gateway hosts — all share the mainnet relay.
  */
-internal const val PROXY_RELAY_URL = "https://ohttp-relay.example/relay"
+internal val PROXY_RELAY_URL: String
+    get() = RustOhttpTool.relayUrlFor(PROXY_GATEWAY_HOST)
+        ?: error("Mainnet relay URL not found")
 
 /**
  * The gateway host whose signed key configuration the proxy requests are sealed to: the mainnet
