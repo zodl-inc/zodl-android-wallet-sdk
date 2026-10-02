@@ -326,7 +326,7 @@ internal class SaplingParamTool(
             val torProvider = torHttpClientProvider
             if (torProvider != null) {
                 Twig.debug { "Sapling params: downloading ${url.file.substringAfterLast('/')} via Tor" }
-                // Closing the client closes its engine, which releases the isolated native Tor client.
+                /** Closing the client closes its engine, which releases the isolated native Tor client. */
                 torProvider().use { client ->
                     val response = client.get(url.toString())
                     if (response.status.value != HttpURLConnection.HTTP_OK) {
