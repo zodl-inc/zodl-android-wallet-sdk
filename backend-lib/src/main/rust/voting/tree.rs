@@ -47,10 +47,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_syn
 
         if slot.route_key != route_key {
             // Route changed: replace the sync with one configured for the new route
-            let transport = Arc::new(HyperTransport::with_route(route));
-            slot.sync = Arc::new(VoteTreeSync::with_transport(
-                transport as Arc<dyn vote_commitment_tree_client::transport::Transport>,
-            ));
+            // Unsized coercion to the crate's tree `Transport` trait object.
+            slot.sync = Arc::new(VoteTreeSync::with_transport(Arc::new(
+                HyperTransport::with_route(route),
+            )));
             slot.route_key = route_key;
         }
 
