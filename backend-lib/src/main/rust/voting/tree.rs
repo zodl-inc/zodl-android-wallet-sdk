@@ -1,7 +1,7 @@
 use super::db::*;
 use super::helpers::*;
-use super::round_session::SessionRoute;
 use super::round_session::resolve_session_route;
+use super::round_session::SessionRoute;
 use super::*;
 
 use voting::HyperTransport;
@@ -31,7 +31,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_syn
         let node_url_string = java_string_to_rust(env, &node_url)?;
 
         let is_custom = is_custom_server != 0;
-        let route = resolve_session_route(tor_runtime, is_custom, &node_url_string)?;
+        let network = db.network;
+        let route = resolve_session_route(tor_runtime, is_custom, &node_url_string, network)?;
 
         // Derive the route key for this sync call
         let route_key = match &route {

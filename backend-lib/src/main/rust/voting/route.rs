@@ -7,14 +7,12 @@ use zcash_voting::{RouteError, RouteFuture, RouteHttp, RouteRequest, RouteRespon
 use crate::tor::TorRuntime;
 
 #[cfg(feature = "slipstream")]
-use slipstream_core::ohttp::{Dialer, http_round_trip};
+use slipstream_core::ohttp::{http_round_trip, Dialer};
 
 /// OHTTP gateway hostname for voting traffic (mainnet).
 const OHTTP_GATEWAY_HOST_MAINNET: &str = "ohttp-gateway.example";
 
 /// OHTTP gateway hostname for voting traffic (testnet).
-/// TODO: use when network-aware gateway selection is implemented (route.rs:190-192)
-#[allow(dead_code)]
 const OHTTP_GATEWAY_HOST_TESTNET: &str = "ohttp-gateway-testnet.example";
 
 /// Exact vote and PIR hosts in gateway BACKENDS (mainnet).
@@ -40,7 +38,7 @@ const OHTTP_VOTE_HOSTS: &[&str] = &[
     "zpir-1.stardust.rest",
 ];
 
-/// 64 MiB response cap (matches gateway MAX_UPSTREAM_RESPONSE_BYTES default).
+/// 256 MiB response cap (gateway MAX_UPSTREAM_RESPONSE_BYTES is 268435456).
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 /// [`RouteHttp`] executor that routes every voting chain-submission HTTP
@@ -146,9 +144,11 @@ impl RouteHttp for ZodlVotingRoute {
     }
 }
 
-/// Checks if a host is in the gateway's exact vote host list.
+/// Checks if a host is in the gateway's exact vote host list (case-insensitive).
 fn can_handle_ohttp(host: &str) -> bool {
-    OHTTP_VOTE_HOSTS.contains(&host)
+    OHTTP_VOTE_HOSTS
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(host))
 }
 
 /// [`RouteHttp`] executor that routes voting HTTP requests through the OHTTP
@@ -163,8 +163,8 @@ fn can_handle_ohttp(host: &str) -> bool {
 /// IP to vote servers.
 ///
 /// Uses the same OHTTP stack as the lightwalletd gRPC path: signed HPKE key
-/// configs, relay-simulator.example (mainnet), 64 MiB response cap, client
-/// trace prefix.
+/// configs, relay from `zodl_ohttp_client::relay_for` (Fastly production relays),
+/// 256 MiB response cap, client trace prefix.
 pub(super) struct ZodlOhttpRoute {
     gateway_host: String,
 }
@@ -172,7 +172,11 @@ pub(super) struct ZodlOhttpRoute {
 impl ZodlOhttpRoute {
     /// Creates a new OHTTP route for voting traffic.
     /// `url` is the target vote/helper server URL to check for OHTTP eligibility.
-    pub(super) fn new(url: &str) -> Result<Self, RouteError> {
+    /// `network` selects mainnet or testnet gateway.
+    pub(super) fn new(
+        url: &str,
+        network: zcash_voting::types::Network,
+    ) -> Result<Self, RouteError> {
         // Extract host from URL
         let host = url
             .split("://")
@@ -189,9 +193,13 @@ impl ZodlOhttpRoute {
             )));
         }
 
-        // Determine gateway host based on network (hardcoded mainnet for now)
-        // TODO: derive from network parameter when testnet support is added
-        let gateway_host = OHTTP_GATEWAY_HOST_MAINNET.to_string();
+        // Select gateway based on network
+        let gateway_host = match network {
+            zcash_voting::types::Network::Mainnet => OHTTP_GATEWAY_HOST_MAINNET,
+            zcash_voting::types::Network::Testnet => OHTTP_GATEWAY_HOST_TESTNET,
+            zcash_voting::types::Network::Regtest => OHTTP_GATEWAY_HOST_TESTNET,
+        }
+        .to_string();
 
         Ok(Self { gateway_host })
     }
@@ -290,41 +298,85 @@ mod tests {
 
     #[test]
     fn ohttp_route_rejects_unsupported_hosts() {
-        let result = ZodlOhttpRoute::new("https://custom.example.com/api/vote");
+        use zcash_voting::types::Network;
+
+        let result = ZodlOhttpRoute::new("https://custom.example.com/api/vote", Network::Mainnet);
         assert!(result.is_err());
 
-        let result = ZodlOhttpRoute::new("https://pir.valargroup.org/api");
+        let result = ZodlOhttpRoute::new("https://pir.valargroup.org/api", Network::Mainnet);
         assert!(result.is_err());
     }
 
     #[test]
     fn ohttp_route_accepts_supported_hosts() {
+        use zcash_voting::types::Network;
+
         // Vote servers
-        let result = ZodlOhttpRoute::new("https://voting.valargroup.dev/api/vote");
+        let result =
+            ZodlOhttpRoute::new("https://voting.valargroup.dev/api/vote", Network::Mainnet);
         assert!(result.is_ok());
 
-        let result = ZodlOhttpRoute::new("https://prod.vote-chain-primary.valargroup.org/submit");
+        let result = ZodlOhttpRoute::new(
+            "https://prod.vote-chain-primary.valargroup.org/submit",
+            Network::Mainnet,
+        );
         assert!(result.is_ok());
 
-        let result = ZodlOhttpRoute::new("https://zvote.zodl.com/api/v1/round");
+        let result = ZodlOhttpRoute::new("https://zvote.zodl.com/api/v1/round", Network::Mainnet);
         assert!(result.is_ok());
 
         // PIR endpoints
-        let result = ZodlOhttpRoute::new("https://lb-pir-primary.valargroup.org/root");
+        let result = ZodlOhttpRoute::new(
+            "https://lb-pir-primary.valargroup.org/root",
+            Network::Mainnet,
+        );
         assert!(result.is_ok());
 
-        let result = ZodlOhttpRoute::new("https://zpir-1.stardust.rest/api/pir");
+        let result = ZodlOhttpRoute::new("https://zpir-1.stardust.rest/api/pir", Network::Mainnet);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn ohttp_vote_hosts_matches_gateway_backends() {
-        // This test documents the hosts in gateway BACKENDS (mainnet):
-        // 12 vote servers + 3 PIR endpoints.
-        // If the gateway adds/removes hosts, this list must be updated.
-        assert_eq!(OHTTP_VOTE_HOSTS.len(), 15);
+    fn ohttp_route_selects_gateway_by_network() {
+        use zcash_voting::types::Network;
 
-        let expected_vote = vec![
+        let mainnet_route =
+            ZodlOhttpRoute::new("https://voting.valargroup.dev/api", Network::Mainnet)
+                .expect("mainnet route should succeed");
+        assert_eq!(mainnet_route.gateway_host, OHTTP_GATEWAY_HOST_MAINNET);
+
+        let testnet_route =
+            ZodlOhttpRoute::new("https://voting.valargroup.dev/api", Network::Testnet)
+                .expect("testnet route should succeed");
+        assert_eq!(testnet_route.gateway_host, OHTTP_GATEWAY_HOST_TESTNET);
+
+        let regtest_route =
+            ZodlOhttpRoute::new("https://voting.valargroup.dev/api", Network::Regtest)
+                .expect("regtest route should succeed");
+        assert_eq!(regtest_route.gateway_host, OHTTP_GATEWAY_HOST_TESTNET);
+    }
+
+    #[test]
+    fn ohttp_host_checking_is_case_insensitive() {
+        // Exact case matches
+        assert!(can_handle_ohttp("voting.valargroup.dev"));
+        assert!(can_handle_ohttp("zvote.zodl.com"));
+
+        // Case variations
+        assert!(can_handle_ohttp("VOTING.valargroup.dev"));
+        assert!(can_handle_ohttp("Zvote.Zodl.Com"));
+        assert!(can_handle_ohttp("ZVOTE.ZODL.COM"));
+    }
+
+    #[test]
+    fn ohttp_vote_hosts_matches_gateway_backends() {
+        // This test verifies OHTTP_VOTE_HOSTS matches the gateway BACKENDS list
+        // from /work/infra/kubernetes/apps/ohttp-gateway/deployment.yaml.
+        // Source of truth: BACKENDS env var in mainnet and testnet gateway pods.
+        //
+        // Expected: 12 vote servers + 3 PIR endpoints (as of 2026-10-02).
+        let expected_hosts = vec![
+            // Vote servers (predefined endpoints)
             "vote.zodl.com",
             "prod.vote-chain-primary.valargroup.org",
             "voting.valargroup.dev",
@@ -337,18 +389,30 @@ mod tests {
             "zvote.keplr.app",
             "zvote.zfnd.org",
             "v.ombie.cash",
-        ];
-
-        let expected_pir = [
+            // PIR endpoints (delegation hosts)
             "lb-pir-primary.valargroup.org",
             "lb-pir-backup.valargroup.org",
             "zpir-1.stardust.rest",
         ];
 
-        for host in expected_vote.iter().chain(expected_pir.iter()) {
+        assert_eq!(
+            OHTTP_VOTE_HOSTS.len(),
+            expected_hosts.len(),
+            "OHTTP_VOTE_HOSTS length mismatch with expected gateway BACKENDS"
+        );
+
+        for host in &expected_hosts {
             assert!(
                 OHTTP_VOTE_HOSTS.contains(host),
                 "Expected host {} not in OHTTP_VOTE_HOSTS",
+                host
+            );
+        }
+
+        for host in OHTTP_VOTE_HOSTS {
+            assert!(
+                expected_hosts.contains(host),
+                "OHTTP_VOTE_HOSTS contains unexpected host {}",
                 host
             );
         }

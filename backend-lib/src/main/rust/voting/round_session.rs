@@ -18,8 +18,8 @@
 //! test below.
 
 use std::num::NonZeroUsize;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::OnceLock;
 
 use super::db::db_from_handle;
 use super::helpers::*;
@@ -45,11 +45,11 @@ use crate::tor::TorRuntime;
 /// - Tor OFF + predefined server + OHTTP-eligible: [`SessionRoute::Ohttp`]
 /// - Tor OFF + custom server: [`SessionRoute::Direct`] (clearnet)
 ///
-/// OHTTP-eligible means the destination host matches the gateway's allowlist
-/// (`.valargroup.org`, `.valargroup.dev`, `chaindefuser.com`) or has a static
-/// mapping (`voting.valargroup.dev` → `vote.zodl.com`). Custom user-added
-/// servers (pinnedSource field) never route through OHTTP by design (user
-/// decision to use a custom endpoint implies accepting direct routing).
+/// OHTTP-eligible means the destination host appears in the gateway's BACKENDS
+/// list (exact match, case-insensitive). The gateway allowlist includes predefined
+/// vote servers and PIR endpoints. Custom user-added servers (pinnedSource field)
+/// never route through OHTTP by design (user decision to use a custom endpoint
+/// implies accepting direct routing).
 ///
 /// Delegating [`RouteHttp`] through this enum -- rather than making
 /// [`SessionTransport`] a trait object -- keeps it a concrete type, so the
@@ -241,8 +241,8 @@ pub(super) unsafe fn resolve_tor_runtime<'a>(
 /// (`precomputePirProofsNative`/`precomputeSnapshotBundlesNative`) can apply
 /// the same policy to their own `tor_runtime: jlong` parameters as
 /// `openRoundSessionNative` applies to chain/helper traffic -- see
-/// `connect_pir_client` in `delegation.rs`. PIR exports should pass
-/// `is_custom_server=false` and an appropriate `endpoint_url` from their own
+/// `connect_pir_client` in `delegation.rs`. PIR exports pass the caller's
+/// `is_custom_server` value and an appropriate `endpoint_url` from their own
 /// fleet configuration.
 ///
 /// # Safety
@@ -255,6 +255,7 @@ pub(super) fn resolve_session_route(
     tor_runtime: jlong,
     is_custom_server: bool,
     endpoint_url: &str,
+    network: voting::types::Network,
 ) -> anyhow::Result<SessionRoute> {
     match unsafe { resolve_tor_runtime(tor_runtime) } {
         Ok(tor_runtime) => Ok(SessionRoute::Tor(ZodlVotingRoute::new(tor_runtime))),
@@ -265,7 +266,7 @@ pub(super) fn resolve_session_route(
                 Ok(SessionRoute::Direct(DirectRoute::new()))
             } else {
                 // Predefined servers: try OHTTP, fail closed if unsupported
-                match ZodlOhttpRoute::new(endpoint_url) {
+                match ZodlOhttpRoute::new(endpoint_url, network) {
                     Ok(ohttp_route) => Ok(SessionRoute::Ohttp(ohttp_route)),
                     Err(e) => Err(anyhow!(
                         "Cannot reach predefined vote server at {} with Tor disabled: {}",
@@ -506,16 +507,32 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
         // - Tor OFF + custom server: use direct routing (user decision)
         // - Tor OFF + predefined server: use OHTTP routing (privacy via gateway)
         //
-        // Use the first chain_endpoint to determine OHTTP eligibility. If the
-        // session's endpoints are heterogeneous (some OHTTP-eligible, some not),
-        // callers must open separate sessions per endpoint group. In practice,
-        // voting rounds use homogeneous endpoint lists (all from the same
-        // provider or all custom), so this is not a real-world constraint.
+        // When Tor is OFF and server is predefined, check that ALL chain endpoints,
+        // helpers, tree nodes, and PIR hosts are OHTTP-eligible (fail closed at open).
+        let is_custom = is_custom_server != 0;
+
+        // Check eligibility of all known endpoints when opening with Tor OFF + predefined
+        if tor_runtime == 0 && !is_custom {
+            let all_urls = chain_endpoints
+                .iter()
+                .chain(configured_helper_urls.iter())
+                .chain(vote_tree_node_urls.iter());
+
+            for url in all_urls {
+                ZodlOhttpRoute::new(url, network).map_err(|e| {
+                    anyhow!(
+                        "Cannot reach predefined endpoint {} with Tor disabled: {}",
+                        url,
+                        e
+                    )
+                })?;
+            }
+        }
+
         let endpoint_sample = chain_endpoints
             .first()
             .ok_or_else(|| anyhow!("At least one chain_endpoint is required"))?;
-        let is_custom = is_custom_server != 0;
-        let route = resolve_session_route(tor_runtime, is_custom, endpoint_sample)?;
+        let route = resolve_session_route(tor_runtime, is_custom, endpoint_sample, network)?;
         let transport: SessionTransport = Arc::new(HyperTransport::with_route(route));
         let helper_client = HelperClient::new(
             Arc::clone(&transport) as Arc<dyn HelperTransport>,
@@ -866,12 +883,14 @@ mod tests {
 
     #[test]
     fn resolve_session_route_tor_off_custom_server_uses_direct() {
+        use voting::types::Network;
         // Custom servers with Tor OFF use direct routing (user decision to use
         // a custom endpoint implies accepting direct routing)
         let route = resolve_session_route(
             0,    // Tor OFF
             true, // is_custom_server
             "https://custom.example.com/api/vote",
+            Network::Mainnet,
         )
         .expect("should succeed for custom server");
         assert!(matches!(route, SessionRoute::Direct(_)));
@@ -879,11 +898,13 @@ mod tests {
 
     #[test]
     fn resolve_session_route_tor_off_predefined_ohttp_eligible_uses_ohttp() {
+        use voting::types::Network;
         // Predefined servers with Tor OFF that are OHTTP-eligible use OHTTP routing
         let route = resolve_session_route(
             0,     // Tor OFF
             false, // is_custom_server (predefined)
             "https://voting.valargroup.dev/api/vote",
+            Network::Mainnet,
         )
         .expect("should succeed for OHTTP-eligible predefined server");
         assert!(matches!(route, SessionRoute::Ohttp(_)));
@@ -891,11 +912,13 @@ mod tests {
 
     #[test]
     fn resolve_session_route_tor_off_predefined_not_ohttp_eligible_fails() {
+        use voting::types::Network;
         // Predefined servers with Tor OFF that are NOT OHTTP-eligible fail closed
         let result = resolve_session_route(
             0,     // Tor OFF
             false, // is_custom_server (predefined)
             "https://unsupported.example.com/api/vote",
+            Network::Mainnet,
         );
         assert!(result.is_err());
         let err_msg = result.err().unwrap().to_string();
@@ -903,7 +926,51 @@ mod tests {
     }
 
     #[test]
+    fn resolve_session_route_case_insensitive_host_matching() {
+        use voting::types::Network;
+        // Host comparison should be case-insensitive
+        let route = resolve_session_route(
+            0,
+            false,
+            "https://VOTING.valargroup.dev/api/vote",
+            Network::Mainnet,
+        )
+        .expect("should handle uppercase host");
+        assert!(matches!(route, SessionRoute::Ohttp(_)));
+
+        let route = resolve_session_route(0, false, "https://Zvote.Zodl.Com/api", Network::Mainnet)
+            .expect("should handle mixed-case host");
+        assert!(matches!(route, SessionRoute::Ohttp(_)));
+    }
+
+    #[test]
+    fn resolve_session_route_testnet_vs_mainnet_gateway() {
+        use voting::types::Network;
+        // Network parameter should select the correct gateway
+        let mainnet_route = resolve_session_route(
+            0,
+            false,
+            "https://voting.valargroup.dev/api",
+            Network::Mainnet,
+        )
+        .expect("mainnet route should succeed");
+
+        let testnet_route = resolve_session_route(
+            0,
+            false,
+            "https://voting.valargroup.dev/api",
+            Network::Testnet,
+        )
+        .expect("testnet route should succeed");
+
+        // Both should be OHTTP but with different gateways
+        assert!(matches!(mainnet_route, SessionRoute::Ohttp(_)));
+        assert!(matches!(testnet_route, SessionRoute::Ohttp(_)));
+    }
+
+    #[test]
     fn resolve_session_route_tor_off_pir_endpoints_use_ohttp() {
+        use voting::types::Network;
         // PIR endpoints with Tor OFF must route through OHTTP, never Direct.
         // This is the privacy guarantee: Tor-off predefined-server delegation
         // traffic must not expose the user's IP to PIR servers.
@@ -918,6 +985,7 @@ mod tests {
                 0,     // Tor OFF
                 false, // is_custom_server (predefined PIR endpoint)
                 endpoint,
+                Network::Mainnet,
             )
             .unwrap_or_else(|e| panic!("PIR endpoint {} should resolve to OHTTP: {}", endpoint, e));
 
@@ -937,14 +1005,21 @@ mod tests {
 
     #[test]
     fn resolve_session_route_tor_off_pir_with_trailing_slash() {
+        use voting::types::Network;
         // Host parsing must tolerate trailing slashes in URLs
-        let route = resolve_session_route(0, false, "https://lb-pir-primary.valargroup.org/")
-            .expect("should handle trailing slash");
+        let route = resolve_session_route(
+            0,
+            false,
+            "https://lb-pir-primary.valargroup.org/",
+            Network::Mainnet,
+        )
+        .expect("should handle trailing slash");
         assert!(matches!(route, SessionRoute::Ohttp(_)));
     }
 
     #[test]
     fn resolve_session_route_tor_off_custom_server_pir_not_in_list_uses_direct() {
+        use voting::types::Network;
         // Custom voting configs can have PIR endpoints not in OHTTP_VOTE_HOSTS.
         // With Tor OFF + is_custom_server=true, these must route to Direct (user decision
         // to use custom server), not fail closed. This is the privacy/usability tradeoff
@@ -954,6 +1029,7 @@ mod tests {
             0,    // Tor OFF
             true, // is_custom_server (from custom voting config)
             custom_pir_url,
+            Network::Mainnet,
         )
         .expect("custom server PIR endpoint should resolve to Direct when Tor OFF");
 
