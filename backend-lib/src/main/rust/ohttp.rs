@@ -25,14 +25,14 @@ use std::ptr;
 
 use anyhow::anyhow;
 use jni::{
-    objects::{JByteArray, JClass, JObject, JString, JValue},
-    sys::{jint, jlong, jobject, jstring, JNI_FALSE, JNI_TRUE},
     JNIEnv,
+    objects::{JByteArray, JClass, JObject, JString, JValue},
+    sys::{JNI_FALSE, JNI_TRUE, jint, jlong, jobject, jstring},
 };
 use zodl_ohttp_client::{
+    BhttpRequest, ClientProfile, Completed, Error, Field, KEY_BYTES, KeyConfig, ResponseOpener,
     complete_exchange_in_place, encapsulate_request, pack_fields, signed_config_url, unpack_fields,
-    verify_signed_config, verify_signed_config_with, BhttpRequest, ClientProfile, Completed, Error,
-    Field, KeyConfig, ResponseOpener, KEY_BYTES,
+    verify_signed_config, verify_signed_config_with,
 };
 
 use crate::utils::{
@@ -552,18 +552,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_profile
 #[cfg(test)]
 mod tests {
     use aes_gcm::{
-        aead::{Aead, KeyInit, Payload},
         Aes128Gcm, Nonce,
+        aead::{Aead, KeyInit, Payload},
     };
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use ed25519_dalek::{Signer, SigningKey};
     use hkdf::Hkdf;
     use hpke::{
-        aead::AesGcm128, kdf::HkdfSha256, kem::X25519HkdfSha256, Deserializable, Kem, OpModeR,
-        Serializable,
+        Deserializable, Kem, OpModeR, Serializable, aead::AesGcm128, kdf::HkdfSha256,
+        kem::X25519HkdfSha256,
     };
     use sha2::{Digest, Sha256};
-    use zodl_ohttp_client::{encode_bhttp_request, EncodeOptions};
+    use zodl_ohttp_client::{EncodeOptions, encode_bhttp_request};
 
     use super::*;
 

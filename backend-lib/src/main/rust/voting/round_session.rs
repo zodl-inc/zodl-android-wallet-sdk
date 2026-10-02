@@ -18,8 +18,8 @@
 //! test below.
 
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::db::db_from_handle;
 use super::helpers::*;
