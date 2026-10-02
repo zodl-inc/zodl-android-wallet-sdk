@@ -93,19 +93,17 @@ class RustOhttpToolTest {
             val first = codec.encapsulate(key, request)
             val second = codec.encapsulate(key, request)
 
-            assertNotEquals(0L, first.opener)
-            assertNotEquals(first.opener, second.opener)
             // hdr (7 bytes) || enc (32) || ciphertext (the request plus a 16-byte tag)
             assertTrue(first.body.size > 7 + 32 + 16)
             assertEquals(first.body.size, second.body.size)
             assertFalse(first.body.contentEquals(second.body))
 
-            codec.free(first.opener)
-            // 0 is the spent handle: freeing it is a no-op
-            codec.free(0L)
+            first.opener.close()
+            // Closing again is a no-op
+            first.opener.close()
 
             // A relay refusal: the core decides whether a new key is wanted, and spends the opener.
-            val refetch = codec.complete(second.opener, 400, null, ByteArray(0), 0)
+            val refetch = second.opener.open(400, null, ByteArray(0), 0)
             assertIs<OhttpCompletion.RefetchKeyConfig>(refetch)
         }
 
@@ -115,9 +113,9 @@ class RustOhttpToolTest {
             val codec = RustOhttpTool.new()
 
             val secondTry = codec.encapsulate(key, request).opener
-            val second = codec.complete(secondTry, 400, null, "nope".toByteArray(), 1)
+            val second = secondTry.open(400, null, "nope".toByteArray(), 1)
             val busy = codec.encapsulate(key, request).opener
-            val unavailable = codec.complete(busy, 503, null, "busy".toByteArray(), 0)
+            val unavailable = busy.open(503, null, "busy".toByteArray(), 0)
 
             assertIs<OhttpCompletion.Refused>(second)
             assertEquals(400, second.status)
@@ -134,8 +132,10 @@ class RustOhttpToolTest {
             val sealed = codec.encapsulate(key, request)
 
             assertFailsWith<OhttpException> {
-                codec.complete(sealed.opener, 200, null, ByteArray(64), 0)
+                sealed.opener.open(200, null, ByteArray(64), 0)
             }
+            // Closing a spent opener is a no-op
+            sealed.opener.close()
         }
 
     @Test

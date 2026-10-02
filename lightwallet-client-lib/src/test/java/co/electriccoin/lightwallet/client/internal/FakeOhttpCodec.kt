@@ -6,17 +6,20 @@ import co.electriccoin.lightwallet.client.OhttpCodecRequest
 import co.electriccoin.lightwallet.client.OhttpCodecResponse
 import co.electriccoin.lightwallet.client.OhttpCompletion
 import co.electriccoin.lightwallet.client.OhttpProfileInfo
+import co.electriccoin.lightwallet.client.OhttpResponseOpener
 import co.electriccoin.lightwallet.client.OhttpSealedRequest
 import co.electriccoin.lightwallet.client.OhttpVerifiedKey
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * An [OhttpCodec] for JVM unit tests, which cannot load the native library. It only models the
  * contract the transport relies on, not the protocol (the real one is tested in `ohttp.rs` and in
  * `RustOhttpToolTest`):
  *
- * - every `encapsulate` returns a new body and a new opener handle, and every handle must be
- *   spent by `complete` or released by `free` exactly once ([liveOpeners] is what is left);
- * - `complete` classifies like the core's Android profile: an outer 400 or 422 on the first
+ * - every `encapsulate` returns a new body and a new opener, and every opener must be
+ *   spent by [OhttpResponseOpener.open] or released by [OhttpResponseOpener.close] exactly once
+ *   ([liveOpeners] is what is left);
+ * - [complete] classifies like the core's Android profile: an outer 400 or 422 on the first
  *   attempt asks for a new key, another non-200 status is a refusal, 200 is [answer].
  */
 internal class FakeOhttpCodec(
@@ -43,6 +46,28 @@ internal class FakeOhttpCodec(
         val body: ByteArray,
         val attempt: Int,
     )
+
+    private inner class ResponseOpenerImpl(
+        opener: Long,
+    ) : OhttpResponseOpener {
+        private val handle = AtomicLong(opener)
+
+        override suspend fun open(
+            outerStatus: Int,
+            contentType: String?,
+            body: ByteArray,
+            attempt: Int,
+        ): OhttpCompletion {
+            val spent = handle.getAndSet(0)
+            check(spent != 0L) { "The OHTTP response opener is already spent" }
+            return complete(spent, outerStatus, contentType, body, attempt)
+        }
+
+        override fun close() {
+            val abandoned = handle.getAndSet(0)
+            if (abandoned != 0L) free(abandoned)
+        }
+    }
 
     override fun profileInfo(): OhttpProfileInfo = profile
 
@@ -77,10 +102,10 @@ internal class FakeOhttpCodec(
         sealedRequests.add(request)
         val body = "sealed-$opener".toByteArray()
         sealedBodies.add(body)
-        return OhttpSealedRequest(body = body, opener = opener)
+        return OhttpSealedRequest(body = body, opener = ResponseOpenerImpl(opener))
     }
 
-    override fun complete(
+    private fun complete(
         opener: Long,
         outerStatus: Int,
         contentType: String?,
@@ -104,7 +129,7 @@ internal class FakeOhttpCodec(
         }
     }
 
-    override fun free(opener: Long) {
+    private fun free(opener: Long) {
         check(liveOpeners.remove(opener)) { "opener $opener is not live (spent, freed twice or never issued)" }
         freed.add(opener)
     }

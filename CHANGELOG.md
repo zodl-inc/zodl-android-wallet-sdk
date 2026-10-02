@@ -66,6 +66,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     when the channel is created.
   The cargo dependency is a private git repository: the CI GitHub App token used by
   `.github/actions/setup` now also covers `zodl-inc/ohttp`.
+- The OHTTP response opener is now an opaque `OhttpResponseOpener` interface (extending `Closeable`)
+  instead of a raw `Long` exposed on the public `OhttpSealedRequest.opener`. The opener is single-use:
+  `open()` consumes it, `close()` frees it if not consumed, both idempotent and thread-safe. The
+  `OhttpCodec` interface no longer exposes `complete(opener: Long, ...)` or `free(opener: Long)` publicly;
+  these are now private to the implementation.
 - `OhttpSender` and `OhttpHttpClient` extend `Disposable`. Implementers of `OhttpSender` must
   implement `dispose()`; a `TorOhttpSender` releases its isolated `TorClient` there.
 - Sapling parameters are downloaded from `https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/`

@@ -11,8 +11,8 @@ package co.electriccoin.lightwallet.client
  *
  * **One sealing per attempt.** The gateway answers a repeated nonce with 409, so [encapsulate] must
  * be called again for every attempt, after a transport error and after a key refresh alike. The
- * `opener` of an [OhttpSealedRequest] is single use: hand it to exactly one of [complete] or
- * [free].
+ * [OhttpSealedRequest.opener] is single use: call its [OhttpResponseOpener.open] once or
+ * [OhttpResponseOpener.close] it.
  *
  * Failures are [KeyConfigVerificationFailedException] (the signed key configuration was rejected)
  * or [OhttpException] (anything else). Their messages never contain request or response content.
@@ -51,27 +51,6 @@ interface OhttpCodec {
         key: ByteArray,
         request: OhttpCodecRequest,
     ): OhttpSealedRequest
-
-    /**
-     * Classifies the relay's answer (its outer [outerStatus], [contentType] and [body]) and, if it
-     * is a sealed response, opens it with [opener]. [attempt] is 0 for the first post of a request
-     * and 1 for the post after an [OhttpCompletion.RefetchKeyConfig].
-     *
-     * [opener] is spent whatever happens, an exception included: never call [free] for it
-     * afterwards.
-     *
-     * @throws OhttpException if the answer does not open or is not a response
-     */
-    fun complete(
-        opener: Long,
-        outerStatus: Int,
-        contentType: String?,
-        body: ByteArray,
-        attempt: Int,
-    ): OhttpCompletion
-
-    /** Frees an [opener] whose [complete] will never be called (the post failed). */
-    fun free(opener: Long)
 }
 
 /** The request of an [OhttpCodec.encapsulate]: what the gateway forwards to its backend. */
@@ -112,12 +91,40 @@ class OhttpVerifiedKey(
 )
 
 /**
- * A sealed request: [body] is what is posted to the relay; [opener] is the native handle of what
- * opens its answer (the secret never enters the JVM). Single use.
+ * Opens the relay's answer to an OHTTP sealed request. Single use: [open] consumes the opener,
+ * [close] frees it if not consumed. Both are idempotent and thread-safe.
+ *
+ * The response secret never enters the JVM; implementations wrap an opaque native handle.
+ */
+interface OhttpResponseOpener : java.io.Closeable {
+    /**
+     * Classifies the relay's answer (its outer [outerStatus], [contentType] and [body]) and, if it
+     * is a sealed response, opens it. [attempt] is 0 for the first post of a request and 1 for the
+     * post after an [OhttpCompletion.RefetchKeyConfig].
+     *
+     * The opener is consumed whatever happens, an exception included: never call [close] afterwards.
+     *
+     * @throws OhttpException if the answer does not open or is not a response
+     * @throws IllegalStateException if the opener is already spent or freed
+     */
+    suspend fun open(
+        outerStatus: Int,
+        contentType: String?,
+        body: ByteArray,
+        attempt: Int,
+    ): OhttpCompletion
+
+    /** Frees the opener if [open] has not consumed it. Idempotent. */
+    override fun close()
+}
+
+/**
+ * A sealed request: [body] is what is posted to the relay; [opener] is what opens its answer.
+ * Single use.
  */
 class OhttpSealedRequest(
     val body: ByteArray,
-    val opener: Long,
+    val opener: OhttpResponseOpener,
 )
 
 /** What the relay's answer came to: [OhttpCodec.complete]. */

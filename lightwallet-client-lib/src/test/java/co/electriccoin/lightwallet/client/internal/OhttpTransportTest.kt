@@ -359,12 +359,12 @@ class OhttpTransportTest {
 
     @Test
     fun `an opener cannot be spent twice and closing a spent one frees nothing`() {
-        val pending = OhttpPending(codec, codec.encapsulate(FakeOhttpCodec.KEY, request).opener)
+        val opener = codec.encapsulate(FakeOhttpCodec.KEY, request).opener
 
-        pending.complete(200, null, ByteArray(0), 0)
-        assertFailsWith<IllegalStateException> { pending.complete(200, null, ByteArray(0), 0) }
-        pending.close()
-        pending.close()
+        runBlocking { opener.open(200, null, ByteArray(0), 0) }
+        assertFailsWith<IllegalStateException> { runBlocking { opener.open(200, null, ByteArray(0), 0) } }
+        opener.close()
+        opener.close()
 
         assertEquals(1, codec.completed.size)
         assertTrue(codec.freed.isEmpty())
@@ -373,10 +373,10 @@ class OhttpTransportTest {
 
     @Test
     fun `closing an unused opener frees it once`() {
-        val pending = OhttpPending(codec, codec.encapsulate(FakeOhttpCodec.KEY, request).opener)
+        val opener = codec.encapsulate(FakeOhttpCodec.KEY, request).opener
 
-        pending.close()
-        pending.close()
+        opener.close()
+        opener.close()
 
         assertEquals(listOf(1L), codec.freed)
         assertFailsWith<IllegalStateException> { pending.complete(200, null, ByteArray(0), 0) }

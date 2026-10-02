@@ -112,7 +112,7 @@ internal class OhttpTransport(
 
     /**
      * One sealing and one post. Returns the response, or null if the gateway asked for a new key
-     * configuration. The native opener is spent by the codec's `complete` or freed here, whichever
+     * configuration. The opener is spent by [OhttpResponseOpener.open] or freed here, whichever
      * way this ends (an exception or a cancelled coroutine included).
      */
     private suspend fun exchange(
@@ -122,17 +122,17 @@ internal class OhttpTransport(
         attempt: Int,
     ): OhttpCodecResponse? {
         val sealed = codec.encapsulate(key, request)
-        return OhttpPending(codec, sealed.opener).use { pending ->
+        return sealed.opener.use { opener ->
             val answer =
                 try {
                     sender.post(relayUrl, sealed.body, profile.postHeaders + traceHeaders(true), timeoutMs)
                 } catch (e: OhttpException) {
                     // The senders only return the body of a 200, and throw the relay's other
-                    // statuses: let the codec decide whether this one asks for a new key.
+                    // statuses: let the opener decide whether this one asks for a new key.
                     val status = e.httpStatus ?: throw e
-                    return@use refusal(pending.complete(status, null, ByteArray(0), attempt), e)
+                    return@use refusal(opener.open(status, null, ByteArray(0), attempt), e)
                 }
-            interpret(pending.complete(HTTP_OK, null, answer, attempt))
+            interpret(opener.open(HTTP_OK, null, answer, attempt))
         }
     }
 

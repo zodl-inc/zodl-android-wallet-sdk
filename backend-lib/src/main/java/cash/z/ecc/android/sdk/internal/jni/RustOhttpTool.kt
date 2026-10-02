@@ -12,17 +12,46 @@ import co.electriccoin.lightwallet.client.OhttpCodecResponse
 import co.electriccoin.lightwallet.client.OhttpCompletion
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpProfileInfo
+import co.electriccoin.lightwallet.client.OhttpResponseOpener
 import co.electriccoin.lightwallet.client.OhttpSealedRequest
 import co.electriccoin.lightwallet.client.OhttpVerifiedKey
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * [OhttpCodec] over the shared `zodl-ohttp-client` core, Android profile (`ohttp.rs`).
  *
  * The response opener (the secret that opens the gateway's answer) never enters the JVM: `encapsulate`
- * returns an opaque native handle, which `complete` takes by value and `free` releases. The callers
- * (`OhttpPending`) swap the handle for 0 before using it, so each one is used once.
+ * returns an [OhttpResponseOpener] wrapping an opaque native handle. The opener swaps the handle for 0
+ * before using it, so each one is used once.
  */
 class RustOhttpTool private constructor() : OhttpCodec {
+    /**
+     * Implementation of [OhttpResponseOpener] wrapping a native handle. The handle is swapped for 0
+     * before it is used, so it is spent or freed exactly once even if a coroutine is cancelled
+     * between sealing and opening.
+     */
+    private class ResponseOpenerImpl(
+        opener: Long,
+    ) : OhttpResponseOpener {
+        private val handle = AtomicLong(opener)
+
+        override suspend fun open(
+            outerStatus: Int,
+            contentType: String?,
+            body: ByteArray,
+            attempt: Int,
+        ): OhttpCompletion {
+            val spent = handle.getAndSet(0)
+            check(spent != 0L) { "The OHTTP response opener is already spent" }
+            return complete(spent, outerStatus, contentType, body, attempt)
+        }
+
+        override fun close() {
+            val abandoned = handle.getAndSet(0)
+            if (abandoned != 0L) openerFree(abandoned)
+        }
+    }
+
     private val profile: OhttpProfileInfo by lazy {
         translating { Companion.profileInfo(PROFILE_ANDROID) }.let { native ->
             OhttpProfileInfo(
@@ -42,8 +71,7 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
     override fun relayUrlFor(gatewayHost: String): String? = nativeRelayUrlFor(gatewayHost)
 
-    override fun signedConfigUrl(relayUrl: String): String =
-        translating { Companion.signedConfigUrl(PROFILE_ANDROID, relayUrl) }
+    override fun signedConfigUrl(relayUrl: String): String = translating { Companion.signedConfigUrl(PROFILE_ANDROID, relayUrl) }
 
     override fun verifyKeyConfig(
         gatewayHost: String,
@@ -68,9 +96,9 @@ class RustOhttpTool private constructor() : OhttpCodec {
                 OhttpFields.pack(request.headers),
                 request.body,
             )
-        }.let { OhttpSealedRequest(body = it.body, opener = it.opener) }
+        }.let { OhttpSealedRequest(body = it.body, opener = ResponseOpenerImpl(it.opener)) }
 
-    override fun complete(
+    private fun complete(
         opener: Long,
         outerStatus: Int,
         contentType: String?,
@@ -80,7 +108,7 @@ class RustOhttpTool private constructor() : OhttpCodec {
         translating { Companion.complete(PROFILE_ANDROID, opener, outerStatus, contentType, body, attempt) }
             .let(::completion)
 
-    override fun free(opener: Long) = Companion.openerFree(opener)
+    private fun openerFree(opener: Long) = Companion.openerFree(opener)
 
     private inline fun <T> translating(block: () -> T): T =
         try {
