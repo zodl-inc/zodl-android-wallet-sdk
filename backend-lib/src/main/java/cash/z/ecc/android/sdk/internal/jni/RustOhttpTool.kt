@@ -40,7 +40,7 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
     override fun profileInfo(): OhttpProfileInfo = profile
 
-    override fun relayUrlFor(gatewayHost: String): String? = Companion.relayUrlFor(gatewayHost)
+    override fun relayUrlFor(gatewayHost: String): String? = nativeRelayUrlFor(gatewayHost)
 
     override fun signedConfigUrl(relayUrl: String): String =
         translating { Companion.signedConfigUrl(PROFILE_ANDROID, relayUrl) }
@@ -204,7 +204,7 @@ class RustOhttpTool private constructor() : OhttpCodec {
          * The built-in mapping can be overridden at build time via environment variables.
          */
         @JvmStatic
-        external fun relayUrlFor(gatewayHost: String): String?
+        private external fun nativeRelayUrlFor(gatewayHost: String): String?
 
         @JvmStatic
         private external fun profileInfo(profile: Int): JniOhttpProfile

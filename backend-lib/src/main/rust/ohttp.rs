@@ -496,7 +496,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_signedC
 /// The built-in mapping can be overridden at build time via environment variables
 /// `ZODL_OHTTP_RELAY_URL_MAINNET` and `ZODL_OHTTP_RELAY_URL_TESTNET`.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_relayUrlFor<'local>(
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeRelayUrlFor<'local>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     gateway_host: JString<'local>,
