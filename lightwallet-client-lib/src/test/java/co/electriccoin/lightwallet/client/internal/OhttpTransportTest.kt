@@ -379,7 +379,7 @@ class OhttpTransportTest {
         opener.close()
 
         assertEquals(listOf(1L), codec.freed)
-        assertFailsWith<IllegalStateException> { pending.complete(200, null, ByteArray(0), 0) }
+        assertFailsWith<IllegalStateException> { runBlocking { opener.open(200, null, ByteArray(0), 0) } }
     }
 
     private fun profile(
