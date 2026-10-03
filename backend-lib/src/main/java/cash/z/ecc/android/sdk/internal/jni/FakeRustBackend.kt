@@ -140,10 +140,23 @@ class FakeRustBackend(
         error("Intentionally not implemented yet.")
     }
 
+    override suspend fun proposeSendMaxTransfer(
+        accountUuid: ByteArray,
+        to: String,
+        memo: ByteArray?
+    ): ProposalUnsafe {
+        error("Intentionally not implemented yet.")
+    }
+
     override suspend fun createProposedTransactions(
         proposal: ProposalUnsafe,
-        unifiedSpendingKey: ByteArray
+        unifiedSpendingKey: ByteArray,
+        discardOvk: Boolean
     ): List<ByteArray> {
+        error("Intentionally not implemented yet.")
+    }
+
+    override suspend fun proposalRequiresSaplingProofs(proposal: ProposalUnsafe): Boolean {
         error("Intentionally not implemented yet.")
     }
 

@@ -62,10 +62,41 @@ interface Backend {
         transparentReceiver: String? = null
     ): ProposalUnsafe?
 
+    /**
+     * Proposes sending the account's entire currently spendable shielded balance to [to], with
+     * the ZIP 317 fee deducted from it. Notes that are not yet spendable are left in place.
+     *
+     * @throws RuntimeException if nothing is spendable or the spendable value does not cover
+     * the fee, or as a common indicator of the operation failure
+     */
+    @Throws(RuntimeException::class)
+    suspend fun proposeSendMaxTransfer(
+        accountUuid: ByteArray,
+        to: String,
+        memo: ByteArray? = null
+    ): ProposalUnsafe
+
+    /**
+     * Creates and stores the transactions of [proposal].
+     *
+     * @param discardOvk when `true`, the transactions are created with no outgoing viewing key,
+     * so their outputs cannot be recovered by anyone holding the account's keys. Otherwise the
+     * account's own OVK is used.
+     */
     suspend fun createProposedTransactions(
         proposal: ProposalUnsafe,
-        unifiedSpendingKey: ByteArray
+        unifiedSpendingKey: ByteArray,
+        discardOvk: Boolean = false
     ): List<ByteArray>
+
+    /**
+     * Checks whether creating the transactions of [proposal] needs the Sapling parameters,
+     * which is the case only when it spends or creates a Sapling note.
+     *
+     * @throws RuntimeException as a common indicator of the operation failure
+     */
+    @Throws(RuntimeException::class)
+    suspend fun proposalRequiresSaplingProofs(proposal: ProposalUnsafe): Boolean
 
     /**
      * Creates a partially-created (unsigned without proofs) transaction from the given proposal.

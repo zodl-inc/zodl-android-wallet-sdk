@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk
 
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.model.CreatedTransaction
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
@@ -23,6 +24,9 @@ interface Broadcaster {
      * Created transactions will not be automatically resubmitted until they are
      * submitted through this API.
      *
+     * @param ovkPolicy the outgoing viewing key to encrypt the transactions' outputs to. Use
+     *        [OvkPolicy.Discard] when nobody holding the spending key may learn the recipients.
+     *
      * @throws TransactionEncoderException.AnchorNotFoundException if the transactions could
      *         not be created because no anchor was computable at the height the proposal
      *         anchors to. Scanning creates a checkpoint at every height a proposal can anchor
@@ -34,7 +38,8 @@ interface Broadcaster {
      */
     suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender
     ): List<CreatedTransaction>
 
     /**

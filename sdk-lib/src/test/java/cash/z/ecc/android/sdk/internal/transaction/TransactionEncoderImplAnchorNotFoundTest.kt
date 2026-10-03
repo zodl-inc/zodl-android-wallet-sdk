@@ -47,6 +47,7 @@ class TransactionEncoderImplAnchorNotFoundTest {
     fun createProposedTransactionsMapsAnchorNotFound() =
         runBlocking {
             val backend = mock(TypesafeBackend::class.java)
+            `when`(backend.proposalRequiresSaplingProofs(proposal)).thenReturn(false)
             `when`(backend.createProposedTransactions(proposal, usk)).thenThrow(anchorNotFound)
 
             val exception =
@@ -62,6 +63,7 @@ class TransactionEncoderImplAnchorNotFoundTest {
     fun createProposedTransactionsMapsOtherFailuresToTheGenericWrapper() =
         runBlocking {
             val backend = mock(TypesafeBackend::class.java)
+            `when`(backend.proposalRequiresSaplingProofs(proposal)).thenReturn(false)
             `when`(backend.createProposedTransactions(proposal, usk)).thenThrow(unrelated)
 
             val exception =

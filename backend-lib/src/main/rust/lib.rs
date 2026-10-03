@@ -120,6 +120,8 @@ mod migration_keystone;
 mod migration_plan_cache;
 mod migration_send_max;
 mod payment_uri;
+mod proving;
+mod send_max;
 mod tor;
 mod utils;
 mod voting;
@@ -2497,6 +2499,68 @@ where
     anyhow!("{}: {}", context, e)
 }
 
+/// Returns the [`OvkPolicy`] selected over JNI: the account's OVK, or none at all.
+fn ovk_policy_from_jni(discard_ovk: jboolean) -> OvkPolicy {
+    if discard_ovk == JNI_FALSE {
+        OvkPolicy::Sender
+    } else {
+        OvkPolicy::Discard
+    }
+}
+
+/// Builds the transactions of `proposal`, loading the Sapling parameters only when the
+/// proposal has a Sapling component (see [`proving::proposal_requires_sapling_proofs`]).
+#[allow(clippy::too_many_arguments)]
+fn create_transactions_for_proposal(
+    env: &mut JNIEnv,
+    db_data: &mut WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>,
+    network: &Network,
+    proposal: &zcash_client_backend::proposal::Proposal<
+        StandardFeeRule,
+        zcash_client_sqlite::ReceivedNoteId,
+    >,
+    usk: UnifiedSpendingKey,
+    ovk_policy: OvkPolicy,
+    spend_params: JString,
+    output_params: JString,
+) -> anyhow::Result<NonEmpty<TxId>> {
+    let spending_keys = wallet::SpendingKeys::from_unified_spending_key(usk);
+    let txids = if proving::proposal_requires_sapling_proofs(proposal) {
+        let spend_params = path_from_jni(env, spend_params)?;
+        let output_params = path_from_jni(env, output_params)?;
+        let prover = LocalTxProver::new(&spend_params, &output_params);
+        create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
+            db_data,
+            network,
+            &prover,
+            &prover,
+            &spending_keys,
+            ovk_policy,
+            proposal,
+            None,
+        )
+    } else {
+        let prover = proving::NoSaplingProver;
+        create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
+            db_data,
+            network,
+            &prover,
+            &prover,
+            &spending_keys,
+            ovk_policy,
+            proposal,
+            None,
+        )
+    };
+    txids.map_err(|e| map_proposal_error(env, "Error while creating transactions", e))
+}
+
+/// Creates the transactions of the given proposal and stores them in the wallet.
+///
+/// `discard_ovk` selects [`OvkPolicy::Discard`] instead of [`OvkPolicy::Sender`]: the outputs
+/// are then not recoverable with the account's outgoing viewing key, so nobody holding the
+/// spending key can later learn their recipients. The Sapling parameter paths are read only
+/// when the proposal spends or creates a Sapling note.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createProposedTransactions<
     'local,
@@ -2508,6 +2572,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
     usk: JByteArray<'local>,
     spend_params: JString<'local>,
     output_params: JString<'local>,
+    discard_ovk: jboolean,
     network_id: jint,
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
@@ -2515,26 +2580,21 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
         let network = parse_network(network_id)?;
         let mut db_data = wallet_db(env, network, db_data)?;
         let usk = decode_usk(env, usk)?;
-        let spend_params = path_from_jni(env, spend_params)?;
-        let output_params = path_from_jni(env, output_params)?;
-
-        let prover = LocalTxProver::new(&spend_params, &output_params);
 
         let proposal = Proposal::decode(utils::java_bytes_to_rust(env, &proposal)?.as_slice())
             .map_err(|e| anyhow!("Invalid proposal: {}", e))?
             .try_into_standard_proposal(&network, &db_data)?;
 
-        let txids = create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
+        let txids = create_transactions_for_proposal(
+            env,
             &mut db_data,
             &network,
-            &prover,
-            &prover,
-            &wallet::SpendingKeys::from_unified_spending_key(usk),
-            OvkPolicy::Sender,
             &proposal,
-            None,
-        )
-        .map_err(|e| map_proposal_error(env, "Error while creating transactions", e))?;
+            usk,
+            ovk_policy_from_jni(discard_ovk),
+            spend_params,
+            output_params,
+        )?;
 
         Ok(
             utils::rust_vec_to_java(env, txids.into(), "[B", |env, txid| {
@@ -2542,6 +2602,79 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
             })?
             .into_raw(),
         )
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Returns `true` if creating the transactions of the given proposal needs the Sapling
+/// parameter files, which is the case only when it spends or creates a Sapling note.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposalRequiresSaplingProofs<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    proposal: JByteArray<'local>,
+    network_id: jint,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.proposalRequiresSaplingProofs").entered();
+        let network = parse_network(network_id)?;
+        let db_data = wallet_db(env, network, db_data)?;
+
+        let proposal = Proposal::decode(utils::java_bytes_to_rust(env, &proposal)?.as_slice())
+            .map_err(|e| anyhow!("Invalid proposal: {}", e))?
+            .try_into_standard_proposal(&network, &db_data)?;
+
+        Ok(if proving::proposal_requires_sapling_proofs(&proposal) {
+            JNI_TRUE
+        } else {
+            JNI_FALSE
+        })
+    });
+    unwrap_exc_or(&mut env, res, JNI_TRUE)
+}
+
+/// Proposes sending the account's entire currently spendable shielded balance to `to`, with
+/// the ZIP 317 fee deducted from it (see [`send_max::propose_send_max`]).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSendMaxTransfer<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    account_uuid: JByteArray<'local>,
+    to: JString<'local>,
+    memo: JByteArray<'local>,
+    network_id: jint,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.proposeSendMaxTransfer").entered();
+        let network = parse_network(network_id)?;
+        let mut db_data = wallet_db(env, network, db_data)?;
+        let account_uuid = account_id_from_jni(env, account_uuid)?;
+        let to = utils::java_string_to_rust(env, &to)?;
+        let to = to
+            .parse::<ZcashAddress>()
+            .map_err(|e| anyhow!("Can't parse recipient address: {}", e))?;
+
+        let memo = utils::java_nullable_bytes_to_rust(env, &memo)?
+            .as_deref()
+            .map(MemoBytes::from_bytes)
+            .transpose()
+            .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
+
+        let proposal = send_max::propose_send_max(&mut db_data, &network, account_uuid, to, memo)?;
+
+        Ok(utils::rust_bytes_to_java(
+            env,
+            Proposal::from_standard_proposal(&proposal)
+                .encode_to_vec()
+                .as_ref(),
+        )?
+        .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }

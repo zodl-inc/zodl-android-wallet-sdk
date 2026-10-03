@@ -63,10 +63,13 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FetchFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.ObserveFiatCurrencyResult
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
 import cash.z.ecc.android.sdk.model.TransactionId
@@ -1157,6 +1160,19 @@ class SdkSynchronizer private constructor(
     override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal =
         txManager.proposeOrchardToIronwoodMigration(account)
 
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalFromParametersException::class
+    )
+    override suspend fun proposeSendMax(
+        account: Account,
+        recipient: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal {
+        require(recipient.network == network) { "The recipient is for a different network" }
+        return txManager.proposeSendMax(account, recipient, memo)
+    }
+
     /**
      * @throws TransactionEncoderException.ProposalShieldingException in case the proposal creation failed
      *
@@ -1177,14 +1193,16 @@ class SdkSynchronizer private constructor(
     )
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
     ): Flow<TransactionSubmitResult> {
         // This preserves the legacy API contract by creating locally, then submitting each
         // created transaction to the builder-configured default endpoint.
         return sdkBroadcaster.createAndSubmitProposedTransactions(
             proposal = proposal,
             usk = usk,
-            endpoint = defaultSubmitEndpoint
+            endpoint = defaultSubmitEndpoint,
+            ovkPolicy = ovkPolicy
         )
     }
 

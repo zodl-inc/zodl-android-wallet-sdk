@@ -20,8 +20,11 @@ import cash.z.ecc.android.sdk.model.AccountUsk
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.MemoContent
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
@@ -147,15 +150,33 @@ internal class TypesafeBackendImpl(
                 )
             }
 
+    override suspend fun proposeSendMaxTransfer(
+        account: Account,
+        to: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal =
+        Proposal.fromUnsafe(
+            backend.proposeSendMaxTransfer(
+                account.accountUuid.value,
+                to.encoding,
+                memo?.asMemoBytes()?.bytes?.byteArray
+            )
+        )
+
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
     ): List<FirstClassByteArray> =
         backend
             .createProposedTransactions(
                 proposal.toUnsafe(),
-                usk.copyBytes()
+                usk.copyBytes(),
+                discardOvk = ovkPolicy == OvkPolicy.Discard
             ).map { FirstClassByteArray(it) }
+
+    override suspend fun proposalRequiresSaplingProofs(proposal: Proposal): Boolean =
+        backend.proposalRequiresSaplingProofs(proposal.toUnsafe())
 
     override suspend fun createPcztFromProposal(
         account: Account,

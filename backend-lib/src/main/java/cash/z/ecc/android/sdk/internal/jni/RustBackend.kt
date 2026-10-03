@@ -483,9 +483,27 @@ class RustBackend private constructor(
             }
         }
 
+    override suspend fun proposeSendMaxTransfer(
+        accountUuid: ByteArray,
+        to: String,
+        memo: ByteArray?
+    ): ProposalUnsafe =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            ProposalUnsafe.parse(
+                proposeSendMaxTransfer(
+                    dataDbFile.absolutePath,
+                    accountUuid,
+                    to,
+                    memo,
+                    networkId = networkId,
+                )
+            )
+        }
+
     override suspend fun createProposedTransactions(
         proposal: ProposalUnsafe,
-        unifiedSpendingKey: ByteArray
+        unifiedSpendingKey: ByteArray,
+        discardOvk: Boolean
     ): List<ByteArray> =
         withContext(SdkDispatchers.DATABASE_IO) {
             createProposedTransactions(
@@ -494,8 +512,18 @@ class RustBackend private constructor(
                 unifiedSpendingKey,
                 spendParamsPath = saplingSpendFile.absolutePath,
                 outputParamsPath = saplingOutputFile.absolutePath,
+                discardOvk = discardOvk,
                 networkId = networkId
             ).asList()
+        }
+
+    override suspend fun proposalRequiresSaplingProofs(proposal: ProposalUnsafe): Boolean =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            proposalRequiresSaplingProofs(
+                dataDbFile.absolutePath,
+                proposal.toByteArray(),
+                networkId = networkId
+            )
         }
 
     override suspend fun createPcztFromProposal(
@@ -739,6 +767,27 @@ class RustBackend private constructor(
 
         fun validateUnifiedSpendingKey(bytes: ByteArray) = isValidSpendingKey(bytes)
 
+        /**
+         * Returns `true` if [address] is a unified, Sapling, transparent or TEX address on the
+         * network [networkId]. Pure: needs no wallet database.
+         *
+         * The per-kind checks throw when the text does not decode for [networkId] at all; that
+         * is reported as `false` here.
+         */
+        @Suppress("TooGenericExceptionCaught", "SwallowedException")
+        fun isValidRecipientAddress(
+            address: String,
+            networkId: Int
+        ): Boolean =
+            try {
+                isValidUnifiedAddress(address, networkId) ||
+                    isValidSaplingAddress(address, networkId) ||
+                    isValidTransparentAddress(address, networkId) ||
+                    isValidTexAddress(address, networkId)
+            } catch (e: RuntimeException) {
+                false
+            }
+
         @JvmStatic
         private external fun isValidSpendingKey(bytes: ByteArray): Boolean
 
@@ -951,14 +1000,32 @@ class RustBackend private constructor(
 
         @JvmStatic
         @Suppress("LongParameterList")
+        private external fun proposeSendMaxTransfer(
+            dbDataPath: String,
+            accountUuid: ByteArray,
+            to: String,
+            memo: ByteArray?,
+            networkId: Int,
+        ): ByteArray
+
+        @JvmStatic
+        @Suppress("LongParameterList")
         private external fun createProposedTransactions(
             dbDataPath: String,
             proposal: ByteArray,
             usk: ByteArray,
             spendParamsPath: String,
             outputParamsPath: String,
+            discardOvk: Boolean,
             networkId: Int
         ): Array<ByteArray>
+
+        @JvmStatic
+        private external fun proposalRequiresSaplingProofs(
+            dbDataPath: String,
+            proposal: ByteArray,
+            networkId: Int
+        ): Boolean
 
         @JvmStatic
         private external fun createPcztFromProposal(

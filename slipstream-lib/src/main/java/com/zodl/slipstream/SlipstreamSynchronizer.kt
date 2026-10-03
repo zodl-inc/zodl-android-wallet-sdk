@@ -51,6 +51,7 @@ import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FetchFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.ObserveFiatCurrencyResult
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
@@ -1014,10 +1015,11 @@ class SlipstreamSynchronizer internal constructor(
 
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
     ): Flow<TransactionSubmitResult> {
         awaitReady()
-        return spendService.createProposedTransactions(proposal, usk)
+        return spendService.createProposedTransactions(proposal, usk, ovkPolicy)
     }
 
     override suspend fun createPcztFromProposal(

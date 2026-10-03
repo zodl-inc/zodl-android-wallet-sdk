@@ -15,6 +15,30 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   card's key is never exposed and is redacted from `toString()`. A rejected link throws
   `GiftCardException.InvalidLink`, whose `reason` (`GiftCardLinkError`) categorizes the
   failure; neither it nor the message contains any part of the link.
+- `Synchronizer.proposeSendMax(account, recipient, memo = null)`, which proposes sending the
+  account's entire currently spendable shielded balance (Sapling, Orchard and Ironwood) to one
+  recipient, with the ZIP 317 fee computed internally and deducted from it, leaving no change.
+  Notes that are not yet spendable are left in the account; transparent funds are not swept.
+  Throws `TransactionEncoderException.InsufficientFundsException` when nothing is spendable or
+  the spendable balance does not cover the fee. The default implementation throws
+  `UnsupportedOperationException`; the SDK's default synchronizer implements it, the
+  Slipstream synchronizer does not yet.
+- `RecipientAddress`, a unified, Sapling, transparent or TEX address validated for a network
+  by the Rust backend (`RecipientAddress.new(encoding, network)`), taken by `proposeSendMax`.
+- `OvkPolicy` (`Sender`, `Discard`), selecting which outgoing viewing key created
+  transactions' outputs are encrypted to.
+
+### Changed
+- `Synchronizer.createProposedTransactions` and `Broadcaster.createProposedTransactions` take
+  an `ovkPolicy: OvkPolicy = OvkPolicy.Sender` parameter. Existing call sites compile
+  unchanged and keep the previous behavior. Any implementer or test fake of `Synchronizer` or
+  `Broadcaster` must add the parameter to its override. With `OvkPolicy.Discard`, nobody
+  holding the account's keys can recover the recipients, values or memos of the created
+  outputs, including the sending wallet itself if its local data is lost.
+- Creating transactions from a proposal that neither spends nor creates a Sapling note
+  (including change) no longer downloads the Sapling parameters (about 50 MB) first, so such
+  sends work on a device that has never fetched them. Proposals that involve Sapling still
+  download them as before.
 
 ## [5.0.0] - 2026-09-25
 

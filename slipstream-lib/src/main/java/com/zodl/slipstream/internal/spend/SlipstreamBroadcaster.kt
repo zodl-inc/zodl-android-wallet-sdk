@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
@@ -48,10 +49,16 @@ internal class SlipstreamBroadcaster(
 ) : Broadcaster {
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
     ): List<CreatedTransaction> {
         SaplingParams.ensureDownloaded(saplingParamsDir)
-        val txIds = backend.createProposedTransactions(proposal.toUnsafe(), usk.copyBytes())
+        val txIds =
+            backend.createProposedTransactions(
+                proposal.toUnsafe(),
+                usk.copyBytes(),
+                discardOvk = ovkPolicy == OvkPolicy.Discard
+            )
         val created = txIds.map { txId -> storeAsAwaitingSubmission(FirstClassByteArray(txId)) }
         engine.notifyTxChange()
         return created

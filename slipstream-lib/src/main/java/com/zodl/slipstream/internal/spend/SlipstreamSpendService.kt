@@ -11,6 +11,7 @@ import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
@@ -121,11 +122,17 @@ internal class SlipstreamSpendService(
      */
     fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender
     ): Flow<TransactionSubmitResult> =
         flow {
             ensureSaplingParams()
-            val txIds = backend.createProposedTransactions(proposal.toUnsafe(), usk.copyBytes())
+            val txIds =
+                backend.createProposedTransactions(
+                    proposal.toUnsafe(),
+                    usk.copyBytes(),
+                    discardOvk = ovkPolicy == OvkPolicy.Discard
+                )
             engine.notifyTxChange()
             for (txId in txIds) {
                 val txIdBytes = FirstClassByteArray(txId)

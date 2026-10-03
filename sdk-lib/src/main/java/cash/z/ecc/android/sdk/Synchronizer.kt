@@ -37,10 +37,13 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FastestServersResult
+import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.ObserveFiatCurrencyResult
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
 import cash.z.ecc.android.sdk.model.TransactionId
@@ -412,6 +415,40 @@ interface Synchronizer {
     suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal
 
     /**
+     * Creates a proposal sending the account's entire currently spendable shielded balance
+     * (Sapling, Orchard and Ironwood) to [recipient], with the ZIP 317 fee computed internally
+     * and deducted from it, so that nothing is left behind as change.
+     *
+     * Only funds that are spendable now are swept: notes that do not yet have enough
+     * confirmations under the default confirmations policy are left where they are and stay
+     * in the account. Transparent funds are not swept; shield them first with
+     * [proposeShielding].
+     *
+     * The default implementation throws [UnsupportedOperationException]; SDK-backed
+     * synchronizers override it.
+     *
+     * @param account the account from which to send.
+     * @param recipient the recipient's address, on this synchronizer's [network].
+     * @param memo the optional memo for the recipient. Must be `null` for a transparent
+     *        recipient.
+     *
+     * @return the proposal or an exception
+     *
+     * @throws TransactionEncoderException.InsufficientFundsException if nothing is spendable, or
+     * the spendable balance does not cover the fee
+     * @throws TransactionEncoderException.ProposalFromParametersException if the proposal cannot
+     * be created for any other reason
+     */
+    suspend fun proposeSendMax(
+        account: Account,
+        recipient: RecipientAddress,
+        memo: MemoContent? = null
+    ): Proposal =
+        throw UnsupportedOperationException(
+            "proposeSendMax is unavailable for this Synchronizer implementation."
+        )
+
+    /**
      * Creates a proposal for fulfilling a payment ZIP-321 URI
      *
      * @param account the account from which to transfer funds.
@@ -463,6 +500,10 @@ interface Synchronizer {
      * @param proposal the proposal for which to create transactions.
      * @param usk the unified spending key associated with the account for which the
      *            proposal was created.
+     * @param ovkPolicy the outgoing viewing key to encrypt the transactions' outputs to. The
+     *            default, [OvkPolicy.Sender], lets the wallet recover what it sent. Use
+     *            [OvkPolicy.Discard] when nobody holding [usk] may learn the recipients, values
+     *            or memos, e.g. when sweeping a gift card whose issuer can rederive its key.
      *
      * @return a flow of result objects for the transactions that were created as part of
      *         the proposal, indicating whether they were submitted to the network or if
@@ -479,7 +520,8 @@ interface Synchronizer {
      */
     suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender
     ): Flow<TransactionSubmitResult>
 
     /**
@@ -1401,7 +1443,8 @@ interface Synchronizer {
 private object UnavailableBroadcaster : Broadcaster {
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
     ): List<CreatedTransaction> = throw UnsupportedOperationException(
         "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
     )
