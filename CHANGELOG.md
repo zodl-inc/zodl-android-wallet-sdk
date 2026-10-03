@@ -15,6 +15,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   card's key is never exposed and is redacted from `toString()`. A rejected link throws
   `GiftCardException.InvalidLink`, whose `reason` (`GiftCardLinkError`) categorizes the
   failure; neither it nor the message contains any part of the link.
+- `GiftCardRedeemer`, which redeems a `GiftCard` into the user's wallet through a temporary,
+  isolated wallet (its own `Synchronizer` under its own alias, without Tor or exchange rates)
+  that can run alongside the main wallet. `GiftCardRedeemer.new(context, card, network,
+  lightWalletEndpoint, alias = GiftCardRedeemer.defaultAlias(card))`, then `check()` syncs the
+  card wallet and returns `Status.Ready` / `Status.Pending` / `Status.Empty` with the card's
+  balance, `redeem(toAddress, memo)` sweeps the spendable balance minus the ZIP 317 fee to
+  `toAddress` and submits it, and `close()` closes and deletes the temporary wallet.
+  Redemption is created with `OvkPolicy.Discard`, so the card's issuer (who can rederive the
+  card's key) cannot learn the recipient address. Funds received by the card less than 10
+  blocks ago are reported as pending and are not swept. Failures are reported as
+  `GiftCardException` subtypes (`NetworkMismatch`, `NothingToRedeem`, `SyncFailed`,
+  `Closed`). Each `check()` on a fresh redeemer scans from the card's birthday, which needs
+  network access.
 - `Synchronizer.proposeSendMax(account, recipient, memo = null)`, which proposes sending the
   account's entire currently spendable shielded balance (Sapling, Orchard and Ironwood) to one
   recipient, with the ZIP 317 fee computed internally and deducted from it, leaving no change.
@@ -24,7 +37,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UnsupportedOperationException`; the SDK's default synchronizer implements it, the
   Slipstream synchronizer does not yet.
 - `RecipientAddress`, a unified, Sapling, transparent or TEX address validated for a network
-  by the Rust backend (`RecipientAddress.new(encoding, network)`), taken by `proposeSendMax`.
+  by the Rust backend (`RecipientAddress.new(encoding, network)`), taken by `proposeSendMax`
+  and `GiftCardRedeemer.redeem`.
 - `OvkPolicy` (`Sender`, `Discard`), selecting which outgoing viewing key created
   transactions' outputs are encrypted to.
 - `Synchronizer.eraseAlias(appContext, network, alias)`, which deletes the local data of the
