@@ -6,6 +6,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GiftCard`, a gift card read from a gift card link with `GiftCard.parse(link)`: this SDK's
+  own links (`https://gift.zodl.com/#v=1&key=...&height=...`) and Vizor wallet gift card links
+  (`https://link.vizor.cash/payment-links/open#v1=` / `v2=` / `v3=`). Exposes `origin`
+  (`GiftCardOrigin`), `network`, `birthdayHeight`, `statedAmount` (informational only), the
+  issuer's free-form `description`, and `id`, a stable non-secret identifier of the card. The
+  card's key is never exposed and is redacted from `toString()`. A rejected link throws
+  `GiftCardException.InvalidLink`, whose `reason` (`GiftCardLinkError`) categorizes the
+  failure; neither it nor the message contains any part of the link.
+
 ## [5.0.0] - 2026-09-25
 
 ### Added

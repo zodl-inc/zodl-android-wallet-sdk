@@ -53,6 +53,9 @@ zcash_client_backend = { version = "0.24.0", features = [
     "pczt",
 ] }
 zcash_client_sqlite = { version = "0.22.0", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+# Used by gift.rs (gift card links), which names `zcash_keys` directly rather than through the
+# `zcash_client_backend` re-exports; resolves to the same instance already in Cargo.lock.
+zcash_keys = "0.16"
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.30"
 zcash_proofs = "0.30"
@@ -71,6 +74,9 @@ shardtree = "0.7"
 incrementalmerkletree = { version = "0.8", default-features = false }
 
 # Infrastructure
+# Gift cards (gift.rs): a card secret is BIP 39 entropy, and its link key is Bech32m-encoded.
+bech32 = "0.11"
+bip0039 = "0.12"
 prost = "0.14"
 rusqlite = "0.37"
 secrecy = "0.8"
@@ -213,12 +219,6 @@ ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package
 tracing-android = { version = "0.2", optional = true }
 
 [dev-dependencies]
-# Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
-# which needs a real UnifiedSpendingKey to exercise the in-process-signing path
-# (`commit_preparation`) against a real wallet DB fixture — the app itself never uses this crate
-# (Kotlin does the mnemonic-to-seed conversion, Rust always receives already-derived seed bytes).
-bip0039 = "0.12"
-
 # Test-only: pulls in `zcash_client_sqlite::testing` (`TestDb`/`TestDbFactory`/`BlockCache`) and,
 # through it, `zcash_client_backend::data_api::testing::TestBuilder` — a synthetic, self-contained
 # wallet DB with real chain/checkpoint history, no fixture file required. Used by

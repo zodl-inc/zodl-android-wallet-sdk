@@ -108,6 +108,12 @@ use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
 };
 
+// `gift` is shared verbatim with the other wallet backends and the card-minting tooling, so it
+// is neither edited nor reformatted here; minting helpers it carries are unused by this crate.
+#[allow(dead_code)]
+#[rustfmt::skip]
+mod gift;
+mod gift_card;
 mod migration;
 mod migration_engine;
 mod migration_keystone;
