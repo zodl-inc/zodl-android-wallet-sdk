@@ -56,6 +56,7 @@ internal class DatabaseCoordinator private constructor(
 
         const val DATABASE_FILE_JOURNAL_SUFFIX = "journal" // $NON-NLS
         const val DATABASE_FILE_WAL_SUFFIX = "wal" // $NON-NLS
+        const val DATABASE_FILE_SHM_SUFFIX = "shm" // $NON-NLS
 
         @VisibleForTesting
         internal const val ALIAS_LEGACY = "ZcashSdk" // $NON-NLS
@@ -435,9 +436,10 @@ internal class DatabaseCoordinator private constructor(
      * @return true when a file exists at the given path and was deleted.
      */
     private suspend fun deleteDatabase(file: File): Boolean {
-        // Just try the journal and wal files too. Doesn't matter if they're not there.
+        // Just try the journal, wal and shared-memory files too. Doesn't matter if they're not there.
         File("${file.absolutePath}-$DATABASE_FILE_JOURNAL_SUFFIX").deleteSuspend()
         File("${file.absolutePath}-$DATABASE_FILE_WAL_SUFFIX").deleteSuspend()
+        File("${file.absolutePath}-$DATABASE_FILE_SHM_SUFFIX").deleteSuspend()
 
         return file.deleteSuspend()
     }

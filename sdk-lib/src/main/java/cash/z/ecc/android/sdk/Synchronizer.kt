@@ -1274,7 +1274,7 @@ interface Synchronizer {
                         val pendingSubmitPlanStore =
                             PendingSubmitPlanStore(
                                 preferenceProvider = encryptedPreferenceProvider(),
-                                namespace = "${zcashNetwork.id}_$alias"
+                                namespace = PendingSubmitPlanStore.namespaceFor(zcashNetwork.id, alias)
                             )
                         preferenceProvider to pendingSubmitPlanStore
                     }
@@ -1437,6 +1437,32 @@ interface Synchronizer {
             network: ZcashNetwork,
             alias: String = ZcashSdk.DEFAULT_ALIAS
         ): Boolean = SdkSynchronizer.erase(appContext, network, alias)
+
+        /**
+         * Deletes the local data of the wallet at [network] and [alias] only: its databases,
+         * compact block cache and the transaction submit plans stored for it.
+         *
+         * Unlike [erase], this does not clear the preferences shared by every wallet in the
+         * process, so wallets under other aliases (in particular the app's main wallet) keep all
+         * of their state. Use it to dispose of an auxiliary wallet, such as the temporary wallet a
+         * [GiftCardRedeemer] creates, while the main wallet keeps running.
+         *
+         * The synchronizer for [network] and [alias] must be closed first; this waits for a
+         * closing one to finish shutting down.
+         *
+         * @return true if any of the wallet's files were found and deleted.
+         *
+         * @throws IllegalArgumentException if [alias] is not a valid alias.
+         * @throws IllegalStateException if a synchronizer for [network] and [alias] is active.
+         */
+        suspend fun eraseAlias(
+            appContext: Context,
+            network: ZcashNetwork,
+            alias: String
+        ): Boolean {
+            validateAlias(alias)
+            return SdkSynchronizer.eraseAlias(appContext, network, alias)
+        }
     }
 }
 

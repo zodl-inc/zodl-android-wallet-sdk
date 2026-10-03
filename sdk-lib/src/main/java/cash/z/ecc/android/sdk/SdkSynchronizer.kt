@@ -275,6 +275,36 @@ class SdkSynchronizer private constructor(
             }
         }
 
+        /**
+         * Deletes the data that belongs to the wallet at [network] and [alias] alone: its data
+         * database (with its journal, WAL and shared-memory files), its compact block cache,
+         * its legacy pending-transactions database, and the submit plans stored under its
+         * namespace. Unlike [erase], it leaves the preferences shared by every wallet in the
+         * process untouched, so other wallets (in particular the default-alias wallet) are not
+         * affected.
+         */
+        internal suspend fun eraseAlias(
+            appContext: Context,
+            network: ZcashNetwork,
+            alias: String
+        ): Boolean {
+            val key = SynchronizerKey(network, alias)
+
+            return mutex.withLock {
+                waitForShutdown(key)
+                checkForExistingSynchronizers(key)
+
+                PendingSubmitPlanStore.eraseNamespace(
+                    preferenceProvider = EncryptedPreferenceProvider(appContext)(),
+                    namespace = PendingSubmitPlanStore.namespaceFor(network.id, alias)
+                )
+
+                val coordinator = DatabaseCoordinator.getInstance(appContext)
+                val pendingDeleted = coordinator.deletePendingTransactionDatabase(network, alias)
+                coordinator.deleteDatabases(network, alias) || pendingDeleted
+            }
+        }
+
         suspend fun estimateBirthdayHeight(
             context: Context,
             date: Instant,

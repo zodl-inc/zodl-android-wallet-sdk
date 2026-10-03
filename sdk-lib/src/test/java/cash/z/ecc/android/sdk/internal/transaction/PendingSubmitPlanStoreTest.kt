@@ -206,6 +206,68 @@ class PendingSubmitPlanStoreTest {
         }
 
     @Test
+    fun concurrently_loaded_namespaced_stores_keep_each_others_plans() =
+        runBlocking {
+            val preferenceProvider = FakePreferenceProvider()
+            val mainTransaction = createdTransaction(1)
+            val giftTransaction = createdTransaction(2)
+            val mainStore = PendingSubmitPlanStore(preferenceProvider, namespace = "1_zcashdefault")
+            val giftStore = PendingSubmitPlanStore(preferenceProvider, namespace = "1_giftcard_ab")
+
+            // Both stores load the (empty) shared preference before either writes to it, as two
+            // synchronizers running side by side do.
+            assertNull(mainStore.getSubmitPlan(mainTransaction.txId))
+            assertNull(giftStore.getSubmitPlan(giftTransaction.txId))
+
+            mainStore.storeSubmitPlan(mainTransaction, TransactionSubmitPlan(listOf(endpoint("a.z.cash"))))
+            giftStore.storeSubmitPlan(giftTransaction, TransactionSubmitPlan(listOf(endpoint("b.z.cash"))))
+            giftStore.addSubmitEndpoint(giftTransaction, endpoint("c.z.cash"))
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint("a.z.cash")))),
+                PendingSubmitPlanStore(preferenceProvider, namespace = "1_zcashdefault")
+                    .getSubmitPlan(mainTransaction.txId)
+            )
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(
+                    TransactionSubmitPlan(listOf(endpoint("b.z.cash"), endpoint("c.z.cash")))
+                ),
+                PendingSubmitPlanStore(preferenceProvider, namespace = "1_giftcard_ab")
+                    .getSubmitPlan(giftTransaction.txId)
+            )
+        }
+
+    @Test
+    fun erase_namespace_removes_only_that_namespace() =
+        runBlocking {
+            val preferenceProvider = FakePreferenceProvider()
+            val mainTransaction = createdTransaction(1)
+            val giftTransaction = createdTransaction(2)
+            PendingSubmitPlanStore(preferenceProvider, namespace = "1_zcashdefault")
+                .storeSubmitPlan(mainTransaction, TransactionSubmitPlan(listOf(endpoint("a.z.cash"))))
+            PendingSubmitPlanStore(preferenceProvider, namespace = "1_gift")
+                .storeSubmitPlan(giftTransaction, TransactionSubmitPlan(listOf(endpoint("b.z.cash"))))
+            // A namespace that merely starts with the erased one is a different namespace.
+            PendingSubmitPlanStore(preferenceProvider, namespace = "1_gift2")
+                .storeSubmitPlan(giftTransaction, TransactionSubmitPlan(listOf(endpoint("c.z.cash"))))
+
+            PendingSubmitPlanStore.eraseNamespace(preferenceProvider, "1_gift")
+
+            assertNull(
+                PendingSubmitPlanStore(preferenceProvider, namespace = "1_gift").getSubmitPlan(giftTransaction.txId)
+            )
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint("a.z.cash")))),
+                PendingSubmitPlanStore(preferenceProvider, namespace = "1_zcashdefault")
+                    .getSubmitPlan(mainTransaction.txId)
+            )
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(endpoint("c.z.cash")))),
+                PendingSubmitPlanStore(preferenceProvider, namespace = "1_gift2").getSubmitPlan(giftTransaction.txId)
+            )
+        }
+
+    @Test
     fun to_hex_reversed_and_from_hex_reversed_round_trip() {
         val bytes = Random(42).nextBytes(37)
 

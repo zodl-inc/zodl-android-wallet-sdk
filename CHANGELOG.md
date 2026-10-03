@@ -27,6 +27,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by the Rust backend (`RecipientAddress.new(encoding, network)`), taken by `proposeSendMax`.
 - `OvkPolicy` (`Sender`, `Discard`), selecting which outgoing viewing key created
   transactions' outputs are encrypted to.
+- `Synchronizer.eraseAlias(appContext, network, alias)`, which deletes the local data of the
+  wallet under one alias (databases, block cache and its stored submit plans) without clearing
+  the preferences shared by every wallet in the process, unlike `Synchronizer.erase`. The
+  synchronizer for that alias must be closed first.
 
 ### Changed
 - `Synchronizer.createProposedTransactions` and `Broadcaster.createProposedTransactions` take
@@ -39,6 +43,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (including change) no longer downloads the Sapling parameters (about 50 MB) first, so such
   sends work on a device that has never fetched them. Proposals that involve Sapling still
   download them as before.
+
+### Fixed
+- Two synchronizers running in the same process (different aliases) no longer overwrite each
+  other's stored transaction submit plans; previously the later writer could drop a plan the
+  other had stored, so a created transaction was not resubmitted to the endpoints it was
+  submitted to.
+- `Synchronizer.erase` now also deletes a database's SQLite shared-memory (`-shm`) file.
 
 ## [5.0.0] - 2026-09-25
 
