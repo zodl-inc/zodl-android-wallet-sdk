@@ -854,6 +854,63 @@ interface Synchronizer {
      */
     fun enhanceTransaction(txId: TransactionId)
 
+    /**
+     * Stores a transaction that was created on this device by another wallet, and marks it as
+     * trusted (ZIP 315).
+     *
+     * ZIP 315 makes a wallet wait for more confirmations before spending the outputs of an
+     * untrusted transaction (one it did not create; 10 blocks by default) than those of a
+     * trusted one (3 blocks by default), and lets a wallet "enable ... specific external
+     * transactions as trusted". The sweep of a gift card into this wallet is such a transaction:
+     * [GiftCardRedeemer] authors it on this device, so its outputs deserve the same confidence as
+     * the wallet's own change. Recording it here decrypts and stores [rawTransaction] right
+     * away, so the incoming funds show up without waiting for the next sync, and marks the
+     * transaction trusted, so the funds are spendable after the trusted number of confirmations.
+     *
+     * This writes to the wallet database directly, so it works whether the synchronizer is
+     * synced, still syncing or stopped. Recording the same transaction again is harmless.
+     *
+     * The default implementation throws [UnsupportedOperationException]; SDK-backed
+     * synchronizers override it.
+     *
+     * @param rawTransaction the complete serialized transaction, as submitted to the network.
+     * @param txId the transaction's id, in the byte order the SDK uses everywhere, e.g.
+     * [TransactionSubmitResult.txId] or [CreatedTransaction.txId].
+     *
+     * @throws IllegalArgumentException if [txId] is not the id of [rawTransaction]; the
+     * transaction is stored anyway, but as untrusted.
+     */
+    suspend fun recordTrustedTransaction(
+        rawTransaction: ByteArray,
+        txId: ByteArray
+    ): Unit =
+        throw UnsupportedOperationException(
+            "recordTrustedTransaction is unavailable for this Synchronizer implementation."
+        )
+
+    /**
+     * Marks a transaction this wallet already knows about as trusted or untrusted (ZIP 315).
+     *
+     * The outputs of a trusted transaction are spendable after the trusted number of
+     * confirmations (3 by default) instead of the untrusted one (10 by default). Transactions the
+     * wallet created itself are trusted already; use this for an external transaction whose
+     * origin the app can vouch for, or to withdraw that trust. Nothing changes if the wallet does
+     * not know the transaction yet: see [recordTrustedTransaction] to store and trust one in a
+     * single step.
+     *
+     * The default implementation throws [UnsupportedOperationException]; SDK-backed
+     * synchronizers override it.
+     *
+     * @param txId the transaction's id, in the byte order the SDK uses everywhere.
+     */
+    suspend fun setTransactionTrust(
+        txId: ByteArray,
+        trusted: Boolean
+    ): Unit =
+        throw UnsupportedOperationException(
+            "setTransactionTrust is unavailable for this Synchronizer implementation."
+        )
+
     fun onBackground()
 
     fun onForeground()

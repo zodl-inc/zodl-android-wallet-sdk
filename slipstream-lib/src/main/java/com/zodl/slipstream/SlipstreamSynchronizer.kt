@@ -1416,6 +1416,33 @@ class SlipstreamSynchronizer internal constructor(
     }
 
     /**
+     * Awaits only the database gate, not [PrepareState.Ready]: recording a transaction created on
+     * this device must work while this wallet is not synced, and `decryptAndStoreTransaction` and
+     * `setTransactionTrust` need nothing but the schema. Trust is set only once the stored
+     * transaction's id has been checked against [txId], so a mixed-up id cannot trust the wrong
+     * transaction.
+     */
+    override suspend fun recordTrustedTransaction(
+        rawTransaction: ByteArray,
+        txId: ByteArray
+    ) {
+        awaitDbReady()
+        val storedTxId = backend.decryptAndStoreTransaction(rawTransaction, minedHeight = null)
+        require(storedTxId.contentEquals(txId)) { "txId does not match the transaction" }
+        backend.setTransactionTrust(txId, trusted = true)
+        engine.notifyTxChange()
+    }
+
+    override suspend fun setTransactionTrust(
+        txId: ByteArray,
+        trusted: Boolean
+    ) {
+        awaitDbReady()
+        backend.setTransactionTrust(txId, trusted)
+        engine.notifyTxChange()
+    }
+
+    /**
      * Pairs with [onForeground]'s [SlipstreamEngine.isRunning] guard: [SlipstreamEngine.stop]
      * always clears it, so a following foreground sees an honest running/stopped state. A no-op
      * once [close] has already run - post-close lifecycle calls are no-ops.

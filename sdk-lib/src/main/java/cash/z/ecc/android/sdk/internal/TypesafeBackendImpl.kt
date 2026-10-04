@@ -403,6 +403,14 @@ internal class TypesafeBackendImpl(
         status = status.toPrimitiveValue()
     )
 
+    override suspend fun setTransactionTrust(
+        txId: ByteArray,
+        trusted: Boolean
+    ) = backend.setTransactionTrust(
+        txId = txId,
+        trusted = trusted
+    )
+
     override fun getSaplingReceiver(ua: String): String? = backend.getSaplingReceiver(ua)
 
     override fun getTransparentReceiver(ua: String): String? = backend.getTransparentReceiver(ua)

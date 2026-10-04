@@ -40,6 +40,7 @@ import cash.z.ecc.android.sdk.internal.model.TorHttp
 import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.model.ZcashProtocol
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
+import cash.z.ecc.android.sdk.internal.recordTrustedTransaction
 import cash.z.ecc.android.sdk.internal.repository.CompactBlockRepository
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 import cash.z.ecc.android.sdk.internal.storage.block.FileCompactBlockRepository
@@ -690,6 +691,24 @@ class SdkSynchronizer private constructor(
         coroutineScope.launch {
             processor.enhanceTransaction(txId)
         }
+    }
+
+    // Straight to the wallet database: this must work while the synchronizer is not synced or
+    // is stopped, so no sync state is awaited.
+    override suspend fun recordTrustedTransaction(
+        rawTransaction: ByteArray,
+        txId: ByteArray
+    ) {
+        backend.recordTrustedTransaction(rawTransaction, txId)
+        storage.invalidate()
+    }
+
+    override suspend fun setTransactionTrust(
+        txId: ByteArray,
+        trusted: Boolean
+    ) {
+        backend.setTransactionTrust(txId, trusted)
+        storage.invalidate()
     }
 
     /**

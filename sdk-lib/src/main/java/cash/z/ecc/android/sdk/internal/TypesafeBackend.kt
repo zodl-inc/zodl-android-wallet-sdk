@@ -317,6 +317,15 @@ internal interface TypesafeBackend {
         status: TransactionStatus,
     )
 
+    /**
+     * Marks an already stored transaction as trusted or untrusted (ZIP 315); see
+     * [Backend.setTransactionTrust].
+     */
+    suspend fun setTransactionTrust(
+        txId: ByteArray,
+        trusted: Boolean,
+    )
+
     fun getSaplingReceiver(ua: String): String?
 
     fun getTransparentReceiver(ua: String): String?

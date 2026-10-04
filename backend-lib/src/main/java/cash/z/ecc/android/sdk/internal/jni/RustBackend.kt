@@ -597,6 +597,18 @@ class RustBackend private constructor(
         )
     }
 
+    override suspend fun setTransactionTrust(
+        txId: ByteArray,
+        trusted: Boolean
+    ) = withContext(SdkDispatchers.DATABASE_IO) {
+        setTransactionTrust(
+            dataDbFile.absolutePath,
+            txId,
+            trusted,
+            networkId = networkId
+        )
+    }
+
     override fun isValidSaplingAddr(addr: String) = isValidSaplingAddress(addr, networkId = networkId)
 
     override fun isValidTransparentAddr(addr: String) = isValidTransparentAddress(addr, networkId = networkId)
@@ -958,6 +970,14 @@ class RustBackend private constructor(
             dbDataPath: String,
             txId: ByteArray,
             status: Long,
+            networkId: Int
+        )
+
+        @JvmStatic
+        private external fun setTransactionTrust(
+            dbDataPath: String,
+            txId: ByteArray,
+            trusted: Boolean,
             networkId: Int
         )
 

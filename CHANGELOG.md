@@ -32,6 +32,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state it fetches from `lightWalletEndpoint` for that height, so no blocks below the link's
   height are scanned. If the server cannot provide it, the scan starts at the nearest bundled
   checkpoint below the birthday instead and takes correspondingly longer.
+- `GiftCardRedeemer.redeem(toAddress, memo, destination)` takes the user's own `Synchronizer`
+  as an optional `destination`. After the sweep is submitted, the claim transaction is recorded
+  in that wallet as trusted (ZIP 315), so the wallet shows the incoming funds at once instead
+  of after its next sync, and can spend them after 3 confirmations instead of the 10 it applies
+  to an untrusted external receive. A failure to record never fails the redemption; it is
+  reported as `Redemption.recordedInDestination == false`.
+- `Synchronizer.recordTrustedTransaction(rawTransaction, txId)`, which stores a transaction that
+  was created on this device by another wallet and marks it as trusted (ZIP 315), and
+  `Synchronizer.setTransactionTrust(txId, trusted)`, which changes the trust of a transaction
+  the wallet already knows. Both write to the wallet database directly and work while the
+  synchronizer is not synced or is stopped. The default implementations throw
+  `UnsupportedOperationException`; the SDK's default synchronizer and the Slipstream
+  synchronizer implement them.
 - `Synchronizer.proposeSendMax(account, recipient, memo = null)`, which proposes sending the
   account's entire currently spendable shielded balance (Sapling, Orchard and Ironwood) to one
   recipient, with the ZIP 317 fee computed internally and deducted from it, leaving no change.

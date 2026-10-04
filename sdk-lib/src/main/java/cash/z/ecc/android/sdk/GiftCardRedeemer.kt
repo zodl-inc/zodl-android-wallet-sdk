@@ -4,24 +4,28 @@ import android.content.Context
 import cash.z.ecc.android.sdk.exception.GiftCardException
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.ext.ZcashSdk
+import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
+import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.GiftCard
 import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
+import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zip32AccountIndex
 import cash.z.ecc.android.sdk.tool.DerivationTool
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -44,6 +48,11 @@ import kotlin.time.Duration.Companion.minutes
  * the main wallet uses, and it runs without Tor and without exchange rates. Sending needs no
  * Sapling parameters unless the card holds Sapling funds, which cards do not.
  *
+ * Pass the main wallet's synchronizer as [redeem]'s `destination` so that it learns about the
+ * claim at once and treats it as trusted (ZIP 315): without that, the main wallet sees the
+ * incoming funds only when it next syncs, and as an untrusted external receive that it holds for
+ * 10 confirmations rather than 3.
+ *
  * Typical use:
  *
  * ```
@@ -51,7 +60,8 @@ import kotlin.time.Duration.Companion.minutes
  * val redeemer = GiftCardRedeemer.new(context, card, network, endpoint)
  * try {
  *     when (val status = redeemer.check()) {
- *         is GiftCardRedeemer.Status.Ready -> redeemer.redeem(RecipientAddress.new(myAddress, network))
+ *         is GiftCardRedeemer.Status.Ready ->
+ *             redeemer.redeem(RecipientAddress.new(myAddress, network), destination = mySynchronizer)
  *         is GiftCardRedeemer.Status.Pending -> showPending(status.balance)
  *         GiftCardRedeemer.Status.Empty -> showAlreadyRedeemed()
  *     }
@@ -67,7 +77,8 @@ class GiftCardRedeemer private constructor(
     val card: GiftCard,
     private val lightWalletEndpoint: LightWalletEndpoint,
     /** The alias of the temporary wallet. Never [ZcashSdk.DEFAULT_ALIAS]. */
-    val alias: String
+    val alias: String,
+    private val wallets: GiftCardWallets
 ) {
     /** The network the card, and the redemption, are on. */
     val network: ZcashNetwork = card.network
@@ -117,10 +128,16 @@ class GiftCardRedeemer private constructor(
      * @property fee the fee paid, deducted from the card's balance.
      * @property results one result per created transaction (a redemption is normally a single
      * transaction), in order. Each carries the transaction id.
+     * @property recordedInDestination `true` when a `destination` was passed to [redeem] and
+     * every submitted transaction was recorded in it as trusted (ZIP 315). `false` when no
+     * destination was passed, nothing was submitted, or the destination failed to record the
+     * claim; in the last case the redemption itself still stands, and the destination wallet
+     * finds the funds on its own when it next syncs, as an untrusted receive.
      */
     data class Redemption(
         val fee: Zatoshi,
-        val results: List<TransactionSubmitResult>
+        val results: List<TransactionSubmitResult>,
+        val recordedInDestination: Boolean = false
     ) {
         /** `true` when every transaction was accepted by the server. */
         val isSubmitted: Boolean get() = results.all { it is TransactionSubmitResult.Success }
@@ -163,21 +180,35 @@ class GiftCardRedeemer private constructor(
      * unsubmitted transaction in the temporary wallet: [close] this redeemer and start over with
      * a new one to retry.
      *
+     * With a [destination], the submitted transaction is also recorded in that wallet as
+     * trusted (ZIP 315, see [Synchronizer.recordTrustedTransaction]): the wallet shows the
+     * incoming funds immediately rather than after its next sync, and can spend them after 3
+     * confirmations rather than the 10 it applies to an external receive. [destination] should be
+     * the wallet that owns [toAddress]; recording in a wallet that does not own it stores nothing
+     * of value. A failure to record never fails the redemption, which has already happened on
+     * chain: it is logged and reported as [Redemption.recordedInDestination] being `false`, and
+     * the destination finds the funds by itself when it next syncs.
+     *
      * @param toAddress the user's own address, on [network].
      * @param memo an optional memo for the recipient; must be `null` for a transparent address.
+     * @param destination the user's own wallet, to be told about the claim at once; `null` to
+     * let it find the funds on its next sync.
      *
      * @throws GiftCardException.NothingToRedeem if nothing is spendable, or the spendable
      * balance does not cover the fee.
-     * @throws GiftCardException.NetworkMismatch if [toAddress] is for another network.
+     * @throws GiftCardException.NetworkMismatch if [toAddress] or [destination] is for another
+     * network.
      * @throws GiftCardException.Closed if [close] was called.
      * @throws TransactionEncoderException if the transaction could not be created.
      */
     suspend fun redeem(
         toAddress: RecipientAddress,
-        memo: MemoContent? = null
+        memo: MemoContent? = null,
+        destination: Synchronizer? = null
     ): Redemption =
         mutex.withLock {
             if (toAddress.network != network) throw GiftCardException.NetworkMismatch()
+            if (destination != null && destination.network != network) throw GiftCardException.NetworkMismatch()
             val synchronizer = openSynchronizer()
             val account = synchronizer.getAccounts().first()
 
@@ -188,18 +219,63 @@ class GiftCardRedeemer private constructor(
                     throw GiftCardException.NothingToRedeem(e)
                 }
 
-            val usk =
-                DerivationTool.getInstance().deriveUnifiedSpendingKey(
-                    seed = card.seed.copyBytes(),
-                    network = network,
-                    accountIndex = Zip32AccountIndex.new(0)
-                )
-            val results =
-                synchronizer
-                    .createProposedTransactions(proposal, usk, OvkPolicy.Discard)
-                    .toList()
-            Redemption(fee = proposal.totalFeeRequired(), results = results)
+            val usk = wallets.deriveSpendingKey(card.seed.copyBytes(), network)
+            // Created and submitted in two steps, rather than with `createProposedTransactions`, so
+            // that the raw transaction is at hand for the destination.
+            val broadcaster = synchronizer.broadcaster
+            val created = broadcaster.createProposedTransactions(proposal, usk, OvkPolicy.Discard)
+            val results = submitInOrder(broadcaster, created)
+            val recorded = destination != null && recordInDestination(destination, created, results)
+            Redemption(fee = proposal.totalFeeRequired(), results = results, recordedInDestination = recorded)
         }
+
+    /**
+     * Submits [created] to the redeemer's endpoint in order, stopping at the first failure: a
+     * later transaction of a multi-step proposal depends on the earlier ones. This mirrors what
+     * [Synchronizer.createProposedTransactions] does after creating the transactions.
+     */
+    private suspend fun submitInOrder(
+        broadcaster: Broadcaster,
+        created: List<CreatedTransaction>
+    ): List<TransactionSubmitResult> {
+        var failed = false
+        return created.map { transaction ->
+            if (failed) {
+                TransactionSubmitResult.NotAttempted(transaction.txId)
+            } else {
+                broadcaster.submit(transaction, lightWalletEndpoint).also {
+                    failed = it !is TransactionSubmitResult.Success
+                }
+            }
+        }
+    }
+
+    /**
+     * Records every submitted transaction in [destination] as trusted. Returns `true` only when
+     * there was something to record and all of it was recorded; a failure is logged, not thrown,
+     * as the funds have moved regardless and the destination will find them when it next syncs.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun recordInDestination(
+        destination: Synchronizer,
+        created: List<CreatedTransaction>,
+        results: List<TransactionSubmitResult>
+    ): Boolean {
+        val submitted = created.filterIndexed { index, _ -> results[index] is TransactionSubmitResult.Success }
+        if (submitted.isEmpty()) return false
+        return try {
+            submitted.forEach { destination.recordTrustedTransaction(it.raw.byteArray, it.txId.byteArray) }
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Twig.warn(e) {
+                "The gift card claim could not be recorded in the destination wallet; " +
+                    "it will be found by that wallet's next sync"
+            }
+            false
+        }
+    }
 
     /**
      * Closes the temporary wallet and deletes all of its local data. Nothing that belongs to
@@ -215,7 +291,7 @@ class GiftCardRedeemer private constructor(
                 isClosed = true
                 synchronizer?.close()
                 synchronizer = null
-                Synchronizer.eraseAlias(context, network, alias)
+                wallets.erase(context, network, alias)
             }
         }
     }
@@ -227,31 +303,23 @@ class GiftCardRedeemer private constructor(
         // Start from scratch: the temporary wallet is disposable, and a fresh scan is what makes
         // an already-redeemed card show up as empty. This also clears leftovers of an earlier
         // redemption that was interrupted before `close()`.
-        Synchronizer.eraseAlias(context, network, alias)
+        wallets.erase(context, network, alias)
 
         val seed = card.seed.copyBytes()
         val created =
             try {
-                Synchronizer.new(
+                wallets.open(
+                    context = context,
+                    network = network,
                     alias = alias,
                     birthday = card.birthdayHeight,
-                    context = context,
                     lightWalletEndpoint = lightWalletEndpoint,
                     setup =
                         AccountCreateSetup(
                             accountName = ACCOUNT_NAME,
                             keySource = null,
                             seed = FirstClassByteArray(seed)
-                        ),
-                    walletInitMode = WalletInitMode.RestoreWallet,
-                    zcashNetwork = network,
-                    isTorEnabled = false,
-                    isExchangeRateEnabled = false,
-                    // The link's height is at or just below the funding height, so the card wallet
-                    // can start exactly there instead of at the nearest bundled checkpoint, which may
-                    // be thousands of blocks earlier. The card is not the user's wallet, so revealing
-                    // its exact height to the server costs it nothing.
-                    isBirthdayExact = true
+                        )
                 )
             } finally {
                 seed.fill(0)
@@ -312,6 +380,17 @@ class GiftCardRedeemer private constructor(
             network: ZcashNetwork,
             lightWalletEndpoint: LightWalletEndpoint,
             alias: String = defaultAlias(card)
+        ): GiftCardRedeemer = new(context, card, network, lightWalletEndpoint, alias, GiftCardWallets.Default)
+
+        /** [new] with the device-facing parts replaced, for unit tests. */
+        @Suppress("LongParameterList")
+        internal fun new(
+            context: Context,
+            card: GiftCard,
+            network: ZcashNetwork,
+            lightWalletEndpoint: LightWalletEndpoint,
+            alias: String,
+            wallets: GiftCardWallets
         ): GiftCardRedeemer {
             if (card.network != network) throw GiftCardException.NetworkMismatch()
             require(alias != ZcashSdk.DEFAULT_ALIAS) { "A gift card must not use the default wallet alias" }
@@ -319,8 +398,83 @@ class GiftCardRedeemer private constructor(
                 alias.length in ZcashSdk.ALIAS_MIN_LENGTH..ZcashSdk.ALIAS_MAX_LENGTH &&
                     alias.all { it.isLetterOrDigit() || it == '_' || it == '-' }
             ) { "Invalid alias" }
-            return GiftCardRedeemer(context.applicationContext, card, lightWalletEndpoint, alias)
+            return GiftCardRedeemer(context.applicationContext, card, lightWalletEndpoint, alias, wallets)
         }
+    }
+}
+
+/**
+ * What [GiftCardRedeemer] needs from the device: the temporary card wallet and the derivation of
+ * its spending key. [Default] uses [Synchronizer] and [DerivationTool]; unit tests replace it.
+ */
+internal interface GiftCardWallets {
+    /** Deletes the local data of the card wallet under [alias]. */
+    suspend fun erase(
+        context: Context,
+        network: ZcashNetwork,
+        alias: String
+    )
+
+    /** Creates and starts the card wallet under [alias] from the card's seed in [setup]. */
+    @Suppress("LongParameterList")
+    suspend fun open(
+        context: Context,
+        network: ZcashNetwork,
+        alias: String,
+        birthday: BlockHeight,
+        lightWalletEndpoint: LightWalletEndpoint,
+        setup: AccountCreateSetup
+    ): CloseableSynchronizer
+
+    /** Derives the card wallet's spending key from the card's [seed]. */
+    suspend fun deriveSpendingKey(
+        seed: ByteArray,
+        network: ZcashNetwork
+    ): UnifiedSpendingKey
+
+    object Default : GiftCardWallets {
+        override suspend fun erase(
+            context: Context,
+            network: ZcashNetwork,
+            alias: String
+        ) {
+            Synchronizer.eraseAlias(context, network, alias)
+        }
+
+        override suspend fun open(
+            context: Context,
+            network: ZcashNetwork,
+            alias: String,
+            birthday: BlockHeight,
+            lightWalletEndpoint: LightWalletEndpoint,
+            setup: AccountCreateSetup
+        ): CloseableSynchronizer =
+            Synchronizer.new(
+                alias = alias,
+                birthday = birthday,
+                context = context,
+                lightWalletEndpoint = lightWalletEndpoint,
+                setup = setup,
+                walletInitMode = WalletInitMode.RestoreWallet,
+                zcashNetwork = network,
+                isTorEnabled = false,
+                isExchangeRateEnabled = false,
+                // The link's height is at or just below the funding height, so the card wallet
+                // can start exactly there instead of at the nearest bundled checkpoint, which may
+                // be thousands of blocks earlier. The card is not the user's wallet, so revealing
+                // its exact height to the server costs it nothing.
+                isBirthdayExact = true
+            )
+
+        override suspend fun deriveSpendingKey(
+            seed: ByteArray,
+            network: ZcashNetwork
+        ): UnifiedSpendingKey =
+            DerivationTool.getInstance().deriveUnifiedSpendingKey(
+                seed = seed,
+                network = network,
+                accountIndex = Zip32AccountIndex.new(0)
+            )
     }
 }
 

@@ -2189,6 +2189,37 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransa
     unwrap_exc_or(&mut env, res, ())
 }
 
+/// Marks a transaction the wallet knows about as trusted or untrusted (ZIP 315).
+///
+/// The outputs of a trusted transaction become spendable after the policy's `trusted` number of
+/// confirmations (3 by default) instead of its `untrusted` one (10 by default), even when the
+/// transaction was not created by this wallet. This only updates an existing `transactions` row:
+/// store the transaction first, e.g. with `decryptAndStoreTransaction`.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransactionTrust<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    txid_bytes: JByteArray<'local>,
+    trusted: jboolean,
+    network_id: jint,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.setTransactionTrust").entered();
+        let network = parse_network(network_id)?;
+        let mut db_data = wallet_db(env, network, db_data)?;
+        let txid = parse_txid(env, txid_bytes)?;
+
+        db_data
+            .set_tx_trust(txid, trusted != JNI_FALSE)
+            .map_err(|e| anyhow!("Error while setting transaction trust: {}", e))
+    });
+
+    unwrap_exc_or(&mut env, res, ())
+}
+
 fn zip317_helper<DbT>(
     change_memo: Option<MemoBytes>,
 ) -> (

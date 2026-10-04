@@ -97,6 +97,13 @@ class FakeRustBackend(
         error("Intentionally not implemented yet.")
     }
 
+    override suspend fun setTransactionTrust(
+        txId: ByteArray,
+        trusted: Boolean
+    ) {
+        error("Intentionally not implemented yet.")
+    }
+
     override suspend fun findBlockMetadata(height: Long): JniBlockMeta? {
         requireValidHeight(height, "height")
         return metadata.findLast { it.height == height }
