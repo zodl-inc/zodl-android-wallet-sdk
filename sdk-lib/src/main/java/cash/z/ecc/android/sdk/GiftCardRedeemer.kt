@@ -131,8 +131,11 @@ class GiftCardRedeemer private constructor(
      * reports the card's balance.
      *
      * The first call scans the chain from the card's birthday, which needs network access and
-     * may take a while for an old card. Later calls reuse the synced wallet and return quickly,
-     * so polling a [Status.Pending] card is cheap.
+     * may take a while for an old card. The wallet starts exactly at [GiftCard.birthdayHeight],
+     * using the tree state fetched from [lightWalletEndpoint]; if the server cannot provide it,
+     * the scan starts at the nearest bundled checkpoint below it instead, which takes longer.
+     * Later calls reuse the synced wallet and return quickly, so polling a [Status.Pending] card
+     * is cheap.
      *
      * @param timeout how long to wait for the sync to complete.
      *
@@ -243,7 +246,12 @@ class GiftCardRedeemer private constructor(
                     walletInitMode = WalletInitMode.RestoreWallet,
                     zcashNetwork = network,
                     isTorEnabled = false,
-                    isExchangeRateEnabled = false
+                    isExchangeRateEnabled = false,
+                    // The link's height is at or just below the funding height, so the card wallet
+                    // can start exactly there instead of at the nearest bundled checkpoint, which may
+                    // be thousands of blocks earlier. The card is not the user's wallet, so revealing
+                    // its exact height to the server costs it nothing.
+                    isBirthdayExact = true
                 )
             } finally {
                 seed.fill(0)

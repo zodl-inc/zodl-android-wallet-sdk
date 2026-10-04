@@ -27,7 +27,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blocks ago are reported as pending and are not swept. Failures are reported as
   `GiftCardException` subtypes (`NetworkMismatch`, `NothingToRedeem`, `SyncFailed`,
   `Closed`). Each `check()` on a fresh redeemer scans from the card's birthday, which needs
-  network access.
+  network access: the card wallet starts exactly at `GiftCard.birthdayHeight`, using the tree
+  state it fetches from `lightWalletEndpoint` for that height, so no blocks below the link's
+  height are scanned. If the server cannot provide it, the scan starts at the nearest bundled
+  checkpoint below the birthday instead and takes correspondingly longer.
 - `Synchronizer.proposeSendMax(account, recipient, memo = null)`, which proposes sending the
   account's entire currently spendable shielded balance (Sapling, Orchard and Ironwood) to one
   recipient, with the ZIP 317 fee computed internally and deducted from it, leaving no change.

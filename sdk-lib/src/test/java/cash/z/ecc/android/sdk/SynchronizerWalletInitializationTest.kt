@@ -161,6 +161,88 @@ class SynchronizerWalletInitializationTest {
             assertEquals(listOf(TreeStateRequest(treeStateHeight, ServiceMode.Direct)), walletClient.treeStateRequests)
         }
 
+    @Test
+    fun restore_wallet_uses_checkpoint_and_server_tip_by_default() =
+        runBlocking {
+            val tipHeight = BlockHeightUnsafe(2_000_000)
+            val fallbackTreeState = treeState(height = fallbackTreeStateHeight.value)
+            val walletClient =
+                FakeCombinedWalletClient(
+                    latestBlockHeightResponse = Response.Success(tipHeight),
+                    treeStateResponse = Response.Success(treeStateUnsafe(height = 1_500_000))
+                )
+
+            val result =
+                resolveWalletInitializationState(
+                    downloaderProvider = { downloader(walletClient) },
+                    fallbackTreeState = fallbackTreeState,
+                    sdkFlags = sdkFlags,
+                    walletInitMode = WalletInitMode.RestoreWallet
+                )
+
+            assertSame(fallbackTreeState, result.treeState)
+            assertEquals(BlockHeight(tipHeight.value), result.recoverUntil)
+            assertEquals(listOf<ServiceMode>(ServiceMode.Direct), walletClient.latestBlockHeightRequests)
+            assertTrue(walletClient.treeStateRequests.isEmpty())
+        }
+
+    @Test
+    fun restore_wallet_with_exact_birthday_uses_tree_state_below_birthday() =
+        runBlocking {
+            val tipHeight = BlockHeightUnsafe(2_000_000)
+            val birthday = BlockHeight(1_500_001)
+            val treeStateHeight = BlockHeightUnsafe(birthday.value - 1)
+            val exactTreeState = treeStateUnsafe(height = treeStateHeight.value)
+            val walletClient =
+                FakeCombinedWalletClient(
+                    latestBlockHeightResponse = Response.Success(tipHeight),
+                    treeStateResponse = Response.Success(exactTreeState)
+                )
+
+            val result =
+                resolveWalletInitializationState(
+                    downloaderProvider = { downloader(walletClient) },
+                    fallbackTreeState = treeState(height = fallbackTreeStateHeight.value),
+                    sdkFlags = sdkFlags,
+                    walletInitMode = WalletInitMode.RestoreWallet,
+                    exactBirthday = birthday
+                )
+
+            assertTrue(exactTreeState.encoded.contentEquals(result.treeState.encoded))
+            assertEquals(BlockHeight(tipHeight.value), result.recoverUntil)
+            assertEquals(listOf<ServiceMode>(ServiceMode.Direct), walletClient.latestBlockHeightRequests)
+            assertEquals(listOf(TreeStateRequest(treeStateHeight, ServiceMode.Direct)), walletClient.treeStateRequests)
+        }
+
+    @Test
+    fun restore_wallet_with_exact_birthday_falls_back_to_checkpoint_when_tree_state_fetch_fails() =
+        runBlocking {
+            val tipHeight = BlockHeightUnsafe(2_000_000)
+            val birthday = BlockHeight(1_500_001)
+            val fallbackTreeState = treeState(height = fallbackTreeStateHeight.value)
+            val walletClient =
+                FakeCombinedWalletClient(
+                    latestBlockHeightResponse = Response.Success(tipHeight),
+                    treeStateResponse = failure()
+                )
+
+            val result =
+                resolveWalletInitializationState(
+                    downloaderProvider = { downloader(walletClient) },
+                    fallbackTreeState = fallbackTreeState,
+                    sdkFlags = sdkFlags,
+                    walletInitMode = WalletInitMode.RestoreWallet,
+                    exactBirthday = birthday
+                )
+
+            assertSame(fallbackTreeState, result.treeState)
+            assertEquals(BlockHeight(tipHeight.value), result.recoverUntil)
+            assertEquals(
+                listOf(TreeStateRequest(BlockHeightUnsafe(birthday.value - 1), ServiceMode.Direct)),
+                walletClient.treeStateRequests
+            )
+        }
+
     private class FakeCombinedWalletClient(
         private val latestBlockHeightResponse: Response<BlockHeightUnsafe>,
         private val treeStateResponse: Response<TreeStateUnsafe>,

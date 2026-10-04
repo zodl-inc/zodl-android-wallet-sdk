@@ -1163,7 +1163,7 @@ interface Synchronizer {
          * If customized initialization is required (e.g. for dependency injection or testing), see
          * [DefaultSynchronizerFactory].
          */
-        @Suppress("LongParameterList", "LongMethod", "TooGenericExceptionCaught")
+        @Suppress("LongParameterList")
         suspend fun new(
             alias: String = ZcashSdk.DEFAULT_ALIAS,
             birthday: BlockHeight?,
@@ -1174,6 +1174,43 @@ interface Synchronizer {
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean
+        ): CloseableSynchronizer =
+            new(
+                alias = alias,
+                birthday = birthday,
+                context = context,
+                lightWalletEndpoint = lightWalletEndpoint,
+                setup = setup,
+                walletInitMode = walletInitMode,
+                zcashNetwork = zcashNetwork,
+                isTorEnabled = isTorEnabled,
+                isExchangeRateEnabled = isExchangeRateEnabled,
+                isBirthdayExact = false
+            )
+
+        /**
+         * [new] with one extra, SDK-internal option.
+         *
+         * @param isBirthdayExact when `true`, [walletInitMode] is [WalletInitMode.RestoreWallet] and [birthday]
+         * is known to be at or below the height of the wallet's first funds, the account is seeded from the tree
+         * state at `birthday - 1` fetched from [lightWalletEndpoint], so the wallet's birthday is exactly
+         * [birthday] and scanning starts there instead of at the nearest bundled checkpoint below it, which
+         * can be thousands of blocks earlier. If the fetch fails, the bundled checkpoint is used as before.
+         * Fetching reveals the exact height to the server; `false` keeps the checkpoint granularity that the
+         * app's main wallet relies on for privacy.
+         */
+        @Suppress("LongParameterList", "LongMethod", "TooGenericExceptionCaught")
+        internal suspend fun new(
+            alias: String,
+            birthday: BlockHeight?,
+            context: Context,
+            lightWalletEndpoint: LightWalletEndpoint,
+            setup: AccountCreateSetup?,
+            walletInitMode: WalletInitMode,
+            zcashNetwork: ZcashNetwork,
+            isTorEnabled: Boolean,
+            isExchangeRateEnabled: Boolean,
+            isBirthdayExact: Boolean
         ): CloseableSynchronizer {
             val applicationContext = context.applicationContext
             // Populates Twig's process/tag columns — without this every SDK log line renders a
@@ -1310,7 +1347,8 @@ interface Synchronizer {
                             downloaderProvider = { downloaderDeferred.await() },
                             fallbackTreeState = checkpointDeferred.await().treeState(),
                             sdkFlags = sdkFlags,
-                            walletInitMode = walletInitMode
+                            walletInitMode = walletInitMode,
+                            exactBirthday = birthday?.takeIf { isBirthdayExact }
                         )
 
                     val repository =
@@ -1555,18 +1593,27 @@ internal data class WalletInitializationState(
  * [WalletInitMode.ExistingWallet] is the normal cold-start case and never needs the network client, so it
  * does not invoke [downloaderProvider]. This lets DB init (repository/initDataDb) proceed without waiting
  * for the concurrently-built walletClient/downloader.
+ *
+ * [exactBirthday], used only with [RestoreWallet], asks for the tree state at `exactBirthday - 1` from the
+ * server so that the wallet's birthday is exactly [exactBirthday]; [fallbackTreeState] is used if that
+ * fetch fails.
  */
+@Suppress("LongParameterList")
 internal suspend fun resolveWalletInitializationState(
     downloaderProvider: suspend () -> CompactBlockDownloader,
     fallbackTreeState: TreeState,
     sdkFlags: SdkFlags,
     walletInitMode: WalletInitMode,
-    newWalletTreeStateTimeout: Duration = NEW_WALLET_TREE_STATE_FETCH_TIMEOUT
+    newWalletTreeStateTimeout: Duration = NEW_WALLET_TREE_STATE_FETCH_TIMEOUT,
+    exactBirthday: BlockHeight? = null
 ) = when (walletInitMode) {
     is RestoreWallet -> {
+        val downloader = downloaderProvider()
         WalletInitializationState(
-            treeState = fallbackTreeState,
-            recoverUntil = downloaderProvider().fetchRecoverUntil(sdkFlags)
+            treeState =
+                exactBirthday?.let { downloader.fetchExactBirthdayTreeState(it, sdkFlags) }
+                    ?: fallbackTreeState,
+            recoverUntil = downloader.fetchRecoverUntil(sdkFlags)
         )
     }
 
@@ -1605,6 +1652,40 @@ private suspend fun CompactBlockDownloader.fetchRecoverUntil(sdkFlags: SdkFlags)
             null
         }
     }
+
+/**
+ * Fetches the tree state at `birthday - 1`, which seeds an account whose birthday is exactly [birthday]
+ * (the backend sets the birthday to the tree state's height plus one). Returns null, after logging, if
+ * the server could not provide it, so the caller can fall back to a bundled checkpoint.
+ */
+private suspend fun CompactBlockDownloader.fetchExactBirthdayTreeState(
+    birthday: BlockHeight,
+    sdkFlags: SdkFlags
+): TreeState? {
+    // There is no tree state below the genesis block.
+    if (birthday.value < 1) return null
+    val treeStateHeight = BlockHeightUnsafe(birthday.value - 1)
+    return when (
+        val treeStateResponse =
+            getTreeState(
+                height = treeStateHeight,
+                serviceMode = sdkFlags ifTor ServiceMode.UniqueTor
+            )
+    ) {
+        is Response.Success -> {
+            Twig.info { "Restore: using tree state at height ${treeStateHeight.value} for exact birthday" }
+            TreeState.new(treeStateResponse.result)
+        }
+
+        is Response.Failure -> {
+            Twig.warn {
+                "Tree state fetch for exact birthday ${birthday.value} failed with: " +
+                    "${treeStateResponse.toThrowable()}, falling back to bundled checkpoint"
+            }
+            null
+        }
+    }
+}
 
 private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(
     sdkFlags: SdkFlags,
