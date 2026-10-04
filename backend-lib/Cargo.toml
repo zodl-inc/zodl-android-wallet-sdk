@@ -57,7 +57,7 @@ zcash_client_backend = { version = "0.24.0", features = [
     "pczt",
 ] }
 zcash_client_sqlite = { version = "0.22.0", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
-# Used by gift.rs (gift card links), which names `zcash_keys` directly rather than through the
+# Used by liberated_payment.rs (gift card links), which names `zcash_keys` directly rather than through the
 # `zcash_client_backend` re-exports; resolves to the same instance already in Cargo.lock.
 zcash_keys = "0.16"
 zcash_note_encryption = "0.4.1"
@@ -78,7 +78,7 @@ shardtree = "0.7"
 incrementalmerkletree = { version = "0.8", default-features = false }
 
 # Infrastructure
-# Gift cards (gift.rs): a card secret is BIP 39 entropy, and its link key is Bech32m-encoded.
+# Gift cards (liberated_payment.rs): a card secret is BIP 39 entropy, and its link key is Bech32m-encoded.
 bech32 = "0.11"
 bip0039 = "0.12"
 prost = "0.14"
@@ -207,8 +207,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 # (co.electriccoin.zcash ui-lib) is stale (last release Oct 2025) and has no batch-signing API —
 # only single-PCZT `generatePczt`/`parsePczt`. Batch signing for Zcash (firmware + these UR
 # envelope types) was added to the Keystone ecosystem within the last month, but hasn't reached a
-# new Android SDK release yet. `chainapsis/vizor-wallet` (a different Zcash wallet, run by the
-# same contributors behind the Keystone firmware/core PRs) bypasses the compiled AAR entirely by
+# new Android SDK release yet. Another open-source Zcash wallet (run by the same contributors
+# behind the Keystone firmware/core PRs) bypasses the compiled AAR entirely by
 # depending on `keystone-sdk-rust`'s `ur-registry` crate and `ur-rs` directly from git — this
 # mirrors that exact, verified-working pattern instead of waiting on an Android SDK release.
 # The actual batching primitive is `pczt::roles::signer::batch` (see the `signer` feature above),

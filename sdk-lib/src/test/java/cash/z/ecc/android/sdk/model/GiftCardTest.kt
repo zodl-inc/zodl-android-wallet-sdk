@@ -15,9 +15,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertSame
 
 /**
- * The Kotlin half of gift card parsing. The parsing itself is Rust's (covered by `gift.rs` and
- * `gift_card.rs` tests); these pin the mapping of its result and errors, and that nothing
- * secret leaks through `toString` or exception messages.
+ * The Kotlin half of gift card parsing. The parsing itself is Rust's (covered by
+ * `liberated_payment.rs` and `gift_card.rs` tests); these pin the mapping of its result and
+ * errors, and that nothing secret leaks through `toString` or exception messages.
  */
 class GiftCardTest {
     private val seed = ByteArray(64) { (it * 7 + 3).toByte() }
@@ -49,10 +49,19 @@ class GiftCardTest {
     @Test
     fun mapsAbsentOptionalFields() {
         val card = GiftCard.parse("link", links { jniCard(origin = 3, networkId = 0, amount = -1, description = null) })
-        assertEquals(GiftCardOrigin.VizorV3, card.origin)
+        assertEquals(GiftCardOrigin.LegacyV3, card.origin)
         assertEquals(ZcashNetwork.Testnet, card.network)
         assertNull(card.statedAmount)
         assertNull(card.description)
+    }
+
+    @Test
+    fun originCodesMatchTheBackend() {
+        // The backend's `origin_code` reports these integers; the enum order must match it.
+        assertEquals(GiftCardOrigin.Zodl, GiftCard.parse("link", links { jniCard(origin = 0) }).origin)
+        assertEquals(GiftCardOrigin.LegacyV1, GiftCard.parse("link", links { jniCard(origin = 1) }).origin)
+        assertEquals(GiftCardOrigin.LegacyV2, GiftCard.parse("link", links { jniCard(origin = 2) }).origin)
+        assertEquals(GiftCardOrigin.LegacyV3, GiftCard.parse("link", links { jniCard(origin = 3) }).origin)
     }
 
     @Test

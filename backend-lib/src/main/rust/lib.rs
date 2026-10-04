@@ -108,11 +108,12 @@ use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
 };
 
-// `gift` is shared verbatim with the other wallet backends and the card-minting tooling, so it
-// is neither edited nor reformatted here; minting helpers it carries are unused by this crate.
+// `liberated_payment` is shared verbatim with the other wallet backends and the payment-minting
+// tooling, so it is neither edited nor reformatted here; the minting helpers it carries are
+// unused by this crate, which only reads links.
 #[allow(dead_code)]
 #[rustfmt::skip]
-mod gift;
+mod liberated_payment;
 mod gift_card;
 mod migration;
 mod migration_engine;

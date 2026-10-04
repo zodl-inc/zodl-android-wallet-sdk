@@ -64,9 +64,9 @@ class GiftCard private constructor(
          * Parses and validates a gift card link.
          *
          * Supports this SDK's own links (`https://gift.zodl.com/#v=1&key=...&height=...`) and
-         * the gift card links issued by the Vizor wallet
-         * (`https://link.vizor.cash/payment-links/open#v1=...`, `v2=`, `v3=`). Parsing is pure:
-         * it touches no wallet database and no network.
+         * the legacy JSON payment-link encoding at `/payment-links/open#vN=` (`v1=`, `v2=`,
+         * `v3=` payloads) found in the wild. Parsing is pure: it touches no wallet database and
+         * no network.
          *
          * @throws GiftCardException.InvalidLink if the text is not a valid gift card link. Its
          * message and [GiftCardException.InvalidLink.reason] never contain any part of the link.
@@ -109,19 +109,19 @@ class GiftCard private constructor(
     }
 }
 
-/** Who issued a gift card link. The order matches the backend's origin codes. */
+/** The encoding a gift card link was read from. The order matches the backend's origin codes. */
 enum class GiftCardOrigin {
-    /** A link in this SDK's own format (`https://gift.zodl.com/`). */
+    /** A `v=1` link in this SDK's own format (`https://gift.zodl.com/#v=1&key=...&height=...`). */
     Zodl,
 
-    /** A Vizor wallet `v1` link. */
-    VizorV1,
+    /** A `v1=` payload of the legacy JSON payment-link encoding at `/payment-links/open#vN=`. */
+    LegacyV1,
 
-    /** A Vizor wallet `v2` link. */
-    VizorV2,
+    /** A `v2=` payload of the legacy JSON payment-link encoding at `/payment-links/open#vN=`. */
+    LegacyV2,
 
-    /** A Vizor wallet `v3` link. */
-    VizorV3
+    /** A `v3=` payload of the legacy JSON payment-link encoding at `/payment-links/open#vN=`. */
+    LegacyV3
 }
 
 /** Why a gift card link was rejected. */

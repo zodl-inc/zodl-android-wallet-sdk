@@ -9,7 +9,9 @@ import androidx.annotation.Keep
  * `(Int, Int, Long, Long, String?, ByteArray, String)` constructor signature are part of the JNI
  * contract with `gift_card.rs`, and are never referenced from bytecode.
  *
- * @param origin who issued the link: 0 for this SDK's own format, 1 to 3 for Vizor v1 to v3.
+ * @param origin the encoding the link was read from: 0 for this SDK's own `v=1` format, 1 to 3
+ * for the `v1=` to `v3=` payloads of the legacy JSON payment-link encoding at
+ * `/payment-links/open#vN=`.
  * @param networkId the [network id][cash.z.ecc.android.sdk.internal.Backend.networkId] of the card.
  * @param birthdayHeight the height from which to scan for the card's funds.
  * @param amountZatoshi the amount the link states, or -1 if it states none.
