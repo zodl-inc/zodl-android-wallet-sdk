@@ -33,7 +33,10 @@ class TransactionOverviewCursorTest {
                         blockTime = 1_700_000_000,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(1_009)
             )
@@ -65,7 +68,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(1_000)
             )
@@ -99,7 +105,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(1_000_000)
             )
@@ -131,7 +140,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = true,
                         isExpiredUnmined = null,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = null
             )
@@ -171,7 +183,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 3 // Zip318Kind.TRANSFER
+                        zip318Kind = 3, // Zip318Kind.TRANSFER
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(2_000_000)
             )
@@ -212,7 +227,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(200),
                 nowEpochSeconds = 1_800_000_000L
@@ -246,7 +264,10 @@ class TransactionOverviewCursorTest {
                         blockTime = 1_650_000_000L,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(200),
                 nowEpochSeconds = 1_800_000_000L
@@ -279,7 +300,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(200),
                 nowEpochSeconds = 1_800_000_000L
@@ -312,7 +336,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 2 // Zip318Kind.PREPARATION
+                        zip318Kind = 2, // Zip318Kind.PREPARATION
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(2_000_000)
             )
@@ -321,4 +348,67 @@ class TransactionOverviewCursorTest {
         assertEquals(TransactionState.Pending, overview.transactionState)
         assertEquals(cash.z.ecc.android.sdk.model.Zip318Kind.PREPARATION, overview.zip318Kind)
     }
+
+    /**
+     * `trust_status` follows the SDK's own `AllTransactionView` rule: only an explicit `1` is
+     * trusted (e.g. a gift-card claim recorded as trusted per ZIP 315); `0` and SQL NULL - a
+     * transaction the wallet never marked, or a migration-pending row - read as untrusted.
+     */
+    @Test
+    fun trust_status_one_maps_to_trusted() {
+        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = 1L), BlockHeight.new(1_001))
+
+        assertTrue(overview.isTrusted)
+    }
+
+    @Test
+    fun trust_status_zero_maps_to_untrusted() {
+        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = 0L), BlockHeight.new(1_001))
+
+        assertFalse(overview.isTrusted)
+    }
+
+    @Test
+    fun null_trust_status_maps_to_untrusted() {
+        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = null), BlockHeight.new(1_001))
+
+        assertFalse(overview.isTrusted)
+    }
+
+    @Test
+    fun spent_note_count_and_pool_crossing_value_are_carried_through() {
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                receivedRow(trustStatus = null).copy(spentNoteCount = 2, poolCrossingValue = 4_000L),
+                BlockHeight.new(1_001)
+            )
+
+        assertEquals(2, overview.spentNoteCount)
+        assertEquals(4_000L, overview.poolCrossingValue?.value)
+        assertNull(TransactionOverviewCursor.fromRow(receivedRow(trustStatus = null), null).poolCrossingValue)
+    }
+
+    private fun receivedRow(trustStatus: Long?) =
+        SlipstreamTransactionRow(
+            txId = ByteArray(32) { 7 },
+            minedHeight = 1_000,
+            expiryHeight = null,
+            txIndex = 0,
+            raw = null,
+            accountBalanceDelta = 5_000,
+            totalSpent = 0,
+            totalReceived = 5_000,
+            feePaid = null,
+            hasChange = false,
+            sentNoteCount = 0,
+            receivedNoteCount = 1,
+            memoCount = 0,
+            blockTime = 1_700_000_000,
+            isShielding = false,
+            isExpiredUnmined = 0L,
+            zip318Kind = 0,
+            spentNoteCount = 0,
+            poolCrossingValue = null,
+            trustStatus = trustStatus
+        )
 }

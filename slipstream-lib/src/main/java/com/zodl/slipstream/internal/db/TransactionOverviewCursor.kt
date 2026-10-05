@@ -88,18 +88,13 @@ internal object TransactionOverviewCursor {
             blockTimeEpochSeconds = estimatedBlockTime,
             transactionState = transactionState,
             isShielding = row.isShielding,
-            // NOT PROJECTED by this read path. `host_read.rs`'s `listTransactions` SQL selects a
-            // fixed column list that does not include `spent_note_count`, `pool_crossing_value` or
-            // `trust_status`, and `SlipstreamTransactionRow` has no slot for them, so there is
-            // nothing to carry here. These values reproduce the shape this path had before the
-            // columns existed, so nothing regresses; a transaction read through slipstream simply
-            // does not gain them. `isTrusted = false` is the conservative reading (the longer,
-            // untrusted confirmation count). Widening the projection means extending the SQL, the
-            // row type, and the `SlipstreamTransactionRow` JNI constructor signature in lockstep —
-            // a follow-up, not merge work. The SDK's own `AllTransactionView` does project them.
-            spentNoteCount = 0,
-            poolCrossingValue = null,
-            isTrusted = false,
+            // Projected from `v_transactions` by `host_read.rs`'s `listTransactions`, the same
+            // columns the SDK's own `AllTransactionView` reads. `isTrusted` follows that reader's
+            // rule: only an explicit `trust_status = 1` is trusted; NULL (never set, or a
+            // migration-pending row) and 0 read as untrusted.
+            spentNoteCount = row.spentNoteCount,
+            poolCrossingValue = row.poolCrossingValue?.let(::Zatoshi),
+            isTrusted = row.trustStatus == 1L,
             // `zip318_kind` is selected from `v_transactions` by our own `host_read.rs`
             // (backend-lib, not the external slipstream-core crate) — see that file's 2026-08-03
             // doc update.

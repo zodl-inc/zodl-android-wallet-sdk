@@ -32,12 +32,18 @@ class SlipstreamHostReadModelsTest {
                 Long::class.javaObjectType,
                 // `zip318Kind`, appended when this branch started projecting `zip318_kind` out of
                 // `v_transactions`; `host_read.rs`'s `TX_ROW_CTOR` gained the trailing `I` then.
-                Int::class.javaPrimitiveType
+                Int::class.javaPrimitiveType,
+                // `spentNoteCount`, `poolCrossingValue`, `trustStatus`, appended (in that order)
+                // when `listTransactions` started projecting them; `TX_ROW_CTOR` gained
+                // `ILjava/lang/Long;Ljava/lang/Long;` then.
+                Int::class.javaPrimitiveType,
+                Long::class.javaObjectType,
+                Long::class.javaObjectType
             )
 
         assertEquals(
             "([BLjava/lang/Long;Ljava/lang/Long;Ljava/lang/Long;[BJJJLjava/lang/Long;" +
-                "ZIIILjava/lang/Long;ZLjava/lang/Long;I)V",
+                "ZIIILjava/lang/Long;ZLjava/lang/Long;IILjava/lang/Long;Ljava/lang/Long;)V",
             constructor.jniDescriptor()
         )
     }

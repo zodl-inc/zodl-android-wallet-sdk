@@ -34,7 +34,7 @@ const JNI_RAW_TX: &str = "com/zodl/slipstream/model/SlipstreamRawTransaction";
 const JNI_TX_OUTPUT_ROW: &str = "com/zodl/slipstream/model/SlipstreamTxOutputRow";
 const JNI_RESUBMISSION_ROW: &str = "com/zodl/slipstream/model/SlipstreamResubmissionRow";
 
-const TX_ROW_CTOR: &str = "([BLjava/lang/Long;Ljava/lang/Long;Ljava/lang/Long;[BJJJLjava/lang/Long;ZIIILjava/lang/Long;ZLjava/lang/Long;I)V";
+const TX_ROW_CTOR: &str = "([BLjava/lang/Long;Ljava/lang/Long;Ljava/lang/Long;[BJJJLjava/lang/Long;ZIIILjava/lang/Long;ZLjava/lang/Long;IILjava/lang/Long;Ljava/lang/Long;)V";
 const RAW_TX_CTOR: &str = "([BJ)V";
 const TX_OUTPUT_ROW_CTOR: &str = "([BIILjava/lang/String;[B)V";
 const RESUBMISSION_ROW_CTOR: &str = "([B[B)V";
@@ -61,6 +61,14 @@ struct TxRow {
     /// as `transactions.zip318_kind` decodes it — see `Zip318Kind` on the Kotlin side. Appended
     /// as the LAST field (never reordered — the JNI binding contract keys ctor args by position).
     zip318_kind: i32,
+    /// `v_transactions.spent_note_count`. Appended after `zip318_kind`, like the two below.
+    spent_note_count: i32,
+    /// `v_transactions.pool_crossing_value`: non-NULL exactly for a wallet-internal transfer
+    /// between shielded pools.
+    pool_crossing_value: Option<i64>,
+    /// `v_transactions.trust_status` (`transactions.trust_status`): `Some(1)` when the wallet
+    /// explicitly trusts the transaction (ZIP 315); NULL is preserved through the boundary.
+    trust_status: Option<i64>,
 }
 
 impl TxRow {
@@ -83,6 +91,9 @@ impl TxRow {
             is_shielding: row.get(14)?,
             is_expired_unmined: row.get(15)?,
             zip318_kind: row.get(16)?,
+            spent_note_count: row.get::<_, Option<i32>>(17)?.unwrap_or(0),
+            pool_crossing_value: row.get(18)?,
+            trust_status: row.get(19)?,
         })
     }
 }
@@ -151,6 +162,8 @@ fn tx_row_object<'local>(env: &mut JNIEnv<'local>, row: &TxRow) -> anyhow::Resul
     let fee_paid = boxed_long(env, row.fee_paid)?;
     let block_time = boxed_long(env, row.block_time)?;
     let is_expired_unmined = boxed_long(env, row.is_expired_unmined)?;
+    let pool_crossing_value = boxed_long(env, row.pool_crossing_value)?;
+    let trust_status = boxed_long(env, row.trust_status)?;
     Ok(env.new_object(
         JNI_TX_ROW,
         TX_ROW_CTOR,
@@ -172,6 +185,9 @@ fn tx_row_object<'local>(env: &mut JNIEnv<'local>, row: &TxRow) -> anyhow::Resul
             JValue::Bool(u8::from(row.is_shielding)),
             JValue::Object(&is_expired_unmined),
             JValue::Int(row.zip318_kind),
+            JValue::Int(row.spent_note_count),
+            JValue::Object(&pool_crossing_value),
+            JValue::Object(&trust_status),
         ],
     )?)
 }
@@ -232,8 +248,8 @@ fn has_zip318_kind_column(conn: &rusqlite::Connection, table_name: &str) -> bool
 fn has_pending_migrations_view(conn: &rusqlite::Connection) -> bool {
     conn.prepare(
         "SELECT account_uuid, txid, expiry_height, value_spent, value_received, fee, \
-         has_change, received_note_count, zip318_kind, state FROM v_migration_transactions \
-         LIMIT 0",
+         has_change, received_note_count, spent_note_count, pool_crossing_value, zip318_kind, \
+         state FROM v_migration_transactions LIMIT 0",
     )
     .is_ok()
 }
@@ -250,7 +266,7 @@ const PENDING_MIGRATION_TX_SOURCE_SQL: &str = "(\
     SELECT account_uuid, mined_height, txid, tx_index, expiry_height, raw, \
            account_balance_delta, total_spent, total_received, fee_paid, has_change, \
            sent_note_count, received_note_count, memo_count, block_time, is_shielding, \
-           expired_unmined, zip318_kind \
+           expired_unmined, zip318_kind, spent_note_count, pool_crossing_value, trust_status \
       FROM v_transactions \
      UNION ALL \
     SELECT vmt.account_uuid AS account_uuid, NULL AS mined_height, vmt.txid AS txid, \
@@ -262,7 +278,8 @@ const PENDING_MIGRATION_TX_SOURCE_SQL: &str = "(\
            NULL AS block_time, 0 AS is_shielding, \
            (vmt.expiry_height BETWEEN 1 AND (SELECT MAX(blocks.height) FROM blocks)) \
                AS expired_unmined, \
-           vmt.zip318_kind AS zip318_kind \
+           vmt.zip318_kind AS zip318_kind, vmt.spent_note_count AS spent_note_count, \
+           vmt.pool_crossing_value AS pool_crossing_value, NULL AS trust_status \
       FROM v_migration_transactions vmt \
      WHERE vmt.state = 'proved')";
 
@@ -290,7 +307,8 @@ mod view_existence_tests {
             "CREATE VIEW v_migration_transactions AS
              SELECT NULL AS account_uuid, NULL AS txid, NULL AS expiry_height,
                     0 AS value_spent, 0 AS value_received, 0 AS fee, 0 AS has_change,
-                    0 AS received_note_count, 0 AS zip318_kind, 'proved' AS state",
+                    0 AS received_note_count, 0 AS spent_note_count, NULL AS pool_crossing_value,
+                    0 AS zip318_kind, 'proved' AS state",
         )
         .unwrap();
         assert!(has_pending_migrations_view(&conn));
@@ -357,7 +375,11 @@ mod list_transactions_sql_tests {
     #[test]
     fn zip318_kind_and_pending_migrations_flags_are_independent() {
         let sql = list_transactions_sql(false, false, false, true);
-        assert!(sql.contains(", 0 FROM ("));
+        assert!(
+            sql.contains(
+                ", 0, tx.spent_note_count, tx.pool_crossing_value, tx.trust_status FROM ("
+            )
+        );
         assert!(sql.contains("FROM v_migration_transactions vmt"));
         assert!(sql.contains("WHERE vmt.state = 'proved'"));
     }
@@ -369,8 +391,8 @@ mod list_transactions_sql_tests {
             "SELECT tx.txid, tx.mined_height, tx.expiry_height, tx.tx_index, tx.raw, \
              tx.account_balance_delta, tx.total_spent, tx.total_received, tx.fee_paid, \
              tx.has_change, tx.sent_note_count, tx.received_note_count, tx.memo_count, \
-             tx.block_time, tx.is_shielding, tx.expired_unmined, tx.zip318_kind \
-             FROM ("
+             tx.block_time, tx.is_shielding, tx.expired_unmined, tx.zip318_kind, \
+             tx.spent_note_count, tx.pool_crossing_value, tx.trust_status FROM ("
         ));
         assert!(sql.contains("FROM v_migration_transactions vmt"));
         assert!(sql.contains("WHERE vmt.state = 'proved'"));
@@ -419,6 +441,51 @@ mod list_transactions_execution_tests {
         assert_eq!(mined.raw, Some(vec![0xbb]));
     }
 
+    #[test]
+    fn trust_spent_and_pool_crossing_columns_are_carried_from_both_sources() {
+        let conn = seeded_connection_with_migration_states();
+        let sql = list_transactions_sql(false, false, true, true);
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let rows: Vec<TxRow> = stmt
+            .query_map([], |row| Ok(TxRow::from_row(row).unwrap()))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let mined = rows.iter().find(|r| r.mined_height.is_some()).unwrap();
+        assert_eq!(mined.trust_status, Some(1));
+        assert_eq!(mined.spent_note_count, 1);
+        assert_eq!(mined.pool_crossing_value, None);
+        // The migration-pending arm mirrors the vendored union view: no trust status (NULL, so
+        // the Kotlin side reads it as untrusted), the migration's own note count and crossing value.
+        let pending = rows.iter().find(|r| r.mined_height.is_none()).unwrap();
+        assert_eq!(pending.trust_status, None);
+        assert_eq!(pending.spent_note_count, 2);
+        assert_eq!(pending.pool_crossing_value, Some(100_000));
+    }
+
+    #[test]
+    fn null_trust_status_and_spent_note_count_survive_the_plain_view() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE VIEW v_transactions AS
+             SELECT X'aa' AS txid, 100 AS mined_height, 0 AS expiry_height, 0 AS tx_index,
+                    NULL AS raw, 500 AS account_balance_delta, 0 AS total_spent,
+                    500 AS total_received, NULL AS fee_paid, 0 AS has_change,
+                    0 AS sent_note_count, 1 AS received_note_count, 0 AS memo_count,
+                    1_700_000_000 AS block_time, 0 AS is_shielding, 0 AS expired_unmined,
+                    0 AS zip318_kind, X'cc' AS account_uuid, NULL AS spent_note_count,
+                    NULL AS pool_crossing_value, NULL AS trust_status;",
+        )
+        .unwrap();
+        let sql = list_transactions_sql(false, false, true, false);
+        let row = conn
+            .query_row(&sql, [], |row| Ok(TxRow::from_row(row).unwrap()))
+            .unwrap();
+        assert_eq!(row.trust_status, None);
+        assert_eq!(row.spent_note_count, 0);
+        assert_eq!(row.pool_crossing_value, None);
+    }
+
     /// Minimal DDL mirroring `v_transactions` plus the real, lower-level
     /// `v_migration_transactions` view's column shape (see `zcash_pool_migration`'s
     /// `create_migration_tx_view_sql` — `account_uuid, txid, expiry_height, value_spent,
@@ -434,17 +501,19 @@ mod list_transactions_execution_tests {
                     0 AS total_received, 100 AS fee_paid, 0 AS has_change,
                     1 AS sent_note_count, 0 AS received_note_count, 0 AS memo_count,
                     1_700_000_000 AS block_time, 0 AS is_shielding, 0 AS expired_unmined,
-                    3 AS zip318_kind, X'cc' AS account_uuid;
+                    3 AS zip318_kind, X'cc' AS account_uuid, 1 AS spent_note_count,
+                    NULL AS pool_crossing_value, 1 AS trust_status;
              CREATE TABLE blocks (height INTEGER PRIMARY KEY);
              INSERT INTO blocks (height) VALUES (500);
              CREATE TABLE v_migration_transactions_fixture (
                  account_uuid BLOB, txid BLOB, expiry_height INTEGER, value_spent INTEGER,
                  value_received INTEGER, fee INTEGER, has_change INTEGER,
-                 received_note_count INTEGER, zip318_kind INTEGER, state TEXT);
+                 received_note_count INTEGER, spent_note_count INTEGER,
+                 pool_crossing_value INTEGER, zip318_kind INTEGER, state TEXT);
              INSERT INTO v_migration_transactions_fixture VALUES
-                (X'cc', X'11', 40000, 115000, 100000, 15000, 0, 1, 3, 'awaiting_signature'),
-                (X'cc', X'22', 40000, 115000, 100000, 15000, 0, 1, 3, 'signed'),
-                (X'cc', X'33', 40000, 115000, 100000, 15000, 0, 1, 3, 'proved');
+                (X'cc', X'11', 40000, 115000, 100000, 15000, 0, 1, 2, 100000, 3, 'awaiting_signature'),
+                (X'cc', X'22', 40000, 115000, 100000, 15000, 0, 1, 2, 100000, 3, 'signed'),
+                (X'cc', X'33', 40000, 115000, 100000, 15000, 0, 1, 2, 100000, 3, 'proved');
              CREATE VIEW v_migration_transactions AS
              SELECT * FROM v_migration_transactions_fixture;",
         )
@@ -483,16 +552,18 @@ mod list_transactions_execution_tests {
                     0 AS total_received, 100 AS fee_paid, 0 AS has_change,
                     1 AS sent_note_count, 0 AS received_note_count, 0 AS memo_count,
                     1_700_000_000 AS block_time, 0 AS is_shielding, 0 AS expired_unmined,
-                    3 AS zip318_kind, X'cc' AS account_uuid;
+                    3 AS zip318_kind, X'cc' AS account_uuid, 1 AS spent_note_count,
+                    NULL AS pool_crossing_value, 1 AS trust_status;
              CREATE TABLE blocks (height INTEGER PRIMARY KEY);
              INSERT INTO blocks (height) VALUES (500);
              CREATE TABLE v_migration_transactions_fixture (
                  account_uuid BLOB, txid BLOB, expiry_height INTEGER, value_spent INTEGER,
                  value_received INTEGER, fee INTEGER, has_change INTEGER,
-                 received_note_count INTEGER, zip318_kind INTEGER, state TEXT);
+                 received_note_count INTEGER, spent_note_count INTEGER,
+                 pool_crossing_value INTEGER, zip318_kind INTEGER, state TEXT);
              INSERT INTO v_migration_transactions_fixture VALUES
-                (X'cc', X'11', 40000, 115000, 100000, 15000, 0, 1, 3, 'awaiting_signature'),
-                (X'cc', X'22', 40000, 115000, 100000, 15000, 0, 1, 3, 'signed');
+                (X'cc', X'11', 40000, 115000, 100000, 15000, 0, 1, 2, 100000, 3, 'awaiting_signature'),
+                (X'cc', X'22', 40000, 115000, 100000, 15000, 0, 1, 2, 100000, 3, 'signed');
              CREATE VIEW v_migration_transactions AS
              SELECT * FROM v_migration_transactions_fixture;",
         )
@@ -509,6 +580,53 @@ mod list_transactions_execution_tests {
             1,
             "only the real mined row, no signed/awaiting-signature rows"
         );
+    }
+}
+
+/// Prepares `listTransactions`' SQL against a wallet DB created by the pinned
+/// `zcash_client_sqlite`'s own `init_wallet_db` — the real `v_transactions` /
+/// `v_migration_transactions` shapes, not hand-written fixtures — so a column this module projects
+/// that the pinned schema lacks fails here rather than as an empty Activity list at runtime.
+#[cfg(test)]
+mod list_transactions_real_schema_tests {
+    use super::*;
+    use rand::rngs::OsRng;
+    use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
+    use zcash_protocol::consensus::Network;
+
+    fn fresh_wallet_db() -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "host_read_schema_test_{}_{}.sqlite3",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        let mut db = WalletDb::for_path(&path, Network::TestNetwork, SystemClock, OsRng).unwrap();
+        init_wallet_db(&mut db, None).unwrap();
+        path
+    }
+
+    #[test]
+    fn every_variant_prepares_against_the_pinned_wallet_schema() {
+        let path = fresh_wallet_db();
+        let conn = read_query::open_read_only(path.to_str().unwrap()).unwrap();
+        assert!(has_pending_migrations_view(&conn));
+        assert!(has_zip318_kind_column(
+            &conn,
+            PENDING_MIGRATION_TX_SOURCE_SQL
+        ));
+        for has_pending in [false, true] {
+            for has_account_filter in [false, true] {
+                let sql = list_transactions_sql(false, has_account_filter, true, has_pending);
+                conn.prepare(&sql)
+                    .unwrap_or_else(|e| panic!("prepare failed for {sql}: {e}"));
+            }
+        }
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
     }
 }
 
@@ -547,7 +665,8 @@ fn list_transactions_sql(
         "SELECT tx.txid, tx.mined_height, tx.expiry_height, tx.tx_index, tx.raw, \
          tx.account_balance_delta, tx.total_spent, tx.total_received, tx.fee_paid, \
          tx.has_change, tx.sent_note_count, tx.received_note_count, tx.memo_count, \
-         tx.block_time, tx.is_shielding, tx.expired_unmined, {zip318_kind_projection} FROM {table_name} AS tx",
+         tx.block_time, tx.is_shielding, tx.expired_unmined, {zip318_kind_projection}, \
+         tx.spent_note_count, tx.pool_crossing_value, tx.trust_status FROM {table_name} AS tx",
     );
     if is_recovering {
         sql.push_str(&format!(
