@@ -720,6 +720,8 @@ fn hotkey_unified_address(
         Some(orchard_address),
         None,
         None,
+        None,
+        None,
     )
     .ok_or_else(|| anyhow!("failed to build unified address from hotkey Orchard receiver"))?;
     let encode_network = match network {

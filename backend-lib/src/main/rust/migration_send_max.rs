@@ -12,7 +12,7 @@
 //! themselves, because the fee depends on which inputs the selector picks.
 
 use anyhow::anyhow;
-use rand::rngs::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use zcash_address::{ToAddress, ZcashAddress, unified, unified::Encoding as _};
 use zcash_client_backend::{
     data_api::{
@@ -32,7 +32,7 @@ use zcash_protocol::{
 };
 
 /// The wallet database as the JNI layer holds it.
-type Db = WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>;
+type Db = WalletDb<rusqlite::Connection, Network, SystemClock, UnwrapErr<SysRng>>;
 
 type MigrationProposal = Proposal<StandardFeeRule, <Db as InputSource>::NoteRef>;
 
@@ -99,9 +99,14 @@ pub(crate) fn propose_orchard_to_ironwood(
     let receiver = orchard_fvk.address_at(0u32, orchard::keys::Scope::Internal);
     let recipient = ZcashAddress::from_unified(
         network.network_type(),
-        unified::Address::try_from_items(vec![unified::Receiver::Orchard(
-            receiver.to_raw_address_bytes(),
-        )])
+        // Revision 0, as before the NU7 crates: this recipient is the account's own internal
+        // receiver, used to build the proposal and never displayed or stored.
+        unified::Address::try_from_items(
+            unified::Revision::R0,
+            vec![unified::Uitem::Data(unified::Receiver::Orchard(
+                receiver.to_raw_address_bytes(),
+            ))],
+        )
         .map_err(|e| anyhow!("Unable to construct the migration recipient: {}", e))?,
     );
 

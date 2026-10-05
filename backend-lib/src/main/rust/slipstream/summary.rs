@@ -40,7 +40,7 @@ use jni::JNIEnv;
 use jni::objects::{JObject, JValue};
 use jni::sys::jobject;
 
-use rand::rngs::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use zcash_client_backend::data_api::WalletRead;
 use zcash_client_backend::data_api::WalletSummary;
 use zcash_client_backend::data_api::wallet::ConfirmationsPolicy;
@@ -302,8 +302,8 @@ fn build_policy(
 }
 
 /// One upstream `get_wallet_summary` walk — the expensive read the E-1 cache rations. Opens a
-/// fresh `WalletDb` (same `WalletDb::for_path(path, params, SystemClock, OsRng)` shape as the
-/// published Android SDK) and returns the summary, or `None` for "no balance data yet". Takes
+/// fresh `WalletDb` (same `WalletDb::for_path(path, params, SystemClock, UnwrapErr(SysRng))`
+/// shape as the published Android SDK) and returns the summary, or `None` for "no balance data yet". Takes
 /// the raw confirmations scalars (all `Copy`) so it is callable both synchronously and from the
 /// background refresh thread.
 fn walk_summary(
@@ -314,7 +314,7 @@ fn walk_summary(
     allow_zero_conf_shielding: bool,
 ) -> anyhow::Result<Option<WalletSummary<AccountUuid>>> {
     let policy = build_policy(trusted, untrusted, allow_zero_conf_shielding)?;
-    let db = WalletDb::for_path(db_path, network, SystemClock, OsRng)
+    let db = WalletDb::for_path(db_path, network, SystemClock, UnwrapErr(SysRng))
         .map_err(|e| anyhow!("open wallet db: {e}"))?;
     db.get_wallet_summary(policy)
         .map_err(|e| anyhow!("get_wallet_summary: {e}"))

@@ -41,7 +41,7 @@ use jni::{
     },
 };
 use prost::Message;
-use rand::rngs::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use rusqlite::Connection;
 use std::num::NonZeroUsize;
 use std::ptr;
@@ -180,7 +180,8 @@ mod run_sizing_for_tests {
     }
 }
 
-pub(crate) type Wallet = zcash_client_sqlite::WalletDb<Connection, Network, SystemClock, OsRng>;
+pub(crate) type Wallet =
+    zcash_client_sqlite::WalletDb<Connection, Network, SystemClock, UnwrapErr<SysRng>>;
 
 /// Opens a fresh wallet-read connection plus a second, independent connection for the migration
 /// store (same on-disk file — SQLite supports multiple connections to one file; mirrors the old
@@ -221,7 +222,7 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
     wallet_conn
         .pragma_update(None, "mmap_size", 0)
         .map_err(|e| anyhow!("Error disabling wallet mmap: {}", e))?;
-    let wallet = Wallet::from_connection(wallet_conn, network, SystemClock, OsRng)
+    let wallet = Wallet::from_connection(wallet_conn, network, SystemClock, UnwrapErr(SysRng))
         .with_anchor_retention_interval(retention_interval);
     let store_conn = Connection::open(db_path)
         .map_err(|e| anyhow!("Error opening migration store connection: {}", e))?;
@@ -451,7 +452,7 @@ fn compute_plan(
     store_conn: &mut Connection,
 ) -> anyhow::Result<(MigrationPlan, BlockHeight)> {
     let backend = Backend::new(wallet, account, store_conn, *wallet.params())?;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let migration_plan = engine::plan_migration_sized_with(
         &default_portfolio(),
         run_sizing_for(backend.is_keystone()),
@@ -575,7 +576,7 @@ fn commit_or_reuse(
         BlockHeight,
         &mut Backend<Wallet>,
         &MigrationPlan,
-        &mut OsRng,
+        &mut UnwrapErr<SysRng>,
     ) -> anyhow::Result<MigrationCommitOutcome>,
 ) -> anyhow::Result<MigrationCommitOutcome> {
     let CommitContext {
@@ -603,7 +604,7 @@ fn commit_or_reuse(
     }
     let migration_plan = crate::migration_plan_cache::get(account, plan_handle)?;
     let mut backend = Backend::new(wallet, account, store_conn, *wallet.params())?;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let result = sign(network, target, &mut backend, &migration_plan, &mut rng)?;
     crate::migration_plan_cache::clear(account);
     Ok(result)
@@ -1218,11 +1219,11 @@ fn try_prove(
     // The tip the wallet has actually observed and can witness at, which is what bounds the
     // engine's anchor re-draw and its dependency-coverage reading of an absent input.
     let scanned_tip = target_height(wallet)? - 1;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     // Scoped so the prover's mutable borrow of the wallet ends before the store below takes a
     // shared one.
     let result = {
-        let mut prover = WalletMigrationProver::new(wallet, account, fvk);
+        let mut prover = WalletMigrationProver::new(wallet, UnwrapErr(SysRng), account, fvk);
         match anchor {
             None => engine::prove_transfer(&params, &mut prover, state, id, scanned_tip, &mut rng),
             Some(anchor) => engine::prove_preparation(&mut prover, state, id, anchor),
@@ -1352,7 +1353,7 @@ fn finalize_note_split(
     let extracted = pczt::roles::tx_extractor::TransactionExtractor::new(
         pczt::Pczt::parse(&bytes).map_err(|e| anyhow!("parse proven note-split pczt: {:?}", e))?,
     )
-    .extract()
+    .extract(UnwrapErr(SysRng))
     .map_err(|e| anyhow!("extract proven note-split tx: {:?}", e))?;
     let txid: [u8; 32] = *extracted.txid().as_ref();
     Ok((bytes, txid))
@@ -1459,7 +1460,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let pczt =
             pczt::Pczt::parse(&pczt_bytes).map_err(|e| anyhow!("Error parsing PCZT: {:?}", e))?;
         let tx = pczt::roles::tx_extractor::TransactionExtractor::new(pczt)
-            .extract()
+            .extract(UnwrapErr(SysRng))
             .map_err(|e| anyhow!("Error extracting transaction: {:?}", e))?;
         let mut raw = Vec::new();
         tx.write(&mut raw)
@@ -1657,7 +1658,7 @@ fn read_reconciled(
 fn pczt_txid(bytes: &[u8]) -> Option<[u8; 32]> {
     let parsed = pczt::Pczt::parse(bytes).ok()?;
     let extracted = pczt::roles::tx_extractor::TransactionExtractor::new(parsed)
-        .extract()
+        .extract(UnwrapErr(SysRng))
         .ok()?;
     Some(*extracted.txid().as_ref())
 }
@@ -1960,7 +1961,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let estimate = engine::estimate_migration_runs_sized_with(
             &default_portfolio(),
             run_sizing_for(backend.is_keystone()),
@@ -2659,7 +2660,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     pczt::Pczt::parse(bytes)
                         .map_err(|e| anyhow!("parse proven transfer pczt: {:?}", e))?,
                 )
-                .extract()
+                .extract(UnwrapErr(SysRng))
                 .map_err(|e| anyhow!("extract proven transfer tx: {:?}", e))?;
                 let txid: [u8; 32] = *extracted.txid().as_ref();
                 let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
@@ -4167,7 +4168,7 @@ mod live_wallet_signing_tests {
         let mut state = {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             engine::commit_preparation(
                 &network,
                 target,
@@ -4320,7 +4321,7 @@ mod live_wallet_signing_tests {
         let (mut state, unsigned) = {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4350,8 +4351,9 @@ mod live_wallet_signing_tests {
         let ask = orchard::keys::SpendAuthorizingKey::from(usk.orchard());
         let unsigned_pczt =
             pczt::Pczt::parse(&unsigned_split_bytes).expect("parse unsigned split pczt");
-        let signed_pczt = zcash_pool_migration::build::sign_pczt(unsigned_pczt, &ask)
-            .expect("sign split pczt out-of-process");
+        let signed_pczt =
+            zcash_pool_migration::build::sign_pczt(UnwrapErr(SysRng), unsigned_pczt, &ask)
+                .expect("sign split pczt out-of-process");
         let signed_bytes = signed_pczt
             .serialize()
             .expect("serialize signed split pczt");
@@ -4372,7 +4374,7 @@ mod live_wallet_signing_tests {
         // `OrchardParse(MissingAnchor)` on the un-finalized bytes.
         let parsed = pczt::Pczt::parse(&proven_pczt).expect("parse proven split pczt");
         let tx = pczt::roles::tx_extractor::TransactionExtractor::new(parsed)
-            .extract()
+            .extract(UnwrapErr(SysRng))
             .expect("extract broadcast tx from finalized split pczt");
         assert_eq!(
             *tx.txid().as_ref(),
@@ -4453,7 +4455,7 @@ mod live_wallet_edge_case_tests {
         target: BlockHeight,
         backend: &mut Backend<Wallet>,
         plan: &MigrationPlan,
-        rng: &mut OsRng,
+        rng: &mut UnwrapErr<SysRng>,
     ) -> anyhow::Result<MigrationCommitOutcome> {
         let (state, unsigned) = engine::build_preparation_unsigned(
             network,
@@ -4495,7 +4497,7 @@ mod live_wallet_edge_case_tests {
         {
             let mut backend_a = Backend::new(&wallet, account_a, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4562,7 +4564,7 @@ mod live_wallet_edge_case_tests {
         let mut state = {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let (state, _unsigned) = engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4648,7 +4650,7 @@ mod live_wallet_edge_case_tests {
         let mut state = {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let (state, _unsigned) = engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4851,7 +4853,7 @@ mod live_wallet_edge_case_tests {
         {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4865,7 +4867,7 @@ mod live_wallet_edge_case_tests {
 
         let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
             .expect("account exists for migration store");
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let result = engine::build_preparation_unsigned(
             &network,
             target,
@@ -4900,7 +4902,7 @@ mod live_wallet_edge_case_tests {
             let target = tip + 1;
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let (state, _unsigned) = engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4960,7 +4962,7 @@ mod live_wallet_edge_case_tests {
         {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -5453,7 +5455,7 @@ mod next_due_transfer_tests {
             &mut st,
             DuenessTargets::new(scanned, BlockHeight::from_u32(estimated)),
             &AdvanceConfig::new(SETTLE_DEPTH),
-            &mut OsRng,
+            &mut UnwrapErr(SysRng),
         )
         .expect("in-memory store never errors");
         match advance.step() {
@@ -5752,7 +5754,7 @@ mod advance_step_peek_tests {
             &mut state_a,
             targets,
             &AdvanceConfig::new(SETTLE_DEPTH),
-            &mut OsRng,
+            &mut UnwrapErr(SysRng),
         )
         .expect("in-memory store never errors");
         let expected_next = advance.next();
@@ -6204,7 +6206,7 @@ mod reconcile_tests {
         let mut state = {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = OsRng;
+            let mut rng = UnwrapErr(SysRng);
             let (state, _unsigned) = engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -7717,7 +7719,7 @@ fn advance_step(
 ) -> anyhow::Result<(i64, i64, i64, i64)> {
     let targets = DuenessTargets::new(scanned_target, estimated_target);
     let config = AdvanceConfig::new(SETTLE_DEPTH);
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let advance = advance_migration(backend, state, targets, &config, &mut rng)
         .map_err(|e| anyhow!("Error advancing migration: {:?}", e))?;
     let (code, id) = match advance.step() {
@@ -7833,7 +7835,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         else {
             return Ok(ptr::null_mut());
         };
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let wakeups = state
             .sync_wakeup_schedule(
                 tip,

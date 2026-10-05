@@ -96,8 +96,11 @@ impl SpendAuthSigner for SeedSpendAuthSigner {
                 message: "delegation signing request alpha is not a canonical scalar".to_string(),
             })?;
         let rsk = ask.randomize(&alpha);
-        let sig: [u8; SPEND_AUTH_SIG_BYTES] =
-            (&rsk.sign(rand::rngs::OsRng, &request.sighash)).into();
+        let sig: [u8; SPEND_AUTH_SIG_BYTES] = (&rsk.sign(
+            rand::rand_core::UnwrapErr(rand::rngs::SysRng),
+            &request.sighash,
+        ))
+            .into();
         Ok(sig)
     }
 }
