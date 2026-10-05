@@ -235,12 +235,8 @@ mod tests {
 
         let mut conn = Connection::open(&db_path).expect("open fresh wallet db file");
         let account_uuid = {
-            let mut db = WalletDb::from_connection(
-                &mut conn,
-                network,
-                SystemClock,
-                rand::rand_core::UnwrapErr(rand::rngs::SysRng),
-            );
+            let mut db =
+                WalletDb::from_connection(&mut conn, network, SystemClock, crate::system_rng());
             init_wallet_db(&mut db, Some(SecretVec::new(vec![7u8; 32])))
                 .expect("init wallet schema");
 

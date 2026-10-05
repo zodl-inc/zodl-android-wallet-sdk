@@ -12,7 +12,6 @@
 //! themselves, because the fee depends on which inputs the selector picks.
 
 use anyhow::anyhow;
-use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use zcash_address::{ToAddress, ZcashAddress, unified, unified::Encoding as _};
 use zcash_client_backend::{
     data_api::{
@@ -32,7 +31,7 @@ use zcash_protocol::{
 };
 
 /// The wallet database as the JNI layer holds it.
-type Db = WalletDb<rusqlite::Connection, Network, SystemClock, UnwrapErr<SysRng>>;
+type Db = WalletDb<rusqlite::Connection, Network, SystemClock, crate::SystemRng>;
 
 type MigrationProposal = Proposal<StandardFeeRule, <Db as InputSource>::NoteRef>;
 

@@ -31,6 +31,7 @@
 //!    caller-echoed primitives is impossible anyway: the new engine's plan types have no public
 //!    constructor — verified directly, not assumed.)
 
+use crate::{SystemRng, system_rng};
 use anyhow::anyhow;
 use jni::{
     JNIEnv,
@@ -41,7 +42,7 @@ use jni::{
     },
 };
 use prost::Message;
-use rand::{rand_core::UnwrapErr, rngs::SysRng};
+use rand::CryptoRng;
 use rusqlite::Connection;
 use std::num::NonZeroUsize;
 use std::ptr;
@@ -180,8 +181,7 @@ mod run_sizing_for_tests {
     }
 }
 
-pub(crate) type Wallet =
-    zcash_client_sqlite::WalletDb<Connection, Network, SystemClock, UnwrapErr<SysRng>>;
+pub(crate) type Wallet = zcash_client_sqlite::WalletDb<Connection, Network, SystemClock, SystemRng>;
 
 /// Opens a fresh wallet-read connection plus a second, independent connection for the migration
 /// store (same on-disk file — SQLite supports multiple connections to one file; mirrors the old
@@ -192,7 +192,11 @@ pub(crate) type Wallet =
 /// JNI-free (takes a plain path, not a `JString`) so it — and everything built on top of it — is
 /// callable directly from `cargo test` against a real wallet DB file, without an emulator or a
 /// Kotlin/JNI round-trip. See the `tests` module at the bottom of this file.
-fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Wallet, Connection)> {
+fn open_at(
+    rng: SystemRng,
+    db_path: &std::path::Path,
+    network: Network,
+) -> anyhow::Result<(Wallet, Connection)> {
     // Configured with the same anchor grid `lib.rs`'s `wallet_db` uses, so the boundaries this
     // migration draws its transfer anchors from are exactly the ones the scanning path retains
     // checkpoints for.
@@ -222,7 +226,7 @@ fn open_at(db_path: &std::path::Path, network: Network) -> anyhow::Result<(Walle
     wallet_conn
         .pragma_update(None, "mmap_size", 0)
         .map_err(|e| anyhow!("Error disabling wallet mmap: {}", e))?;
-    let wallet = Wallet::from_connection(wallet_conn, network, SystemClock, UnwrapErr(SysRng))
+    let wallet = Wallet::from_connection(wallet_conn, network, SystemClock, rng)
         .with_anchor_retention_interval(retention_interval);
     let store_conn = Connection::open(db_path)
         .map_err(|e| anyhow!("Error opening migration store connection: {}", e))?;
@@ -359,10 +363,11 @@ fn clear_invalidation(conn: &Connection, account: &[u8]) -> anyhow::Result<()> {
 /// it and it would otherwise report as dead code.
 #[cfg(feature = "slipstream")]
 pub(crate) fn min_pending_anchor_boundary(
+    rng: SystemRng,
     db_path: &std::path::Path,
     network: Network,
 ) -> anyhow::Result<Option<u32>> {
-    let (wallet, mut store_conn) = open_at(db_path, network)?;
+    let (wallet, mut store_conn) = open_at(rng, db_path, network)?;
     let account_ids = wallet
         .get_account_ids()
         .map_err(|e| anyhow!("Error listing account ids: {}", e))?;
@@ -399,13 +404,14 @@ pub(crate) fn min_pending_anchor_boundary(
 }
 
 fn open(
+    rng: SystemRng,
     env: &mut JNIEnv,
     db_data: JString,
     network_id: jint,
 ) -> anyhow::Result<(Network, Wallet, Connection)> {
     let network = crate::parse_network(network_id)?;
     let db_path = crate::path_from_jni(env, db_data)?;
-    let (wallet, store_conn) = open_at(&db_path, network)?;
+    let (wallet, store_conn) = open_at(rng, &db_path, network)?;
     Ok((network, wallet, store_conn))
 }
 
@@ -446,19 +452,19 @@ fn natural_anchor_height(wallet: &Wallet) -> anyhow::Result<BlockHeight> {
 ///
 /// Run sizing branches on `Backend::is_keystone` (see [`run_sizing_for`]'s doc for why).
 fn compute_plan(
+    rng: &mut impl CryptoRng,
     network: &Network,
     wallet: &Wallet,
     account: AccountUuid,
     store_conn: &mut Connection,
 ) -> anyhow::Result<(MigrationPlan, BlockHeight)> {
     let backend = Backend::new(wallet, account, store_conn, *wallet.params())?;
-    let mut rng = UnwrapErr(SysRng);
     let migration_plan = engine::plan_migration_sized_with(
         &default_portfolio(),
         run_sizing_for(backend.is_keystone()),
         network,
         &backend,
-        &mut rng,
+        rng,
     )
     .map_err(|e| anyhow!("Error planning migration: {:?}", e))?;
     let prep = migration_plan.preparation();
@@ -512,6 +518,7 @@ fn compute_plan(
 /// which must echo the handle back — signs exactly this plan, not an independently re-randomized
 /// one.
 fn plan_for(
+    rng: &mut impl CryptoRng,
     network: &Network,
     wallet: &Wallet,
     account: AccountUuid,
@@ -521,8 +528,8 @@ fn plan_for(
     BlockHeight,
     crate::migration_plan_cache::PlanHandle,
 )> {
-    let (migration_plan, tip) = compute_plan(network, wallet, account, store_conn)?;
-    let handle = crate::migration_plan_cache::set(account, migration_plan.clone());
+    let (migration_plan, tip) = compute_plan(rng, network, wallet, account, store_conn)?;
+    let handle = crate::migration_plan_cache::set(rng, account, migration_plan.clone());
     Ok((migration_plan, tip, handle))
 }
 
@@ -536,9 +543,15 @@ fn plan(
     BlockHeight,
     crate::migration_plan_cache::PlanHandle,
 )> {
-    let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+    let (network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
     let account = crate::account_id_from_jni(env, account_uuid)?;
-    plan_for(&network, &wallet, account, &mut store_conn)
+    plan_for(
+        &mut system_rng(),
+        &network,
+        &wallet,
+        account,
+        &mut store_conn,
+    )
 }
 
 /// Returns the already-committed migration state if one exists (non-terminal), otherwise commits
@@ -568,7 +581,8 @@ struct CommitContext<'a> {
 /// picks which `commit_preparation`/`build_preparation_unsigned` variant to run, and (if signing
 /// in process) supplies the spending key directly to that call rather than to the `Backend`,
 /// which never holds spending authority.
-fn commit_or_reuse(
+fn commit_or_reuse<R: CryptoRng>(
+    rng: &mut R,
     ctx: CommitContext<'_>,
     plan_handle: crate::migration_plan_cache::PlanHandle,
     sign: impl FnOnce(
@@ -576,7 +590,7 @@ fn commit_or_reuse(
         BlockHeight,
         &mut Backend<Wallet>,
         &MigrationPlan,
-        &mut UnwrapErr<SysRng>,
+        &mut R,
     ) -> anyhow::Result<MigrationCommitOutcome>,
 ) -> anyhow::Result<MigrationCommitOutcome> {
     let CommitContext {
@@ -604,8 +618,7 @@ fn commit_or_reuse(
     }
     let migration_plan = crate::migration_plan_cache::get(account, plan_handle)?;
     let mut backend = Backend::new(wallet, account, store_conn, *wallet.params())?;
-    let mut rng = UnwrapErr(SysRng);
-    let result = sign(network, target, &mut backend, &migration_plan, &mut rng)?;
+    let result = sign(network, target, &mut backend, &migration_plan, rng)?;
     crate::migration_plan_cache::clear(account);
     Ok(result)
 }
@@ -1069,7 +1082,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     proposal_handle: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, _store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, _store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let plan_handle = proposal_handle as u64;
         let migration_plan = crate::migration_plan_cache::get(account, plan_handle)?;
@@ -1105,7 +1118,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
-        let (network, mut wallet, _store_conn) = open(env, db_data, network_id)?;
+        let (network, mut wallet, _store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let proposal =
             crate::migration_engine::propose_immediate_send_max(&network, &mut wallet, account)?;
@@ -1202,7 +1215,14 @@ fn is_prove_ready(
 /// (`WalletProveError::UnknownSpentNote`/`AnchorNotFound`/`WitnessNotFound`) — this is the ordinary
 /// transient "not ready yet" condition, not a failure, matching the old stopgap's `Ok(None)`
 /// contract. Any other error is propagated.
+///
+/// Takes two RNGs because the engine needs two at once: `prover_rng` is owned by the
+/// [`WalletMigrationProver`] for as long as it lives, and `rng` is lent to the proving call that
+/// borrows that prover.
+#[allow(clippy::too_many_arguments)]
 fn try_prove(
+    prover_rng: impl CryptoRng,
+    rng: &mut impl CryptoRng,
     wallet: &mut Wallet,
     account: AccountUuid,
     fvk: orchard::keys::FullViewingKey,
@@ -1219,13 +1239,12 @@ fn try_prove(
     // The tip the wallet has actually observed and can witness at, which is what bounds the
     // engine's anchor re-draw and its dependency-coverage reading of an absent input.
     let scanned_tip = target_height(wallet)? - 1;
-    let mut rng = UnwrapErr(SysRng);
     // Scoped so the prover's mutable borrow of the wallet ends before the store below takes a
     // shared one.
     let result = {
-        let mut prover = WalletMigrationProver::new(wallet, UnwrapErr(SysRng), account, fvk);
+        let mut prover = WalletMigrationProver::new(wallet, prover_rng, account, fvk);
         match anchor {
-            None => engine::prove_transfer(&params, &mut prover, state, id, scanned_tip, &mut rng),
+            None => engine::prove_transfer(&params, &mut prover, state, id, scanned_tip, rng),
             Some(anchor) => engine::prove_preparation(&mut prover, state, id, anchor),
         }
     };
@@ -1312,6 +1331,8 @@ fn is_transient_prove_error<TE, NE, RE, LE>(err: &WalletProveError<TE, NE, RE, L
 /// `extractBroadcastTxNative` fails with `OrchardParse(MissingAnchor)` on the merely-signed PCZT
 /// (confirmed live: the Keystone path originally skipped this step entirely).
 fn finalize_note_split(
+    prover_rng: impl CryptoRng,
+    rng: &mut impl CryptoRng,
     wallet: &mut Wallet,
     account: AccountUuid,
     store_conn: &mut Connection,
@@ -1331,8 +1352,10 @@ fn finalize_note_split(
         .find(|t| t.id() == id)
         .map(|t| t.kind())
         .ok_or_else(|| anyhow!("Note-split transaction not found in migration state"))?;
-    let proved = try_prove(wallet, account, fvk, state, id, kind, store_conn)
-        .map_err(|e| anyhow!("Error finalizing note split: {}", e))?;
+    let proved = try_prove(
+        prover_rng, &mut *rng, wallet, account, fvk, state, id, kind, store_conn,
+    )
+    .map_err(|e| anyhow!("Error finalizing note split: {}", e))?;
     if !proved {
         return Err(anyhow!(
             "Note-split transaction is not yet finalizable — its funding note isn't witnessable yet"
@@ -1353,7 +1376,7 @@ fn finalize_note_split(
     let extracted = pczt::roles::tx_extractor::TransactionExtractor::new(
         pczt::Pczt::parse(&bytes).map_err(|e| anyhow!("parse proven note-split pczt: {:?}", e))?,
     )
-    .extract(UnwrapErr(SysRng))
+    .extract(rng)
     .map_err(|e| anyhow!("extract proven note-split tx: {:?}", e))?;
     let txid: [u8; 32] = *extracted.txid().as_ref();
     Ok((bytes, txid))
@@ -1390,11 +1413,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     usk: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, mut wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let usk = crate::decode_usk(env, usk)?;
         let target = target_height(&wallet)?;
         let (mut state, _unsigned) = commit_or_reuse(
+            &mut system_rng(),
             CommitContext {
                 network: &network,
                 wallet: &wallet,
@@ -1423,8 +1447,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             .find(|t| matches!(t.kind(), MigrationTxKind::Preparation { layer: 0, .. }))
             .map(|t| t.id())
             .ok_or_else(|| anyhow!("Migration has no note-split preparation transaction"))?;
-        let (proven_pczt, txid) =
-            finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
+        let (proven_pczt, txid) = finalize_note_split(
+            system_rng(),
+            &mut system_rng(),
+            &mut wallet,
+            account,
+            &mut store_conn,
+            &mut state,
+            split_id,
+        )?;
 
         let id = encode_transfer_id(split_id);
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
@@ -1460,7 +1491,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let pczt =
             pczt::Pczt::parse(&pczt_bytes).map_err(|e| anyhow!("Error parsing PCZT: {:?}", e))?;
         let tx = pczt::roles::tx_extractor::TransactionExtractor::new(pczt)
-            .extract(UnwrapErr(SysRng))
+            .extract(system_rng())
             .map_err(|e| anyhow!("Error extracting transaction: {:?}", e))?;
         let mut raw = Vec::new();
         tx.write(&mut raw)
@@ -1486,7 +1517,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     observed_tip: jlong,
 ) {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let id = decode_transfer_id(transfer_id)?;
         // The invalidation side table stores the id as TEXT (see INVALIDATION_DDL) — render the
@@ -1655,10 +1686,10 @@ fn read_reconciled(
 /// `Proved`+ transaction) transaction. Returns `Ok(None)` if the PCZT can't be extracted yet
 /// (e.g. an `AwaitingSignature`/`Signed` transfer whose anchor/witness isn't installed) rather than
 /// erroring, so an un-extractable transaction is simply omitted from the own-txid set.
-fn pczt_txid(bytes: &[u8]) -> Option<[u8; 32]> {
+fn pczt_txid(rng: impl CryptoRng, bytes: &[u8]) -> Option<[u8; 32]> {
     let parsed = pczt::Pczt::parse(bytes).ok()?;
     let extracted = pczt::roles::tx_extractor::TransactionExtractor::new(parsed)
-        .extract(UnwrapErr(SysRng))
+        .extract(rng)
         .ok()?;
     Some(*extracted.txid().as_ref())
 }
@@ -1682,6 +1713,7 @@ fn pczt_txid(bytes: &[u8]) -> Option<[u8; 32]> {
 /// `Signed` (pre-proof) transfers, never `Proved` ones. `advance_migration`'s own candidate checks
 /// now own foreign-spend detection end to end, reached through the ordinary `nextStep` driver loop.
 fn reconcile_invalidated(
+    rng: &mut impl CryptoRng,
     wallet: &mut Wallet,
     account: AccountUuid,
     // No longer read: was only used by the deleted Pass 3 to tag `record_invalidation` calls.
@@ -1709,7 +1741,7 @@ fn reconcile_invalidated(
         if !matches!(tx.state(), MigrationTxState::Proved) {
             continue;
         }
-        let Some(txid_bytes) = pczt_txid(tx.pczt()) else {
+        let Some(txid_bytes) = pczt_txid(&mut *rng, tx.pczt()) else {
             continue;
         };
         let txid = zcash_protocol::TxId::from_bytes(txid_bytes);
@@ -1755,11 +1787,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, mut wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let account_bytes = account.expose_uuid().as_bytes().to_vec();
         Ok(
-            if reconcile_invalidated(&mut wallet, account, &account_bytes, &mut store_conn)? {
+            if reconcile_invalidated(
+                &mut system_rng(),
+                &mut wallet,
+                account,
+                &account_bytes,
+                &mut store_conn,
+            )? {
                 JNI_TRUE
             } else {
                 JNI_FALSE
@@ -1791,7 +1829,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     txid: JByteArray<'local>,
 ) -> jlong {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, _store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, _store_conn) = open(system_rng(), env, db_data, network_id)?;
         let txid_bytes = crate::utils::java_bytes_to_rust(env, &txid)?;
         let txid_arr: [u8; 32] = txid_bytes
             .as_slice()
@@ -1820,7 +1858,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
         let mut backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
@@ -1849,7 +1887,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
         // Deliberately NOT `mut` — unlike every mutating sibling here, this function must never
@@ -1878,7 +1916,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
         let mut backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
@@ -1929,9 +1967,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // `compute_plan`, NOT `plan`: this is a pure peek — caching its throwaway plan would
         // invalidate the handle of any proposal the user is currently reviewing (see
         // `migration_plan_cache`'s module doc).
-        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
-        let (migration_plan, _tip) = compute_plan(&network, &wallet, account, &mut store_conn)?;
+        let (migration_plan, _tip) = compute_plan(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )?;
         Ok(if migration_plan.preparation().transaction_count() > 0 {
             JNI_TRUE
         } else {
@@ -1958,10 +2002,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jint {
     let res = catch_unwind(&mut env, |env| {
-        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
-        let mut rng = UnwrapErr(SysRng);
+        let mut rng = system_rng();
         let estimate = engine::estimate_migration_runs_sized_with(
             &default_portfolio(),
             run_sizing_for(backend.is_keystone()),
@@ -1981,6 +2025,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 /// same fix. A plan-wide "does anything exist overdue anywhere" blanket scan is what this
 /// replaces — see spec §A.
 fn any_overdue(
+    rng: &mut impl CryptoRng,
     backend: &mut impl PoolMigrationWrite<Error = EngineError>,
     state: &mut MigrationState,
     scanned_tip: BlockHeight,
@@ -1992,7 +2037,7 @@ fn any_overdue(
     let scanned_target = scanned_tip + 1;
     let estimated_target = std::cmp::max(scanned_target, effective_tip + 1);
     let (code, _id, _next_height, _next_kind) =
-        advance_step(backend, state, scanned_target, estimated_target)?;
+        advance_step(rng, backend, state, scanned_target, estimated_target)?;
     Ok(code == STEP_BROADCAST)
 }
 
@@ -2008,7 +2053,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     estimated_tip: jlong,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let scanned_tip = target_height(&wallet)? - 1;
         let effective_tip = if estimated_tip >= 0 {
@@ -2020,7 +2065,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         let persisted = read_reconciled(&wallet, &mut backend)?;
         Ok(match persisted {
             Some(mut state) => {
-                if any_overdue(&mut backend, &mut state, scanned_tip, effective_tip)? {
+                if any_overdue(
+                    &mut system_rng(),
+                    &mut backend,
+                    &mut state,
+                    scanned_tip,
+                    effective_tip,
+                )? {
                     JNI_TRUE
                 } else {
                     JNI_FALSE
@@ -2043,7 +2094,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let mut backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
         let persisted = read_reconciled(&wallet, &mut backend)?;
@@ -2072,7 +2123,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     usk: JByteArray<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
-        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let usk = crate::decode_usk(env, usk)?;
         // No schedule fields cross the boundary here — `commit_preparation` takes a
@@ -2083,6 +2134,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // latest-plan-wins cache contract).
         let target = target_height(&wallet)?;
         commit_or_reuse(
+            &mut system_rng(),
             CommitContext {
                 network: &network,
                 wallet: &wallet,
@@ -2413,7 +2465,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jint {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, mut wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
 
@@ -2480,6 +2532,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 .map(|t| (t.anchor_boundary(), Some(t.scheduled_height())))
                 .unwrap_or((None, None));
             if try_prove(
+                system_rng(),
+                &mut system_rng(),
                 &mut wallet,
                 account,
                 fvk.clone(),
@@ -2533,6 +2587,7 @@ enum DueTransferResult<'a> {
 /// `next_due_transfer_delegation_tests` module below for the differential coverage pinning this
 /// down.
 fn next_due_transfer_result<'a>(
+    rng: &mut impl CryptoRng,
     backend: &mut impl PoolMigrationWrite<Error = EngineError>,
     state: &'a mut MigrationState,
     scanned_tip: BlockHeight,
@@ -2547,7 +2602,7 @@ fn next_due_transfer_result<'a>(
     let scanned_target = scanned_tip + 1;
     let estimated_target = std::cmp::max(scanned_target, effective_tip + 1);
     let (code, id, _next_height, _next_kind) =
-        advance_step(backend, state, scanned_target, estimated_target)?;
+        advance_step(rng, backend, state, scanned_target, estimated_target)?;
     Ok(match code {
         STEP_BROADCAST => {
             let tx_id = MigrationTransferId::new(id as u32);
@@ -2576,7 +2631,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     estimated_tip: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let scanned_tip = target_height(&wallet)? - 1;
         let effective_tip = if estimated_tip >= 0 {
@@ -2619,7 +2674,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                 .collect::<Vec<_>>(),
         );
 
-        match next_due_transfer_result(&mut backend, &mut state, scanned_tip, effective_tip)? {
+        match next_due_transfer_result(
+            &mut system_rng(),
+            &mut backend,
+            &mut state,
+            scanned_tip,
+            effective_tip,
+        )? {
             DueTransferResult::NothingDue => Ok(env
                 .new_object(
                     JNI_DUE_TRANSFER_RESULT,
@@ -2660,7 +2721,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     pczt::Pczt::parse(bytes)
                         .map_err(|e| anyhow!("parse proven transfer pczt: {:?}", e))?,
                 )
-                .extract(UnwrapErr(SysRng))
+                .extract(system_rng())
                 .map_err(|e| anyhow!("extract proven transfer tx: {:?}", e))?;
                 let txid: [u8; 32] = *extracted.txid().as_ref();
                 let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
@@ -2723,7 +2784,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
         let backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
@@ -3236,7 +3297,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jint {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, mut wallet, _store_conn) = open(env, db_data, network_id)?;
+        let (_network, mut wallet, _store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
 
@@ -3283,7 +3344,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
         let network = crate::parse_network(network_id)?;
-        let db = crate::wallet_db(env, network, db_data)?;
+        let db = crate::wallet_db(system_rng(), env, network, db_data)?;
         let account_ids = match db.get_account_ids() {
             Ok(ids) => ids,
             Err(zcash_client_sqlite::error::SqliteClientError::DbError(
@@ -3347,7 +3408,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jint {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let mut backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
         let outcome = backend
@@ -3378,7 +3439,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let tip = target_height(&wallet)? - 1;
         let mut backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
@@ -3460,7 +3521,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jlong {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, _store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, _store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
 
@@ -3530,10 +3591,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     proposal_handle: jlong,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
-        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
         let (state, unsigned) = commit_or_reuse(
+            &mut system_rng(),
             CommitContext {
                 network: &network,
                 wallet: &wallet,
@@ -3593,7 +3655,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     signed_pczt: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, mut wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, mut wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let signed_pczt_bytes = crate::utils::java_bytes_to_rust(env, &signed_pczt)?;
         let mut state = {
@@ -3621,8 +3683,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // Resolve the deferred witness/anchor and prove before extraction — without this,
         // `extractBroadcastTxNative` fails with `OrchardParse(MissingAnchor)` on the
         // merely-signed-but-unproven bytes just applied above (confirmed live).
-        let (proven_pczt, txid) =
-            finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)?;
+        let (proven_pczt, txid) = finalize_note_split(
+            system_rng(),
+            &mut system_rng(),
+            &mut wallet,
+            account,
+            &mut store_conn,
+            &mut state,
+            split_id,
+        )?;
 
         let id = encode_transfer_id(split_id);
         let txid_obj = crate::utils::rust_bytes_to_java(env, &txid)?;
@@ -3654,7 +3723,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     proposal_handle: jlong,
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
-        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         // Mirrors `createUnsignedNoteSplitPcztNative`: no schedule fields cross the boundary —
         // `commit_or_reuse` builds exactly the cached plan `proposal_handle` identifies (erroring
@@ -3664,6 +3733,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         // (which would have hit `CommitError::MigrationInProgress` from the engine anyway).
         let target = target_height(&wallet)?;
         let (state, unsigned) = commit_or_reuse(
+            &mut system_rng(),
             CommitContext {
                 network: &network,
                 wallet: &wallet,
@@ -3754,10 +3824,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     proposal_handle: jlong,
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
-        let (network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
         let (state, unsigned) = commit_or_reuse(
+            &mut system_rng(),
             CommitContext {
                 network: &network,
                 wallet: &wallet,
@@ -3845,7 +3916,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     pczt_bytes_list: JObjectArray<'local>,
 ) {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let count = env.get_array_length(&ids)?;
         // A `long[]` is read as a region rather than element-by-element: the ids are primitives,
@@ -4071,11 +4142,18 @@ mod live_wallet_tests {
         let fixture = fixture_db_path().expect("set MIGRATION_TEST_WALLET_DB");
         let db_path = fresh_test_db_copy(&fixture);
         let network = Network::TestNetwork;
-        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
-        let (plan, tip, _handle) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (plan, tip, _handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("plan_for");
 
         println!(
             "tip={tip:?} funding_notes={} prep_layers={} prep_txs={} direct_funding={}",
@@ -4131,7 +4209,8 @@ mod live_wallet_signing_tests {
         let phrase = std::env::var("MIGRATION_TEST_SEED_PHRASE")
             .expect("set MIGRATION_TEST_SEED_PHRASE (BIP-39 mnemonic, space-separated words)");
         let network = Network::TestNetwork;
-        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (mut wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account = wallet
             .get_account_ids()
             .expect("list accounts")
@@ -4161,14 +4240,20 @@ mod live_wallet_signing_tests {
              the seed phrase and/or account index (this test assumes account 0)"
         );
 
-        let (migration_plan, tip, _handle) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (migration_plan, tip, _handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("plan_for");
         let target = tip + 1;
 
         let mut state = {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = UnwrapErr(SysRng);
+            let mut rng = system_rng();
             engine::commit_preparation(
                 &network,
                 target,
@@ -4200,6 +4285,8 @@ mod live_wallet_signing_tests {
         let mut transient = 0;
         for (id, kind) in ids_and_kinds {
             match try_prove(
+                system_rng(),
+                &mut system_rng(),
                 &mut wallet,
                 account,
                 fvk.clone(),
@@ -4238,7 +4325,8 @@ mod live_wallet_signing_tests {
             .expect("set MIGRATION_TEST_WALLET_DB");
         let db_path = fresh_test_db_copy(&fixture);
         let network = Network::TestNetwork;
-        let (mut wallet, _store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (mut wallet, _store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account = wallet
             .get_account_ids()
             .expect("list accounts")
@@ -4298,7 +4386,8 @@ mod live_wallet_signing_tests {
         let phrase = std::env::var("MIGRATION_TEST_SEED_PHRASE")
             .expect("set MIGRATION_TEST_SEED_PHRASE (BIP-39 mnemonic, space-separated words)");
         let network = Network::TestNetwork;
-        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (mut wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account = wallet
             .get_account_ids()
             .expect("list accounts")
@@ -4312,8 +4401,14 @@ mod live_wallet_signing_tests {
         let usk = UnifiedSpendingKey::from_seed(&network, &seed, zip32::AccountId::ZERO)
             .expect("derive USK from seed for account 0");
 
-        let (migration_plan, tip, _handle) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (migration_plan, tip, _handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("plan_for");
         let target = tip + 1;
 
         // Mirrors `createUnsignedNoteSplitPcztNative`: build unsigned, leaving every transaction
@@ -4321,7 +4416,7 @@ mod live_wallet_signing_tests {
         let (mut state, unsigned) = {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = UnwrapErr(SysRng);
+            let mut rng = system_rng();
             engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4351,9 +4446,8 @@ mod live_wallet_signing_tests {
         let ask = orchard::keys::SpendAuthorizingKey::from(usk.orchard());
         let unsigned_pczt =
             pczt::Pczt::parse(&unsigned_split_bytes).expect("parse unsigned split pczt");
-        let signed_pczt =
-            zcash_pool_migration::build::sign_pczt(UnwrapErr(SysRng), unsigned_pczt, &ask)
-                .expect("sign split pczt out-of-process");
+        let signed_pczt = zcash_pool_migration::build::sign_pczt(system_rng(), unsigned_pczt, &ask)
+            .expect("sign split pczt out-of-process");
         let signed_bytes = signed_pczt
             .serialize()
             .expect("serialize signed split pczt");
@@ -4364,17 +4458,22 @@ mod live_wallet_signing_tests {
             state.apply_signature(split_id, signed_bytes),
             "apply_signature should accept the freshly-signed split pczt"
         );
-        let (proven_pczt, txid) =
-            finalize_note_split(&mut wallet, account, &mut store_conn, &mut state, split_id)
-                .expect(
-                    "finalize_note_split should resolve the anchor, not fail with MissingAnchor",
-                );
+        let (proven_pczt, txid) = finalize_note_split(
+            system_rng(),
+            &mut system_rng(),
+            &mut wallet,
+            account,
+            &mut store_conn,
+            &mut state,
+            split_id,
+        )
+        .expect("finalize_note_split should resolve the anchor, not fail with MissingAnchor");
 
         // Mirrors `extractBroadcastTxNative` exactly — this is what previously crashed with
         // `OrchardParse(MissingAnchor)` on the un-finalized bytes.
         let parsed = pczt::Pczt::parse(&proven_pczt).expect("parse proven split pczt");
         let tx = pczt::roles::tx_extractor::TransactionExtractor::new(parsed)
-            .extract(UnwrapErr(SysRng))
+            .extract(system_rng())
             .expect("extract broadcast tx from finalized split pczt");
         assert_eq!(
             *tx.txid().as_ref(),
@@ -4455,7 +4554,7 @@ mod live_wallet_edge_case_tests {
         target: BlockHeight,
         backend: &mut Backend<Wallet>,
         plan: &MigrationPlan,
-        rng: &mut UnwrapErr<SysRng>,
+        rng: &mut SystemRng,
     ) -> anyhow::Result<MigrationCommitOutcome> {
         let (state, unsigned) = engine::build_preparation_unsigned(
             network,
@@ -4485,19 +4584,26 @@ mod live_wallet_edge_case_tests {
     fn singleton_id_collision_between_accounts() {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
-        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (mut wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account_a = first_account(&wallet);
         let account_b = create_synthetic_account(&mut wallet, 0x42, "edge-case-account-b", None);
         assert_ne!(account_a, account_b);
 
         // Plan + commit an (unsigned) migration for account A only — account B is never touched.
-        let (plan_a, tip, _handle) =
-            plan_for(&network, &wallet, account_a, &mut store_conn).expect("plan_for account_a");
+        let (plan_a, tip, _handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account_a,
+            &mut store_conn,
+        )
+        .expect("plan_for account_a");
         let target = tip + 1;
         {
             let mut backend_a = Backend::new(&wallet, account_a, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = UnwrapErr(SysRng);
+            let mut rng = system_rng();
             engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4550,7 +4656,8 @@ mod live_wallet_edge_case_tests {
     fn mark_mined_reconciles_on_read() {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
-        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
         // Commit a migration, then manually drive one of its transactions to `Broadcast` using a
@@ -4558,13 +4665,19 @@ mod live_wallet_edge_case_tests {
         // state unconditionally (no prior-state precondition, confirmed in
         // `zcash_pool_migration::state`), so an `AwaitingSignature` transaction from
         // `build_preparation_unsigned` works fine here without needing real signing.
-        let (plan, tip, _handle) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (plan, tip, _handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("plan_for");
         let target = tip + 1;
         let mut state = {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = UnwrapErr(SysRng);
+            let mut rng = system_rng();
             let (state, _unsigned) = engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4641,16 +4754,23 @@ mod live_wallet_edge_case_tests {
     fn unreconciled_read_never_persists_mark_mined() {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
-        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
-        let (plan, tip, _handle) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (plan, tip, _handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("plan_for");
         let target = tip + 1;
         let mut state = {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = UnwrapErr(SysRng);
+            let mut rng = system_rng();
             let (state, _unsigned) = engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4705,14 +4825,22 @@ mod live_wallet_edge_case_tests {
     fn commit_or_reuse_returns_existing_state_without_recommitting() {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
-        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
-        let (_plan, tip, handle) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (_plan, tip, handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("plan_for");
         let target = tip + 1;
 
         let (state1, unsigned1) = commit_or_reuse(
+            &mut system_rng(),
             CommitContext {
                 network: &network,
                 wallet: &wallet,
@@ -4731,12 +4859,20 @@ mod live_wallet_edge_case_tests {
 
         // Re-plan, as the app does whenever it re-renders the review screen — this must not
         // itself disturb the already-committed migration.
-        plan_for(&network, &wallet, account, &mut store_conn).expect("re-plan after commit");
+        plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("re-plan after commit");
 
         // Deliberately passes the ORIGINAL handle, which the re-plan above superseded: on the
         // reuse path the handle must NOT be consulted (the commitment already happened, with a
         // handle-verified plan) — a stale handle only blocks a FRESH commit.
         let (state2, unsigned2) = commit_or_reuse(
+            &mut system_rng(),
             CommitContext {
                 network: &network,
                 wallet: &wallet,
@@ -4785,16 +4921,30 @@ mod live_wallet_edge_case_tests {
 
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
-        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
-        let (_plan1, tip, stale_handle) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("first plan");
-        let (_plan2, _tip2, current_handle) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("superseding plan");
+        let (_plan1, tip, stale_handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("first plan");
+        let (_plan2, _tip2, current_handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("superseding plan");
         let target = tip + 1;
 
         let err = commit_or_reuse(
+            &mut system_rng(),
             CommitContext {
                 network: &network,
                 wallet: &wallet,
@@ -4813,6 +4963,7 @@ mod live_wallet_edge_case_tests {
         );
 
         let (_state, unsigned) = commit_or_reuse(
+            &mut system_rng(),
             CommitContext {
                 network: &network,
                 wallet: &wallet,
@@ -4844,16 +4995,23 @@ mod live_wallet_edge_case_tests {
     fn raw_recommit_over_committed_migration_is_rejected() {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
-        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
-        let (plan, tip, _handle) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (plan, tip, _handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("plan_for");
         let target = tip + 1;
         {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = UnwrapErr(SysRng);
+            let mut rng = system_rng();
             engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4867,7 +5025,7 @@ mod live_wallet_edge_case_tests {
 
         let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
             .expect("account exists for migration store");
-        let mut rng = UnwrapErr(SysRng);
+        let mut rng = system_rng();
         let result = engine::build_preparation_unsigned(
             &network,
             target,
@@ -4895,14 +5053,21 @@ mod live_wallet_edge_case_tests {
         let network = Network::TestNetwork;
 
         let committed_ids: Vec<MigrationTransferId> = {
-            let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+            let (wallet, mut store_conn) =
+                open_at(system_rng(), &db_path, network).expect("open wallet");
             let account = first_account(&wallet);
-            let (plan, tip, _handle) =
-                plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+            let (plan, tip, _handle) = plan_for(
+                &mut system_rng(),
+                &network,
+                &wallet,
+                account,
+                &mut store_conn,
+            )
+            .expect("plan_for");
             let target = tip + 1;
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = UnwrapErr(SysRng);
+            let mut rng = system_rng();
             let (state, _unsigned) = engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4916,7 +5081,8 @@ mod live_wallet_edge_case_tests {
             // wallet / store_conn / backend all drop here — simulates process death.
         };
 
-        let (wallet2, mut store_conn2) = open_at(&db_path, network).expect("reopen wallet");
+        let (wallet2, mut store_conn2) =
+            open_at(system_rng(), &db_path, network).expect("reopen wallet");
         let account = first_account(&wallet2);
         let backend2 = Backend::new(&wallet2, account, &mut store_conn2, network)
             .expect("account exists for migration store");
@@ -4953,16 +5119,23 @@ mod live_wallet_edge_case_tests {
     fn plan_migration_is_read_only_after_commit() {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
-        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
-        let (plan_before, _tip, _handle) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("plan before commit");
+        let (plan_before, _tip, _handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("plan before commit");
         let target = target_height(&wallet).expect("target height");
         {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = UnwrapErr(SysRng);
+            let mut rng = system_rng();
             engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -4974,8 +5147,14 @@ mod live_wallet_edge_case_tests {
             .expect("commit");
         }
 
-        let (plan_after, _tip2, _handle2) = plan_for(&network, &wallet, account, &mut store_conn)
-            .expect("plan_migration must remain callable after a migration is committed");
+        let (plan_after, _tip2, _handle2) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("plan_migration must remain callable after a migration is committed");
 
         assert_eq!(
             plan_before.funding_notes(),
@@ -4993,7 +5172,8 @@ mod live_wallet_edge_case_tests {
     fn planning_an_account_with_no_funds_errors_cleanly() {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
-        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (mut wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account_b =
             create_synthetic_account(&mut wallet, 0x43, "edge-case-empty-account", None);
 
@@ -5002,7 +5182,13 @@ mod live_wallet_edge_case_tests {
         // file still bypassing it — harmless here only because a zero-note account hits
         // NothingToMigrate before any sizing knob matters, but a bad precedent for anyone copying
         // this test's shape against a funded account later.
-        let result = compute_plan(&network, &wallet, account_b, &mut store_conn);
+        let result = compute_plan(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account_b,
+            &mut store_conn,
+        );
         let err = result.expect_err("an account with zero spendable Orchard notes must error");
         assert!(
             format!("{err:?}").contains("NothingToMigrate"),
@@ -5020,7 +5206,8 @@ mod live_wallet_edge_case_tests {
     fn backend_is_keystone_reflects_the_accounts_key_source() {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
-        let (mut wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (mut wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let keystone_account =
             create_synthetic_account(&mut wallet, 0x44, "keystone-account", Some("Keystone"));
         let zodl_account =
@@ -5154,7 +5341,7 @@ mod next_due_transfer_tests {
             state: state.clone(),
             as_of: scanned,
         };
-        next_due_transfer_result(&mut store, state, scanned, effective)
+        next_due_transfer_result(&mut system_rng(), &mut store, state, scanned, effective)
             .expect("in-memory store never errors")
     }
 
@@ -5288,7 +5475,8 @@ mod next_due_transfer_tests {
             as_of: tip,
         };
         assert!(
-            any_overdue(&mut store, &mut state, tip, tip).expect("in-memory store never errors"),
+            any_overdue(&mut system_rng(), &mut store, &mut state, tip, tip)
+                .expect("in-memory store never errors"),
             "a due Proved preparation must count as overdue (sync gate must close)"
         );
 
@@ -5455,7 +5643,7 @@ mod next_due_transfer_tests {
             &mut st,
             DuenessTargets::new(scanned, BlockHeight::from_u32(estimated)),
             &AdvanceConfig::new(SETTLE_DEPTH),
-            &mut UnwrapErr(SysRng),
+            &mut system_rng(),
         )
         .expect("in-memory store never errors");
         match advance.step() {
@@ -5754,7 +5942,7 @@ mod advance_step_peek_tests {
             &mut state_a,
             targets,
             &AdvanceConfig::new(SETTLE_DEPTH),
-            &mut UnwrapErr(SysRng),
+            &mut system_rng(),
         )
         .expect("in-memory store never errors");
         let expected_next = advance.next();
@@ -5772,9 +5960,14 @@ mod advance_step_peek_tests {
             as_of: tip,
         };
         let mut state_b = state.clone();
-        let (_code, _id, next_height, next_kind) =
-            advance_step(&mut store_b, &mut state_b, tip + 1, tip + 1)
-                .expect("advance_step over the in-memory store");
+        let (_code, _id, next_height, next_kind) = advance_step(
+            &mut system_rng(),
+            &mut store_b,
+            &mut state_b,
+            tip + 1,
+            tip + 1,
+        )
+        .expect("advance_step over the in-memory store");
 
         let (expected_height, expected_kind) = expected_next.expect("checked above");
         assert_eq!(
@@ -5818,7 +6011,7 @@ mod advance_step_peek_tests {
         };
         let mut st = state.clone();
         let (code, _id, next_height, next_kind) =
-            advance_step(&mut store, &mut st, tip + 1, tip + 1)
+            advance_step(&mut system_rng(), &mut store, &mut st, tip + 1, tip + 1)
                 .expect("advance_step over the in-memory store");
         assert_eq!(code, STEP_COMPLETE);
         assert_eq!(next_height, -1);
@@ -6141,7 +6334,7 @@ mod reconcile_tests {
     #[test]
     fn pczt_txid_returns_none_for_garbage_bytes() {
         assert_eq!(
-            pczt_txid(&[0u8; 32]),
+            pczt_txid(system_rng(), &[0u8; 32]),
             None,
             "garbage bytes must not parse as a PCZT"
         );
@@ -6150,7 +6343,11 @@ mod reconcile_tests {
     /// Empty slice is also not a valid PCZT.
     #[test]
     fn pczt_txid_returns_none_for_empty_bytes() {
-        assert_eq!(pczt_txid(&[]), None, "empty slice must not parse as a PCZT");
+        assert_eq!(
+            pczt_txid(system_rng(), &[]),
+            None,
+            "empty slice must not parse as a PCZT"
+        );
     }
 
     // --- Fixture-backed integration test for M6 test 1 (Proved transfer whose txid is on chain →
@@ -6197,16 +6394,23 @@ mod reconcile_tests {
     fn reconcile_marks_proved_transfer_broadcast_when_its_txid_is_on_chain() {
         let db_path = fresh_test_db_copy(&fixture_db_path());
         let network = Network::TestNetwork;
-        let (wallet, mut store_conn) = open_at(&db_path, network).expect("open wallet");
+        let (wallet, mut store_conn) =
+            open_at(system_rng(), &db_path, network).expect("open wallet");
         let account = first_account(&wallet);
 
-        let (plan, tip, _handle) =
-            plan_for(&network, &wallet, account, &mut store_conn).expect("plan_for");
+        let (plan, tip, _handle) = plan_for(
+            &mut system_rng(),
+            &network,
+            &wallet,
+            account,
+            &mut store_conn,
+        )
+        .expect("plan_for");
         let target = tip + 1;
         let mut state = {
             let mut backend = Backend::new(&wallet, account, &mut store_conn, network)
                 .expect("account exists for migration store");
-            let mut rng = UnwrapErr(SysRng);
+            let mut rng = system_rng();
             let (state, _unsigned) = engine::build_preparation_unsigned(
                 &network,
                 target,
@@ -7712,6 +7916,7 @@ const BLOCKER_UNSATISFIABLE: i32 = 9;
 /// (nothing height-schedulable: chain- or user-driven, or terminal). `nextKind` uses the SAME
 /// `STEP_*` encoding as `stepCode` (`StepKind` and `AdvanceStep` are 1:1).
 fn advance_step(
+    rng: &mut impl CryptoRng,
     backend: &mut impl PoolMigrationWrite<Error = EngineError>,
     state: &mut MigrationState,
     scanned_target: BlockHeight,
@@ -7719,8 +7924,7 @@ fn advance_step(
 ) -> anyhow::Result<(i64, i64, i64, i64)> {
     let targets = DuenessTargets::new(scanned_target, estimated_target);
     let config = AdvanceConfig::new(SETTLE_DEPTH);
-    let mut rng = UnwrapErr(SysRng);
-    let advance = advance_migration(backend, state, targets, &config, &mut rng)
+    let advance = advance_migration(backend, state, targets, &config, rng)
         .map_err(|e| anyhow!("Error advancing migration: {:?}", e))?;
     let (code, id) = match advance.step() {
         // The step now carries the WHOLE provable set (PR #2939) rather than one candidate — see
@@ -7781,7 +7985,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     estimated_tip: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let scanned = target_height(&wallet)?; // scanned tip + 1
         // estimated_tip < 0 → unavailable → no acceleration (estimated == scanned).
@@ -7797,8 +8001,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         else {
             return Ok(ptr::null_mut());
         };
-        let (code, id, next_height, next_kind) =
-            advance_step(&mut backend, &mut state, scanned, estimated)?;
+        let (code, id, next_height, next_kind) = advance_step(
+            &mut system_rng(),
+            &mut backend,
+            &mut state,
+            scanned,
+            estimated,
+        )?;
         let arr = env.new_long_array(4)?;
         env.set_long_array_region(&arr, 0, &[code, id, next_height, next_kind])?;
         Ok(arr.into_raw())
@@ -7824,7 +8033,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let target = target_height(&wallet)?;
         let tip = target - 1;
@@ -7835,7 +8044,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         else {
             return Ok(ptr::null_mut());
         };
-        let mut rng = UnwrapErr(SysRng);
+        let mut rng = system_rng();
         let wakeups = state
             .sync_wakeup_schedule(
                 tip,
@@ -7889,7 +8098,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     signed_pczt: JByteArray<'local>,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let id = decode_transfer_id(transfer_id)?;
         let pczt_bytes = env.convert_byte_array(signed_pczt)?;
@@ -7926,7 +8135,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     account_uuid: JByteArray<'local>,
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
-        let (_network, wallet, mut store_conn) = open(env, db_data, network_id)?;
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
         let account = crate::account_id_from_jni(env, account_uuid)?;
         let mut backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
         let Some(mut state) = backend

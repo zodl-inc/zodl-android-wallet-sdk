@@ -26,7 +26,6 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use rand::Rng;
-use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use zcash_client_sqlite::AccountUuid;
 use zcash_pool_migration::engine::MigrationPlan;
 
@@ -70,9 +69,10 @@ fn store() -> &'static Mutex<HashMap<AccountUuid, (PlanHandle, MigrationPlan)>> 
 /// Records the most recently previewed plan for `account`, replacing any previous one (matches
 /// the old crate's "each propose call replaces any prior unconsumed proposal" semantics), and
 /// returns the fresh handle that now identifies it. Any handle previously issued for `account`
-/// is thereby invalidated: committing with it fails with [`PlanLookupError::Superseded`].
-pub fn set(account: AccountUuid, plan: MigrationPlan) -> PlanHandle {
-    let handle = UnwrapErr(SysRng).next_u64();
+/// is thereby invalidated: committing with it fails with [`PlanLookupError::Superseded`]. The
+/// handle is drawn from `rng`.
+pub fn set(rng: &mut impl Rng, account: AccountUuid, plan: MigrationPlan) -> PlanHandle {
+    let handle = rng.next_u64();
     store()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
