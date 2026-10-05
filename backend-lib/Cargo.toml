@@ -264,8 +264,8 @@ crate-type = ["staticlib", "cdylib"]
 # (0.3.1 or later) exists on crates.io. The dependency on 0.3.0-alpha.1 avoids
 # colliding with the public 0.3.0 release (grpc-only, no OHTTP, published 2026-10-01).
 # The rev must be repinned to the slipstream-internal main commit after PR #16 merges.
-# Pinned to c43226e9 (3f8d2612 + zodl-ohttp-client f0d88a5d, final Fastly relay hostnames).
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "c43226e9cb25ceb03ff385a2ce9dd4741fdb66c7" }
+# Pinned to 73d9a2a0 (3f8d2612 + zodl-ohttp-client f0d88a5d, final Fastly relay hostnames).
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "73d9a2a01cc980bb7740da9c6d7589239ea61c1f" }
 # `slipstream-core` is deliberately absent here: since the engine's history rewrite to the
 # published `zodl-slipstream` 0.1.x line, the dependency above resolves from crates.io like
 # the rest of the released family — the old git pin was not dropped by accident.
