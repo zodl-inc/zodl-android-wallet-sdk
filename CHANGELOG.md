@@ -104,6 +104,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With the Slipstream synchronizer, `TransactionOverview.isTrusted` now reports the wallet's
   stored trust status (for example a gift-card claim recorded as trusted) instead of always
   `false`; `spentNoteCount` and `poolCrossingValue` are now populated as well.
+- `TransactionOverview.transactionState` of a received transaction with `isTrusted == true`
+  (for example a gift-card claim) is now `Confirmed` at 3 confirmations, the ZIP 315 trusted
+  count at which its funds become spendable, instead of 10. Untrusted received transactions and
+  sent transactions are still `Confirmed` at 10. This applies to both synchronizers; no call-site
+  change is needed.
 
 ## [5.0.0] - 2026-09-25
 

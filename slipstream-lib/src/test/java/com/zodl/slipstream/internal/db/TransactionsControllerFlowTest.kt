@@ -1,6 +1,7 @@
 package com.zodl.slipstream.internal.db
 
 import cash.z.ecc.android.sdk.internal.TypesafeBackend
+import cash.z.ecc.android.sdk.internal.model.ConfirmationsPolicy
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.TransactionOverview
@@ -45,16 +46,19 @@ class TransactionsControllerFlowTest {
             `when`(it.lastSnapshot).thenReturn(lastSnapshot)
         }
 
-    private val rows =
+    private fun rows(trustStatus: Long?) =
         VisibleTransactionRows { _, _ ->
             queries.incrementAndGet()
-            listOf(receivedRow(MINED))
+            listOf(receivedRow(MINED, trustStatus))
         }
 
-    private fun controller(maxScannedHeight: BlockHeight?): TransactionsController {
+    private fun controller(
+        maxScannedHeight: BlockHeight?,
+        trustStatus: Long? = null
+    ): TransactionsController {
         val backend = mock(TypesafeBackend::class.java)
         runBlocking { `when`(backend.getMaxScannedHeight()).thenReturn(maxScannedHeight) }
-        return TransactionsController(rows, engine, backend)
+        return TransactionsController(rows(trustStatus), engine, backend)
     }
 
     @Test
@@ -66,6 +70,33 @@ class TransactionsControllerFlowTest {
             networkHeight.value = BlockHeight.new(MINED + 9)
             assertEquals(TransactionState.Confirmed, emissions.nextState())
             assertEquals(1, queries.get(), "a tip change must re-map the rows, not re-read them")
+        }
+
+    @Test
+    fun tip_advance_confirms_a_trusted_receive_at_the_trusted_count() =
+        withEmissions(
+            controller(maxScannedHeight = null, trustStatus = 1L).allTransactions,
+            tip = MINED + TRUSTED - 2
+        ) { emissions ->
+            // TRUSTED - 1 confirmations.
+            assertEquals(TransactionState.Pending, emissions.nextState())
+
+            networkHeight.value = BlockHeight.new(MINED + TRUSTED - 1)
+            assertEquals(TransactionState.Confirmed, emissions.nextState())
+            assertEquals(1, queries.get(), "a tip change must re-map the rows, not re-read them")
+        }
+
+    @Test
+    fun tip_advance_keeps_an_untrusted_receive_pending_until_the_untrusted_count() =
+        withEmissions(controller(maxScannedHeight = null).allTransactions, tip = MINED + TRUSTED - 1) { emissions ->
+            // TRUSTED confirmations: not enough for an untrusted receive.
+            assertEquals(TransactionState.Pending, emissions.nextState())
+
+            networkHeight.value = BlockHeight.new(MINED + UNTRUSTED - 2)
+            assertEquals(TransactionState.Pending, emissions.nextState())
+
+            networkHeight.value = BlockHeight.new(MINED + UNTRUSTED - 1)
+            assertEquals(TransactionState.Confirmed, emissions.nextState())
         }
 
     @Test
@@ -136,7 +167,10 @@ class TransactionsControllerFlowTest {
     private suspend fun ReceiveChannel<List<TransactionOverview>>.nextState(): TransactionState =
         withTimeout(TIMEOUT_MS) { receive() }.single().transactionState
 
-    private fun receivedRow(minedHeight: Long) =
+    private fun receivedRow(
+        minedHeight: Long,
+        trustStatus: Long?
+    ) =
         SlipstreamTransactionRow(
             txId = ByteArray(32) { 1 },
             minedHeight = minedHeight,
@@ -157,11 +191,13 @@ class TransactionsControllerFlowTest {
             zip318Kind = 0,
             spentNoteCount = 0,
             poolCrossingValue = null,
-            trustStatus = null
+            trustStatus = trustStatus
         )
 
     companion object {
         private const val MINED = 3_500_000L
         private const val TIMEOUT_MS = 5_000L
+        private const val TRUSTED = ConfirmationsPolicy.TRUSTED_CONFIRMATIONS
+        private const val UNTRUSTED = ConfirmationsPolicy.UNTRUSTED_CONFIRMATIONS
     }
 }

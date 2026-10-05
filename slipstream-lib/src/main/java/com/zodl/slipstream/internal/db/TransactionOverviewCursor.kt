@@ -1,5 +1,6 @@
 package com.zodl.slipstream.internal.db
 
+import cash.z.ecc.android.sdk.internal.model.ConfirmationsPolicy
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.TransactionId
@@ -40,13 +41,17 @@ internal object TransactionOverviewCursor {
         val minedBlockHeight = row.minedHeight?.let(BlockHeight::new)
         val expiryBlockHeight = row.expiryHeight?.takeIf { it != 0L }?.let(BlockHeight::new)
         val isSent = row.accountBalanceDelta < 0
+        // Only an explicit `trust_status = 1` is trusted (the rule of the SDK's own
+        // `AllTransactionView`); NULL (never set, or a migration-pending row) and 0 read as untrusted.
+        val isTrusted = row.trustStatus == 1L
 
         val transactionState =
             computeTransactionState(
                 latestHeight = latestHeight,
                 minedHeight = minedBlockHeight,
                 expiryHeight = expiryBlockHeight,
-                isExpiredUnmined = row.isExpiredUnmined?.let { it != 0L }
+                isExpiredUnmined = row.isExpiredUnmined?.let { it != 0L },
+                requiredConfirmations = ConfirmationsPolicy.requiredConfirmations(isSent, isTrusted)
             )
 
         // MOB-1665: the legacy SdkSynchronizer path backfilled a real historical timestamp for
@@ -89,12 +94,10 @@ internal object TransactionOverviewCursor {
             transactionState = transactionState,
             isShielding = row.isShielding,
             // Projected from `v_transactions` by `host_read.rs`'s `listTransactions`, the same
-            // columns the SDK's own `AllTransactionView` reads. `isTrusted` follows that reader's
-            // rule: only an explicit `trust_status = 1` is trusted; NULL (never set, or a
-            // migration-pending row) and 0 read as untrusted.
+            // columns the SDK's own `AllTransactionView` reads.
             spentNoteCount = row.spentNoteCount,
             poolCrossingValue = row.poolCrossingValue?.let(::Zatoshi),
-            isTrusted = row.trustStatus == 1L,
+            isTrusted = isTrusted,
             // `zip318_kind` is selected from `v_transactions` by our own `host_read.rs`
             // (backend-lib, not the external slipstream-core crate) — see that file's 2026-08-03
             // doc update.

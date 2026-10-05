@@ -1,5 +1,6 @@
 package com.zodl.slipstream.internal.db
 
+import cash.z.ecc.android.sdk.internal.model.ConfirmationsPolicy
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.TransactionState
 import com.zodl.slipstream.model.SlipstreamTransactionRow
@@ -10,7 +11,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TransactionOverviewCursorTest {
-    /** `chainTip + 1 - minedHeight == 10 == MIN_CONFIRMATIONS -> Confirmed`. */
+    /** `chainTip + 1 - minedHeight == 10`, the untrusted confirmation count -> Confirmed. */
     @Test
     fun received_transaction_has_positive_net_value_and_is_not_sent() {
         val overview =
@@ -375,6 +376,37 @@ class TransactionOverviewCursorTest {
         assertFalse(overview.isTrusted)
     }
 
+    /** A received row mined at 1_000 has `latestHeight + 1 - 1_000` confirmations. */
+    @Test
+    fun trusted_receive_is_confirmed_at_the_trusted_count() {
+        val trusted = receivedRow(trustStatus = 1L)
+        val atHeight = { confirmations: Int -> BlockHeight.new(1_000L + confirmations - 1) }
+
+        assertEquals(
+            TransactionState.Pending,
+            TransactionOverviewCursor.fromRow(trusted, atHeight(TRUSTED - 1)).transactionState
+        )
+        assertEquals(
+            TransactionState.Confirmed,
+            TransactionOverviewCursor.fromRow(trusted, atHeight(TRUSTED)).transactionState
+        )
+    }
+
+    @Test
+    fun untrusted_receive_is_confirmed_at_the_untrusted_count() {
+        val untrusted = receivedRow(trustStatus = null)
+        val atHeight = { confirmations: Int -> BlockHeight.new(1_000L + confirmations - 1) }
+
+        assertEquals(
+            TransactionState.Pending,
+            TransactionOverviewCursor.fromRow(untrusted, atHeight(UNTRUSTED - 1)).transactionState
+        )
+        assertEquals(
+            TransactionState.Confirmed,
+            TransactionOverviewCursor.fromRow(untrusted, atHeight(UNTRUSTED)).transactionState
+        )
+    }
+
     @Test
     fun spent_note_count_and_pool_crossing_value_are_carried_through() {
         val overview =
@@ -411,4 +443,9 @@ class TransactionOverviewCursorTest {
             poolCrossingValue = null,
             trustStatus = trustStatus
         )
+
+    companion object {
+        private const val TRUSTED = ConfirmationsPolicy.TRUSTED_CONFIRMATIONS
+        private const val UNTRUSTED = ConfirmationsPolicy.UNTRUSTED_CONFIRMATIONS
+    }
 }
