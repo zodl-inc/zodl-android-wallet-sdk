@@ -47,8 +47,15 @@ import kotlin.time.Duration.Companion.minutes
  *
  * The temporary wallet is fully isolated from the app's main wallet, which can keep running
  * the whole time: it has its own databases and block cache, it never touches the preferences
- * the main wallet uses, and it runs without Tor and without exchange rates. Sending needs no
- * Sapling parameters unless the card holds Sapling funds, which cards do not.
+ * the main wallet uses, and it runs without exchange rates. It connects to the server the way
+ * the user chose for the main wallet: pass the main wallet's Tor setting as `isTorEnabled` to
+ * [new], so that syncing the card, fetching its birthday tree state and submitting the claim
+ * do not reveal the user's IP address when the main wallet hides it. Sending needs no Sapling
+ * parameters unless the card holds Sapling funds, which cards do not.
+ *
+ * Only one redeemer at a time may use a card's temporary wallet: a second redeemer for the same
+ * card (or the same [alias]) in the same process fails with [GiftCardException.InUse] until the
+ * first one is [close]d.
  *
  * Pass the main wallet's synchronizer as [redeem]'s `destination` so that it learns about the
  * claim at once and treats it as trusted (ZIP 315): without that, the main wallet sees the
@@ -59,7 +66,7 @@ import kotlin.time.Duration.Companion.minutes
  *
  * ```
  * val card = GiftCard.parse(link)
- * val redeemer = GiftCardRedeemer.new(context, card, network, endpoint)
+ * val redeemer = GiftCardRedeemer.new(context, card, network, endpoint, isTorEnabled)
  * try {
  *     when (val status = redeemer.check()) {
  *         is GiftCardRedeemer.Status.Ready ->
@@ -74,13 +81,16 @@ import kotlin.time.Duration.Companion.minutes
  *
  * All functions are safe to call from any coroutine; they are serialized internally.
  */
+@Suppress("LongParameterList")
 class GiftCardRedeemer private constructor(
     private val context: Context,
     val card: GiftCard,
     private val lightWalletEndpoint: LightWalletEndpoint,
+    private val isTorEnabled: Boolean,
     /** The alias of the temporary wallet. Never [ZcashSdk.DEFAULT_ALIAS]. */
     val alias: String,
-    private val wallets: GiftCardWallets
+    private val wallets: GiftCardWallets,
+    private val aliases: GiftCardAliases
 ) {
     /** The network the card, and the redemption, are on. */
     val network: ZcashNetwork = card.network
@@ -88,6 +98,10 @@ class GiftCardRedeemer private constructor(
     private val mutex = Mutex()
     private var synchronizer: CloseableSynchronizer? = null
     private var isClosed = false
+    private var holdsAlias = false
+
+    /** The card wallet's account, set once [check] has seen the wallet synced. */
+    private var checkedAccount: Account? = null
 
     @Volatile
     private var criticalError: Throwable? = null
@@ -96,7 +110,10 @@ class GiftCardRedeemer private constructor(
     data class Balance(
         /** Everything the card holds, spendable or not. */
         val total: Zatoshi,
-        /** What can be redeemed now. A redemption pays this minus the ZIP 317 fee. */
+        /**
+         * What can be spent now. A redemption pays this minus the ZIP 317 fee, so it is
+         * redeemable only when it exceeds that fee.
+         */
         val spendable: Zatoshi,
         /**
          * What the card holds but cannot spend yet: funds received less than 10 blocks ago
@@ -108,19 +125,26 @@ class GiftCardRedeemer private constructor(
     /** What [check] found on the card. */
     sealed interface Status {
         /**
-         * Funds can be redeemed now. [Balance.pending] may still be non-zero, in which case a
-         * redemption sweeps only [Balance.spendable] and leaves the rest on the card.
+         * Funds can be redeemed now: [Balance.spendable] exceeds the ZIP 317 fee.
+         * [Balance.pending] may still be non-zero, in which case a redemption sweeps only
+         * [Balance.spendable] and leaves the rest on the card.
          */
         data class Ready(
             val balance: Balance
         ) : Status
 
-        /** The card holds funds, but none of them are spendable yet. Check again later. */
+        /**
+         * The card holds more than the fee, but not enough of it is spendable yet to pay for a
+         * redemption. Check again later.
+         */
         data class Pending(
             val balance: Balance
         ) : Status
 
-        /** The card holds nothing: it was never funded, or it has already been redeemed. */
+        /**
+         * The card holds nothing that can be redeemed: it was never funded, it has already been
+         * redeemed, or what it holds does not exceed the ZIP 317 fee a redemption would pay.
+         */
         data object Empty : Status
     }
 
@@ -158,15 +182,20 @@ class GiftCardRedeemer private constructor(
      *
      * @param timeout how long to wait for the sync to complete.
      *
-     * @throws GiftCardException.SyncFailed if the wallet did not sync within [timeout], or
-     * stopped on an unrecoverable error.
+     * @throws GiftCardException.SyncFailed if the temporary wallet could not be created, did
+     * not sync within [timeout], or stopped on an unrecoverable error. The cause, if any, is
+     * attached.
+     * @throws GiftCardException.InUse if another redeemer in this process is using the same
+     * temporary wallet.
      * @throws GiftCardException.Closed if [close] was called.
      */
     suspend fun check(timeout: Duration = DEFAULT_SYNC_TIMEOUT): Status =
         mutex.withLock {
             val synchronizer = openSynchronizer()
-            val account = synchronizer.getAccounts().first()
-            awaitSyncedBalance(synchronizer, account, timeout).toGiftCardBalance().toStatus()
+            val account = walletCreationStep { synchronizer.getAccounts().first() }
+            val balance = awaitSyncedBalance(synchronizer, account, timeout).toGiftCardBalance()
+            checkedAccount = account
+            balance.toStatus()
         }
 
     /**
@@ -196,8 +225,9 @@ class GiftCardRedeemer private constructor(
      * @param destination the user's own wallet, to be told about the claim at once; `null` to
      * let it find the funds on its next sync.
      *
-     * @throws GiftCardException.NothingToRedeem if nothing is spendable, or the spendable
-     * balance does not cover the fee.
+     * @throws GiftCardException.NotChecked if no [check] on this redeemer has completed yet.
+     * @throws GiftCardException.NothingToRedeem if the spendable balance does not exceed the
+     * fee, including when nothing is spendable.
      * @throws GiftCardException.NetworkMismatch if [toAddress] or [destination] is for another
      * network.
      * @throws GiftCardException.Closed if [close] was called.
@@ -211,20 +241,39 @@ class GiftCardRedeemer private constructor(
         mutex.withLock {
             if (toAddress.network != network) throw GiftCardException.NetworkMismatch()
             if (destination != null && destination.network != network) throw GiftCardException.NetworkMismatch()
-            val synchronizer = openSynchronizer()
-            val account = synchronizer.getAccounts().first()
+            if (isClosed) throw GiftCardException.Closed()
+            val cardWallet = synchronizer
+            val account = checkedAccount
+            if (cardWallet == null || account == null) throw GiftCardException.NotChecked()
+
+            // Decided from the balance, not from a failed proposal: a card holding no more than
+            // the fee can never be redeemed, and saying so needs no error text from the backend.
+            val balance =
+                cardWallet.walletBalances.value
+                    ?.get(account.accountUuid)
+                    ?.toGiftCardBalance()
+            if (balance == null || balance.spendable.value <= MINIMUM_FEE.value) {
+                throw GiftCardException.NothingToRedeem()
+            }
 
             val proposal =
                 try {
-                    synchronizer.proposeSendMax(account, toAddress, memo)
+                    cardWallet.proposeSendMax(account, toAddress, memo)
                 } catch (e: TransactionEncoderException.InsufficientFundsException) {
+                    // Typed by the backend: the notes' total fee exceeds what they hold.
                     throw GiftCardException.NothingToRedeem(e)
                 }
 
-            val usk = wallets.deriveSpendingKey(card.seed.copyBytes(), network)
+            val seed = card.seed.copyBytes()
+            val usk =
+                try {
+                    wallets.deriveSpendingKey(seed, network)
+                } finally {
+                    seed.fill(0)
+                }
             // Created and submitted in two steps, rather than with `createProposedTransactions`, so
             // that the raw transaction is at hand for the destination.
-            val broadcaster = synchronizer.broadcaster
+            val broadcaster = cardWallet.broadcaster
             val created = broadcaster.createProposedTransactions(proposal, usk, OvkPolicy.Discard)
             val results = submitInOrder(broadcaster, created)
             val recorded = destination != null && recordInDestination(destination, created, results)
@@ -288,17 +337,28 @@ class GiftCardRedeemer private constructor(
      * Closes the temporary wallet and deletes all of its local data. Nothing that belongs to
      * any other wallet is touched. Idempotent; the redeemer cannot be used afterwards.
      *
-     * Always call this when done, including after a failure. If the app is killed before it
-     * runs, the data is removed the next time a redeemer for the same card is used, or
-     * explicitly with [Synchronizer.eraseAlias] and [alias].
+     * Always call this when done, including after a failure: it also lets another redeemer
+     * for the same card be used. If the app is killed before it runs, the data is removed the
+     * next time a redeemer for the same card is used, or explicitly with
+     * [Synchronizer.eraseAlias] and [alias].
      */
     suspend fun close() {
         withContext(NonCancellable) {
             mutex.withLock {
                 isClosed = true
+                checkedAccount = null
                 synchronizer?.close()
                 synchronizer = null
-                wallets.erase(context, network, alias)
+                // Erased only by the redeemer that holds the alias, so that closing a redeemer
+                // that was refused as `InUse` cannot delete the wallet another one is using.
+                if (holdsAlias) {
+                    try {
+                        wallets.erase(context, network, alias)
+                    } finally {
+                        aliases.release(network, alias)
+                        holdsAlias = false
+                    }
+                }
             }
         }
     }
@@ -307,29 +367,37 @@ class GiftCardRedeemer private constructor(
         if (isClosed) throw GiftCardException.Closed()
         synchronizer?.let { return it }
 
-        // Start from scratch: the temporary wallet is disposable, and a fresh scan is what makes
-        // an already-redeemed card show up as empty. This also clears leftovers of an earlier
-        // redemption that was interrupted before `close()`.
-        wallets.erase(context, network, alias)
+        if (!holdsAlias) {
+            if (!aliases.acquire(network, alias)) throw GiftCardException.InUse()
+            holdsAlias = true
+        }
 
-        val seed = card.seed.copyBytes()
         val created =
-            try {
-                wallets.open(
-                    context = context,
-                    network = network,
-                    alias = alias,
-                    birthday = card.birthdayHeight,
-                    lightWalletEndpoint = lightWalletEndpoint,
-                    setup =
-                        AccountCreateSetup(
-                            accountName = ACCOUNT_NAME,
-                            keySource = null,
-                            seed = FirstClassByteArray(seed)
-                        )
-                )
-            } finally {
-                seed.fill(0)
+            walletCreationStep {
+                // Start from scratch: the temporary wallet is disposable, and a fresh scan is what
+                // makes an already-redeemed card show up as empty. This also clears leftovers of
+                // an earlier redemption that was interrupted before `close()`.
+                wallets.erase(context, network, alias)
+
+                val seed = card.seed.copyBytes()
+                try {
+                    wallets.open(
+                        context = context,
+                        network = network,
+                        alias = alias,
+                        birthday = card.birthdayHeight,
+                        lightWalletEndpoint = lightWalletEndpoint,
+                        isTorEnabled = isTorEnabled,
+                        setup =
+                            AccountCreateSetup(
+                                accountName = ACCOUNT_NAME,
+                                keySource = null,
+                                seed = FirstClassByteArray(seed)
+                            )
+                    )
+                } finally {
+                    seed.fill(0)
+                }
             }
         created.onCriticalErrorHandler = { error ->
             criticalError = error
@@ -338,6 +406,25 @@ class GiftCardRedeemer private constructor(
         synchronizer = created
         return created
     }
+
+    /**
+     * Runs a step of creating or opening the temporary wallet, reporting any failure as the
+     * documented [GiftCardException.SyncFailed] (for example, no bundled checkpoint at or below
+     * the card's birthday, a database that cannot be opened, or a server that cannot be reached).
+     * The cause stays attached for diagnosis; the message is fixed, as the cause may come from
+     * the backend.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun <T> walletCreationStep(block: suspend () -> T): T =
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: GiftCardException) {
+            throw e
+        } catch (e: Exception) {
+            throw GiftCardException.SyncFailed(e)
+        }
 
     private suspend fun awaitSyncedBalance(
         synchronizer: Synchronizer,
@@ -355,6 +442,13 @@ class GiftCardRedeemer private constructor(
     companion object {
         /** How long [check] waits for the temporary wallet to sync, by default. */
         val DEFAULT_SYNC_TIMEOUT: Duration = 10.minutes
+
+        /**
+         * The smallest fee a ZIP 317 transaction pays (`zip317::MINIMUM_FEE` in
+         * `zcash_primitives`: the marginal fee times the grace actions). A card whose spendable
+         * balance does not exceed it cannot pay the recipient anything.
+         */
+        internal val MINIMUM_FEE = Zatoshi(10_000)
 
         private const val ACCOUNT_NAME = "Gift card"
         private const val ALIAS_PREFIX = "giftcard_"
@@ -374,6 +468,9 @@ class GiftCardRedeemer private constructor(
          * @param network the network the app runs on.
          * @param lightWalletEndpoint the server to sync from and submit to; usually the main
          * wallet's.
+         * @param isTorEnabled whether the temporary wallet connects to [lightWalletEndpoint] over
+         * Tor. Pass the main wallet's setting: with `false`, the server sees the user's IP address
+         * along with the card's exact birthday height and the claim transaction.
          * @param alias the temporary wallet's alias. Must be unique to this card and must not be
          * [ZcashSdk.DEFAULT_ALIAS] or any other alias the app uses; 1 to 99 letters, digits,
          * `_` or `-`.
@@ -381,23 +478,37 @@ class GiftCardRedeemer private constructor(
          * @throws GiftCardException.NetworkMismatch if [card] is not for [network].
          * @throws IllegalArgumentException if [alias] is not a valid, non-default alias.
          */
+        @Suppress("LongParameterList")
         fun new(
             context: Context,
             card: GiftCard,
             network: ZcashNetwork,
             lightWalletEndpoint: LightWalletEndpoint,
+            isTorEnabled: Boolean,
             alias: String = defaultAlias(card)
-        ): GiftCardRedeemer = new(context, card, network, lightWalletEndpoint, alias, GiftCardWallets.Default)
+        ): GiftCardRedeemer =
+            new(
+                context = context,
+                card = card,
+                network = network,
+                lightWalletEndpoint = lightWalletEndpoint,
+                isTorEnabled = isTorEnabled,
+                alias = alias,
+                wallets = GiftCardWallets.Default,
+                aliases = GiftCardAliases.Process
+            )
 
-        /** [new] with the device-facing parts replaced, for unit tests. */
+        /** [new] with the device-facing and process-wide parts replaced, for unit tests. */
         @Suppress("LongParameterList")
         internal fun new(
             context: Context,
             card: GiftCard,
             network: ZcashNetwork,
             lightWalletEndpoint: LightWalletEndpoint,
+            isTorEnabled: Boolean,
             alias: String,
-            wallets: GiftCardWallets
+            wallets: GiftCardWallets,
+            aliases: GiftCardAliases
         ): GiftCardRedeemer {
             if (card.network != network) throw GiftCardException.NetworkMismatch()
             require(alias != ZcashSdk.DEFAULT_ALIAS) { "A gift card must not use the default wallet alias" }
@@ -405,7 +516,15 @@ class GiftCardRedeemer private constructor(
                 alias.length in ZcashSdk.ALIAS_MIN_LENGTH..ZcashSdk.ALIAS_MAX_LENGTH &&
                     alias.all { it.isLetterOrDigit() || it == '_' || it == '-' }
             ) { "Invalid alias" }
-            return GiftCardRedeemer(context.applicationContext, card, lightWalletEndpoint, alias, wallets)
+            return GiftCardRedeemer(
+                context = context.applicationContext,
+                card = card,
+                lightWalletEndpoint = lightWalletEndpoint,
+                isTorEnabled = isTorEnabled,
+                alias = alias,
+                wallets = wallets,
+                aliases = aliases
+            )
         }
     }
 }
@@ -430,6 +549,7 @@ internal interface GiftCardWallets {
         alias: String,
         birthday: BlockHeight,
         lightWalletEndpoint: LightWalletEndpoint,
+        isTorEnabled: Boolean,
         setup: AccountCreateSetup
     ): CloseableSynchronizer
 
@@ -454,6 +574,7 @@ internal interface GiftCardWallets {
             alias: String,
             birthday: BlockHeight,
             lightWalletEndpoint: LightWalletEndpoint,
+            isTorEnabled: Boolean,
             setup: AccountCreateSetup
         ): CloseableSynchronizer =
             Synchronizer.new(
@@ -464,12 +585,15 @@ internal interface GiftCardWallets {
                 setup = setup,
                 walletInitMode = WalletInitMode.RestoreWallet,
                 zcashNetwork = network,
-                isTorEnabled = false,
+                // The card wallet shares the Tor data directory with the main wallet; Arti lets
+                // a second client use it read-only, so no fresh bootstrap is needed.
+                isTorEnabled = isTorEnabled,
                 isExchangeRateEnabled = false,
                 // The link's height is at or just below the funding height, so the card wallet
                 // can start exactly there instead of at the nearest bundled checkpoint, which may
                 // be thousands of blocks earlier. The card is not the user's wallet, so revealing
-                // its exact height to the server costs it nothing.
+                // its exact height to the server costs it nothing; with `isTorEnabled`, that fetch
+                // goes over Tor like the rest of the card wallet's traffic.
                 isBirthdayExact = true
             )
 
@@ -495,10 +619,42 @@ internal fun AccountBalance.toGiftCardBalance(): GiftCardRedeemer.Balance {
     return GiftCardRedeemer.Balance(total = spendable + pending, spendable = spendable, pending = pending)
 }
 
-/** What [GiftCardRedeemer.check] reports for a card with this balance. */
+/**
+ * What [GiftCardRedeemer.check] reports for a card with this balance. A redemption pays at least
+ * [GiftCardRedeemer.MINIMUM_FEE], so only value above it counts as redeemable.
+ */
 internal fun GiftCardRedeemer.Balance.toStatus(): GiftCardRedeemer.Status =
     when {
-        spendable.value > 0 -> GiftCardRedeemer.Status.Ready(this)
-        total.value > 0 -> GiftCardRedeemer.Status.Pending(this)
+        spendable.value > GiftCardRedeemer.MINIMUM_FEE.value -> GiftCardRedeemer.Status.Ready(this)
+        total.value > GiftCardRedeemer.MINIMUM_FEE.value -> GiftCardRedeemer.Status.Pending(this)
         else -> GiftCardRedeemer.Status.Empty
     }
+
+/**
+ * The aliases of the card wallets that redeemers in this process are using. Two redeemers must
+ * never share one: each erases the wallet before opening it and again when closed, and the
+ * synchronizer allows one instance per alias.
+ */
+internal class GiftCardAliases {
+    private val held = mutableSetOf<Pair<Int, String>>()
+
+    /** Claims [alias] on [network]; `false` if another redeemer holds it. */
+    @Synchronized
+    fun acquire(
+        network: ZcashNetwork,
+        alias: String
+    ): Boolean = held.add(network.id to alias)
+
+    @Synchronized
+    fun release(
+        network: ZcashNetwork,
+        alias: String
+    ) {
+        held.remove(network.id to alias)
+    }
+
+    companion object {
+        /** The registry every redeemer created through the public API shares. */
+        val Process = GiftCardAliases()
+    }
+}

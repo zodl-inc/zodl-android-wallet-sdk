@@ -23,17 +23,25 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blank description, or a malformed stated amount, reads as `null` instead of rejecting the
   card. Still display `description` as untrusted text.
 - `GiftCardRedeemer`, which redeems a `GiftCard` into the user's wallet through a temporary,
-  isolated wallet (its own `Synchronizer` under its own alias, without Tor or exchange rates)
-  that can run alongside the main wallet. `GiftCardRedeemer.new(context, card, network,
-  lightWalletEndpoint, alias = GiftCardRedeemer.defaultAlias(card))`, then `check()` syncs the
-  card wallet and returns `Status.Ready` / `Status.Pending` / `Status.Empty` with the card's
-  balance, `redeem(toAddress, memo)` sweeps the spendable balance minus the ZIP 317 fee to
-  `toAddress` and submits it, and `close()` closes and deletes the temporary wallet.
-  Redemption is created with `OvkPolicy.Discard`, so the card's issuer (who can rederive the
-  card's key) cannot learn the recipient address. Funds received by the card less than 10
-  blocks ago are reported as pending and are not swept. Failures are reported as
-  `GiftCardException` subtypes (`NetworkMismatch`, `NothingToRedeem`, `SyncFailed`,
-  `Closed`). Each `check()` on a fresh redeemer scans from the card's birthday, which needs
+  isolated wallet (its own `Synchronizer` under its own alias, without exchange rates) that
+  can run alongside the main wallet. `GiftCardRedeemer.new(context, card, network,
+  lightWalletEndpoint, isTorEnabled, alias = GiftCardRedeemer.defaultAlias(card))`, then
+  `check()` syncs the card wallet and returns `Status.Ready` / `Status.Pending` /
+  `Status.Empty` with the card's balance, `redeem(toAddress, memo)` sweeps the spendable
+  balance minus the ZIP 317 fee to `toAddress` and submits it, and `close()` closes and
+  deletes the temporary wallet. Pass the main wallet's Tor setting as `isTorEnabled`: the card
+  wallet syncs, fetches the card's birthday tree state and submits the claim over Tor when it
+  is `true`, and with `false` the server sees the user's IP address together with the card's
+  birthday and the claim. Redemption is created with `OvkPolicy.Discard`, so the card's issuer
+  (who can rederive the card's key) cannot learn the recipient address. Funds received by the
+  card less than 10 blocks ago are reported as pending and are not swept, and a card holding
+  no more than the 10,000 zatoshi minimum fee reports `Status.Empty`. `redeem` must follow a
+  completed `check()` on the same redeemer. Failures are reported as `GiftCardException`
+  subtypes: `NetworkMismatch`, `NothingToRedeem` (nothing spendable above the fee),
+  `SyncFailed` (the card wallet could not be created, for example for a birthday no bundled
+  checkpoint covers, or did not sync), `NotChecked` (`redeem` before `check`), `InUse`
+  (another redeemer in the process is using the same card's wallet; `close()` it first) and
+  `Closed`. Each `check()` on a fresh redeemer scans from the card's birthday, which needs
   network access: the card wallet starts exactly at `GiftCard.birthdayHeight`, using the tree
   state it fetches from `lightWalletEndpoint` for that height, so no blocks below the link's
   height are scanned. If the server cannot provide it, the scan starts at the nearest bundled
@@ -57,7 +65,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recipient, with the ZIP 317 fee computed internally and deducted from it, leaving no change.
   Notes that are not yet spendable are left in the account; transparent funds are not swept.
   Throws `TransactionEncoderException.InsufficientFundsException` when nothing is spendable or
-  the spendable balance does not cover the fee. The default implementation throws
+  the spendable balance does not exceed the fee; the backend reports that case as a typed
+  error, so it does not depend on the wording of its message. The default implementation throws
   `UnsupportedOperationException`; the SDK's default synchronizer implements it, the
   Slipstream synchronizer does not yet.
 - `RecipientAddress`, a unified, Sapling, transparent or TEX address validated for a network

@@ -20,8 +20,9 @@ sealed class GiftCardException(
     class NetworkMismatch : GiftCardException("The gift card is for a different network")
 
     /**
-     * The card has nothing to redeem right now: either it holds no funds (it was never funded,
-     * or it has already been redeemed), or its funds are not yet spendable (see
+     * The card has nothing to redeem right now: it holds no funds (it was never funded, or it
+     * has already been redeemed), what it holds does not exceed the ZIP 317 fee a redemption
+     * would pay, or its funds are not yet spendable (see
      * [cash.z.ecc.android.sdk.GiftCardRedeemer.Status.Pending]).
      */
     class NothingToRedeem(
@@ -29,12 +30,27 @@ sealed class GiftCardException(
     ) : GiftCardException("The gift card has no spendable funds", cause)
 
     /**
-     * The gift card's temporary wallet did not finish syncing: it timed out (for example, the
-     * server is unreachable) or stopped on an unrecoverable error, which is the [cause] if known.
+     * The gift card's temporary wallet could not be created or did not finish syncing: creating
+     * it failed (for example, no bundled checkpoint covers the card's birthday, or its database
+     * could not be opened), it timed out (for example, the server is unreachable), or it stopped
+     * on an unrecoverable error. The underlying failure is the [cause], if known.
      */
     class SyncFailed(
         cause: Throwable?
     ) : GiftCardException("The gift card wallet could not be synced", cause)
+
+    /**
+     * [cash.z.ecc.android.sdk.GiftCardRedeemer.redeem] was called before a
+     * [cash.z.ecc.android.sdk.GiftCardRedeemer.check] on the same redeemer completed. Without it
+     * the card's funds are unknown, so nothing is attempted.
+     */
+    class NotChecked : GiftCardException("Check the gift card before redeeming it")
+
+    /**
+     * Another [cash.z.ecc.android.sdk.GiftCardRedeemer] in this process is using the same
+     * temporary wallet (the same card, or the same alias). Close that redeemer first.
+     */
+    class InUse : GiftCardException("Another redeemer is using this gift card's wallet")
 
     /** The redeemer was used after [cash.z.ecc.android.sdk.GiftCardRedeemer.close]. */
     class Closed : GiftCardException("The gift card redeemer is closed")

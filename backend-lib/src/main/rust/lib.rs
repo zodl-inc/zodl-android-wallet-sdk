@@ -2668,8 +2668,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposalR
     unwrap_exc_or(&mut env, res, JNI_TRUE)
 }
 
+/// The JVM class thrown when a proposal fails because the account cannot cover it. The
+/// `(String)` constructor signature is part of the JNI contract with the Kotlin class.
+const INSUFFICIENT_FUNDS_EXCEPTION_CLASS: &str =
+    "cash/z/ecc/android/sdk/internal/jni/ProposalInsufficientFundsException";
+
 /// Proposes sending the account's entire currently spendable shielded balance to `to`, with
-/// the ZIP 317 fee deducted from it (see [`send_max::propose_send_max`]).
+/// the ZIP 317 fee deducted from it (see [`send_max::propose_send_max`]). When the spendable
+/// value does not exceed the fee, throws `ProposalInsufficientFundsException`, so callers can
+/// tell that case apart without matching message text.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSendMaxTransfer<
     'local,
@@ -2698,7 +2705,19 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSe
             .transpose()
             .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
 
-        let proposal = send_max::propose_send_max(&mut db_data, &network, account_uuid, to, memo)?;
+        let proposal = send_max::propose_send_max(&mut db_data, &network, account_uuid, to, memo)
+            .inspect_err(|e| {
+            if e.downcast_ref::<send_max::InsufficientFunds>().is_some() {
+                utils::exception::throw_object(env, INSUFFICIENT_FUNDS_EXCEPTION_CLASS, |env| {
+                    let message = env.new_string(e.to_string())?;
+                    env.new_object(
+                        INSUFFICIENT_FUNDS_EXCEPTION_CLASS,
+                        "(Ljava/lang/String;)V",
+                        &[JValue::Object(&message)],
+                    )
+                });
+            }
+        })?;
 
         Ok(utils::rust_bytes_to_java(
             env,
