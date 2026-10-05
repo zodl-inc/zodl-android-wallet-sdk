@@ -14,7 +14,9 @@ import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.GiftCard
 import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.OvkPolicy
+import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.RecipientAddress
+import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
@@ -264,7 +266,12 @@ class GiftCardRedeemer private constructor(
         val submitted = created.filterIndexed { index, _ -> results[index] is TransactionSubmitResult.Success }
         if (submitted.isEmpty()) return false
         return try {
-            submitted.forEach { destination.recordTrustedTransaction(it.raw.byteArray, it.txId.byteArray) }
+            submitted.forEach {
+                destination.recordTrustedTransaction(
+                    rawTransaction = RawTransaction(data = it.raw.byteArray, height = null),
+                    txId = TransactionId.new(it.txId)
+                )
+            }
             true
         } catch (e: CancellationException) {
             throw e

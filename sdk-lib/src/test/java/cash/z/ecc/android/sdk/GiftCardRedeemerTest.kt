@@ -17,7 +17,9 @@ import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.RecipientAddress
+import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.WalletBalance
@@ -168,11 +170,11 @@ class GiftCardRedeemerTest {
         override val network: ZcashNetwork = ZcashNetwork.Mainnet
 
         override suspend fun recordTrustedTransaction(
-            rawTransaction: ByteArray,
-            txId: ByteArray
+            rawTransaction: RawTransaction,
+            txId: TransactionId
         ) {
             failure?.let { throw it }
-            recorded += rawTransaction to txId
+            recorded += rawTransaction.data to txId.value.byteArray
         }
     }
 

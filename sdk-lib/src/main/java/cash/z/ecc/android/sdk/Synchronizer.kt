@@ -43,6 +43,7 @@ import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
@@ -859,56 +860,49 @@ interface Synchronizer {
      * trusted (ZIP 315).
      *
      * ZIP 315 makes a wallet wait for more confirmations before spending the outputs of an
-     * untrusted transaction (one it did not create; 10 blocks by default) than those of a
-     * trusted one (3 blocks by default), and lets a wallet "enable ... specific external
-     * transactions as trusted". The sweep of a gift card into this wallet is such a transaction:
-     * [GiftCardRedeemer] authors it on this device, so its outputs deserve the same confidence as
-     * the wallet's own change. Recording it here decrypts and stores [rawTransaction] right
-     * away, so the incoming funds show up without waiting for the next sync, and marks the
-     * transaction trusted, so the funds are spendable after the trusted number of confirmations.
+     * untrusted transaction (one it did not create; 10 blocks under the default confirmations
+     * policy) than those of a trusted one (3 blocks), and lets a wallet treat specific external
+     * transactions as trusted. ZIP 315 calls a transaction output trusted when the wallet trusts
+     * that it "will remain mined in its original transaction". This API exists for the claim of a
+     * gift card ([GiftCardRedeemer]), and that is the case it was reasoned through for:
      *
-     * This writes to the wallet database directly, so it works whether the synchronizer is
-     * synced, still syncing or stopped. Recording the same transaction again is harmless.
+     * - The notes on a card are *not* trusted: whoever issued the card still holds its key and
+     *   could spend them in a competing transaction if the chain rolled back. The temporary card
+     *   wallet therefore applies the default policy to them and spends them only after 10
+     *   confirmations, the same as any external receive.
+     * - Once those inputs are 10 blocks deep, the claim that spends them was authored on this
+     *   device, and nobody but the issuer can double-spend its inputs, only through a rollback
+     *   deeper than the untrusted threshold. That is the risk ZIP 315 accepts for a wallet's own
+     *   change, so the claim's outputs are recorded here as trusted and become spendable after
+     *   3 confirmations.
+     *
+     * Do not use this for a transaction whose inputs another party can still spend before they
+     * reach the untrusted threshold, or for one received from elsewhere: marking it trusted
+     * lets the wallet spend funds that a rollback can take back.
+     *
+     * Recording also decrypts and stores [rawTransaction] right away, so the incoming funds show
+     * up without waiting for the next sync. This writes to the wallet database directly, so it
+     * works whether the synchronizer is synced, still syncing or stopped. Recording the same
+     * transaction again is harmless.
      *
      * The default implementation throws [UnsupportedOperationException]; SDK-backed
      * synchronizers override it.
      *
      * @param rawTransaction the complete serialized transaction, as submitted to the network.
-     * @param txId the transaction's id, in the byte order the SDK uses everywhere, e.g.
-     * [TransactionSubmitResult.txId] or [CreatedTransaction.txId].
+     * Its [RawTransaction.height] is ignored: the transaction is stored as unmined, and scanning
+     * fills in the height once it is mined.
+     * @param txId the transaction's id, e.g. `TransactionId.new(result.txId)` for the
+     * [TransactionSubmitResult] of its submission.
      *
      * @throws IllegalArgumentException if [txId] is not the id of [rawTransaction]; the
      * transaction is stored anyway, but as untrusted.
      */
     suspend fun recordTrustedTransaction(
-        rawTransaction: ByteArray,
-        txId: ByteArray
+        rawTransaction: RawTransaction,
+        txId: TransactionId
     ): Unit =
         throw UnsupportedOperationException(
             "recordTrustedTransaction is unavailable for this Synchronizer implementation."
-        )
-
-    /**
-     * Marks a transaction this wallet already knows about as trusted or untrusted (ZIP 315).
-     *
-     * The outputs of a trusted transaction are spendable after the trusted number of
-     * confirmations (3 by default) instead of the untrusted one (10 by default). Transactions the
-     * wallet created itself are trusted already; use this for an external transaction whose
-     * origin the app can vouch for, or to withdraw that trust. Nothing changes if the wallet does
-     * not know the transaction yet: see [recordTrustedTransaction] to store and trust one in a
-     * single step.
-     *
-     * The default implementation throws [UnsupportedOperationException]; SDK-backed
-     * synchronizers override it.
-     *
-     * @param txId the transaction's id, in the byte order the SDK uses everywhere.
-     */
-    suspend fun setTransactionTrust(
-        txId: ByteArray,
-        trusted: Boolean
-    ): Unit =
-        throw UnsupportedOperationException(
-            "setTransactionTrust is unavailable for this Synchronizer implementation."
         )
 
     fun onBackground()

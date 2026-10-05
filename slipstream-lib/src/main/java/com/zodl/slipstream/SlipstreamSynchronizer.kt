@@ -55,6 +55,7 @@ import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
 import cash.z.ecc.android.sdk.model.TransactionId
@@ -1423,22 +1424,13 @@ class SlipstreamSynchronizer internal constructor(
      * transaction.
      */
     override suspend fun recordTrustedTransaction(
-        rawTransaction: ByteArray,
-        txId: ByteArray
+        rawTransaction: RawTransaction,
+        txId: TransactionId
     ) {
         awaitDbReady()
-        val storedTxId = backend.decryptAndStoreTransaction(rawTransaction, minedHeight = null)
-        require(storedTxId.contentEquals(txId)) { "txId does not match the transaction" }
-        backend.setTransactionTrust(txId, trusted = true)
-        engine.notifyTxChange()
-    }
-
-    override suspend fun setTransactionTrust(
-        txId: ByteArray,
-        trusted: Boolean
-    ) {
-        awaitDbReady()
-        backend.setTransactionTrust(txId, trusted)
+        val storedTxId = backend.decryptAndStoreTransaction(rawTransaction.data, minedHeight = null)
+        require(storedTxId.contentEquals(txId.value.byteArray)) { "txId does not match the transaction" }
+        backend.setTransactionTrust(txId.value.byteArray, trusted = true)
         engine.notifyTxChange()
     }
 

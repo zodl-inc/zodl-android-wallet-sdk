@@ -44,13 +44,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of after its next sync, and can spend them after 3 confirmations instead of the 10 it applies
   to an untrusted external receive. A failure to record never fails the redemption; it is
   reported as `Redemption.recordedInDestination == false`.
-- `Synchronizer.recordTrustedTransaction(rawTransaction, txId)`, which stores a transaction that
-  was created on this device by another wallet and marks it as trusted (ZIP 315), and
-  `Synchronizer.setTransactionTrust(txId, trusted)`, which changes the trust of a transaction
-  the wallet already knows. Both write to the wallet database directly and work while the
-  synchronizer is not synced or is stopped. The default implementations throw
-  `UnsupportedOperationException`; the SDK's default synchronizer and the Slipstream
-  synchronizer implement them.
+- `Synchronizer.recordTrustedTransaction(rawTransaction: RawTransaction, txId: TransactionId)`,
+  which stores a transaction that was created on this device by another wallet and marks it as
+  trusted (ZIP 315). It writes to the wallet database directly and works while the
+  synchronizer is not synced or is stopped. Use it only for a transaction whose inputs nobody
+  else can spend before they reach the untrusted confirmation count, such as a gift card
+  claim: trusting anything else lets the wallet spend funds a rollback can take back. The
+  default implementation throws `UnsupportedOperationException`; the SDK's default
+  synchronizer and the Slipstream synchronizer implement it.
 - `Synchronizer.proposeSendMax(account, recipient, memo = null)`, which proposes sending the
   account's entire currently spendable shielded balance (Sapling, Orchard and Ironwood) to one
   recipient, with the ZIP 317 fee computed internally and deducted from it, leaving no change.

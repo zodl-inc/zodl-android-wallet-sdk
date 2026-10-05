@@ -70,6 +70,7 @@ import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
@@ -696,18 +697,10 @@ class SdkSynchronizer private constructor(
     // Straight to the wallet database: this must work while the synchronizer is not synced or
     // is stopped, so no sync state is awaited.
     override suspend fun recordTrustedTransaction(
-        rawTransaction: ByteArray,
-        txId: ByteArray
+        rawTransaction: RawTransaction,
+        txId: TransactionId
     ) {
         backend.recordTrustedTransaction(rawTransaction, txId)
-        storage.invalidate()
-    }
-
-    override suspend fun setTransactionTrust(
-        txId: ByteArray,
-        trusted: Boolean
-    ) {
-        backend.setTransactionTrust(txId, trusted)
         storage.invalidate()
     }
 

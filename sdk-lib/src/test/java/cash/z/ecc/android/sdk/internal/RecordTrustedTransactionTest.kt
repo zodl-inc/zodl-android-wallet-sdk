@@ -2,6 +2,8 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.RawTransaction
+import cash.z.ecc.android.sdk.model.TransactionId
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.Mockito.mock
@@ -13,8 +15,8 @@ import kotlin.test.assertFailsWith
  * transaction is stored first, then marked trusted, and only if the ids agree.
  */
 class RecordTrustedTransactionTest {
-    private val raw = "raw transaction".toByteArray()
-    private val txId = "txid".toByteArray()
+    private val raw = RawTransaction("raw transaction".toByteArray(), height = BlockHeight.new(3_000_000))
+    private val txId = TransactionId.new("txid".toByteArray())
 
     /** Records the backend calls in order; stores every transaction under [storedTxId]. */
     private class RecordingBackend(
@@ -41,7 +43,8 @@ class RecordTrustedTransactionTest {
     @Test
     fun storesTheTransactionWithoutAHeightAndThenTrustsIt() =
         runBlocking {
-            val backend = RecordingBackend(storedTxId = txId)
+            // The raw transaction's own height is ignored: it is stored as unmined.
+            val backend = RecordingBackend(storedTxId = txId.value.byteArray)
 
             backend.recordTrustedTransaction(raw, txId)
 
