@@ -25,7 +25,13 @@ import java.security.MessageDigest
  * @property statedAmount the amount the link states, if any. This is informational only: the
  * funds found on chain are authoritative.
  * @property description the link's description or message, if any. This is untrusted text
- * chosen by the issuer.
+ * chosen by the issuer, sanitized by the backend before it gets here: line and paragraph breaks
+ * and other control whitespace become a space, and the remaining control characters and the
+ * invisible format characters that can hide or reorder text (bidi embeddings, overrides and
+ * isolates, zero width space, byte order mark and the like) are removed, while ZWJ, ZWNJ and
+ * variation selectors, which emoji and several scripts need, are kept. It is at most 512 bytes
+ * of UTF-8. A description that is malformed, too long, or blank after sanitizing is `null`
+ * rather than making the card unreadable. Still display it as untrusted text.
  */
 @Suppress("LongParameterList")
 class GiftCard private constructor(
@@ -89,23 +95,28 @@ class GiftCard private constructor(
             return fromJni(jni)
         }
 
-        internal fun fromJni(jni: JniGiftCard): GiftCard {
-            val origin =
-                GiftCardOrigin.entries.getOrNull(jni.origin)
-                    ?: throw GiftCardException.InvalidLink(GiftCardLinkError.Unknown)
-            val network =
-                runCatching { ZcashNetwork.from(jni.networkId) }
-                    .getOrElse { throw GiftCardException.InvalidLink(GiftCardLinkError.UnsupportedNetwork) }
-            return GiftCard(
-                origin = origin,
-                network = network,
-                birthdayHeight = BlockHeight.new(jni.birthdayHeight),
-                statedAmount = jni.amountZatoshi.takeIf { it >= 0 }?.let { Zatoshi(it) },
-                description = jni.description,
-                seed = GiftCardSeed(jni.seed.copyOf()),
-                fundingAddress = jni.fundingAddress
-            )
-        }
+        /** Builds the card from what the backend parsed, then wipes the backend's seed copy. */
+        internal fun fromJni(jni: JniGiftCard): GiftCard =
+            try {
+                val origin =
+                    GiftCardOrigin.entries.getOrNull(jni.origin)
+                        ?: throw GiftCardException.InvalidLink(GiftCardLinkError.Unknown)
+                val network =
+                    runCatching { ZcashNetwork.from(jni.networkId) }
+                        .getOrElse { throw GiftCardException.InvalidLink(GiftCardLinkError.UnsupportedNetwork) }
+                GiftCard(
+                    origin = origin,
+                    network = network,
+                    birthdayHeight = BlockHeight.new(jni.birthdayHeight),
+                    statedAmount = jni.amountZatoshi.takeIf { it >= 0 }?.let { Zatoshi(it) },
+                    description = jni.description,
+                    seed = GiftCardSeed(jni.seed.copyOf()),
+                    fundingAddress = jni.fundingAddress
+                )
+            } finally {
+                // The card keeps its own copy; the one the backend handed over is not needed.
+                jni.seed.fill(0)
+            }
     }
 }
 

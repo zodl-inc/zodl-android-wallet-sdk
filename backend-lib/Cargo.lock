@@ -7720,6 +7720,7 @@ name = "zcash-android-wallet-sdk"
 version = "5.0.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bech32",
  "bip0039",
  "bitflags 2.13.1",
@@ -7742,6 +7743,7 @@ dependencies = [
  "pasta_curves",
  "payment_uri",
  "pczt",
+ "percent-encoding",
  "prost 0.14.4",
  "rand 0.8.7",
  "rayon",

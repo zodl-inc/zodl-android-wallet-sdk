@@ -13,6 +13,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 /**
  * The Kotlin half of gift card parsing. The parsing itself is Rust's (covered by
@@ -117,6 +118,30 @@ class GiftCardTest {
     fun rejectsUnknownOriginOrNetwork() {
         assertFailsWith<GiftCardException.InvalidLink> { GiftCard.parse("link", links { jniCard(origin = 9) }) }
         assertFailsWith<GiftCardException.InvalidLink> { GiftCard.parse("link", links { jniCard(networkId = 7) }) }
+    }
+
+    @Test
+    fun wipesTheBackendsSeedCopyOnceTheCardHoldsItsOwn() {
+        val jni = jniCard()
+        val card = GiftCard.parse("link", links { jni })
+        assertTrue(jni.seed.all { it == 0.toByte() })
+        assertContentEquals(seed, card.seed.copyBytes())
+    }
+
+    @Test
+    fun wipesTheBackendsSeedCopyWhenTheCardIsRejected() {
+        val jni = jniCard(origin = 9)
+        assertFailsWith<GiftCardException.InvalidLink> { GiftCard.parse("link", links { jni }) }
+        assertTrue(jni.seed.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun exposesTheBackendsSanitizedDescriptionAsIs() {
+        // Sanitizing is the backend's job (see `gift_card.rs`); the card must not alter or drop
+        // what it reports, including a trailing space left where a line break was.
+        val sanitized = "Giftmoc.liame "
+        assertEquals(sanitized, GiftCard.parse("link", links { jniCard(description = sanitized) }).description)
+        assertNull(GiftCard.parse("link", links { jniCard(description = null) }).description)
     }
 
     @Test

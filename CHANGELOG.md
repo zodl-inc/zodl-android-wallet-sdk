@@ -15,7 +15,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   issuer's free-form `description`, and `id`, a stable non-secret identifier of the card. The
   card's key is never exposed and is redacted from `toString()`. A rejected link throws
   `GiftCardException.InvalidLink`, whose `reason` (`GiftCardLinkError`) categorizes the
-  failure; neither it nor the message contains any part of the link.
+  failure; neither it nor the message contains any part of the link. The key is read in
+  either case. A birthday height below the network's NU5 activation is rejected
+  (`GiftCardLinkError.InvalidField`), as cards hold Orchard funds only. `description` is
+  sanitized before it is exposed (line breaks become spaces; control characters and invisible
+  bidi and format characters are removed) and is at most 512 bytes; a malformed, over-long or
+  blank description, or a malformed stated amount, reads as `null` instead of rejecting the
+  card. Still display `description` as untrusted text.
 - `GiftCardRedeemer`, which redeems a `GiftCard` into the user's wallet through a temporary,
   isolated wallet (its own `Synchronizer` under its own alias, without Tor or exchange rates)
   that can run alongside the main wallet. `GiftCardRedeemer.new(context, card, network,

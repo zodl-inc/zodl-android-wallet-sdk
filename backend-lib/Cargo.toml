@@ -42,8 +42,6 @@ zcash_pool_migration = { version = "0.1.0", features = ["wallet"] }
 # (`pczt::roles::signer::batch`).
 pczt = { version = "0.9.0", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
-# Named by proving.rs, whose Sapling prover stub implements `sapling`'s prover traits (their
-# signatures use these scalar types). Both resolve to the instances already in Cargo.lock.
 bls12_381 = "0.8"
 jubjub = "0.10"
 transparent = { package = "zcash_transparent", version = "0.10", default-features = false }
@@ -57,8 +55,6 @@ zcash_client_backend = { version = "0.24.0", features = [
     "pczt",
 ] }
 zcash_client_sqlite = { version = "0.22.0", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
-# Used by liberated_payment.rs (gift card links), which names `zcash_keys` directly rather than through the
-# `zcash_client_backend` re-exports; resolves to the same instance already in Cargo.lock.
 zcash_keys = "0.16"
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.30"
@@ -78,7 +74,7 @@ shardtree = "0.7"
 incrementalmerkletree = { version = "0.8", default-features = false }
 
 # Infrastructure
-# Gift cards (liberated_payment.rs): a card secret is BIP 39 entropy, and its link key is Bech32m-encoded.
+base64 = "0.22"
 bech32 = "0.11"
 bip0039 = "0.12"
 prost = "0.14"
@@ -91,6 +87,7 @@ secrecy = "0.8"
 zeroize = { version = "1", default-features = false }
 rand = "0.8"
 nonempty = "0.11"
+percent-encoding = "2"
 
 # HTTP
 bytes = "1"
