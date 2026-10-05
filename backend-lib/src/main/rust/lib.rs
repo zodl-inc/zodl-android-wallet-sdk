@@ -116,6 +116,7 @@ mod migration_plan_cache;
 mod migration_send_max;
 mod payment_uri;
 mod tor;
+mod unified_r0;
 mod utils;
 mod voting;
 
@@ -347,14 +348,17 @@ fn encode_account<'a, P: Parameters>(
     account: zcash_client_sqlite::wallet::Account,
 ) -> jni::errors::Result<JObject<'a>> {
     let ufvk = match account.ufvk() {
-        Some(ufvk) => env.new_string(ufvk.encode(network))?.into(),
+        Some(ufvk) => env
+            .new_string(unified_r0::encode_ufvk_r0(ufvk, network))?
+            .into(),
         None => JObject::null(),
     };
 
     let uivk = match account.ufvk() {
         Some(ufvk) => {
             let uivk = ufvk.to_unified_incoming_viewing_key();
-            env.new_string(uivk.encode(network))?.into()
+            env.new_string(unified_r0::encode_uivk_r0(&uivk, network))?
+                .into()
         }
         None => JObject::null(),
     };
@@ -781,7 +785,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getCurren
             UnifiedAddressRequest::AllAvailableKeys,
         ) {
             Ok(Some(addr)) => {
-                let addr_str = addr.encode(&network);
+                let addr_str = unified_r0::encode_unified_address_r0(&addr, &network);
                 let output = env
                     .new_string(addr_str)
                     .expect("Couldn't create Java string!");
@@ -942,7 +946,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getNextAv
 
         match db_data.get_next_available_address(account_uuid, address_request) {
             Ok(Some((ua, _))) => {
-                let addr_str = ua.encode(&network);
+                let addr_str = unified_r0::encode_unified_address_r0(&ua, &network);
                 let output = env
                     .new_string(addr_str)
                     .expect("Couldn't create Java string!");
@@ -2900,7 +2904,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
                     .map_err(|e| {
                         anyhow!("error generating unified spending key from seed: {:?}", e)
                     })
-                    .map(|usk| usk.to_unified_full_viewing_key().encode(&network))
+                    .map(|usk| {
+                        unified_r0::encode_ufvk_r0(&usk.to_unified_full_viewing_key(), &network)
+                    })
             })
             .collect::<Result<_, _>>()?;
 
@@ -2941,7 +2947,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
                 UnifiedAddressRequest::AllAvailableKeys,
             )
             .expect("At least one Unified Address should be derivable");
-        let address_str = ua.encode(&network);
+        let address_str = unified_r0::encode_unified_address_r0(&ua, &network);
         let output = env
             .new_string(address_str)
             .expect("Couldn't create Java string!");
@@ -2968,7 +2974,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
         // Derive the default Unified Address (containing the default Sapling payment
         // address that older SDKs used).
         let (ua, _) = ufvk.default_address(UnifiedAddressRequest::AllAvailableKeys)?;
-        let address_str = ua.encode(&network);
+        let address_str = unified_r0::encode_unified_address_r0(&ua, &network);
         let output = env
             .new_string(address_str)
             .expect("Couldn't create Java string!");
@@ -2994,7 +3000,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
         let ufvk = usk.to_unified_full_viewing_key();
 
         let output = env
-            .new_string(ufvk.encode(&network))
+            .new_string(unified_r0::encode_ufvk_r0(&ufvk, &network))
             .expect("Couldn't create Java string!");
 
         Ok(output.into_raw())
