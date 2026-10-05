@@ -77,7 +77,7 @@ jobs:
 
           ./gradlew :backend-lib:assembleRelease
 
-          PROD_RELAY_URL="https://ohttp-relay.example/relay"
+          PROD_RELAY_URL="https://ohttp-relay.example/"
           SO_FILES=$(find backend-lib/build/intermediates -name "*.so" -type f)
           if [ -z "$SO_FILES" ]; then
             echo "ERROR: No .so files found after assembleRelease"

@@ -109,7 +109,7 @@ tonic = "0.14"
 # the I/O. The JNI surface is `src/main/rust/ohttp.rs`. The repository is private (CI's App
 # token must include `ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
 # it only to a commit that is on the `main` of zodl-inc/ohttp.
-zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "5bc630f9a3dc0e3e485bc030d34a7fd91ad7ba27", default-features = false }
+zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "f0d88a5d960578b0e34c01881912baca0198de3a", default-features = false }
 
 # Logging
 log-panics = "2.0.0"
@@ -264,8 +264,8 @@ crate-type = ["staticlib", "cdylib"]
 # (0.3.1 or later) exists on crates.io. The dependency on 0.3.0-alpha.1 avoids
 # colliding with the public 0.3.0 release (grpc-only, no OHTTP, published 2026-10-01).
 # The rev must be repinned to the slipstream-internal main commit after PR #16 merges.
-# Pinned to be6e93b1 (3f8d2612 + zodl-ohttp-client from the new zodl-inc/ohttp repo).
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "be6e93b160d4414e3dfcd863d6b25e444a9e4500" }
+# Pinned to c43226e9 (3f8d2612 + zodl-ohttp-client f0d88a5d, final Fastly relay hostnames).
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "c43226e9cb25ceb03ff385a2ce9dd4741fdb66c7" }
 # `slipstream-core` is deliberately absent here: since the engine's history rewrite to the
 # published `zodl-slipstream` 0.1.x line, the dependency above resolves from crates.io like
 # the rest of the released family — the old git pin was not dropped by accident.
