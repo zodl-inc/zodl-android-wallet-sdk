@@ -97,6 +97,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other had stored, so a created transaction was not resubmitted to the endpoints it was
   submitted to.
 - `Synchronizer.erase` now also deletes a database's SQLite shared-memory (`-shm`) file.
+- With the Slipstream synchronizer, a received transaction no longer stays `Pending` after it
+  reaches 10 confirmations: `allTransactions` and `getTransactions(accountUuid)` now recompute
+  `transactionState` whenever the chain tip moves, not only when the set of transactions
+  changes.
 - With the Slipstream synchronizer, `TransactionOverview.isTrusted` now reports the wallet's
   stored trust status (for example a gift-card claim recorded as trusted) instead of always
   `false`; `spentNoteCount` and `poolCrossingValue` are now populated as well.
