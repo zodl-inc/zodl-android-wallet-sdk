@@ -122,11 +122,13 @@ class LedgerBleChannelTest {
         runBlocking<Unit> {
             val link = FakeLink(backend, frameSize = 8)
             val channel = LedgerBleChannel(link, backend, frameSize = 8)
-            link.channel.trySend(byteArrayOf(1, 0x6A))
+            val stray = byteArrayOf(1, 0x6A)
+            link.channel.trySend(stray)
 
             assertFailsWith<LedgerException.MalformedReply> { channel.exchange(byteArrayOf(1), 1.seconds) }
             assertTrue(link.closed)
             assertTrue(link.written.isEmpty(), "nothing is written on a channel out of step")
+            assertContentEquals(ByteArray(2), stray, "the stray notification is wiped")
         }
 
     @Test

@@ -72,7 +72,8 @@ internal class LedgerBleChannel(
             if (dead) {
                 throw LedgerException.Disconnected()
             }
-            if (link.notifications.tryReceive().isSuccess) {
+            link.notifications.tryReceive().getOrNull()?.let { stray ->
+                stray.fill(0)
                 Twig.warn { "Ledger BLE notification arrived with no command outstanding; closing" }
                 poison()
                 throw LedgerException.MalformedReply(reason = "the device sent a reply to no command")
