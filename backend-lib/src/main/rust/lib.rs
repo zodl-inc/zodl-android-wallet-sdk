@@ -61,7 +61,7 @@ use zcash_client_backend::{
     fees::{DustOutputPolicy, SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
     keys::{
         DecodingError, Era, ReceiverRequirement, ReceiverRequirementError, UnifiedAddressRequest,
-        UnifiedFullViewingKey, UnifiedSpendingKey,
+        UnifiedFullViewingKey, UnifiedIncomingViewingKey, UnifiedSpendingKey,
     },
     proposal::ProposalError,
     proto::{proposal::Proposal, service::TreeState},
@@ -108,7 +108,6 @@ use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
 };
 
-mod legacy_ufvk;
 mod migration;
 mod migration_engine;
 mod migration_keystone;
@@ -116,6 +115,7 @@ mod migration_plan_cache;
 mod migration_send_max;
 mod payment_uri;
 mod tor;
+#[cfg(test)]
 mod unified_r0;
 mod utils;
 mod voting;
@@ -314,14 +314,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_initDataD
 ) -> jint {
     let res = catch_unwind(&mut env, |env| {
         let network = parse_network(network_id)?;
-        {
-            // See `legacy_ufvk`: a database from before `full_account_ids` needs its stored
-            // viewing keys re-encoded, or that migration rejects the wallet's own seed.
-            let db_path = env.get_string(&db_data)?;
-            let conn = rusqlite::Connection::open(db_path.to_str()?)
-                .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
-            legacy_ufvk::realign_legacy_ufvk_encodings(&conn, &network)?;
-        }
         let mut db_data = wallet_db(system_rng(), env, network, db_data)
             .map_err(|e| anyhow!("Error while opening data DB: {}", e))?;
 
@@ -353,24 +345,66 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_initDataD
 
 const JNI_ACCOUNT: &str = "cash/z/ecc/android/sdk/internal/model/JniAccount";
 
-fn encode_account<'a, P: Parameters>(
-    env: &mut JNIEnv<'a>,
+/// An account with its viewing keys encoded as strings for Kotlin.
+struct EncodedAccount {
+    account: zcash_client_sqlite::wallet::Account,
+    ufvk: Option<String>,
+    uivk: Option<String>,
+}
+
+/// Encodes the viewing keys of `account` for the given network.
+fn encoded_account<P: Parameters>(
     network: &P,
     account: zcash_client_sqlite::wallet::Account,
+) -> anyhow::Result<EncodedAccount> {
+    let ufvk = account
+        .ufvk()
+        .map(|ufvk| encode_ufvk(ufvk, network))
+        .transpose()?;
+    let uivk = account
+        .ufvk()
+        .map(|ufvk| encode_uivk(&ufvk.to_unified_incoming_viewing_key(), network))
+        .transpose()?;
+    Ok(EncodedAccount {
+        account,
+        ufvk,
+        uivk,
+    })
+}
+
+/// Returns the ZIP 316 string encoding of a unified full viewing key. The encoding uses
+/// revision 0 if revision 0 can represent the key, and revision 2 otherwise.
+fn encode_ufvk<P: Parameters>(ufvk: &UnifiedFullViewingKey, network: &P) -> anyhow::Result<String> {
+    ufvk.encode(network)
+        .map_err(|e| anyhow!("Error encoding a unified full viewing key: {e}"))
+}
+
+/// Returns the ZIP 316 string encoding of a unified incoming viewing key. The encoding uses
+/// revision 0 if revision 0 can represent the key, and revision 2 otherwise.
+fn encode_uivk<P: Parameters>(
+    uivk: &UnifiedIncomingViewingKey,
+    network: &P,
+) -> anyhow::Result<String> {
+    uivk.encode(network)
+        .map_err(|e| anyhow!("Error encoding a unified incoming viewing key: {e}"))
+}
+
+fn encode_account<'a>(
+    env: &mut JNIEnv<'a>,
+    encoded: EncodedAccount,
 ) -> jni::errors::Result<JObject<'a>> {
-    let ufvk = match account.ufvk() {
-        Some(ufvk) => env
-            .new_string(unified_r0::encode_ufvk_r0(ufvk, network))?
-            .into(),
+    let EncodedAccount {
+        account,
+        ufvk,
+        uivk,
+    } = encoded;
+    let ufvk = match ufvk {
+        Some(ufvk) => env.new_string(ufvk)?.into(),
         None => JObject::null(),
     };
 
-    let uivk = match account.ufvk() {
-        Some(ufvk) => {
-            let uivk = ufvk.to_unified_incoming_viewing_key();
-            env.new_string(unified_r0::encode_uivk_r0(&uivk, network))?
-                .into()
-        }
+    let uivk = match uivk {
+        Some(uivk) => env.new_string(uivk)?.into(),
         None => JObject::null(),
     };
 
@@ -433,14 +467,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getAccoun
                     .transpose()
                     .expect("account_id exists")
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|account| encoded_account(&network, account))
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
-        Ok(
-            utils::rust_vec_to_java(env, accounts, JNI_ACCOUNT, |env, account| {
-                encode_account(env, &network, account)
-            })?
-            .into_raw(),
-        )
+        Ok(utils::rust_vec_to_java(env, accounts, JNI_ACCOUNT, encode_account)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -461,7 +493,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getAccoun
         let account = db_data.get_account_for_ufvk(&ufvk)?;
 
         if let Some(account) = account {
-            Ok(encode_account(env, &network, account)?.into_raw())
+            Ok(encode_account(env, encoded_account(&network, account)?)?.into_raw())
         } else {
             Ok(ptr::null_mut())
         }
@@ -720,7 +752,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_importAcc
             )
             .map_err(map_import_account_error)?;
 
-        Ok(encode_account(env, &network, account)?.into_raw())
+        Ok(encode_account(env, encoded_account(&network, account)?)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -796,7 +828,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getCurren
             UnifiedAddressRequest::AllAvailableKeys,
         ) {
             Ok(Some(addr)) => {
-                let addr_str = unified_r0::encode_unified_address_r0(&addr, &network);
+                let addr_str = addr.encode_receiver_preserving(&network);
                 let output = env
                     .new_string(addr_str)
                     .expect("Couldn't create Java string!");
@@ -957,7 +989,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getNextAv
 
         match db_data.get_next_available_address(account_uuid, address_request) {
             Ok(Some((ua, _))) => {
-                let addr_str = unified_r0::encode_unified_address_r0(&ua, &network);
+                let addr_str = ua.encode_receiver_preserving(&network);
                 let output = env
                     .new_string(addr_str)
                     .expect("Couldn't create Java string!");
@@ -2909,9 +2941,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
                     .map_err(|e| {
                         anyhow!("error generating unified spending key from seed: {:?}", e)
                     })
-                    .map(|usk| {
-                        unified_r0::encode_ufvk_r0(&usk.to_unified_full_viewing_key(), &network)
-                    })
+                    .and_then(|usk| encode_ufvk(&usk.to_unified_full_viewing_key(), &network))
             })
             .collect::<Result<_, _>>()?;
 
@@ -2952,7 +2982,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
                 UnifiedAddressRequest::AllAvailableKeys,
             )
             .expect("At least one Unified Address should be derivable");
-        let address_str = unified_r0::encode_unified_address_r0(&ua, &network);
+        let address_str = ua.encode_receiver_preserving(&network);
         let output = env
             .new_string(address_str)
             .expect("Couldn't create Java string!");
@@ -2979,7 +3009,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
         // Derive the default Unified Address (containing the default Sapling payment
         // address that older SDKs used).
         let (ua, _) = ufvk.default_address(UnifiedAddressRequest::AllAvailableKeys)?;
-        let address_str = unified_r0::encode_unified_address_r0(&ua, &network);
+        let address_str = ua.encode_receiver_preserving(&network);
         let output = env
             .new_string(address_str)
             .expect("Couldn't create Java string!");
@@ -3005,7 +3035,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
         let ufvk = usk.to_unified_full_viewing_key();
 
         let output = env
-            .new_string(unified_r0::encode_ufvk_r0(&ufvk, &network))
+            .new_string(encode_ufvk(&ufvk, &network)?)
             .expect("Couldn't create Java string!");
 
         Ok(output.into_raw())

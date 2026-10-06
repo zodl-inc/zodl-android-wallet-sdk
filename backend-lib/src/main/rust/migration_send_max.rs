@@ -29,8 +29,6 @@ use zcash_protocol::{
     memo::MemoBytes,
 };
 
-use crate::unified_r0;
-
 /// The wallet database as the JNI layer holds it.
 type Db = WalletDb<rusqlite::Connection, Network, SystemClock, crate::SystemRng>;
 
@@ -97,7 +95,8 @@ pub(crate) fn propose_orchard_to_ironwood(
     // The internal scope is the account's own change address, so the funds
     // stay with the account rather than being exposed as an external payment.
     let receiver = orchard_fvk.address_at(0u32, orchard::keys::Scope::Internal);
-    let recipient = unified_r0::orchard_only_address_r0(&receiver, network.network_type())?;
+    let recipient = zcash_client_backend::address::Receiver::Orchard(receiver)
+        .to_zcash_address(network.network_type());
 
     // Orchard only. Sapling and transparent funds are deliberately left where
     // they are: this migrates one pool, it is not a sweep of the wallet.

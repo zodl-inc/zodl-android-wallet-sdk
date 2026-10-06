@@ -27,7 +27,7 @@ slipstream = ["dep:slipstream-core", "dep:tokio", "dep:tracing-android", "tracin
 # Zcash dependencies
 
 # The NU7 pre-release generation: orchard 0.16 with the `=`-pinned librustzcash pre-releases
-# below, the same generation `slipstream-core` 0.4.0-pre.0 and the pinned `zcash_voting` are
+# below, the same generation `slipstream-core` 0.4.0-pre.1 and the pinned `zcash_voting` are
 # built against. Everything here resolves from crates.io; no orchard [patch] entry is needed.
 #
 # `unstable-voting-circuits` is not requested here, but it IS enabled in the built graph:
@@ -37,14 +37,14 @@ slipstream = ["dep:slipstream-core", "dep:tokio", "dep:tracing-android", "tracin
 # way to keep the share-reveal circuit out of the shipped library is to drop voting itself,
 # not to drop this feature.
 orchard = "0.16"
-zcash_pool_migration = { version = "=0.2.0-pre.0", features = ["wallet"] }
+zcash_pool_migration = { version = "=0.2.0-pre.1", features = ["wallet"] }
 # `signer` is this branch's addition, for the Keystone batch-signing recipe below
 # (`pczt::roles::signer::batch`).
-pczt = { version = "=0.10.0-pre.0", features = ["prover", "orchard", "sapling", "signer"] }
+pczt = { version = "=0.10.0-pre.1", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.9", default-features = false }
-transparent = { package = "zcash_transparent", version = "=0.11.0-pre.0", default-features = false }
-zcash_address = "=0.14.0-pre.0"
-zcash_client_backend = { version = "=0.25.0-pre.0", features = [
+transparent = { package = "zcash_transparent", version = "=0.11.0-pre.1", default-features = false }
+zcash_address = "=0.14.0-pre.1"
+zcash_client_backend = { version = "=0.25.0-pre.1", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -52,10 +52,10 @@ zcash_client_backend = { version = "=0.25.0-pre.0", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "=0.23.0-pre.0", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "=0.23.0-pre.1", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.5.1"
-zcash_primitives = "=0.31.0-pre.0"
-zcash_proofs = "=0.31.0-pre.0"
+zcash_primitives = "=0.31.0-pre.1"
+zcash_proofs = "=0.31.0-pre.1"
 zcash_protocol = "=0.11.0-pre.0"
 zcash_script = "0.6"
 zip32 = "0.3"
@@ -195,7 +195,7 @@ ff = { version = "0.14" }
 # docs/slipstream/android/worklog/ARCHIVE-phases-0-9.md for the full writeup). The engine is
 # the published `zodl-slipstream` crate from crates.io, built against the same librustzcash
 # generation as the rest of this graph — verify with `cargo tree -d` after any bump.
-slipstream-core = { package = "zodl-slipstream", version = "=0.4.0-pre.0", optional = true }
+slipstream-core = { package = "zodl-slipstream", version = "=0.4.0-pre.1", optional = true }
 # The module's owned engine runtime (HOSTING.md §3.1) and the logcat logging layer it wires up.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 
@@ -235,7 +235,7 @@ bip0039 = "0.12"
 # transaction through `zcash_client_sqlite`'s internal pool-migration truncation wiring. Cargo
 # unions this feature set with the `[dependencies]` entry above only for test/bench/example
 # builds, so the release library never links tempfile/rand_chacha/ambassador.
-zcash_client_sqlite = { version = "=0.23.0-pre.0", features = ["orchard", "transparent-inputs", "unstable", "serde", "test-dependencies"] }
+zcash_client_sqlite = { version = "=0.23.0-pre.1", features = ["orchard", "transparent-inputs", "unstable", "serde", "test-dependencies"] }
 
 [lib]
 name = "zcashwalletsdk"
@@ -271,16 +271,16 @@ crate-type = ["staticlib", "cdylib"]
 # then check `cargo tree -d` for duplicated `zcash_*`/`orchard` crates.
 #
 # valargroup/zcash_voting#373
-zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting", rev = "79bab8da827ae39aa34c881743af6fe9de3c3e3b" }
+zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting", rev = "9bb376295431a3c73a260ed6bbbcc870284f2db3" }
 # valargroup/voting-circuits#135
-voting-circuits = { git = "https://github.com/zodl-inc/voting-circuits", rev = "1e33d48e436482e0f364ff0f9f886904f88fa515" }
-voting-crypto-deps = { git = "https://github.com/zodl-inc/voting-circuits", rev = "1e33d48e436482e0f364ff0f9f886904f88fa515" }
-imt-tree = { git = "https://github.com/zodl-inc/voting-circuits", rev = "1e33d48e436482e0f364ff0f9f886904f88fa515" }
+voting-circuits = { git = "https://github.com/zodl-inc/voting-circuits", rev = "6a399f9260ebbb278cc180a23c89dc73323ee5f5" }
+voting-crypto-deps = { git = "https://github.com/zodl-inc/voting-circuits", rev = "6a399f9260ebbb278cc180a23c89dc73323ee5f5" }
+imt-tree = { git = "https://github.com/zodl-inc/voting-circuits", rev = "6a399f9260ebbb278cc180a23c89dc73323ee5f5" }
 # valargroup/vote-nullifier-pir#173
-pir-types = { git = "https://github.com/zodl-inc/vote-nullifier-pir", rev = "9c62d0565f6cc963e7875f9f40822764431eeab9" }
-pir-client = { git = "https://github.com/zodl-inc/vote-nullifier-pir", rev = "9c62d0565f6cc963e7875f9f40822764431eeab9" }
+pir-types = { git = "https://github.com/zodl-inc/vote-nullifier-pir", rev = "74327f9073e310b2b915d30f2a3c4d7918db7778" }
+pir-client = { git = "https://github.com/zodl-inc/vote-nullifier-pir", rev = "74327f9073e310b2b915d30f2a3c4d7918db7778" }
 # zakura-core/wallet-libraries#83
-zakura-wallet-lib = { git = "https://github.com/zodl-inc/zakura-wallet-libraries", rev = "8128fc437ae5c65c5e108cfacf95046714b34db8" }
+zakura-wallet-lib = { git = "https://github.com/zodl-inc/zakura-wallet-libraries", rev = "29fa15e0ca839d8a6807721ea7275f0994f09b72" }
 
 # DO NOT ALTER THIS COMMENT
 #

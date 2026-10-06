@@ -377,9 +377,9 @@ where
 /// encoding to a `ZcashAddress` is both correct and exactly how
 /// `zcash_pool_migration::build::build_transfer_pczt` derives a migration transfer's own
 /// crossing destination (its `recipient = orchard_fvk.address_at(0u32, Scope::Internal)`) — this
-/// reuses that same derivation, not a second one. The address is encoded at ZIP 316 revision 0
-/// by [`crate::unified_r0::orchard_only_address_r0`], the same encoding the ordinary migration
-/// proposal gives its recipient, because the wallet stores it and the app shows it in history.
+/// reuses that same derivation, not a second one. `zcash_keys` encodes the address at ZIP 316
+/// revision 0, the same encoding the ordinary migration proposal gives its recipient. The wallet
+/// stores the address, and the app shows it in history.
 pub fn propose_immediate_send_max(
     params: &Network,
     wallet: &mut Wallet,
@@ -395,8 +395,8 @@ pub fn propose_immediate_send_max(
         .ok_or_else(|| anyhow::anyhow!("account has no Orchard full viewing key"))?;
 
     let ironwood_receiver = orchard_fvk.address_at(0u32, Scope::Internal);
-    let recipient =
-        crate::unified_r0::orchard_only_address_r0(&ironwood_receiver, params.network_type())?;
+    let recipient = zcash_client_backend::address::Receiver::Orchard(ironwood_receiver)
+        .to_zcash_address(params.network_type());
 
     propose_send_max_transfer::<_, _, _, Infallible>(
         wallet,
