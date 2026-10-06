@@ -19,11 +19,13 @@ class JniMetadataKey(
 ) {
     init {
         require(sk.size == JNI_METADATA_KEY_SK_SIZE) {
-            "Account UUID must be 32 bytes"
+            "Metadata key sk must be 32 bytes"
         }
 
         require(chainCode.size == JNI_METADATA_KEY_CHAIN_CODE_SIZE) {
-            "Seed fingerprint must be 32 bytes"
+            "Metadata key chain code must be 32 bytes"
         }
     }
+
+    override fun toString() = "JniMetadataKey(sk=***, chainCode=***)"
 }
