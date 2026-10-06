@@ -184,7 +184,7 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 3, // Zip318Kind.TRANSFER
+                        zip318Kind = 3,
                         spentNoteCount = 0,
                         poolCrossingValue = null,
                         trustStatus = null
@@ -337,7 +337,7 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 2, // Zip318Kind.PREPARATION
+                        zip318Kind = 2,
                         spentNoteCount = 0,
                         poolCrossingValue = null,
                         trustStatus = null

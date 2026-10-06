@@ -192,6 +192,8 @@ class SdkSynchronizer private constructor(
          *
          * @return Synchronizer instance as CloseableSynchronizer
          *
+         * @param onCriticalErrorHandler installed as [onCriticalErrorHandler] before the synchronizer starts.
+         *
          * @throws IllegalStateException If multiple instances of synchronizer with the same network+alias are
          * active at the same time.  Call `close` to finish one synchronizer before starting another one with the same
          * network+alias.
@@ -213,7 +215,8 @@ class SdkSynchronizer private constructor(
             walletClientFactory: WalletClientFactory,
             defaultSubmitEndpoint: LightWalletEndpoint,
             pendingSubmitPlanStore: PendingSubmitPlanStore,
-            sdkFlags: SdkFlags
+            sdkFlags: SdkFlags,
+            onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null
         ): CloseableSynchronizer {
             val synchronizerKey = SynchronizerKey(zcashNetwork, alias)
             return mutex.withLock {
@@ -236,6 +239,7 @@ class SdkSynchronizer private constructor(
                     pendingSubmitPlanStore = pendingSubmitPlanStore,
                     sdkFlags = sdkFlags
                 ).apply {
+                    this.onCriticalErrorHandler = onCriticalErrorHandler
                     instances[synchronizerKey] = InstanceState.Active
                     start()
                 }
@@ -694,8 +698,10 @@ class SdkSynchronizer private constructor(
         }
     }
 
-    // Straight to the wallet database: this must work while the synchronizer is not synced or
-    // is stopped, so no sync state is awaited.
+    /**
+     * Writes straight to the wallet database: this must work while the synchronizer is not synced
+     * or is stopped, so no sync state is awaited.
+     */
     override suspend fun recordTrustedTransaction(
         rawTransaction: RawTransaction,
         txId: TransactionId

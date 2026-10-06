@@ -30,7 +30,7 @@ class JniGiftCard(
     val seed: ByteArray,
     val fundingAddress: String
 ) {
-    // Override to prevent leaking the card's key to logs
+    /** Leaves the card's key out, so that it never reaches logs. */
     override fun toString() =
         "JniGiftCard(origin=$origin, networkId=$networkId, birthdayHeight=$birthdayHeight, " +
             "amountZatoshi=$amountZatoshi, seed=***)"

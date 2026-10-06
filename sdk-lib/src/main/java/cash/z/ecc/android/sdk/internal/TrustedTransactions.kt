@@ -23,7 +23,7 @@ internal suspend fun TypesafeBackend.recordTrustedTransaction(
 ) {
     val storedTxId = decryptAndStoreTransaction(rawTransaction.data, minedHeight = null)
     require(storedTxId == txId.value) {
-        "txId does not match the transaction" // $NON-NLS
+        "txId does not match the transaction"
     }
     setTransactionTrust(txId.value.byteArray, trusted = true)
 }

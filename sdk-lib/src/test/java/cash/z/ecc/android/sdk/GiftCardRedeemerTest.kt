@@ -23,18 +23,29 @@ import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.TransactionId
+import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
+import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.WalletBalance
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.never
+import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
 import kotlin.test.assertEquals
@@ -42,195 +53,18 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * [GiftCardRedeemer] against a fake card wallet: alias rules, how a balance maps onto the status
  * the UI shows, and what a redemption does with its destination wallet.
  */
 class GiftCardRedeemerTest {
-    private val endpoint = LightWalletEndpoint("localhost", 9067, false)
-
-    private fun card(
-        networkId: Int = ZcashNetwork.ID_MAINNET,
-        fundingAddress: String = "u1fundingaddress"
-    ): GiftCard =
-        GiftCard.parse(
-            "link",
-            object : GiftCardLinks {
-                override fun parse(link: String) =
-                    JniGiftCard(0, networkId, 3_000_000, -1, null, ByteArray(64), fundingAddress)
-            }
-        )
-
-    private fun context(): Context {
-        val context = mock(Context::class.java)
-        `when`(context.applicationContext).thenReturn(context)
-        return context
-    }
-
-    private fun recipient(network: ZcashNetwork = ZcashNetwork.Mainnet): RecipientAddress {
-        val address = mock(RecipientAddress::class.java)
-        `when`(address.network).thenReturn(network)
-        return address
-    }
-
-    private fun rejected(transaction: CreatedTransaction) =
-        TransactionSubmitResult.Failure(transaction.txId, grpcError = false, code = -1, description = "rejected")
-
-    private fun createdTransaction(tag: String) =
-        CreatedTransaction(
-            txId = FirstClassByteArray("txid-$tag".toByteArray()),
-            raw = FirstClassByteArray("raw-$tag".toByteArray()),
-            expiryHeight = null
-        )
-
-    /**
-     * The card wallet: synced, one account holding [spendable], one proposal, and whatever
-     * [submitResult] says about each transaction.
-     */
-    private class FakeCardWallet(
-        private val created: List<CreatedTransaction>,
-        spendable: Long = 1_000_000,
-        private val proposalFailure: Exception? = null,
-        private val submitResult: (CreatedTransaction) -> TransactionSubmitResult
-    ) : CloseableSynchronizer by mock(CloseableSynchronizer::class.java) {
-        val fee = Zatoshi(10_000)
-        var closed = false
-        var proposed = false
-        val submitted = mutableListOf<CreatedTransaction>()
-        var ovkPolicy: OvkPolicy? = null
-
-        override val network: ZcashNetwork = ZcashNetwork.Mainnet
-        override var onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null
-        override val status: Flow<Synchronizer.Status> = MutableStateFlow(Synchronizer.Status.SYNCED)
-        override val walletBalances: StateFlow<Map<AccountUuid, AccountBalance>?> =
-            MutableStateFlow(mapOf(AccountFixture.new().accountUuid to balance(available = spendable)))
-
-        override suspend fun getAccounts(): List<Account> = listOf(AccountFixture.new())
-
-        override suspend fun proposeSendMax(
-            account: Account,
-            recipient: RecipientAddress,
-            memo: MemoContent?
-        ): Proposal {
-            proposed = true
-            proposalFailure?.let { throw it }
-            val proposal = mock(Proposal::class.java)
-            `when`(proposal.totalFeeRequired()).thenReturn(fee)
-            return proposal
-        }
-
-        override val broadcaster: Broadcaster =
-            object : Broadcaster {
-                override suspend fun createProposedTransactions(
-                    proposal: Proposal,
-                    usk: UnifiedSpendingKey,
-                    ovkPolicy: OvkPolicy
-                ): List<CreatedTransaction> {
-                    this@FakeCardWallet.ovkPolicy = ovkPolicy
-                    return created
-                }
-
-                override suspend fun createTransactionFromPczt(
-                    pcztWithProofs: Pczt,
-                    pcztWithSignatures: Pczt
-                ): List<CreatedTransaction> = error("Not a gift card operation")
-
-                override suspend fun submit(
-                    transaction: CreatedTransaction,
-                    endpoint: LightWalletEndpoint
-                ): TransactionSubmitResult {
-                    submitted += transaction
-                    return submitResult(transaction)
-                }
-            }
-
-        override fun close() {
-            closed = true
-        }
-    }
-
-    private class FakeWallets(
-        private val cardWallet: FakeCardWallet,
-        private val openFailure: Exception? = null
-    ) : GiftCardWallets {
-        val erased = mutableListOf<String>()
-        val torSettings = mutableListOf<Boolean>()
-
-        override suspend fun erase(
-            context: Context,
-            network: ZcashNetwork,
-            alias: String
-        ) {
-            erased += alias
-        }
-
-        override suspend fun open(
-            context: Context,
-            network: ZcashNetwork,
-            alias: String,
-            birthday: BlockHeight,
-            lightWalletEndpoint: LightWalletEndpoint,
-            isTorEnabled: Boolean,
-            setup: AccountCreateSetup
-        ): CloseableSynchronizer {
-            torSettings += isTorEnabled
-            openFailure?.let { throw it }
-            return cardWallet
-        }
-
-        override suspend fun deriveSpendingKey(
-            seed: ByteArray,
-            network: ZcashNetwork
-        ): UnifiedSpendingKey = mock(UnifiedSpendingKey::class.java)
-    }
-
-    /** The user's wallet, remembering what it was asked to record, or refusing to. */
-    private class FakeDestination(
-        private val failure: Exception? = null
-    ) : Synchronizer by mock(Synchronizer::class.java) {
-        val recorded = mutableListOf<Pair<ByteArray, ByteArray>>()
-
-        override val network: ZcashNetwork = ZcashNetwork.Mainnet
-
-        override suspend fun recordTrustedTransaction(
-            rawTransaction: RawTransaction,
-            txId: TransactionId
-        ) {
-            failure?.let { throw it }
-            recorded += rawTransaction.data to txId.value.byteArray
-        }
-    }
-
-    private fun redeemer(
-        cardWallet: FakeCardWallet,
-        wallets: FakeWallets = FakeWallets(cardWallet),
-        aliases: GiftCardAliases = GiftCardAliases(),
-        isTorEnabled: Boolean = false
-    ): Pair<GiftCardRedeemer, FakeWallets> {
-        val redeemer =
-            GiftCardRedeemer.new(
-                context = context(),
-                card = card(),
-                network = ZcashNetwork.Mainnet,
-                lightWalletEndpoint = endpoint,
-                isTorEnabled = isTorEnabled,
-                alias = GiftCardRedeemer.defaultAlias(card()),
-                wallets = wallets,
-                aliases = aliases
-            )
-        return redeemer to wallets
-    }
-
-    /** [check]s first, as callers must, then redeems. */
-    private suspend fun GiftCardRedeemer.checkAndRedeem(
-        destination: Synchronizer? = null
-    ): GiftCardRedeemer.Redemption {
-        assertIs<GiftCardRedeemer.Status.Ready>(check())
-        return redeem(recipient(), destination = destination)
-    }
+    private val endpoint = GIFT_CARD_TEST_ENDPOINT
 
     @Test
     fun defaultAliasIsValidUniquePerCardAndNeverTheDefault() {
@@ -275,6 +109,7 @@ class GiftCardRedeemerTest {
         }
     }
 
+    /** The issuer can rederive the card's key, so the sweep must not be decryptable with it. */
     @Test
     fun redeemWithADestinationRecordsTheSubmittedClaimThereAsTrusted() =
         runBlocking {
@@ -292,7 +127,6 @@ class GiftCardRedeemerTest {
             assertEquals(1, destination.recorded.size)
             assertTrue(claim.raw.byteArray.contentEquals(destination.recorded.single().first))
             assertTrue(claim.txId.byteArray.contentEquals(destination.recorded.single().second))
-            // The issuer can rederive the card's key, so the sweep must not be decryptable with it.
             assertEquals(OvkPolicy.Discard, cardWallet.ovkPolicy)
             assertEquals(listOf(claim), cardWallet.submitted)
         }
@@ -329,6 +163,7 @@ class GiftCardRedeemerTest {
             assertTrue(destination.recorded.isEmpty())
         }
 
+    /** What did reach the network is recorded, and nothing else. */
     @Test
     fun onlySubmittedTransactionsAreRecordedAndLaterOnesAreNotAttemptedAfterAFailure() =
         runBlocking {
@@ -358,7 +193,6 @@ class GiftCardRedeemerTest {
             )
             assertFalse(redemption.isSubmitted)
             assertEquals(listOf(first, second), cardWallet.submitted)
-            // What did reach the network is recorded, and nothing else.
             assertEquals(1, destination.recorded.size)
             assertTrue(first.txId.byteArray.contentEquals(destination.recorded.single().second))
             assertTrue(redemption.recordedInDestination)
@@ -396,12 +230,12 @@ class GiftCardRedeemerTest {
             assertEquals(listOf(redeemer.alias, redeemer.alias), wallets.erased)
         }
 
+    /** Transparent funds cannot be swept by a shielded send-max and are not reported. */
     @Test
     fun mapsBalancesToStatus() {
         val empty = AccountBalance(pool(), pool(), pool(), Zatoshi(0))
         assertEquals(GiftCardRedeemer.Status.Empty, empty.toGiftCardBalance().toStatus())
 
-        // Transparent funds cannot be swept by a shielded send-max and are not reported.
         val transparentOnly = AccountBalance(pool(), pool(), pool(), Zatoshi(5_000))
         assertEquals(GiftCardRedeemer.Status.Empty, transparentOnly.toGiftCardBalance().toStatus())
 
@@ -417,19 +251,20 @@ class GiftCardRedeemerTest {
             AccountBalance(pool(), pool(available = 10_000), pool(available = 1_000_000, pending = 5), Zatoshi(0))
         assertEquals(
             GiftCardRedeemer.Status.Ready(
-                GiftCardRedeemer.Balance(Zatoshi(1_010_005), Zatoshi(1_010_000), Zatoshi(5))
+                GiftCardRedeemer.Balance(Zatoshi(1_010_005), Zatoshi(1_010_000), Zatoshi(5)),
+                GiftCardRedeemer.MINIMUM_FEE
             ),
             ready.toGiftCardBalance().toStatus()
         )
     }
 
+    /** Dust that is spendable now plus funds still confirming is pending: wait for them. */
     @Test
     fun aCardHoldingNoMoreThanTheFeeIsEmptyAndOneAboveItIsReady() {
         assertEquals(10_000, GiftCardRedeemer.MINIMUM_FEE.value)
         assertEquals(GiftCardRedeemer.Status.Empty, balance(available = 10_000).toGiftCardBalance().toStatus())
         assertEquals(GiftCardRedeemer.Status.Empty, balance(pending = 10_000).toGiftCardBalance().toStatus())
         assertIs<GiftCardRedeemer.Status.Ready>(balance(available = 10_001).toGiftCardBalance().toStatus())
-        // Dust that is spendable now plus funds still confirming: wait for them.
         assertIs<GiftCardRedeemer.Status.Pending>(
             balance(available = 5_000, pending = 1_000_000).toGiftCardBalance().toStatus()
         )
@@ -472,6 +307,7 @@ class GiftCardRedeemerTest {
             assertSame(failure, thrown.cause)
         }
 
+    /** The card is not checked, so redeeming is refused rather than attempted on a missing wallet. */
     @Test
     fun aWalletCreationFailureIsReportedAsSyncFailed() =
         runBlocking<Unit> {
@@ -481,7 +317,6 @@ class GiftCardRedeemerTest {
 
             val thrown = assertFailsWith<GiftCardException.SyncFailed> { redeemer.check() }
             assertSame(failure, thrown.cause)
-            // Not checked, so redeeming is refused rather than attempted on a missing wallet.
             assertFailsWith<GiftCardException.NotChecked> { redeemer.redeem(recipient()) }
         }
 
@@ -496,6 +331,7 @@ class GiftCardRedeemerTest {
             }
         }
 
+    /** The refused redeemer neither erases the wallet in use nor erases it when closed. */
     @Test
     fun aSecondRedeemerForTheSameCardIsRefusedUntilTheFirstIsClosed() =
         runBlocking {
@@ -507,7 +343,6 @@ class GiftCardRedeemerTest {
 
             firstRedeemer.check()
             assertFailsWith<GiftCardException.InUse> { secondRedeemer.check() }
-            // The refused redeemer neither erased the wallet in use nor erases it when closed.
             secondRedeemer.close()
             assertTrue(secondWallets.erased.isEmpty())
             assertFalse(first.closed)
@@ -519,6 +354,312 @@ class GiftCardRedeemerTest {
             assertIs<GiftCardRedeemer.Status.Ready>(thirdRedeemer.check())
             thirdRedeemer.close()
         }
+
+    @Test
+    fun readyCarriesTheFeeTheCardsNotesRequireAndTheAmountARedemptionSends() =
+        runBlocking {
+            val claim = createdTransaction("claim")
+            val cardWallet = FakeCardWallet(listOf(claim), fee = Zatoshi(25_000))
+            val (redeemer, _) = redeemer(cardWallet)
+
+            val ready = assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+
+            assertEquals(Zatoshi(25_000), ready.fee)
+            assertEquals(Zatoshi(975_000), ready.redeemable)
+            assertEquals(Zatoshi(975_000), redeemer.redeem(recipient()).amount)
+        }
+
+    @Test
+    fun aCardWhoseNotesNeedMoreThanItHoldsIsNotReady() =
+        runBlocking<Unit> {
+            val empty = FakeCardWallet(emptyList(), spendable = 15_000, fee = Zatoshi(20_000))
+            assertEquals(GiftCardRedeemer.Status.Empty, redeemer(empty).first.check())
+
+            val failure = TransactionEncoderException.InsufficientFundsException(RuntimeException())
+            val pending =
+                FakeCardWallet(emptyList(), spendable = 15_000, pending = 50_000, proposalFailure = failure)
+            assertIs<GiftCardRedeemer.Status.Pending>(redeemer(pending).first.check())
+        }
+
+    @Test
+    fun closeCancelsACheckInProgressAndReturnsPromptly() =
+        runBlocking<Unit> {
+            val syncing = MutableStateFlow(Synchronizer.Status.SYNCING)
+            val cardWallet = FakeCardWallet(emptyList(), status = syncing)
+            val (redeemer, wallets) = redeemer(cardWallet)
+
+            val check = async { runCatching { redeemer.check() } }
+            wallets.opened.await()
+            withTimeout(5.seconds) { redeemer.close() }
+
+            assertIs<GiftCardException.Closed>(check.await().exceptionOrNull())
+            assertTrue(cardWallet.closed)
+            assertEquals(listOf(redeemer.alias, redeemer.alias), wallets.erased)
+            assertFailsWith<GiftCardException.Closed> { redeemer.check() }
+        }
+
+    /**
+     * The handler is called while the card wallet is still being opened, i.e. before it could
+     * have been installed on a running synchronizer. The error is looked for along the cause
+     * chain: with assertions on, coroutines' stack trace recovery wraps the thrown exception in a
+     * copy of itself.
+     */
+    @Test
+    fun aCriticalErrorWhileTheCardWalletStartsFailsTheCheck() =
+        runBlocking<Unit> {
+            val error = IllegalStateException("critical")
+            val syncing = MutableStateFlow(Synchronizer.Status.SYNCING)
+            val cardWallet = FakeCardWallet(emptyList(), status = syncing)
+            val wallets = FakeWallets(listOf(cardWallet), onOpen = { handler -> handler(error) })
+            val (redeemer, _) = redeemer(cardWallet, wallets = wallets)
+
+            val thrown = withTimeout(5.seconds) { assertFailsWith<GiftCardException.SyncFailed> { redeemer.check() } }
+            assertTrue(generateSequence(thrown.cause) { it.cause }.any { it === error })
+        }
+
+    @Test
+    fun aCardWalletThatStaysDisconnectedFailsTheCheckBeforeTheTimeout() =
+        runBlocking<Unit> {
+            val disconnected = MutableStateFlow(Synchronizer.Status.DISCONNECTED)
+            val cardWallet = FakeCardWallet(emptyList(), status = disconnected)
+            val (redeemer, _) = redeemer(cardWallet)
+
+            withTimeout(5.seconds) {
+                assertFailsWith<GiftCardException.SyncFailed> {
+                    redeemer.check(timeout = 1.seconds * 600, disconnectedTimeout = 50.milliseconds)
+                }
+            }
+        }
+
+    @Test
+    fun aBriefDisconnectionDoesNotFailTheCheck() =
+        runBlocking<Unit> {
+            val reconnecting =
+                flow {
+                    emit(Synchronizer.Status.DISCONNECTED)
+                    delay(20.milliseconds)
+                    emit(Synchronizer.Status.SYNCED)
+                    awaitCancellation()
+                }
+            val cardWallet = FakeCardWallet(emptyList(), status = reconnecting)
+            val (redeemer, _) = redeemer(cardWallet)
+
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check(disconnectedTimeout = 5.seconds))
+        }
+
+    @Test
+    fun anExactBirthdayScanThatFindsNothingIsRetriedFromTheCheckpoint() =
+        runBlocking {
+            val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
+            val funded = FakeCardWallet(emptyList())
+            val wallets = FakeWallets(listOf(nothing, funded))
+            val (redeemer, _) = redeemer(nothing, wallets = wallets)
+
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+
+            assertEquals(listOf(true, false), wallets.exactBirthdays)
+            assertTrue(nothing.closed)
+        }
+
+    @Test
+    fun aRedeemedCardIsEmptyWithoutARescan() =
+        runBlocking {
+            val redeemed = FakeCardWallet(emptyList(), spendable = 0, history = 2)
+            val wallets = FakeWallets(listOf(redeemed))
+            val (redeemer, _) = redeemer(redeemed, wallets = wallets)
+
+            assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
+
+            assertEquals(listOf(true), wallets.exactBirthdays)
+            assertFalse(redeemed.closed)
+        }
+
+    @Test
+    fun aCheckpointScanThatFindsNothingIsEmpty() =
+        runBlocking {
+            val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
+            val wallets = FakeWallets(listOf(nothing))
+            val (redeemer, _) = redeemer(nothing, wallets = wallets)
+
+            assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
+            assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
+
+            assertEquals(listOf(true, false), wallets.exactBirthdays)
+        }
+
+    @Test
+    fun aCheckThatDoesNotSyncInTimeFailsAndLeavesTheCardUnchecked() =
+        runBlocking<Unit> {
+            val cardWallet = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.SYNCING))
+            val (redeemer, _) = redeemer(cardWallet)
+
+            val thrown =
+                withTimeout(5.seconds) {
+                    assertFailsWith<GiftCardException.SyncFailed> { redeemer.check(timeout = 50.milliseconds) }
+                }
+
+            assertTrue(generateSequence<Throwable>(thrown) { it.cause }.all { it is GiftCardException.SyncFailed })
+            assertFailsWith<GiftCardException.NotChecked> { redeemer.redeem(recipient()) }
+            assertFalse(cardWallet.proposed)
+        }
+
+    @Test
+    fun aStoppedCardWalletFailsTheCheckAtOnce() =
+        runBlocking<Unit> {
+            val cardWallet = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.STOPPED))
+            val (redeemer, _) = redeemer(cardWallet)
+
+            withTimeout(5.seconds) { assertFailsWith<GiftCardException.SyncFailed> { redeemer.check() } }
+        }
+
+    @Test
+    fun aSyncedCardWalletIsWaitedForUntilItReportsTheAccountsBalance() =
+        runBlocking<Unit> {
+            val cardWallet = FakeCardWallet(emptyList())
+            val balances = cardWallet.walletBalances.value
+            cardWallet.walletBalances.value = null
+            val (redeemer, wallets) = redeemer(cardWallet)
+
+            val check = async { redeemer.check() }
+            wallets.opened.await()
+            delay(50.milliseconds)
+            cardWallet.walletBalances.value = emptyMap()
+            delay(50.milliseconds)
+            assertFalse(check.isCompleted)
+            cardWallet.walletBalances.value = balances
+
+            assertIs<GiftCardRedeemer.Status.Ready>(withTimeout(5.seconds) { check.await() })
+        }
+
+    @Test
+    fun aFailingFeeProbeFailsTheCheckWithItsCause() =
+        runBlocking<Unit> {
+            val failure = IllegalStateException("backend")
+            val cardWallet = FakeCardWallet(emptyList(), proposalFailure = failure)
+            val (redeemer, _) = redeemer(cardWallet)
+
+            val thrown = assertFailsWith<GiftCardException.SyncFailed> { redeemer.check() }
+
+            assertTrue(generateSequence(thrown.cause) { it.cause }.any { it === failure })
+        }
+
+    @Test
+    fun aGiftCardFailureWhileOpeningTheWalletIsReportedAsItIs() =
+        runBlocking<Unit> {
+            val cardWallet = FakeCardWallet(emptyList())
+            val wallets = FakeWallets(cardWallet, openFailure = GiftCardException.InUse())
+            val (redeemer, _) = redeemer(cardWallet, wallets = wallets)
+
+            assertFailsWith<GiftCardException.InUse> { redeemer.check() }
+        }
+
+    @Test
+    fun onlyTheFirstCriticalErrorIsReported() =
+        runBlocking<Unit> {
+            val first = IllegalStateException("first")
+            val second = IllegalStateException("second")
+            val cardWallet = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.SYNCING))
+            val wallets =
+                FakeWallets(
+                    listOf(cardWallet),
+                    onOpen = { handler ->
+                        assertFalse(handler(first))
+                        assertFalse(handler(second))
+                    }
+                )
+            val (redeemer, _) = redeemer(cardWallet, wallets = wallets)
+
+            val thrown = withTimeout(5.seconds) { assertFailsWith<GiftCardException.SyncFailed> { redeemer.check() } }
+
+            val causes = generateSequence(thrown.cause) { it.cause }.toList()
+            assertTrue(causes.any { it === first })
+            assertFalse(causes.any { it === second })
+        }
+
+    @Test
+    fun redeemRejectsAnAddressOnAnotherNetworkBeforeTouchingTheCardWallet() =
+        runBlocking<Unit> {
+            val cardWallet = FakeCardWallet(emptyList())
+            val (redeemer, _) = redeemer(cardWallet)
+            redeemer.check()
+            cardWallet.proposed = false
+
+            assertFailsWith<GiftCardException.NetworkMismatch> {
+                redeemer.redeem(recipient(network = ZcashNetwork.Testnet))
+            }
+            assertFalse(cardWallet.proposed)
+            assertTrue(cardWallet.submitted.isEmpty())
+        }
+
+    @Test
+    fun aBalanceNoLongerReportedForTheAccountIsNothingToRedeem() =
+        runBlocking<Unit> {
+            listOf(null, emptyMap<AccountUuid, AccountBalance>()).forEach { reported ->
+                val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
+                val (redeemer, _) = redeemer(cardWallet)
+                redeemer.check()
+                cardWallet.proposed = false
+                cardWallet.walletBalances.value = reported
+
+                assertFailsWith<GiftCardException.NothingToRedeem> { redeemer.redeem(recipient()) }
+                assertFalse(cardWallet.proposed)
+                assertTrue(cardWallet.submitted.isEmpty())
+            }
+        }
+
+    @Test
+    fun aRedemptionWhoseFeeTakesTheWholeBalanceReportsNoAmount() =
+        runBlocking {
+            val claim = createdTransaction("claim")
+            val cardWallet = FakeCardWallet(listOf(claim))
+            val (redeemer, _) = redeemer(cardWallet)
+            redeemer.check()
+            cardWallet.fee = Zatoshi(1_000_000)
+
+            val redemption = redeemer.redeem(recipient())
+
+            assertEquals(Zatoshi(1_000_000), redemption.fee)
+            assertNull(redemption.amount)
+        }
+
+    @Test
+    fun nothingIsRecordedInTheDestinationWhenNoTransactionWasAccepted() =
+        runBlocking {
+            val claim = createdTransaction("claim")
+            val cardWallet = FakeCardWallet(listOf(claim)) { rejected(it) }
+            val (redeemer, _) = redeemer(cardWallet)
+            val destination = FakeDestination()
+
+            val redemption = redeemer.checkAndRedeem(destination)
+
+            assertFalse(redemption.isSubmitted)
+            assertFalse(redemption.recordedInDestination)
+            assertTrue(destination.recorded.isEmpty())
+            assertEquals(listOf(claim), cardWallet.submitted)
+        }
+
+    @Test
+    fun aCancellationWhileRecordingInTheDestinationIsNotSwallowed() =
+        runBlocking<Unit> {
+            val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
+            val (redeemer, _) = redeemer(cardWallet)
+            val destination = FakeDestination(failure = CancellationException("recording"))
+
+            assertFailsWith<CancellationException> { redeemer.checkAndRedeem(destination) }
+        }
+
+    @Test
+    fun aRedemptionIsByDefaultNotRecordedAndOfUnknownAmount() {
+        val txId = FirstClassByteArray("txid".toByteArray())
+        val accepted = GiftCardRedeemer.Redemption(Zatoshi(10_000), listOf(TransactionSubmitResult.Success(txId)))
+        val notAttempted =
+            GiftCardRedeemer.Redemption(Zatoshi(10_000), listOf(TransactionSubmitResult.NotAttempted(txId)))
+
+        assertFalse(accepted.recordedInDestination)
+        assertNull(accepted.amount)
+        assertTrue(accepted.isSubmitted)
+        assertFalse(notAttempted.isSubmitted)
+    }
 
     private companion object {
         fun pool(

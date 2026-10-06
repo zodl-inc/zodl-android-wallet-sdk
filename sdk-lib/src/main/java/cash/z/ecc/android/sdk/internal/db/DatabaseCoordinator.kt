@@ -11,6 +11,7 @@ import cash.z.ecc.android.sdk.internal.ext.deleteRecursivelySuspend
 import cash.z.ecc.android.sdk.internal.ext.deleteSuspend
 import cash.z.ecc.android.sdk.internal.ext.existsSuspend
 import cash.z.ecc.android.sdk.internal.ext.getDatabasePathSuspend
+import cash.z.ecc.android.sdk.internal.ext.listFilesSuspend
 import cash.z.ecc.android.sdk.internal.ext.renameToSuspend
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import kotlinx.coroutines.sync.Mutex
@@ -56,15 +57,43 @@ internal class DatabaseCoordinator private constructor(
 
         const val DATABASE_FILE_JOURNAL_SUFFIX = "journal" // $NON-NLS
         const val DATABASE_FILE_WAL_SUFFIX = "wal" // $NON-NLS
-        const val DATABASE_FILE_SHM_SUFFIX = "shm" // $NON-NLS
+        const val DATABASE_FILE_SHM_SUFFIX = "shm"
 
         @VisibleForTesting
         internal const val ALIAS_LEGACY = "ZcashSdk" // $NON-NLS
+
+        private val DATABASE_FILE_SUFFIXES =
+            listOf(DATABASE_FILE_JOURNAL_SUFFIX, DATABASE_FILE_WAL_SUFFIX, DATABASE_FILE_SHM_SUFFIX)
 
         private val lazy =
             LazyWithArgument<Context, DatabaseCoordinator> { DatabaseCoordinator(it) }
 
         fun getInstance(context: Context) = lazy.getInstance(context)
+
+        /**
+         * The aliases, among those starting with [aliasPrefix] and longer than it, of the wallets on [network] whose
+         * data database, compact block cache or pending transactions database is among [fileNames], the names of the
+         * files in the preferred (no backup) location. [storedAliases] without the file system.
+         */
+        @VisibleForTesting
+        internal fun aliasesAmong(
+            fileNames: List<String>,
+            network: ZcashNetwork,
+            aliasPrefix: String
+        ): Set<String> {
+            val suffixes =
+                listOf(DB_DATA_NAME, DB_FS_BLOCK_DB_ROOT_NAME, DB_PENDING_TRANSACTIONS_NAME).map {
+                    "_${network.networkName}_$it"
+                }
+            return fileNames
+                .filter { it.startsWith(aliasPrefix) }
+                .mapNotNull { name ->
+                    val base =
+                        DATABASE_FILE_SUFFIXES.fold(name) { current, suffix -> current.removeSuffix("-$suffix") }
+                    suffixes.firstOrNull { base.endsWith(it) }?.let { base.removeSuffix(it) }
+                }.filter { it.length > aliasPrefix.length }
+                .toSet()
+        }
     }
 
     /**
@@ -207,6 +236,23 @@ internal class DatabaseCoordinator private constructor(
         deleteFileMutex.withLock {
             return deleteDatabase(pendingTransactionsDbFile(network, alias))
         }
+    }
+
+    /**
+     * Returns the aliases, among those starting with [aliasPrefix], that have any data of a wallet on [network]
+     * stored on the device: a data database, a compact block cache or a pending transactions database in the
+     * preferred (no backup) location.
+     *
+     * @param network the network of the wallets to look for
+     * @param aliasPrefix the prefix the returned aliases start with; must not be empty
+     */
+    internal suspend fun storedAliases(
+        network: ZcashNetwork,
+        aliasPrefix: String
+    ): Set<String> {
+        require(aliasPrefix.isNotEmpty()) { "An alias prefix is required" }
+        val names = Files.getZcashNoBackupSubdirectory(applicationContext).listFilesSuspend()?.map { it.name }
+        return aliasesAmong(names.orEmpty(), network, aliasPrefix)
     }
 
     /**
@@ -427,16 +473,15 @@ internal class DatabaseCoordinator private constructor(
     }
 
     /**
-     * Delete a database and its potential journal and wal file at the given path.
+     * Delete a database and its potential journal, wal and shared-memory files at the given path.
      *
      * The rollback journal (or newer wal) file is a temporary file used to implement atomic commit
-     * and rollback capabilities in SQLite.
+     * and rollback capabilities in SQLite. The companion files are deleted whether or not they exist.
      *
      * @param file the path of the db to erase.
      * @return true when a file exists at the given path and was deleted.
      */
     private suspend fun deleteDatabase(file: File): Boolean {
-        // Just try the journal, wal and shared-memory files too. Doesn't matter if they're not there.
         File("${file.absolutePath}-$DATABASE_FILE_JOURNAL_SUFFIX").deleteSuspend()
         File("${file.absolutePath}-$DATABASE_FILE_WAL_SUFFIX").deleteSuspend()
         File("${file.absolutePath}-$DATABASE_FILE_SHM_SUFFIX").deleteSuspend()

@@ -35,10 +35,12 @@ class TransactionStateTest {
         assertEquals(TransactionState.Confirmed, stateAt(confirmations = UNTRUSTED, isSent = true, isTrusted = true))
     }
 
+    /**
+     * librustzcash `ConfirmationsPolicy::default()`; the Rust backend applies the same numbers to balances, so a
+     * trusted receive must not read Confirmed before it is spendable.
+     */
     @Test
     fun policy_matches_zip_315_defaults() {
-        // librustzcash `ConfirmationsPolicy::default()`; the Rust backend applies the same numbers
-        // to balances, so a trusted receive must not read Confirmed before it is spendable.
         assertEquals(3, TRUSTED)
         assertEquals(10, UNTRUSTED)
     }

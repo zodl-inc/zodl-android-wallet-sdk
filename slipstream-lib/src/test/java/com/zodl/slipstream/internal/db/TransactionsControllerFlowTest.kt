@@ -24,7 +24,9 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * [TransactionsController]'s flow wiring, against a fake row source and a mocked engine whose
@@ -61,24 +63,24 @@ class TransactionsControllerFlowTest {
         return TransactionsController(rows(trustStatus), engine, backend)
     }
 
+    /** Only the tip moves: no requery tick, so no new row read. */
     @Test
     fun tip_advance_without_a_requery_tick_confirms_a_received_transaction() =
         withEmissions(controller(maxScannedHeight = null).allTransactions, tip = MINED + 3) { emissions ->
             assertEquals(TransactionState.Pending, emissions.nextState())
 
-            // Only the tip moves - no requery tick, so no new row read.
             networkHeight.value = BlockHeight.new(MINED + 9)
             assertEquals(TransactionState.Confirmed, emissions.nextState())
             assertEquals(1, queries.get(), "a tip change must re-map the rows, not re-read them")
         }
 
+    /** Starts at `TRUSTED - 1` confirmations. */
     @Test
     fun tip_advance_confirms_a_trusted_receive_at_the_trusted_count() =
         withEmissions(
             controller(maxScannedHeight = null, trustStatus = 1L).allTransactions,
             tip = MINED + TRUSTED - 2
         ) { emissions ->
-            // TRUSTED - 1 confirmations.
             assertEquals(TransactionState.Pending, emissions.nextState())
 
             networkHeight.value = BlockHeight.new(MINED + TRUSTED - 1)
@@ -86,10 +88,10 @@ class TransactionsControllerFlowTest {
             assertEquals(1, queries.get(), "a tip change must re-map the rows, not re-read them")
         }
 
+    /** Starts at `TRUSTED` confirmations: not enough for an untrusted receive. */
     @Test
     fun tip_advance_keeps_an_untrusted_receive_pending_until_the_untrusted_count() =
         withEmissions(controller(maxScannedHeight = null).allTransactions, tip = MINED + TRUSTED - 1) { emissions ->
-            // TRUSTED confirmations: not enough for an untrusted receive.
             assertEquals(TransactionState.Pending, emissions.nextState())
 
             networkHeight.value = BlockHeight.new(MINED + UNTRUSTED - 2)
@@ -121,13 +123,13 @@ class TransactionsControllerFlowTest {
             assertEquals(TransactionState.Confirmed, emissions.nextState())
         }
 
+    /** A tip that lags what the wallet has already scanned must not under-count. */
     @Test
     fun stale_seeded_tip_is_lifted_to_the_scanned_height() =
         withEmissions(
             controller(maxScannedHeight = BlockHeight.new(MINED + 9)).allTransactions,
             tip = MINED + 3
         ) { emissions ->
-            // A tip that lags what the wallet has already scanned must not under-count.
             assertEquals(TransactionState.Confirmed, emissions.nextState())
         }
 
@@ -141,6 +143,65 @@ class TransactionsControllerFlowTest {
         }
 
     @Test
+    fun a_live_tip_spares_the_scanned_height_read_on_tip_changes() {
+        val reads = AtomicInteger(0)
+        lastSnapshot.value = snapshot(chainTip = MINED + 3)
+        withEmissions(countingController(BlockHeight.new(MINED + 3), reads).allTransactions, tip = MINED + 3) {
+            assertEquals(TransactionState.Pending, it.nextState())
+
+            lastSnapshot.value = snapshot(chainTip = MINED + 9)
+            networkHeight.value = BlockHeight.new(MINED + 9)
+            assertEquals(TransactionState.Confirmed, it.nextState())
+            assertEquals(1, reads.get(), "only the first computation reads the scanned height under a known live tip")
+        }
+    }
+
+    @Test
+    fun a_stale_low_live_tip_on_the_first_computation_is_lifted_to_the_scanned_height() {
+        val reads = AtomicInteger(0)
+        lastSnapshot.value = snapshot(chainTip = MINED + 3)
+        withEmissions(countingController(BlockHeight.new(MINED + 9), reads).allTransactions, tip = MINED + 3) {
+            assertEquals(TransactionState.Confirmed, it.nextState())
+            assertEquals(1, reads.get())
+        }
+    }
+
+    @Test
+    fun an_unknown_live_tip_reads_the_scanned_height_on_every_tip_change() {
+        val reads = AtomicInteger(0)
+        withEmissions(countingController(null, reads).allTransactions, tip = MINED + 3) {
+            assertEquals(TransactionState.Pending, it.nextState())
+
+            networkHeight.value = BlockHeight.new(MINED + 9)
+            assertEquals(TransactionState.Confirmed, it.nextState())
+            assertEquals(2, reads.get())
+        }
+    }
+
+    @Test
+    fun a_live_tip_below_the_last_height_used_reads_the_scanned_height_again() {
+        val reads = AtomicInteger(0)
+        lastSnapshot.value = snapshot(chainTip = MINED + 3)
+        withEmissions(countingController(BlockHeight.new(MINED + 3), reads).allTransactions, tip = MINED + 9) {
+            assertEquals(TransactionState.Confirmed, it.nextState())
+            assertEquals(1, reads.get())
+
+            networkHeight.value = BlockHeight.new(MINED + 10)
+            assertEquals(TransactionState.Confirmed, it.nextState())
+            assertEquals(2, reads.get(), "a live tip below the height used last may be stale")
+        }
+    }
+
+    @Test
+    fun needs_scanned_height_first_and_without_a_trustworthy_live_tip() {
+        assertTrue(needsScannedHeight(liveChainTip = null, lastResolved = null))
+        assertTrue(needsScannedHeight(liveChainTip = null, lastResolved = BlockHeight.new(10)))
+        assertTrue(needsScannedHeight(liveChainTip = BlockHeight.new(10), lastResolved = null))
+        assertFalse(needsScannedHeight(liveChainTip = BlockHeight.new(10), lastResolved = BlockHeight.new(10)))
+        assertTrue(needsScannedHeight(liveChainTip = BlockHeight.new(9), lastResolved = BlockHeight.new(10)))
+    }
+
+    @Test
     fun resolve_latest_height_takes_the_highest_known_reading() {
         assertNull(resolveLatestHeight(null, null, null))
         assertEquals(BlockHeight.new(10), resolveLatestHeight(0L, null, BlockHeight.new(10)))
@@ -148,6 +209,23 @@ class TransactionsControllerFlowTest {
         assertEquals(BlockHeight.new(13), resolveLatestHeight(12L, BlockHeight.new(13), BlockHeight.new(10)))
         assertEquals(BlockHeight.new(14), resolveLatestHeight(12L, BlockHeight.new(13), BlockHeight.new(14)))
     }
+
+    private fun countingController(
+        maxScannedHeight: BlockHeight?,
+        reads: AtomicInteger
+    ): TransactionsController {
+        val backend =
+            object : TypesafeBackend by mock(TypesafeBackend::class.java) {
+                override suspend fun getMaxScannedHeight(): BlockHeight? {
+                    reads.incrementAndGet()
+                    return maxScannedHeight
+                }
+            }
+        return TransactionsController(rows(trustStatus = null), engine, backend)
+    }
+
+    private fun snapshot(chainTip: Long) =
+        SlipstreamSnapshot(chainTip, 0, 0, 0, 0, 1, 0, false, 0, false, 0, 0, false, 0)
 
     /** Publishes [tip] BEFORE collecting, so the first emission is deterministic. */
     private fun withEmissions(

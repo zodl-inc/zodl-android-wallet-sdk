@@ -55,9 +55,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Synchronizer.recordTrustedTransaction(rawTransaction: RawTransaction, txId: TransactionId)`,
   which stores a transaction that was created on this device by another wallet and marks it as
   trusted (ZIP 315). It writes to the wallet database directly and works while the
-  synchronizer is not synced or is stopped. Use it only for a transaction whose inputs nobody
-  else can spend before they reach the untrusted confirmation count, such as a gift card
-  claim: trusting anything else lets the wallet spend funds a rollback can take back. The
+  synchronizer is not synced or is stopped. Use it only for a transaction whose inputs no
+  untrusted party can still spend, such as the claim of a gift card from a trusted issuer: the
+  issuer of a card still holds its key, so a reorg deep enough to drop the claim (the trusted
+  count, 3 blocks) would let the issuer get a competing spend mined, and trusting anything else
+  lets the wallet spend funds a rollback can take back. The
   default implementation throws `UnsupportedOperationException`; the SDK's default
   synchronizer and the Slipstream synchronizer implement it.
 - `Synchronizer.proposeSendMax(account, recipient, memo = null)`, which proposes sending the
@@ -69,6 +71,33 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error, so it does not depend on the wording of its message. The default implementation throws
   `UnsupportedOperationException`; the SDK's default synchronizer implements it, the
   Slipstream synchronizer does not yet.
+- `GiftCardRedeemer.Status.Ready` carries `fee`, the ZIP 317 fee a redemption pays for the
+  card's actual notes, and `redeemable`, the spendable balance minus that fee. `check()`
+  proposes the redemption to find that fee, so a card whose notes need more than the
+  10,000 zatoshi minimum fee is reported `Pending` or `Empty` rather than `Ready`, and a
+  `Ready` card can always be redeemed. `GiftCardRedeemer.Redemption.amount` is what the
+  redemption sent to the recipient, after the fee, as the proposal computed it.
+- `GiftCardRedeemer.check(timeout, disconnectedTimeout)`: the check fails with
+  `GiftCardException.SyncFailed` once the card wallet has stayed unable to reach the server
+  for `disconnectedTimeout` (default `GiftCardRedeemer.DEFAULT_DISCONNECTED_TIMEOUT`, 60
+  seconds, or `GiftCardRedeemer.DEFAULT_TOR_DISCONNECTED_TIMEOUT`, 2 minutes, over Tor), and
+  as soon as the card wallet reports a critical error, instead of waiting for the whole
+  `timeout`. Failing to reach the server while the card wallet starts counts as being
+  disconnected, not as a critical error. A card wallet that started exactly at the card's
+  birthday and found no transaction at all is scanned once more from the bundled checkpoint
+  below the birthday before the card is reported `Empty`. A cancellation from inside the
+  check, while its caller is not cancelled, fails it with `GiftCardException.SyncFailed`.
+- `GiftCardRedeemer.redeem` reports a submission that throws as a
+  `TransactionSubmitResult.Failure` with `GiftCardRedeemer.SUBMIT_THREW_CODE`, so every
+  redemption whose transaction was created returns a `Redemption`; close the redeemer and
+  start over with a new one to retry.
+- `GiftCardRedeemer.close()` cancels a `check()` in progress (which then fails with
+  `GiftCardException.Closed`), so it returns promptly instead of waiting for the sync.
+- `GiftCardRedeemer.storedAliases(context, network)`, the aliases of the card wallets whose
+  data is stored on the device, to erase with `Synchronizer.eraseAlias` those left behind by a
+  redeemer that was never closed (for example when the app was killed).
+- `GiftCard.wipe()`, which overwrites the card's key in memory once every redeemer for the card
+  has been closed.
 - `RecipientAddress`, a unified, Sapling, transparent or TEX address validated for a network
   by the Rust backend (`RecipientAddress.new(encoding, network)`), taken by `proposeSendMax`
   and `GiftCardRedeemer.redeem`.

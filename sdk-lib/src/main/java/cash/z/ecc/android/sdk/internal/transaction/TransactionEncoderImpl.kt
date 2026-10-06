@@ -162,7 +162,10 @@ internal class TransactionEncoderImpl(
         return runCatching {
             backend.proposeSendMaxTransfer(account, recipient, memo)
         }.onSuccess {
-            Twig.info { "Result of proposeSendMax: ${it.toPrettyString()}" }
+            Twig.info {
+                "Result of proposeSendMax: ${it.transactionCount()} transaction(s), " +
+                    "total fee ${it.totalFeeRequired().value} zatoshi"
+            }
         }.onFailure {
             Twig.error { "Caught exception while creating the send-max proposal." }
         }.getOrElse {
@@ -171,6 +174,10 @@ internal class TransactionEncoderImpl(
         }
     }
 
+    /**
+     * The Sapling parameters (about 50 MB) are fetched only when [proposal] needs Sapling proofs: a
+     * proposal without Sapling spends or outputs builds without them.
+     */
     @Throws(
         TransactionEncoderException.AnchorNotFoundException::class,
         TransactionEncoderException.TransactionNotCreatedException::class,
@@ -187,8 +194,6 @@ internal class TransactionEncoderImpl(
 
         val transactionIds =
             runCatching {
-                // The Sapling parameters (about 50 MB) are only needed to prove Sapling spends
-                // and outputs; a proposal without any builds without them.
                 if (backend.proposalRequiresSaplingProofs(proposal)) {
                     saplingParamFetcher.forceDownload()
                     Twig.debug { "params exist! attempting to send..." }

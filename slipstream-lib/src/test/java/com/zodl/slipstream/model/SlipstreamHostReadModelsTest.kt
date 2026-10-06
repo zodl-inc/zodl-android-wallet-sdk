@@ -10,6 +10,11 @@ import kotlin.test.assertEquals
  * `backend-lib`'s `JniVotingModelsTest`).
  */
 class SlipstreamHostReadModelsTest {
+    /**
+     * The last three parameters, `spentNoteCount`, `poolCrossingValue` and `trustStatus`, were appended in that
+     * order when `listTransactions` started projecting them; `TX_ROW_CTOR` gained `ILjava/lang/Long;Ljava/lang/Long;`
+     * then.
+     */
     @Test
     fun transaction_row_constructor_matches_rust_jni_signature() {
         val constructor =
@@ -33,9 +38,6 @@ class SlipstreamHostReadModelsTest {
                 // `zip318Kind`, appended when this branch started projecting `zip318_kind` out of
                 // `v_transactions`; `host_read.rs`'s `TX_ROW_CTOR` gained the trailing `I` then.
                 Int::class.javaPrimitiveType,
-                // `spentNoteCount`, `poolCrossingValue`, `trustStatus`, appended (in that order)
-                // when `listTransactions` started projecting them; `TX_ROW_CTOR` gained
-                // `ILjava/lang/Long;Ljava/lang/Long;` then.
                 Int::class.javaPrimitiveType,
                 Long::class.javaObjectType,
                 Long::class.javaObjectType

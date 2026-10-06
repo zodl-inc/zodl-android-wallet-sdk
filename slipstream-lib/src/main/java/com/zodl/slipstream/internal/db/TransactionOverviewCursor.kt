@@ -29,6 +29,11 @@ internal object TransactionOverviewCursor {
      * [nowEpochSeconds] is a parameter rather than an internal `System.currentTimeMillis()` read
      * specifically to preserve that purity/determinism for tests.
      *
+     * The note counts, pool-crossing value and trust status are projected from `v_transactions`
+     * by `host_read.rs`'s `listTransactions`, the same columns the SDK's own `AllTransactionView`
+     * reads. Only an explicit `trust_status = 1` is trusted (that view's rule); NULL (never set,
+     * or a migration-pending row) and 0 read as untrusted.
+     *
      * @param latestHeight the engine snapshot's `chainTip` at query time (the adapter's twin of
      *   the upstream SDK folding `processor.networkHeight` into the flow,
      *   `SdkSynchronizer.kt:360-374`); 0 or unknown -> pass `null`.
@@ -41,8 +46,6 @@ internal object TransactionOverviewCursor {
         val minedBlockHeight = row.minedHeight?.let(BlockHeight::new)
         val expiryBlockHeight = row.expiryHeight?.takeIf { it != 0L }?.let(BlockHeight::new)
         val isSent = row.accountBalanceDelta < 0
-        // Only an explicit `trust_status = 1` is trusted (the rule of the SDK's own
-        // `AllTransactionView`); NULL (never set, or a migration-pending row) and 0 read as untrusted.
         val isTrusted = row.trustStatus == 1L
 
         val transactionState =
@@ -93,8 +96,6 @@ internal object TransactionOverviewCursor {
             blockTimeEpochSeconds = estimatedBlockTime,
             transactionState = transactionState,
             isShielding = row.isShielding,
-            // Projected from `v_transactions` by `host_read.rs`'s `listTransactions`, the same
-            // columns the SDK's own `AllTransactionView` reads.
             spentNoteCount = row.spentNoteCount,
             poolCrossingValue = row.poolCrossingValue?.let(::Zatoshi),
             isTrusted = isTrusted,

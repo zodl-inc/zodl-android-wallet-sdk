@@ -9,6 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onStart
@@ -50,20 +52,28 @@ internal class TransactionsController(
      * [SlipstreamEngine.networkHeight] change - the twin of the legacy
      * `SdkSynchronizer.getTransactions()` combining its rows with `processor.networkHeight` -
      * without re-running the SQL.
+     *
+     * `networkHeight` is a StateFlow, so it is already distinct-until-changed: an unchanged tip
+     * re-published on every 2 s poll tick does not re-map anything.
+     *
+     * Each collection keeps its own [ScannedHeightCache], so the scanned-height read over JNI
+     * happens only when [latestHeight] needs it rather than on every tip change.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
-    private fun visibleTransactions(accountUuid: AccountUuid?): Flow<List<TransactionOverview>> {
-        val rows =
-            engine.requeryTicks
-                .onStart { emit(Unit) }
-                .mapLatest { reader.queryVisibleRows(isRecovering(), accountUuid) }
-        // `networkHeight` is a StateFlow, so it is already distinct-until-changed: an unchanged tip
-        // re-published on every 2 s poll tick does not re-map anything.
-        return combine(rows, engine.networkHeight) { latestRows, networkHeight ->
-            val latestHeight = latestHeight(networkHeight)
-            latestRows.map { row -> TransactionOverviewCursor.fromRow(row, latestHeight) }
+    private fun visibleTransactions(accountUuid: AccountUuid?): Flow<List<TransactionOverview>> =
+        flow {
+            val cache = ScannedHeightCache()
+            val rows =
+                engine.requeryTicks
+                    .onStart { emit(Unit) }
+                    .mapLatest { reader.queryVisibleRows(isRecovering(), accountUuid) }
+            emitAll(
+                combine(rows, engine.networkHeight) { latestRows, networkHeight ->
+                    val latestHeight = latestHeight(networkHeight, cache)
+                    latestRows.map { row -> TransactionOverviewCursor.fromRow(row, latestHeight) }
+                }
+            )
         }.flowOn(Dispatchers.Default)
-    }
 
     private fun isRecovering(): Boolean = engine.lastSnapshot.value?.isRecovering ?: false
 
@@ -79,14 +89,47 @@ internal class TransactionsController(
      * tx's `minedHeight` is cleared in the DB, so `computeTransactionState` still won't report it
      * Confirmed even once `latestHeight` resolves again). See [resolveLatestHeight] for why the
      * scanned height is folded in even when a live tip is known.
+     *
+     * The scanned height is read from the backend on the first computation of each collection,
+     * and after that only when the live snapshot tip is unknown or below the height last resolved
+     * for this collection (see [needsScannedHeight]); otherwise the value read last is reused, as
+     * a live tip at or above everything resolved so far already covers anything the wallet has
+     * scanned.
      */
-    private suspend fun latestHeight(networkHeight: BlockHeight?): BlockHeight? =
-        resolveLatestHeight(
-            snapshotChainTip = engine.lastSnapshot.value?.chainTip,
+    private suspend fun latestHeight(
+        networkHeight: BlockHeight?,
+        cache: ScannedHeightCache
+    ): BlockHeight? {
+        val snapshotChainTip = engine.lastSnapshot.value?.chainTip
+        if (needsScannedHeight(resolveLiveChainTip(snapshotChainTip), cache.lastResolved)) {
+            cache.maxScannedHeight = typesafeBackend.getMaxScannedHeight()
+        }
+        return resolveLatestHeight(
+            snapshotChainTip = snapshotChainTip,
             networkHeight = networkHeight,
-            maxScannedHeight = typesafeBackend.getMaxScannedHeight()
-        )
+            maxScannedHeight = cache.maxScannedHeight
+        ).also { cache.lastResolved = it }
+    }
+
+    /** What one collection of [visibleTransactions] remembers between tip changes. */
+    private class ScannedHeightCache {
+        var maxScannedHeight: BlockHeight? = null
+        var lastResolved: BlockHeight? = null
+    }
 }
+
+/**
+ * Whether [TransactionsController] must read the wallet DB's max scanned height again: on the
+ * first computation of a collection ([lastResolved] `null`), when the live snapshot tip is
+ * unknown ([liveChainTip] `null`, see [resolveLiveChainTip]), or when it is below [lastResolved],
+ * the height the previous computation settled on (a stale tip, which the scanned height may have
+ * to lift). The first computation always reads it: a freshly rebuilt engine can report a known
+ * but stale-low tip before it has caught up, and only the scanned height lifts it then.
+ */
+internal fun needsScannedHeight(
+    liveChainTip: BlockHeight?,
+    lastResolved: BlockHeight?
+): Boolean = lastResolved == null || liveChainTip == null || liveChainTip < lastResolved
 
 /**
  * The confirmation-math height for [TransactionOverviewCursor.fromRow]: the highest of the live

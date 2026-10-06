@@ -40,10 +40,10 @@ class RecordTrustedTransactionTest {
         }
     }
 
+    /** The raw transaction's own height is ignored: it is stored as unmined. */
     @Test
     fun storesTheTransactionWithoutAHeightAndThenTrustsIt() =
         runBlocking {
-            // The raw transaction's own height is ignored: it is stored as unmined.
             val backend = RecordingBackend(storedTxId = txId.value.byteArray)
 
             backend.recordTrustedTransaction(raw, txId)

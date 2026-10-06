@@ -21,7 +21,7 @@ import kotlin.test.assertNull
 class GiftCardParseTest {
     private val key = "zgift1gfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpqfg2fuw"
 
-    // A never-funded test card: 32 bytes of 0x42 as its secret.
+    /** A never-funded test card: 32 bytes of 0x42 as its secret. */
     private val link = "https://gift.zodl.com/#v=1&key=$key&height=3100000"
 
     @Test
@@ -57,11 +57,11 @@ class GiftCardParseTest {
             }
         }
 
+    /** The description carries U+202E (right-to-left override), a line feed and BEL. */
     @Test
     @SmallTest
     fun descriptionsAreSanitized() =
         runTest {
-            // U+202E (right-to-left override), a line feed and BEL.
             val card = GiftCard.parse("$link&desc=Gift%E2%80%AEmoc.liame%0A%07")
             assertEquals("Giftmoc.liame ", card.description)
         }
