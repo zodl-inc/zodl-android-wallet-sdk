@@ -147,18 +147,21 @@ impl LedgerError {
             }
             // A plan refused only because the connected app predates the instructions it needs,
             // or would hash a displayed memo wrongly (fixed by updating the app to v3.9.4), is
-            // the app's age, not the transaction's shape.
+            // the app's age, not the transaction's shape. Every violation has to be an app-age
+            // one: if any other rule is broken too, updating the app would not make the
+            // transaction signable, so a mixed set stays `TransactionNotSignable`.
             SessionError::Validation(violations)
-                if violations.iter().any(|violation| {
-                    matches!(
-                        violation,
-                        LedgerViolation::Limit(
-                            LimitViolation::PcztUnsupported { .. }
-                                | LimitViolation::IronwoodUnsupported { .. }
-                                | LimitViolation::HashedMemoUnsupported { .. }
+                if !violations.is_empty()
+                    && violations.iter().all(|violation| {
+                        matches!(
+                            violation,
+                            LedgerViolation::Limit(
+                                LimitViolation::PcztUnsupported { .. }
+                                    | LimitViolation::IronwoodUnsupported { .. }
+                                    | LimitViolation::HashedMemoUnsupported { .. }
+                            )
                         )
-                    )
-                }) =>
+                    }) =>
             {
                 LedgerError::new(Kind::AppTooOld).with_reason(error.to_string())
             }

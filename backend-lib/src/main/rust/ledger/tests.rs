@@ -329,6 +329,44 @@ fn session_errors_map_to_structured_kinds() {
     }
 }
 
+/// Only a refusal made entirely of app-age violations is `AppTooOld`: if the plan also breaks a
+/// rule an app update does not lift, updating the app would not make it signable.
+#[test]
+fn only_app_age_violations_map_to_app_too_old() {
+    let hashed_memo = LedgerViolation::Limit(LimitViolation::HashedMemoUnsupported {
+        section: Section::Orchard,
+        index: 0,
+    });
+    let pczt_unsupported = LedgerViolation::Limit(LimitViolation::PcztUnsupported {
+        version: (3, 3, 0),
+        required: (3, 4, 0),
+    });
+    let map = |violations: Vec<LedgerViolation>| {
+        LedgerError::from_session(&SessionError::Validation(violations), false).kind
+    };
+
+    assert_eq!(
+        map(vec![hashed_memo.clone(), pczt_unsupported]),
+        Kind::AppTooOld,
+        "only app-age violations"
+    );
+    assert_eq!(
+        map(vec![LedgerViolation::SaplingPresent, hashed_memo]),
+        Kind::TransactionNotSignable,
+        "an app-age violation alongside a shape violation"
+    );
+    assert_eq!(
+        map(vec![LedgerViolation::SaplingPresent]),
+        Kind::TransactionNotSignable,
+        "only a shape violation"
+    );
+    assert_eq!(
+        map(vec![]),
+        Kind::TransactionNotSignable,
+        "no violations at all"
+    );
+}
+
 #[test]
 fn pairing_errors_map_to_structured_kinds() {
     let not_accepted = LedgerError::from_pairing(&PairingError::CmdNotAccepted);
