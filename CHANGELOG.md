@@ -109,7 +109,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synchronizer for that alias must be closed first.
 
 ### Changed
-- `Synchronizer.createProposedTransactions` and `Broadcaster.createProposedTransactions` take
+- **Breaking (binary and for implementers):** `Synchronizer.createProposedTransactions` and
+  `Broadcaster.createProposedTransactions` take
   an `ovkPolicy: OvkPolicy = OvkPolicy.Sender` parameter. Existing call sites compile
   unchanged and keep the previous behavior. Any implementer or test fake of `Synchronizer` or
   `Broadcaster` must add the parameter to its override. With `OvkPolicy.Discard`, nobody

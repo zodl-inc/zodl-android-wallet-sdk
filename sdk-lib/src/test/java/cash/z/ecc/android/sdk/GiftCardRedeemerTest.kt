@@ -82,7 +82,14 @@ class GiftCardRedeemerTest {
 
     @Test
     fun rejectsTheDefaultAliasAndInvalidAliases() {
-        listOf(ZcashSdk.DEFAULT_ALIAS, "", "a/b", "x".repeat(ZcashSdk.ALIAS_MAX_LENGTH + 1)).forEach { alias ->
+        listOf(
+            ZcashSdk.DEFAULT_ALIAS,
+            "${ZcashSdk.DEFAULT_ALIAS}_",
+            "ZcashSdk",
+            "",
+            "a/b",
+            "x".repeat(ZcashSdk.ALIAS_MAX_LENGTH + 1)
+        ).forEach { alias ->
             assertFailsWith<IllegalArgumentException> {
                 GiftCardRedeemer.new(
                     context(),
