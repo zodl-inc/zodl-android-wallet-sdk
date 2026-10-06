@@ -3,14 +3,15 @@
 //! On the NU7 pre-release crates `zcash_keys` encodes at revision 2. These helpers keep the
 //! strings that cross the JNI boundary at revision 0, with every item they carried before.
 
-use zcash_address::unified::{
-    Container as _, Encoding as _, Fvk, Ivk, Receiver, Revision, Ufvk, Uitem, Uivk,
+use zcash_address::{
+    ToAddress as _, ZcashAddress,
+    unified::{Container as _, Encoding as _, Fvk, Ivk, Receiver, Revision, Ufvk, Uitem, Uivk},
 };
 use zcash_client_backend::{
     address::UnifiedAddress,
     keys::{UnifiedFullViewingKey, UnifiedIncomingViewingKey},
 };
-use zcash_protocol::consensus::Parameters;
+use zcash_protocol::consensus::{NetworkType, Parameters};
 
 /// Encodes a unified full viewing key at ZIP 316 revision 0, for the given network, with every
 /// item `zcash_keys`'s own encoder gave it.
@@ -23,11 +24,15 @@ use zcash_protocol::consensus::Parameters;
 ///
 /// Falls back to the revision 2 string unchanged for a key revision 0 cannot hold: one with
 /// expiry metadata, a P2SH viewing-key item (`Fvk::P2sh`, specified only for revision 2), or no
-/// Orchard or Sapling item (revision 0 requires a shielded item).
+/// Orchard or Sapling item (revision 0 requires a shielded item). It does the same, rather than
+/// panic, when that revision 2 string does not decode back: a revision 0 key may carry a
+/// typecode 0x01 item, which revision 0 leaves unrecognised, and `zcash_keys` writes it back
+/// out at revision 2, where 0x01 is a P2SH item its data need not be valid as.
 pub(crate) fn encode_ufvk_r0(ufvk: &UnifiedFullViewingKey, network: &impl Parameters) -> String {
     let r2 = ufvk.encode(network);
-    let (_, _, container) =
-        Ufvk::decode(&r2).expect("zcash_keys just encoded this string, so it must decode");
+    let Ok((_, _, container)) = Ufvk::decode(&r2) else {
+        return r2;
+    };
     let items = container.items_as_parsed();
 
     let has_metadata = items.iter().any(|item| matches!(item, Uitem::Metadata(_)));
@@ -46,19 +51,21 @@ pub(crate) fn encode_ufvk_r0(ufvk: &UnifiedFullViewingKey, network: &impl Parame
     }
 
     Ufvk::try_from_items(Revision::R0, items.to_vec())
-        .expect("zcash_keys's own items, unchanged, must be valid at revision 0")
-        .encode(&network.network_type())
+        .map(|r0| r0.encode(&network.network_type()))
+        .unwrap_or(r2)
 }
 
 /// Encodes a unified incoming viewing key at ZIP 316 revision 0, for the given network. See
-/// [`encode_ufvk_r0`]: same method (`encode`, decode, re-encode), same revision 2 fallback.
+/// [`encode_ufvk_r0`]: same method (`encode`, decode, re-encode), same revision 2 fallback,
+/// including for a revision 2 string that does not decode back.
 pub(crate) fn encode_uivk_r0(
     uivk: &UnifiedIncomingViewingKey,
     network: &impl Parameters,
 ) -> String {
     let r2 = uivk.encode(network);
-    let (_, _, container) =
-        Uivk::decode(&r2).expect("zcash_keys just encoded this string, so it must decode");
+    let Ok((_, _, container)) = Uivk::decode(&r2) else {
+        return r2;
+    };
     let items = container.items_as_parsed();
 
     let has_metadata = items.iter().any(|item| matches!(item, Uitem::Metadata(_)));
@@ -77,8 +84,8 @@ pub(crate) fn encode_uivk_r0(
     }
 
     Uivk::try_from_items(Revision::R0, items.to_vec())
-        .expect("zcash_keys's own items, unchanged, must be valid at revision 0")
-        .encode(&network.network_type())
+        .map(|r0| r0.encode(&network.network_type()))
+        .unwrap_or(r2)
 }
 
 /// Encodes a unified address at ZIP 316 revision 0, for the given network, with every receiver
@@ -97,14 +104,16 @@ pub(crate) fn encode_uivk_r0(
 /// cannot hold: one with expiry metadata, or no Orchard or Sapling receiver (revision 0 requires
 /// a shielded receiver). A P2SH *receiver* (an ordinary transparent address) is unaffected by
 /// either check; only a P2SH *viewing-key item*, which only a UFVK or UIVK can carry, is
-/// revision-2-only.
+/// revision-2-only. Like [`encode_ufvk_r0`], it also returns that string, rather than panic, if
+/// it does not decode back.
 pub(crate) fn encode_unified_address_r0(
     address: &UnifiedAddress,
     network: &impl Parameters,
 ) -> String {
     let r2 = address.encode_receiver_preserving(network);
-    let (_, _, container) = zcash_address::unified::Address::decode(&r2)
-        .expect("zcash_keys just encoded this string, so it must decode");
+    let Ok((_, _, container)) = zcash_address::unified::Address::decode(&r2) else {
+        return r2;
+    };
     let items = container.items_as_parsed();
 
     let has_metadata = items.iter().any(|item| matches!(item, Uitem::Metadata(_)));
@@ -120,8 +129,30 @@ pub(crate) fn encode_unified_address_r0(
     }
 
     zcash_address::unified::Address::try_from_items(Revision::R0, items.to_vec())
-        .expect("zcash_keys's own items, unchanged, must be valid at revision 0")
-        .encode(&network.network_type())
+        .map(|r0| r0.encode(&network.network_type()))
+        .unwrap_or(r2)
+}
+
+/// A ZIP 316 revision 0 unified address holding only the given Orchard receiver, for the given
+/// network: the recipient both Ironwood migration flows give a transfer to the account's own
+/// internal receiver.
+///
+/// `zcash_keys`'s `Receiver::Orchard(..).to_zcash_address(..)` encodes at revision 2
+/// unconditionally on the NU7 crates. The recipient is written to the wallet
+/// (`sent_notes`, and from there `v_tx_outputs.to_address`) and the app reads it back for the
+/// transaction history, so it stays at revision 0, as it was before the move.
+pub(crate) fn orchard_only_address_r0(
+    receiver: &orchard::Address,
+    network: NetworkType,
+) -> anyhow::Result<ZcashAddress> {
+    let address = zcash_address::unified::Address::try_from_items(
+        Revision::R0,
+        vec![Uitem::Data(Receiver::Orchard(
+            receiver.to_raw_address_bytes(),
+        ))],
+    )
+    .map_err(|e| anyhow::anyhow!("Unable to construct the migration recipient: {e}"))?;
+    Ok(ZcashAddress::from_unified(network, address))
 }
 
 #[cfg(test)]
@@ -514,5 +545,155 @@ mod tests {
             encoded, p2sh_uivk_str,
             "must reproduce the upstream vector exactly"
         );
+    }
+
+    /// `WalletFixture.Ben`'s seed phrase.
+    const BEN_PHRASE: &str = "kitchen renew wide common vague fold vacuum tilt amazing pear \
+        square gossip jewel month tree shock scan alpha just spot fluid toilet view dinner";
+
+    /// The strings the SDK returned for account 0 of [`BEN_PHRASE`] before the NU7 crate move,
+    /// computed independently with the pre-move `zcash_keys` 0.16.1 / `zcash_address` 0.13.0.
+    struct PrePortStrings {
+        address: &'static str,
+        ufvk: &'static str,
+        uivk: &'static str,
+        orchard_only_internal: &'static str,
+    }
+
+    const MAINNET_PRE_PORT: PrePortStrings = PrePortStrings {
+        address: "u1ppm8qyhws4mrs2m2puq2nyyrcpzfrj8hynw00355wy7vapzw5f84udl5qs5xf9lh9antxyvqfcgh76h87946q7vw5d6rrmze8x2c6p7vw59uy6mkadgz2467358z3ar7edyjcm7gkpqhdlaxhdzhqhxfacff0fud38zyyzakkscdmwvee59xzf36rhm5xvc893wewsrfe5svcmg4l85",
+        ufvk: "uview188kc3e0wkwlv2qrke9wskcqz4qwj5sx0h8te0jgnfzyarwxm6ymzmsu9jzcl72pyamvj8whnvpfqahhx7nga2qgcv9zn9xsppym2vpcmw3204u57r5ygan9y3pllvv8wgk29ef34uycks9gee2plsa82v0g2dzdcve0g4y8ym4nmax9hnge4v9azw0hdzqr2pqr5uxq62x9p9vucdppq3f3u9z24jqx7envsh6tweu7a5xvrecxk7axjfad4pmtupsr76kvrqsjuqz3hpfdru5p6ty8qwjlfjr7p06u3dmmaap43k0fshcr3994a4l5cce2z3ef6ejdztqtqhd70xl43lmx938z56lz3d4w8twkjhx3en0up8dzqsjh5llmgxtdge3ux2lpxnr3f2e45enda2pa3qxx5pq2wjahj0k7vqfzqltkn3j0d5lxwppaqazyyfm5e5s93j4jzu25k663t8hwj6tq53mjagspzvl2y6fszhgvuudzt",
+        uivk: "uivk1k45cs2xaq4ft88r9mkg7ut95jfgktqxz7kwgjugyzldtrg0833zk2e9w7gq7xj7z0c47zlt2ec7kcqhjndvr0re2tuvakjlzy0geafmkpuy5az07ehmnfml4dk04yz98sapmy9u7exv9r0ystm7whw0rnp36p0kada3a25za44u2ls5ys8fr3u2dlk4e4e9jk6n4pl9n04sz4yppn29dlzy62dmppw75n3pa424f338ckplnpsad736l7vw6844x9jzhnuav6f25eqxtuf3jk43ytsdsw8nfpu8w2ypna05syqxl74e6eywq8h55m32mtlw3evn55hhfje8nwxj7d8y4w9klpq",
+        orchard_only_internal: "u144cetttqvww5xmhyvysxvcct3lr8n3rsufvynwl0hvv59nftkrk57fk3yev84z2qm4wr2g5zrz3xqytafdl8745ueaxxalk8p5p78vm7",
+    };
+
+    const TESTNET_PRE_PORT: PrePortStrings = PrePortStrings {
+        address: "utest1yaqda6n3h0h5mdplk46e64rpwvhfe8ep6rm9lcc4r42cuk5376ul9yur8fuj0vms5l7emf6pf8l2d3lhxjzx8j6qkjf7g48kjakwdz6ycvcrdwyjhr9ve67v9hmw75u5fyvpeq99cjpp5l2shukmmd9dldvqj829r0s3qyevw7xzck6zrqp5hr93v5r929vsaqpa7we0xgakzc5dzpf",
+        ufvk: "uviewtest18la5rss83ypen8qsnk79vwef270fffs50d302da2vjrv2guy3amz4kj66vx2rys8ytwk7rzfy2znykq4273q70q9nzsftjh8x4urejszpv2rn2rrh7thggc340m2vwxqgykypt2tcgkfp28y6yt7gtq4qc59lsssvxlma0jem7l4q7gh2jc6l2nag53t7neffpwhr626gr9zcnkfne87fltkrt4s6c76ez4u70e4sld4wtww7hrv508lch0dnqpysguhdjrn40rcjwj8aln22xeu7p75ted5nnpzyatlz25gu0t69vqtv8er774qqapmm0222q2pl5h84zpuhz5c0eg08pxkmtr7jlurxsw5c20urafl2acx3hm9w2uzz0exju66xksu9pplujr8trgnsjyfgrmqknrp2n5w6k899qjx2jrmxnrggg528s9pe694zvhec8vy6ussyr33nzsltz7y3zzlafypp54g39l6u79e0cgqf5cnpf9v",
+        uivk: "uivktest1yxz7sek5j8e3xlytd98zcusvlfzg29z08vcv0j5gjun35xxyflnmjnt4958fne75gpj2tk8rfhgnxx7kpujan6q7urd4xrg4y440tk40gp9smldfes5hcakj5x424exvnrlpv0k9kux6k9tyv3qq3j3rpzjdv70p7ua879xzl3nas5k2vkm2dfu9ru2qe0hath7v7uxppp0w9qx56hrtfxjkn9r5h77wu8vkp8at0v396z2c2dhhs7srct4jry47n35axnzq4x4s3vxap2s2p6g0ejt2ge5zk9gy8cpusnhl3uzuq4sk0509eqa06scfrfljhuelsv62s59f6wzy0hlmklhdr8",
+        orchard_only_internal: "utest1p3tmuly0dxjd5vvk47494uklm84rp8w8lyg77savy3aeazu8060ra8ty5cr8a4q40u4j05uwh5ewem5atmnmrr84020mk4gspyey5kma",
+    };
+
+    fn assert_pre_port_strings(
+        network: zcash_protocol::consensus::Network,
+        expected: &PrePortStrings,
+    ) {
+        let seed = bip0039::Mnemonic::<bip0039::English>::from_phrase(BEN_PHRASE)
+            .expect("a valid phrase")
+            .to_seed("");
+        let ufvk = UnifiedSpendingKey::from_seed(&network, &seed, zip32::AccountId::ZERO)
+            .expect("account 0 derives")
+            .to_unified_full_viewing_key();
+        let (ua, _) = ufvk
+            .find_address(
+                zip32::DiversifierIndex::new(),
+                UnifiedAddressRequest::AllAvailableKeys,
+            )
+            .expect("the default address derives");
+
+        assert_eq!(super::encode_ufvk_r0(&ufvk, &network), expected.ufvk);
+        assert_eq!(
+            super::encode_uivk_r0(&ufvk.to_unified_incoming_viewing_key(), &network),
+            expected.uivk
+        );
+        assert_eq!(
+            super::encode_unified_address_r0(&ua, &network),
+            expected.address
+        );
+
+        let orchard = ufvk.orchard().expect("an Orchard key");
+        assert_eq!(
+            super::orchard_only_address_r0(
+                &orchard.address_at(0u32, orchard::keys::Scope::Internal),
+                network.network_type(),
+            )
+            .expect("the migration recipient")
+            .encode(),
+            expected.orchard_only_internal
+        );
+    }
+
+    /// The UFVK, UIVK, default address and migration recipient of a fixed seed are exactly the
+    /// strings the SDK returned before the NU7 crate move, not just the same revision.
+    #[test]
+    fn mainnet_encodings_match_the_pre_port_strings() {
+        assert_pre_port_strings(
+            zcash_protocol::consensus::Network::MainNetwork,
+            &MAINNET_PRE_PORT,
+        );
+    }
+
+    /// Testnet counterpart of [`mainnet_encodings_match_the_pre_port_strings`].
+    #[test]
+    fn testnet_encodings_match_the_pre_port_strings() {
+        assert_pre_port_strings(
+            zcash_protocol::consensus::Network::TestNetwork,
+            &TESTNET_PRE_PORT,
+        );
+    }
+
+    /// A revision 0 viewing key may carry a typecode 0x01 item, which revision 0 leaves
+    /// unrecognised. `zcash_keys` keeps it and writes it back out at revision 2, where 0x01 is a
+    /// P2SH item, so its own revision 2 string does not decode back. The encoders return that
+    /// string instead of panicking.
+    #[test]
+    fn an_unknown_typecode_1_item_falls_back_to_revision_2_instead_of_panicking() {
+        let usk = UnifiedSpendingKey::from_seed(&MAIN_NETWORK, &[7u8; 32], zip32::AccountId::ZERO)
+            .expect("a spending key derives");
+        let ufvk = usk.to_unified_full_viewing_key();
+        let uivk = ufvk.to_unified_incoming_viewing_key();
+        let unknown_1 = vec![1, 2, 3, 4];
+
+        let ufvk_input = unified::Ufvk::try_from_items(
+            unified::Revision::R0,
+            vec![
+                unified::Uitem::Data(unified::Fvk::Orchard(
+                    ufvk.orchard().expect("an orchard item").to_bytes(),
+                )),
+                unified::Uitem::Data(unified::Fvk::Sapling(
+                    ufvk.sapling().expect("a sapling item").to_bytes(),
+                )),
+                unified::Uitem::Data(unified::Fvk::Unknown {
+                    typecode: 1,
+                    data: unknown_1.clone(),
+                }),
+            ],
+        )
+        .expect("an unrecognised 0x01 item is valid at revision 0")
+        .encode(&MAIN_NETWORK.network_type());
+        let decoded_ufvk = UnifiedFullViewingKey::decode(&MAIN_NETWORK, &ufvk_input)
+            .expect("the revision 0 string decodes");
+        let ufvk_r2 = decoded_ufvk.encode(&MAIN_NETWORK);
+        assert!(
+            unified::Ufvk::decode(&ufvk_r2).is_err(),
+            "the revision 2 string must not decode back, or this test covers nothing"
+        );
+        assert_eq!(super::encode_ufvk_r0(&decoded_ufvk, &MAIN_NETWORK), ufvk_r2);
+
+        let uivk_input = unified::Uivk::try_from_items(
+            unified::Revision::R0,
+            vec![
+                unified::Uitem::Data(unified::Ivk::Orchard(
+                    uivk.orchard().as_ref().expect("an orchard item").to_bytes(),
+                )),
+                unified::Uitem::Data(unified::Ivk::Sapling(
+                    uivk.sapling().as_ref().expect("a sapling item").to_bytes(),
+                )),
+                unified::Uitem::Data(unified::Ivk::Unknown {
+                    typecode: 1,
+                    data: unknown_1,
+                }),
+            ],
+        )
+        .expect("an unrecognised 0x01 item is valid at revision 0")
+        .encode(&MAIN_NETWORK.network_type());
+        let decoded_uivk = UnifiedIncomingViewingKey::decode(&MAIN_NETWORK, &uivk_input)
+            .expect("the revision 0 string decodes");
+        let uivk_r2 = decoded_uivk.encode(&MAIN_NETWORK);
+        assert!(
+            unified::Uivk::decode(&uivk_r2).is_err(),
+            "the revision 2 string must not decode back, or this test covers nothing"
+        );
+        assert_eq!(super::encode_uivk_r0(&decoded_uivk, &MAIN_NETWORK), uivk_r2);
     }
 }

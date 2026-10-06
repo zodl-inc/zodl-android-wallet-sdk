@@ -12,7 +12,6 @@
 //! themselves, because the fee depends on which inputs the selector picks.
 
 use anyhow::anyhow;
-use zcash_address::{ToAddress, ZcashAddress, unified, unified::Encoding as _};
 use zcash_client_backend::{
     data_api::{
         Account as _, InputSource, MaxSpendMode, WalletRead,
@@ -29,6 +28,8 @@ use zcash_protocol::{
     consensus::{Network, NetworkUpgrade, Parameters},
     memo::MemoBytes,
 };
+
+use crate::unified_r0;
 
 /// The wallet database as the JNI layer holds it.
 type Db = WalletDb<rusqlite::Connection, Network, SystemClock, crate::SystemRng>;
@@ -96,18 +97,7 @@ pub(crate) fn propose_orchard_to_ironwood(
     // The internal scope is the account's own change address, so the funds
     // stay with the account rather than being exposed as an external payment.
     let receiver = orchard_fvk.address_at(0u32, orchard::keys::Scope::Internal);
-    let recipient = ZcashAddress::from_unified(
-        network.network_type(),
-        // Revision 0, as before the NU7 crates: this recipient is the account's own internal
-        // receiver, used to build the proposal and never displayed or stored.
-        unified::Address::try_from_items(
-            unified::Revision::R0,
-            vec![unified::Uitem::Data(unified::Receiver::Orchard(
-                receiver.to_raw_address_bytes(),
-            ))],
-        )
-        .map_err(|e| anyhow!("Unable to construct the migration recipient: {}", e))?,
-    );
+    let recipient = unified_r0::orchard_only_address_r0(&receiver, network.network_type())?;
 
     // Orchard only. Sapling and transparent funds are deliberately left where
     // they are: this migrates one pool, it is not a sweep of the wallet.
