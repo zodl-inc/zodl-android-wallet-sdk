@@ -13,6 +13,10 @@ import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zip32AccountIndex
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
@@ -98,6 +102,11 @@ internal class TypesafeLedgerBackendImpl(
 
     override fun newBleDeframer(): LedgerBleDeframer = BleDeframer(backend, ledgerCall { backend.bleDeframerNew() })
 
+    /**
+     * The native call runs under [NonCancellable], so a caller cancelled while it runs cannot drop the
+     * handle it returns. Until the session is handed back, the handle is freed here: on a caller
+     * cancelled in the meantime, and on a failure building the session.
+     */
     override suspend fun newSignSession(
         dataDbFile: File,
         network: ZcashNetwork,
@@ -109,17 +118,28 @@ internal class TypesafeLedgerBackendImpl(
     ): LedgerSignSession {
         val handle =
             ledgerSuspendCall {
-                backend.signSessionNew(
-                    dbDataPath = dataDbFile.absolutePath,
-                    networkId = network.id,
-                    accountUuid = accountUuid.value,
-                    pczt = pczt.toByteArray(),
-                    deviceIdentity = deviceIdentity.encoding,
-                    zip32AccountIndex = zip32AccountIndex.index,
-                    firmwareVersionReply = firmwareVersionReply
-                )
+                withContext(NonCancellable) {
+                    backend.signSessionNew(
+                        dbDataPath = dataDbFile.absolutePath,
+                        networkId = network.id,
+                        accountUuid = accountUuid.value,
+                        pczt = pczt.toByteArray(),
+                        deviceIdentity = deviceIdentity.encoding,
+                        zip32AccountIndex = zip32AccountIndex.index,
+                        firmwareVersionReply = firmwareVersionReply
+                    )
+                }
             }
-        return SignSession(backend, handle)
+        var session: LedgerSignSession? = null
+        try {
+            currentCoroutineContext().ensureActive()
+            session = SignSession(backend, handle)
+            return session
+        } finally {
+            if (session == null) {
+                ledgerCall { backend.signSessionFree(handle) }
+            }
+        }
     }
 
     private class UfvkExport(
