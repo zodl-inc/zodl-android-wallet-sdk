@@ -1421,7 +1421,8 @@ class SlipstreamSynchronizer internal constructor(
      * this device must work while this wallet is not synced, and `decryptAndStoreTransaction` and
      * `setTransactionTrust` need nothing but the schema. Trust is set only once the stored
      * transaction's id has been checked against [txId], so a mixed-up id cannot trust the wrong
-     * transaction.
+     * transaction. Recording fails, throwing from `setTransactionTrust`, when the transaction does
+     * not involve this wallet and so was not stored: there is nothing to trust.
      */
     override suspend fun recordTrustedTransaction(
         rawTransaction: RawTransaction,

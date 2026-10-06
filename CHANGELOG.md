@@ -138,6 +138,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   count at which its funds become spendable, instead of 10. Untrusted received transactions and
   sent transactions are still `Confirmed` at 10. This applies to both synchronizers; no call-site
   change is needed.
+- `Synchronizer.recordTrustedTransaction` now throws when the transaction does not involve this
+  wallet and so was not stored, instead of returning normally with no trust status recorded, and
+  `RustBackend.setTransactionTrust` throws for a transaction the wallet has not stored. A gift
+  card claim recorded in a wallet it does not pay therefore reports
+  `GiftCardRedeemer.Redemption.recordedInDestination` as `false`; the redemption itself is
+  unaffected.
 
 ## [5.0.0] - 2026-09-25
 

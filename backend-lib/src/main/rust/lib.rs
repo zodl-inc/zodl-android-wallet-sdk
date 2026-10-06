@@ -2194,7 +2194,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransa
 /// The outputs of a trusted transaction become spendable after the policy's `trusted` number of
 /// confirmations (3 by default) instead of its `untrusted` one (10 by default), even when the
 /// transaction was not created by this wallet. This only updates an existing `transactions` row:
-/// store the transaction first, e.g. with `decryptAndStoreTransaction`.
+/// store the transaction first, e.g. with `decryptAndStoreTransaction`, which stores nothing for a
+/// transaction that does not involve this wallet. A transaction the wallet has not stored throws
+/// rather than succeeding with nothing recorded, so a normal return always means the status was
+/// set.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransactionTrust<
     'local,
@@ -2212,12 +2215,41 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransa
         let mut db_data = wallet_db(env, network, db_data)?;
         let txid = parse_txid(env, txid_bytes)?;
 
-        db_data
-            .set_tx_trust(txid, trusted != JNI_FALSE)
-            .map_err(|e| anyhow!("Error while setting transaction trust: {}", e))
+        set_trust_of_stored_transaction(&mut db_data, txid, trusted != JNI_FALSE)
     });
 
     unwrap_exc_or(&mut env, res, ())
+}
+
+/// Sets the trust status of a transaction this wallet has stored, failing when it has not.
+///
+/// `WalletWrite::set_tx_trust` is an update that succeeds without touching a row when the
+/// transaction is unknown, and `decrypt_and_store_transaction` stores nothing for a transaction
+/// that does not involve the wallet. Checking first is what lets a caller tell "trusted" apart from
+/// "there was nothing to trust".
+fn set_trust_of_stored_transaction<W>(
+    db_data: &mut W,
+    txid: TxId,
+    trusted: bool,
+) -> anyhow::Result<()>
+where
+    W: WalletRead + WalletWrite,
+    <W as WalletRead>::Error: std::fmt::Display,
+{
+    let stored = db_data
+        .get_transaction(txid)
+        .map_err(|e| anyhow!("Error looking up txid {}: {}", txid, e))?
+        .is_some();
+    if !stored {
+        return Err(anyhow!(
+            "Transaction {} is not stored in this wallet; its trust status was not set",
+            txid
+        ));
+    }
+
+    db_data
+        .set_tx_trust(txid, trusted)
+        .map_err(|e| anyhow!("Error setting the trust status of txid {}: {}", txid, e))
 }
 
 fn zip317_helper<DbT>(
@@ -4315,5 +4347,39 @@ mod tests {
             "did not expect the marker prefix, got {mapped_msg:?}"
         );
         assert!(mapped_msg.starts_with("Error while initializing accounts: "));
+    }
+
+    /// A transaction the wallet never stored, such as one `decrypt_and_store_transaction` skipped
+    /// because it does not involve the wallet, must not report its trust as set: the update
+    /// underneath would succeed on zero rows.
+    #[test]
+    fn trusting_a_transaction_the_wallet_did_not_store_fails() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time is after UNIX_EPOCH")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "zcash-android-set-trust-test-{}-{nanos}.sqlite",
+            std::process::id()
+        ));
+        let result = {
+            let mut db = WalletDb::for_path(&path, TestNetwork, SystemClock, OsRng)
+                .expect("opens a fresh wallet db");
+            init_wallet_db(&mut db, None).expect("initializes the wallet schema");
+
+            let txid = TxId::from_bytes([0x5a; 32]);
+            let error = set_trust_of_stored_transaction(&mut db, txid, true)
+                .expect_err("an unknown transaction cannot be trusted");
+            let still_unstored = db.get_transaction(txid).unwrap().is_none();
+            (error.to_string(), still_unstored)
+        };
+        let _ = std::fs::remove_file(&path);
+
+        let (message, still_unstored) = result;
+        assert!(
+            message.contains("not stored in this wallet"),
+            "unexpected error: {message}"
+        );
+        assert!(still_unstored);
     }
 }

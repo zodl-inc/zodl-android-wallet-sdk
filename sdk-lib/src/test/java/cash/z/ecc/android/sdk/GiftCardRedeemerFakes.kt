@@ -3,7 +3,9 @@ package cash.z.ecc.android.sdk
 import android.content.Context
 import cash.z.ecc.android.sdk.fixture.AccountFixture
 import cash.z.ecc.android.sdk.internal.GiftCardLinks
+import cash.z.ecc.android.sdk.internal.TypesafeBackend
 import cash.z.ecc.android.sdk.internal.model.JniGiftCard
+import cash.z.ecc.android.sdk.internal.recordTrustedTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
@@ -195,6 +197,42 @@ internal class FakeDestination(
         failure?.let { throw it }
         recorded += rawTransaction.data to txId.value.byteArray
     }
+}
+
+/**
+ * A wallet that the claim does not involve, recording through the SDK's own
+ * `recordTrustedTransaction` step. As in the native backend, storing such a transaction stores
+ * nothing yet still returns its id ([claimTxId]), and trusting it then throws a
+ * [RuntimeException] because no stored transaction has that id.
+ */
+internal class UninvolvedDestination(
+    claimTxId: FirstClassByteArray
+) : Synchronizer by mock(Synchronizer::class.java) {
+    val trustAttempts = mutableListOf<ByteArray>()
+
+    private val backend =
+        object : TypesafeBackend by mock(TypesafeBackend::class.java) {
+            override suspend fun decryptAndStoreTransaction(
+                tx: ByteArray,
+                minedHeight: BlockHeight?
+            ): FirstClassByteArray = claimTxId
+
+            @Suppress("TooGenericExceptionThrown")
+            override suspend fun setTransactionTrust(
+                txId: ByteArray,
+                trusted: Boolean
+            ) {
+                trustAttempts += txId
+                throw RuntimeException("Transaction is not stored in this wallet; its trust status was not set")
+            }
+        }
+
+    override val network: ZcashNetwork = ZcashNetwork.Mainnet
+
+    override suspend fun recordTrustedTransaction(
+        rawTransaction: RawTransaction,
+        txId: TransactionId
+    ) = backend.recordTrustedTransaction(rawTransaction, txId)
 }
 
 /** One account's balance with [available] and [pending] in Orchard. */

@@ -212,7 +212,8 @@ class GiftCardRedeemer private constructor(
      * @property recordedInDestination `true` when a `destination` was passed to [redeem] and
      * every submitted transaction was recorded in it as trusted (ZIP 315). `false` when no
      * destination was passed, nothing was submitted, or the destination failed to record the
-     * claim; in the last case the redemption itself still stands, and the destination wallet
+     * claim, including when the claim does not involve the destination's wallet and so was not
+     * stored there; in the last case the redemption itself still stands, and the destination wallet
      * finds the funds on its own when it next syncs, as an untrusted receive.
      * @property amount what the redemption sends to the recipient, as its proposal computes it:
      * what the spent notes hold, minus [fee] and any change; `null` when not known or not
@@ -476,6 +477,8 @@ class GiftCardRedeemer private constructor(
      * Records every submitted transaction in [destination] as trusted. Returns `true` only when
      * there was something to record and all of it was recorded; a failure is logged, not thrown,
      * as the funds have moved regardless and the destination will find them when it next syncs.
+     * Recording fails when a claim does not involve the destination's wallet, which then stores
+     * nothing. Only the failure's type is logged: its message can carry the transaction id.
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun recordInDestination(
@@ -496,9 +499,9 @@ class GiftCardRedeemer private constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Twig.warn(e) {
-                "The gift card claim could not be recorded in the destination wallet; " +
-                    "it will be found by that wallet's next sync"
+            Twig.warn {
+                "The gift card claim could not be recorded in the destination wallet " +
+                    "(${e::class.simpleName}); it will be found by that wallet's next sync"
             }
             false
         }

@@ -898,6 +898,8 @@ interface Synchronizer {
      *
      * @throws IllegalArgumentException if [txId] is not the id of [rawTransaction]; the
      * transaction is stored anyway, but as untrusted.
+     * @throws RuntimeException if the transaction does not involve this wallet and so was not
+     * stored: there is nothing to trust, so recording fails instead of returning normally.
      */
     suspend fun recordTrustedTransaction(
         rawTransaction: RawTransaction,

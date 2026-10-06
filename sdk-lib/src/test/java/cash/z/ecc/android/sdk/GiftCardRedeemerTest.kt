@@ -163,6 +163,27 @@ class GiftCardRedeemerTest {
             assertTrue(destination.recorded.isEmpty())
         }
 
+    /**
+     * A claim paying another wallet is not stored in the destination, so nothing is trusted there:
+     * the refusal to trust it reports the claim as not recorded, and the redemption still stands.
+     */
+    @Test
+    fun aClaimTheDestinationDidNotStoreIsReportedAsNotRecorded() =
+        runBlocking {
+            val claim = createdTransaction("claim")
+            val cardWallet = FakeCardWallet(listOf(claim)) { TransactionSubmitResult.Success(it.txId) }
+            val (redeemer, _) = redeemer(cardWallet)
+            val destination = UninvolvedDestination(claimTxId = claim.txId)
+
+            val redemption = redeemer.checkAndRedeem(destination)
+
+            assertEquals(listOf(TransactionSubmitResult.Success(claim.txId)), redemption.results)
+            assertTrue(redemption.isSubmitted)
+            assertFalse(redemption.recordedInDestination)
+            assertEquals(listOf(claim), cardWallet.submitted)
+            assertTrue(claim.txId.byteArray.contentEquals(destination.trustAttempts.single()))
+        }
+
     /** What did reach the network is recorded, and nothing else. */
     @Test
     fun onlySubmittedTransactionsAreRecordedAndLaterOnesAreNotAttemptedAfterAFailure() =
