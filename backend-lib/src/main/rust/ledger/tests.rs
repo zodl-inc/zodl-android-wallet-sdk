@@ -18,8 +18,9 @@ use pczt_ledger::{
     Network as LedgerNetwork,
     apdu::{Ins, StatusWord, encode::SIGHASH_ALL},
     framing::{self, BleFrameSize, Deframer},
+    limits::{LimitViolation, Section},
     pairing::{DeviceIdentity, PairingError},
-    session::{PumpStep, SessionError, SessionStatus, Stage},
+    session::{LedgerViolation, PumpStep, SessionError, SessionStatus, Stage},
 };
 use transparent::{
     bundle::{OutPoint, TxOut},
@@ -305,6 +306,27 @@ fn session_errors_map_to_structured_kinds() {
         LedgerError::from_session(&SessionError::Parse("garbage".into()), false).kind,
         Kind::InvalidInput
     );
+
+    for too_old in [
+        LimitViolation::PcztUnsupported {
+            version: (3, 3, 0),
+            required: (3, 4, 0),
+        },
+        LimitViolation::IronwoodUnsupported {
+            version: (3, 9, 3),
+            required: (3, 10, 0),
+        },
+        LimitViolation::HashedMemoUnsupported {
+            section: Section::Orchard,
+            index: 0,
+        },
+    ] {
+        let mapped = LedgerError::from_session(
+            &SessionError::Validation(vec![LedgerViolation::Limit(too_old.clone())]),
+            false,
+        );
+        assert_eq!(mapped.kind, Kind::AppTooOld, "{too_old:?}");
+    }
 }
 
 #[test]

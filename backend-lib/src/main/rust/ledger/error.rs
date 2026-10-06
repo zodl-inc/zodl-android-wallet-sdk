@@ -145,7 +145,8 @@ impl LedgerError {
             SessionError::Parse(_) => {
                 LedgerError::invalid_input("the transaction bytes are not a PCZT")
             }
-            // A plan refused only because the connected app predates the instructions it needs is
+            // A plan refused only because the connected app predates the instructions it needs,
+            // or would hash a displayed memo wrongly (fixed by updating the app to v3.9.4), is
             // the app's age, not the transaction's shape.
             SessionError::Validation(violations)
                 if violations.iter().any(|violation| {
@@ -154,6 +155,7 @@ impl LedgerError {
                         LedgerViolation::Limit(
                             LimitViolation::PcztUnsupported { .. }
                                 | LimitViolation::IronwoodUnsupported { .. }
+                                | LimitViolation::HashedMemoUnsupported { .. }
                         )
                     )
                 }) =>
