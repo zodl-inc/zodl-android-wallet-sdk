@@ -2099,7 +2099,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_putUtxo<'
                     .map_err(|_| anyhow!("Invalid UTXO value"))?,
                 script_pubkey,
             },
-            Some(BlockHeight::from(height as u32)),
+            Some(
+                BlockHeight::try_from(height)
+                    .map_err(|_| anyhow!("Invalid block height: {}", height))?,
+            ),
             // This JNI entry point has no account context to attribute the UTXO to.
             None,
             None,
@@ -2803,7 +2806,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_branchIdF
     let res = panic::catch_unwind(|| {
         let _span = tracing::info_span!("RustBackend.branchIdForHeight").entered();
         let network = parse_network(network_id)?;
-        let branch: BranchId = BranchId::for_height(&network, BlockHeight::from(height as u32));
+        let height = BlockHeight::try_from(height)
+            .map_err(|_| anyhow!("Invalid block height: {}", height))?;
+        let branch: BranchId = BranchId::for_height(&network, height);
         let branch_id: u32 = u32::from(branch);
         debug!(
             "For height {} found consensus branch {:?} with id {}",
@@ -3040,20 +3045,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustDerivationTool.derivePrivateUseMetadataKey").entered();
-        let account_metadata_key_sk = utils::java_bytes_to_rust(env, &account_metadata_key_sk)?;
-        let account_metadata_key_c = utils::java_bytes_to_rust(env, &account_metadata_key_c)?;
+        let account_metadata_key_sk = secret_from_jni(env, account_metadata_key_sk)?;
+        let account_metadata_key_c = secret_from_jni(env, account_metadata_key_c)?;
         let ufvk_string = utils::java_nullable_string_to_rust(env, &ufvk_string)?;
         let private_use_subject = utils::java_bytes_to_rust(env, &private_use_subject)?;
         let network = parse_network(network_id)?;
 
         let account_metadata_key = {
             let sk = account_metadata_key_sk
+                .expose_secret()
                 .as_slice()
                 .try_into()
                 .map_err(|_| anyhow!("Incorrect length for account_metadata_key_sk"))?;
 
             let chain_code = ChainCode::new(
                 account_metadata_key_c
+                    .expose_secret()
                     .as_slice()
                     .try_into()
                     .map_err(|_| anyhow!("Incorrect length for account_metadata_key_c"))?,
