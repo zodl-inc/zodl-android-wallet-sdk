@@ -130,6 +130,23 @@ class LedgerPcztSignerTest {
         }
 
     @Test
+    fun a_rejected_review_can_be_signed_again_on_the_same_transport() =
+        runBlocking<Unit> {
+            val backend = FakeLedgerBackend(streamPackets = 1)
+            val rejected = ceremonyReplies(streamPackets = 1).take(5).toMutableList()
+            rejected[4] = status(DENY)
+            val transport = ScriptedTransport(rejected + ceremonyReplies(streamPackets = 1))
+
+            assertFailsWith<LedgerException.UserRejected> { sign(backend, transport) }
+            val signed = sign(backend, transport)
+
+            assertContentEquals(byteArrayOf(0x5A), signed.toByteArray())
+            assertEquals(5 + ceremonyReplies(streamPackets = 1).size, transport.sent.size)
+            assertFalse(transport.closed)
+            assertEquals(2, backend.sessionsClosed)
+        }
+
+    @Test
     fun a_device_refusal_ends_the_ceremony_without_closing_the_transport() =
         runBlocking<Unit> {
             val backend = FakeLedgerBackend(streamPackets = 2)

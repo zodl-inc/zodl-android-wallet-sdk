@@ -46,6 +46,9 @@ internal class LedgerExchanger(
      * Runs a one-shot command: exchanges [apdu] and returns what [parse] makes of the reply, resending
      * while the device refuses the frame with `0x6901`.
      *
+     * The reply is wiped as soon as [parse] returns, before its result reaches the caller, so [parse]
+     * must copy any bytes of the reply it returns rather than return the reply or a view of it.
+     *
      * @throws LedgerException.DeviceRefused once the retry budget is spent.
      */
     @Suppress("SwallowedException")
