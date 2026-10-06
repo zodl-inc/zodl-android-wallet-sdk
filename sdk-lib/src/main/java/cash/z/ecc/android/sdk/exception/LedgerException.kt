@@ -51,7 +51,10 @@ sealed class LedgerException(
 
     /**
      * The Zcash app on the device is too old for the request: it predates PCZT signing, or the
-     * Ironwood pool a version 6 transaction needs. The user has to update the app.
+     * Ironwood pool a version 6 transaction needs, or it is older than 3.9.4 and the transaction
+     * carries a memo the device would show as a hash. Thrown only when updating the app is all that
+     * stands in the way; a transaction that also breaks another rule is [TransactionNotSignable].
+     * The user has to update the app.
      */
     class AppTooOld internal constructor(
         override val reason: String?

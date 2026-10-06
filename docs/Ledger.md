@@ -1,6 +1,6 @@
 # Ledger hardware wallets
 
-The SDK signs transactions with a Ledger device running the Zcash app (3.6.0 or later; 3.9.3 is the
+The SDK signs transactions with a Ledger device running the Zcash app (3.6.0 or later; 3.9.4 is the
 version the engine is pinned to) over Bluetooth LE. The protocol engine is
 [`pczt_ledger`](https://github.com/zodl-inc/pczt-ledger), compiled into the SDK's native library. It
 performs no I/O: the SDK drives it over a `LedgerApduTransport`, a request/response channel to one
@@ -224,7 +224,7 @@ command". A refusal by the device leaves the transport open; a failure on the tr
 | `WrongApp` | The Zcash app is not running: the device shows its dashboard (`0x6E01`), runs another app (`0x6511`), or runs a version that does not know the command (`0x6E00`, `0x6D00`). `statusWord` says which. | Yes | Ask the user to open the Zcash app on the device, then start again. |
 | `AppNotInstalled` | `ensureZcashAppOpen` asked the device to open the Zcash app and it has none installed. | No | Ask the user to install the Zcash app with Ledger Live, then start again. |
 | `AppOpenRejected` | The user declined opening the Zcash app on the device during `ensureZcashAppOpen`. | Yes | Offer to try again; the device asks the user once more. |
-| `AppTooOld` | The Zcash app predates PCZT signing (checked before anything is exported), or the Ironwood pool a version 6 transaction needs. | No | Ask the user to update the Zcash app with Ledger Live. |
+| `AppTooOld` | The Zcash app predates PCZT signing (checked before anything is exported), or the Ironwood pool a version 6 transaction needs, or is older than 3.9.4 and the transaction has a memo the device would show as a hash. Raised only when updating the app is all that stands in the way; a transaction that also breaks another rule is `TransactionNotSignable`. | No | Ask the user to update the Zcash app with Ledger Live. |
 | `DeviceMismatch` | Signing found that the connected device is not the one the account was paired with. Pairing reads the identity once and no longer raises it. Nothing of the transaction was sent. | No | Ask the user to connect the paired device. |
 | `CapsMismatch` | The Zcash app was updated or swapped during the operation. Nothing of the transaction was sent. | No | Connect again and start over. |
 | `DerivationBudgetExhausted` | The Zcash app's per-run Orchard key derivation budget is spent. | Yes | Ask the user to close and reopen the Zcash app, then start again. |
@@ -273,7 +273,7 @@ cannot sign one.
 ## Manual test plan (testnet)
 
 Real devices cannot be exercised in CI. Before a release, on a testnet build, with a Nano X, a Stax and a
-Flex running the Zcash app 3.6.0 or later (3.9.3 preferred) with a testnet-configured seed:
+Flex running the Zcash app 3.6.0 or later (3.9.4 preferred) with a testnet-configured seed:
 
 1. With Bluetooth permissions not granted, scanning fails with `BluetoothUnauthorized`; with Bluetooth
    off, `BluetoothDisabled`.
