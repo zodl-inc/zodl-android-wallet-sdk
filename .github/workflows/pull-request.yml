@@ -196,7 +196,9 @@ jobs:
         with:
           rust-cache: true
       - name: Android Lint
-        timeout-minutes: 45
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 45 minutes; warm-cache runs finish well inside this limit.
+        timeout-minutes: 120
         env:
           # Disable minify, since it makes lint run faster
           ORG_GRADLE_PROJECT_IS_MINIFY_APP_ENABLED: false
@@ -349,7 +351,9 @@ jobs:
         with:
           rust-cache: true
       - name: Compile with Slipstream disabled
-        timeout-minutes: 30
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 30 minutes; warm-cache runs finish well inside this limit.
+        timeout-minutes: 120
         run: |
           ./gradlew :sdk-incubator-lib:compileDebugKotlin :sdk-lib:compileDebugKotlin -PIS_SLIPSTREAM_ENABLED=false
 
@@ -381,7 +385,9 @@ jobs:
       # `--cfg zcash_voting`, so every crate rebuilds. Measured at 30m+ against
       # ~28m for the same job on a voting-disabled branch.
       - name: Build and test
-        timeout-minutes: 60
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 60 minutes; warm-cache runs finish well inside this limit.
+        timeout-minutes: 120
         run: |
           make test-unit
       - name: Collect Artifacts
@@ -539,7 +545,9 @@ jobs:
       # falls back to 'auto', which needs a real GPU and fails to boot the
       # emulator (EmulatorStartFailedException during snapshot creation).
       - name: Build and test
-        timeout-minutes: 45
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 45 minutes; warm-cache runs finish well inside this limit.
+        timeout-minutes: 120
         run: |
           make test-instrumented
       - name: Collect Artifacts
@@ -593,7 +601,9 @@ jobs:
         run: |
           keytool -genkey -v -keystore $SIGNING_KEY_PATH -keypass android -storepass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 100000 -dname "CN=, OU=, O=Test, L=, S=, C=" -noprompt
       - name: Build
-        timeout-minutes: 45
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 45 minutes; warm-cache runs finish well inside this limit.
+        timeout-minutes: 120
         env:
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEYSTORE_PATH: ${{ format('{0}/release.jks', env.home) }}
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEYSTORE_PASSWORD: android
