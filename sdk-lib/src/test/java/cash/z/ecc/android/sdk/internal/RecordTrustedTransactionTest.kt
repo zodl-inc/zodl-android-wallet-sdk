@@ -21,8 +21,8 @@ class RecordTrustedTransactionTest {
 
     /**
      * Records the backend calls in order; stores every transaction under [storedTxId]. With a
-     * [trustFailure], `setTransactionTrust` throws it after recording the call, as the native
-     * backend does for a transaction the wallet did not store.
+     * [trustFailure], `setTransactionTrust` throws it after recording the call, unconditionally,
+     * standing in for the native backend's refusal to trust a transaction the wallet did not store.
      */
     private class RecordingBackend(
         private val storedTxId: ByteArray,
@@ -75,14 +75,16 @@ class RecordTrustedTransactionTest {
         }
 
     /**
-     * A transaction that does not involve the wallet is not stored, yet its id is still returned:
-     * the backend then refuses to trust it, and that refusal must reach the caller rather than
-     * read as a recorded trust status.
+     * Contract test: when the backend refuses to trust a transaction, as the native one does for a
+     * transaction that does not involve the wallet and so was not stored, that refusal reaches the
+     * caller unchanged rather than reading as a recorded trust status. The refusal is scripted by
+     * [RecordingBackend], so this passes whether or not the native backend refuses; the Rust tests
+     * of `set_trust_of_stored_transaction` cover that it does.
      */
     @Test
     fun aTransactionTheWalletDidNotStoreFailsToBeRecorded() =
         runBlocking {
-            val notStored = RuntimeException("Transaction is not stored in this wallet")
+            val notStored = RuntimeException("Transaction was not found in this wallet's stored transactions")
             val backend = RecordingBackend(storedTxId = txId.value.byteArray, trustFailure = notStored)
 
             val thrown = assertFailsWith<RuntimeException> { backend.recordTrustedTransaction(raw, txId) }

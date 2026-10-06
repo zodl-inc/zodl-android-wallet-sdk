@@ -213,8 +213,9 @@ class GiftCardRedeemer private constructor(
      * every submitted transaction was recorded in it as trusted (ZIP 315). `false` when no
      * destination was passed, nothing was submitted, or the destination failed to record the
      * claim, including when the claim does not involve the destination's wallet and so was not
-     * stored there; in the last case the redemption itself still stands, and the destination wallet
-     * finds the funds on its own when it next syncs, as an untrusted receive.
+     * stored there. The redemption itself still stands either way. A destination that owns
+     * [redeem]'s `toAddress` finds the funds on its own when it next syncs, as an untrusted
+     * receive; a destination the claim does not pay never sees it.
      * @property amount what the redemption sends to the recipient, as its proposal computes it:
      * what the spent notes hold, minus [fee] and any change; `null` when not known or not
      * positive.
@@ -372,8 +373,9 @@ class GiftCardRedeemer private constructor(
      * confirmations rather than the 10 it applies to an external receive. [destination] should be
      * the wallet that owns [toAddress]; recording in a wallet that does not own it stores nothing
      * of value. A failure to record never fails the redemption, which has already happened on
-     * chain: it is logged and reported as [Redemption.recordedInDestination] being `false`, and
-     * the destination finds the funds by itself when it next syncs.
+     * chain: it is logged and reported as [Redemption.recordedInDestination] being `false`. A
+     * destination that owns [toAddress] then finds the funds by itself when it next syncs; one
+     * that does not never sees them.
      *
      * @param toAddress the user's own address, on [network].
      * @param memo an optional memo for the recipient; must be `null` for a transparent address.
@@ -476,9 +478,10 @@ class GiftCardRedeemer private constructor(
     /**
      * Records every submitted transaction in [destination] as trusted. Returns `true` only when
      * there was something to record and all of it was recorded; a failure is logged, not thrown,
-     * as the funds have moved regardless and the destination will find them when it next syncs.
-     * Recording fails when a claim does not involve the destination's wallet, which then stores
-     * nothing. Only the failure's type is logged: its message can carry the transaction id.
+     * as the funds have moved regardless. A destination that owns the redemption's address finds
+     * them when it next syncs; recording fails when a claim does not involve the destination's
+     * wallet, which then stores nothing and never sees the claim. Only the failure's type is
+     * logged: its message can carry the transaction id.
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun recordInDestination(
@@ -501,7 +504,8 @@ class GiftCardRedeemer private constructor(
         } catch (e: Exception) {
             Twig.warn {
                 "The gift card claim could not be recorded in the destination wallet " +
-                    "(${e::class.simpleName}); it will be found by that wallet's next sync"
+                    "(${e::class.simpleName}); the redemption stands, and that wallet finds the claim " +
+                    "at its next sync only if the claim pays it"
             }
             false
         }

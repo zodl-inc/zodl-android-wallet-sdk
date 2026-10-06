@@ -164,8 +164,11 @@ class GiftCardRedeemerTest {
         }
 
     /**
-     * A claim paying another wallet is not stored in the destination, so nothing is trusted there:
-     * the refusal to trust it reports the claim as not recorded, and the redemption still stands.
+     * Contract test: when the destination refuses to trust the claim, as the native backend does
+     * for a claim paying another wallet, the claim is reported as not recorded and the redemption
+     * still stands. The refusal is scripted by [UninvolvedDestination], so this passes whether or
+     * not the native backend refuses; the Rust tests of `set_trust_of_stored_transaction` cover
+     * that it does.
      */
     @Test
     fun aClaimTheDestinationDidNotStoreIsReportedAsNotRecorded() =

@@ -140,7 +140,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change is needed.
 - `Synchronizer.recordTrustedTransaction` now throws when the transaction does not involve this
   wallet and so was not stored, instead of returning normally with no trust status recorded, and
-  `RustBackend.setTransactionTrust` throws for a transaction the wallet has not stored. A gift
+  `RustBackend.setTransactionTrust` throws for a transaction it does not find among the wallet's
+  stored transactions, including a stored one whose raw bytes the wallet does not hold. A gift
   card claim recorded in a wallet it does not pay therefore reports
   `GiftCardRedeemer.Redemption.recordedInDestination` as `false`; the redemption itself is
   unaffected.

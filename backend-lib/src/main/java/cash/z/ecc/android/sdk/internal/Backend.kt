@@ -454,7 +454,8 @@ interface Backend {
      * nothing for a transaction that does not involve this wallet.
      *
      * @throws RuntimeException as a common indicator of the operation failure, including when the
-     * transaction is not stored in this wallet
+     * transaction is not found among this wallet's stored transactions; a stored transaction whose
+     * raw bytes the wallet does not hold also counts as not found
      */
     @Throws(RuntimeException::class)
     suspend fun setTransactionTrust(

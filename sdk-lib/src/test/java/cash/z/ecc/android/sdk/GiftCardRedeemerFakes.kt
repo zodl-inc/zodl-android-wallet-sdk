@@ -200,10 +200,14 @@ internal class FakeDestination(
 }
 
 /**
- * A wallet that the claim does not involve, recording through the SDK's own
- * `recordTrustedTransaction` step. As in the native backend, storing such a transaction stores
- * nothing yet still returns its id ([claimTxId]), and trusting it then throws a
- * [RuntimeException] because no stored transaction has that id.
+ * A destination whose backend behaves as the native one does for a claim that does not involve its
+ * wallet: storing returns the claim's id ([claimTxId]) and trusting it throws a
+ * [RuntimeException]. Recording goes through the SDK's own `recordTrustedTransaction` step.
+ *
+ * The throw is unconditional and scripted here, so tests using this fake cover only the contract
+ * from that throw onwards: how the SDK and the redeemer react to it. Whether the native backend
+ * really throws for a transaction it did not store is covered by the Rust tests of
+ * `set_trust_of_stored_transaction` in backend-lib.
  */
 internal class UninvolvedDestination(
     claimTxId: FirstClassByteArray
@@ -223,7 +227,7 @@ internal class UninvolvedDestination(
                 trusted: Boolean
             ) {
                 trustAttempts += txId
-                throw RuntimeException("Transaction is not stored in this wallet; its trust status was not set")
+                throw RuntimeException("Transaction was not found in this wallet's stored transactions")
             }
         }
 
