@@ -149,6 +149,26 @@ class GiftCardRedeemerFailureTest {
             assertIs<GiftCardRedeemer.Status.Ready>(next.check())
         }
 
+    /**
+     * A card wallet that throws while closing must not strand the card: its data is still erased and its alias is
+     * released, so the same card can be opened again by a new redeemer in this process.
+     */
+    @Test
+    fun aCardWalletThatFailsToCloseIsStillErasedAndItsAliasReleased() =
+        runBlocking<Unit> {
+            val aliases = GiftCardAliases()
+            val cardWallet = FakeCardWallet(emptyList(), closeFailure = IllegalStateException("close"))
+            val wallets = FakeWallets(listOf(cardWallet))
+            val (redeemer, _) = redeemer(cardWallet, wallets = wallets, aliases = aliases)
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+
+            assertFailsWith<IllegalStateException> { redeemer.close() }
+
+            assertTrue(wallets.erased.contains(redeemer.alias))
+            val (next, _) = redeemer(FakeCardWallet(emptyList()), aliases = aliases)
+            assertIs<GiftCardRedeemer.Status.Ready>(next.check())
+        }
+
     @Test
     fun aSubmissionThatThrowsIsAFailedResultThatIsNotRecorded() =
         runBlocking {

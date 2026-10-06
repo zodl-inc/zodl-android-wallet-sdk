@@ -48,6 +48,7 @@ internal class FakeCardWallet(
     var fee: Zatoshi = Zatoshi(10_000),
     private val history: Int = 1,
     private val sent: Long? = null,
+    private val closeFailure: Exception? = null,
     override val status: Flow<Synchronizer.Status> = MutableStateFlow(Synchronizer.Status.SYNCED),
     private val submitResult: (CreatedTransaction) -> TransactionSubmitResult = {
         TransactionSubmitResult.Success(it.txId)
@@ -110,6 +111,7 @@ internal class FakeCardWallet(
 
     override fun close() {
         closed = true
+        closeFailure?.let { throw it }
     }
 }
 

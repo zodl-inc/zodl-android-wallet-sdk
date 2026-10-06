@@ -524,14 +524,17 @@ class GiftCardRedeemer private constructor(
             mutex.withLock {
                 isClosed = true
                 checkedAccount = null
-                synchronizer?.close()
-                synchronizer = null
-                if (holdsAlias) {
-                    try {
-                        wallets.erase(context, network, alias)
-                    } finally {
-                        aliases.release(network, alias)
-                        holdsAlias = false
+                try {
+                    synchronizer?.close()
+                } finally {
+                    synchronizer = null
+                    if (holdsAlias) {
+                        try {
+                            wallets.erase(context, network, alias)
+                        } finally {
+                            aliases.release(network, alias)
+                            holdsAlias = false
+                        }
                     }
                 }
             }
