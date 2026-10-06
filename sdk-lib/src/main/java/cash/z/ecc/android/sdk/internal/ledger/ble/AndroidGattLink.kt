@@ -379,6 +379,9 @@ internal class AndroidGattLink private constructor(
      * The pending operation is tagged with its [kind], and a callback completes it only when the kinds
      * match: the callback of an operation that already timed out may still arrive, and must not be
      * taken for the result of the next one.
+     *
+     * The pending operation is published before `closed` is read, so a [close] racing the start is
+     * either seen here, or finds the operation published and fails it.
      */
     private suspend fun operation(
         kind: Operation,
@@ -387,13 +390,10 @@ internal class AndroidGattLink private constructor(
     ): Int =
         operationMutex.withLock {
             val gatt = gatt ?: throw LedgerException.Disconnected()
-            if (closed.get()) {
-                throw LedgerException.Disconnected()
-            }
             val pending = PendingOperation(kind, CompletableDeferred())
             pendingOperation.set(pending)
             try {
-                if (!start(gatt)) {
+                if (closed.get() || !start(gatt)) {
                     throw LedgerException.Disconnected()
                 }
                 withTimeout(timeout) { pending.result.await() }
