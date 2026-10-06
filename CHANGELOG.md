@@ -25,8 +25,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valargroup/zcash_voting#373, the pull request that moves its librustzcash backend to
   the NU7 pre-release crates. No release carries that change yet, so the Rust backend
   takes the crate, and the crates under it that the change also needs, from git
-  revisions; they are replaced by the releases once those exist. The voting API is
-  unchanged.
+  revisions. crates.io already has releases with the same version numbers built on the
+  Ironwood generation, so these git revisions are replaced only together, once NU7-based
+  releases exist under new version numbers. The voting API is unchanged.
 
 ## [5.0.0] - 2026-09-25
 
