@@ -39,7 +39,7 @@ class LedgerDeviceIntegrationTest {
     private class ScriptedDevice(
         private val ufvk: String,
         private val address: String,
-        var publicKey: ByteArray = GENERATOR_UNCOMPRESSED
+        var publicKey: ByteArray = SEED_7_IDENTITY_KEY_UNCOMPRESSED
     ) : LedgerApduTransport {
         val timeouts = mutableListOf<Duration?>()
         val statusAt = mutableMapOf<Int, Int>()
@@ -130,6 +130,19 @@ class LedgerDeviceIntegrationTest {
                     .dropLast(1)
                     .all { it != null }
             )
+        }
+
+    @Test
+    @SmallTest
+    fun pairing_account_0_refuses_a_viewing_key_of_another_identity() =
+        runTest {
+            val device = fixture()
+            device.publicKey = GENERATOR_UNCOMPRESSED
+
+            assertFailsWith<LedgerException.DeviceMismatch> {
+                LedgerDevice.new(device, network).pairAccount(account)
+            }
+            assertFalse(device.closed)
         }
 
     @Test
@@ -244,6 +257,16 @@ class LedgerDeviceIntegrationTest {
         private const val SW_OK = 0x9000
         private const val SW_DENY = 0x6985
         private const val SW_CMD_NOT_ACCEPTED = 0x6901
+
+        /**
+         * The uncompressed public key at `m/44'/1'/0'/0/0` of the seed `[7; 32]`: the key the
+         * device identity of [fixture] hashes.
+         */
+        private val SEED_7_IDENTITY_KEY_UNCOMPRESSED =
+            hex(
+                "046BA36F35DFB3979AB7610E2839BD1F25C00DF98BF9087F24D55488B485910F94" +
+                    "041CFEB04D9DE99C47918F2A5A5979B65AF2BAB10718B62467854FA9AF217FE6"
+            )
 
         /** The secp256k1 generator, uncompressed: a valid public key. */
         private val GENERATOR_UNCOMPRESSED =
