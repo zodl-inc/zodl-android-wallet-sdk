@@ -205,6 +205,10 @@ class PendingSubmitPlanStoreTest {
             )
         }
 
+    /**
+     * Both stores load the (empty) shared preference before either writes to it, as two synchronizers running side
+     * by side do.
+     */
     @Test
     fun concurrently_loaded_namespaced_stores_keep_each_others_plans() =
         runBlocking {
@@ -214,8 +218,6 @@ class PendingSubmitPlanStoreTest {
             val mainStore = PendingSubmitPlanStore(preferenceProvider, namespace = "1_zcashdefault")
             val giftStore = PendingSubmitPlanStore(preferenceProvider, namespace = "1_giftcard_ab")
 
-            // Both stores load the (empty) shared preference before either writes to it, as two
-            // synchronizers running side by side do.
             assertNull(mainStore.getSubmitPlan(mainTransaction.txId))
             assertNull(giftStore.getSubmitPlan(giftTransaction.txId))
 
@@ -237,6 +239,7 @@ class PendingSubmitPlanStoreTest {
             )
         }
 
+    /** A namespace that merely starts with the erased one is a different namespace. */
     @Test
     fun erase_namespace_removes_only_that_namespace() =
         runBlocking {
@@ -247,7 +250,6 @@ class PendingSubmitPlanStoreTest {
                 .storeSubmitPlan(mainTransaction, TransactionSubmitPlan(listOf(endpoint("a.z.cash"))))
             PendingSubmitPlanStore(preferenceProvider, namespace = "1_gift")
                 .storeSubmitPlan(giftTransaction, TransactionSubmitPlan(listOf(endpoint("b.z.cash"))))
-            // A namespace that merely starts with the erased one is a different namespace.
             PendingSubmitPlanStore(preferenceProvider, namespace = "1_gift2")
                 .storeSubmitPlan(giftTransaction, TransactionSubmitPlan(listOf(endpoint("c.z.cash"))))
 

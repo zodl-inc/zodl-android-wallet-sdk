@@ -56,9 +56,9 @@ class GiftCardTest {
         assertNull(card.description)
     }
 
+    /** The backend's `origin_code` reports these integers; the enum order must match it. */
     @Test
     fun originCodesMatchTheBackend() {
-        // The backend's `origin_code` reports these integers; the enum order must match it.
         assertEquals(GiftCardOrigin.Zodl, GiftCard.parse("link", links { jniCard(origin = 0) }).origin)
         assertEquals(GiftCardOrigin.LegacyV1, GiftCard.parse("link", links { jniCard(origin = 1) }).origin)
         assertEquals(GiftCardOrigin.LegacyV2, GiftCard.parse("link", links { jniCard(origin = 2) }).origin)
@@ -73,6 +73,23 @@ class GiftCardTest {
         assertFalse(text.contains("Summit"))
         assertFalse(text.contains("fundingaddress"))
         assertFalse(card.id.contains("fundingaddress"))
+    }
+
+    @Test
+    fun toStringNamesTheStatedAmountOnlyWhenTheLinkHasOne() {
+        val stated = GiftCard.parse("link", links { jniCard() }).toString()
+        val unstated = GiftCard.parse("link", links { jniCard(amount = -1) }).toString()
+
+        assertTrue(stated.contains("statedAmount=1000000"))
+        assertTrue(unstated.contains("statedAmount=null"))
+        assertFalse(unstated.contains(seed.toHex()))
+    }
+
+    @Test
+    fun aSeedOfAnyOtherLengthIsRefused() {
+        listOf(0, 32, 63, 65).forEach { size ->
+            assertFailsWith<IllegalArgumentException> { GiftCardSeed(ByteArray(size)) }
+        }
     }
 
     @Test
@@ -121,6 +138,26 @@ class GiftCardTest {
     }
 
     @Test
+    fun wipeOverwritesTheKeyAndRefusesLaterUse() {
+        val card = GiftCard.parse("link", links { jniCard() })
+
+        card.wipe()
+        card.wipe()
+
+        assertFailsWith<IllegalStateException> { card.seed.copyBytes() }
+    }
+
+    @Test
+    fun wipeZeroesTheSeedBytes() {
+        val bytes = seed.copyOf()
+        val giftCardSeed = GiftCardSeed(bytes)
+
+        giftCardSeed.wipe()
+
+        assertTrue(bytes.all { it == 0.toByte() })
+    }
+
+    @Test
     fun wipesTheBackendsSeedCopyOnceTheCardHoldsItsOwn() {
         val jni = jniCard()
         val card = GiftCard.parse("link", links { jni })
@@ -135,10 +172,12 @@ class GiftCardTest {
         assertTrue(jni.seed.all { it == 0.toByte() })
     }
 
+    /**
+     * Sanitizing is the backend's job (see `gift_card.rs`); the card must not alter or drop what it reports,
+     * including a trailing space left where a line break was.
+     */
     @Test
     fun exposesTheBackendsSanitizedDescriptionAsIs() {
-        // Sanitizing is the backend's job (see `gift_card.rs`); the card must not alter or drop
-        // what it reports, including a trailing space left where a line break was.
         val sanitized = "Giftmoc.liame "
         assertEquals(sanitized, GiftCard.parse("link", links { jniCard(description = sanitized) }).description)
         assertNull(GiftCard.parse("link", links { jniCard(description = null) }).description)

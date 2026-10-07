@@ -2255,7 +2255,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransa
 /// The outputs of a trusted transaction become spendable after the policy's `trusted` number of
 /// confirmations (3 by default) instead of its `untrusted` one (10 by default), even when the
 /// transaction was not created by this wallet. This only updates an existing `transactions` row:
-/// store the transaction first, e.g. with `decryptAndStoreTransaction`.
+/// store the transaction first, e.g. with `decryptAndStoreTransaction`, which stores nothing for a
+/// transaction that does not involve this wallet. A transaction not found among the wallet's
+/// stored transactions throws rather than succeeding with nothing recorded, so a normal return
+/// always means the status was set; see `set_trust_of_stored_transaction` for what "found" covers.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransactionTrust<
     'local,
@@ -2273,12 +2276,57 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransa
         let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let txid = parse_txid(env, txid_bytes)?;
 
-        db_data
-            .set_tx_trust(txid, trusted != JNI_FALSE)
-            .map_err(|e| anyhow!("Error while setting transaction trust: {}", e))
+        set_trust_of_stored_transaction(&mut db_data, txid, trusted != JNI_FALSE)
     });
 
     unwrap_exc_or(&mut env, res, ())
+}
+
+/// Sets the trust status of a transaction this wallet has stored, failing when it has not.
+///
+/// `WalletWrite::set_tx_trust` is an update that succeeds without touching a row when the
+/// transaction is unknown, and `decrypt_and_store_transaction` stores nothing for a transaction
+/// that does not involve the wallet. Checking first is what lets a caller tell "trusted" apart from
+/// "there was nothing to trust".
+///
+/// The check is `WalletRead::get_transaction`, which `WalletRead` offers as the only lookup of a
+/// `transactions` row by txid that also covers unmined transactions (`get_tx_height` answers `None`
+/// for those as well as for unknown ones). It reads more than whether the row exists, so it is
+/// narrower than "the row exists" in two cases, both of which fail here although `set_tx_trust`
+/// would have updated the row:
+///
+/// - a row whose raw transaction bytes were never stored, such as a mined transaction found by
+///   block scanning and not yet enhanced, is reported as not found;
+/// - an unmined row whose expiry height is 0 cannot be parsed, because no consensus branch can be
+///   chosen for it, and the lookup errors.
+///
+/// Neither arises after `decrypt_and_store_transaction`, which writes the raw bytes and the
+/// transaction's own expiry height, for a transaction this SDK builds, whose expiry height is
+/// never 0; that store-then-trust sequence is how `recordTrustedTransaction` calls this.
+fn set_trust_of_stored_transaction<W>(
+    db_data: &mut W,
+    txid: TxId,
+    trusted: bool,
+) -> anyhow::Result<()>
+where
+    W: WalletRead + WalletWrite,
+    <W as WalletRead>::Error: std::fmt::Display,
+{
+    let stored = db_data
+        .get_transaction(txid)
+        .map_err(|e| anyhow!("Error looking up txid {}: {}", txid, e))?
+        .is_some();
+    if !stored {
+        return Err(anyhow!(
+            "Transaction {} was not found in this wallet's stored transactions; its trust status \
+             was not set",
+            txid
+        ));
+    }
+
+    db_data
+        .set_tx_trust(txid, trusted)
+        .map_err(|e| anyhow!("Error setting the trust status of txid {}: {}", txid, e))
 }
 
 fn zip317_helper<DbT>(
@@ -4344,6 +4392,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOr
 
 #[cfg(test)]
 mod tests {
+    use zcash_client_backend::data_api::{
+        Account as _, MaxSpendMode,
+        testing::{AddressType, TestBuilder, TestState},
+        wallet::{
+            ConfirmationsPolicy, SpendingKeys, create_proposed_transactions,
+            input_selection::LockedInputPolicy, propose_send_max_transfer,
+        },
+    };
+    use zcash_client_backend::{fees::StandardFeeRule, wallet::OvkPolicy};
+    use zcash_client_sqlite::testing::{
+        BlockCache,
+        db::{TestDb, TestDbFactory},
+    };
+    use zcash_keys::address::{Address, UnifiedAddress};
+    use zcash_primitives::block::BlockHash;
+    use zcash_protocol::value::Zatoshis;
+
     use super::*;
 
     #[test]
@@ -4388,5 +4453,165 @@ mod tests {
             "did not expect the marker prefix, got {mapped_msg:?}"
         );
         assert!(mapped_msg.starts_with("Error while initializing accounts: "));
+    }
+
+    /// A transaction the wallet never stored, such as one `decrypt_and_store_transaction` skipped
+    /// because it does not involve the wallet, must not report its trust as set: the update
+    /// underneath would succeed on zero rows.
+    ///
+    /// The wallet lives in memory, so a failing assertion leaves no database file behind.
+    #[test]
+    fn trusting_a_transaction_the_wallet_did_not_store_fails() {
+        let conn = rusqlite::Connection::open_in_memory().expect("opens an in-memory database");
+        rusqlite::vtab::array::load_module(&conn).expect("loads the SQLite array module");
+        let mut db = WalletDb::from_connection(conn, TestNetwork, SystemClock, system_rng());
+        init_wallet_db(&mut db, None).expect("initializes the wallet schema");
+
+        let txid = TxId::from_bytes([0x5a; 32]);
+        let error = set_trust_of_stored_transaction(&mut db, txid, true)
+            .expect_err("an unknown transaction cannot be trusted")
+            .to_string();
+
+        assert!(
+            error.contains("was not found in this wallet's stored transactions"),
+            "unexpected error: {error}"
+        );
+        assert!(db.get_transaction(txid).unwrap().is_none());
+    }
+
+    /// Trust on a stored, unmined transaction that involves the wallet, the way
+    /// `recordTrustedTransaction` sets it: `decrypt_and_store_transaction` with no mined height,
+    /// then `set_trust_of_stored_transaction`.
+    ///
+    /// Two synthetic in-memory wallets share the test seed under different ZIP 32 accounts. The
+    /// sender, standing in for a gift card's wallet, holds a scanned Orchard note and sends all of
+    /// it to the receiver's Orchard address. The receiver, standing in for the redemption's
+    /// destination, has scanned only an empty block of its own, which gives it the chain tip that
+    /// storing an unmined transaction needs, so it learns about the transaction only from its raw
+    /// bytes.
+    #[test]
+    fn trusting_a_stored_unmined_transaction_that_involves_the_wallet_sets_its_trust() {
+        let mut receiver = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_block_cache(BlockCache::new())
+            .with_account_from_sapling_activation(BlockHash([0; 32]))
+            .set_account_index(zip32::AccountId::const_from_u32(1))
+            .build();
+        let receiver_address = {
+            let fvk = orchard::keys::FullViewingKey::from(
+                receiver.test_account().unwrap().usk().orchard(),
+            );
+            Address::from(
+                UnifiedAddress::from_receivers(
+                    Some(fvk.address_at(0u32, orchard::keys::Scope::External)),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            )
+            .to_zcash_address(receiver.network())
+        };
+        let (receiver_tip, _) = receiver.generate_empty_block();
+        receiver.scan_cached_blocks(receiver_tip, 1);
+
+        let mut sender = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_block_cache(BlockCache::new())
+            .with_account_from_sapling_activation(BlockHash([0; 32]))
+            .build();
+        let sender_fvk =
+            orchard::keys::FullViewingKey::from(sender.test_account().unwrap().usk().orchard());
+        let (funded_at, _, _) = sender.generate_next_block(
+            &sender_fvk,
+            AddressType::DefaultExternal,
+            Zatoshis::const_from_u64(100_000),
+        );
+        for _ in 0..10 {
+            sender.generate_empty_block();
+        }
+        sender.scan_cached_blocks(funded_at, 11);
+
+        let network = *sender.network();
+        let account = sender.test_account().unwrap().id();
+        let proposal = propose_send_max_transfer::<_, _, _, std::convert::Infallible>(
+            sender.wallet_mut(),
+            &network,
+            account,
+            &crate::send_max::SEND_MAX_POOLS,
+            &StandardFeeRule::Zip317,
+            receiver_address,
+            None,
+            MaxSpendMode::MaxSpendable,
+            ConfirmationsPolicy::default(),
+            &LockedInputPolicy::Exclude,
+            None,
+        )
+        .expect("proposes sending the sender's Orchard note");
+        let usk = sender.test_account().unwrap().usk().clone();
+        let clock = sender.clock().clone();
+        let txids = create_proposed_transactions::<
+            _,
+            _,
+            std::convert::Infallible,
+            _,
+            std::convert::Infallible,
+            _,
+        >(
+            sender.wallet_mut(),
+            &network,
+            &clock,
+            &mut system_rng(),
+            &proving::NoSaplingProver,
+            &proving::NoSaplingProver,
+            &SpendingKeys::from_unified_spending_key(usk),
+            OvkPolicy::Sender,
+            &proposal,
+            None,
+        )
+        .expect("builds the Orchard-only transaction");
+        assert_eq!(txids.len(), 1);
+        let txid = *txids.first();
+
+        let mut raw = vec![];
+        sender
+            .wallet()
+            .get_transaction(txid)
+            .unwrap()
+            .expect("the sender stored the transaction it created")
+            .write(&mut raw)
+            .unwrap();
+        let tx = Transaction::read(&raw[..], BranchId::Sapling).expect("parses as the JNI does");
+
+        assert!(receiver.wallet().get_transaction(txid).unwrap().is_none());
+        decrypt_and_store_transaction(&network, receiver.wallet_mut().db_mut(), &tx, None)
+            .expect("stores the transaction it can decrypt");
+
+        let row = |receiver: &TestState<_, TestDb, _>| -> (Option<u32>, Option<i64>) {
+            receiver
+                .wallet()
+                .conn()
+                .query_row(
+                    "SELECT mined_height, trust_status FROM transactions WHERE txid = ?",
+                    [txid.as_ref()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("the receiver stored the transaction")
+        };
+        assert_eq!(
+            row(&receiver),
+            (None, None),
+            "stored unmined, with no trust status"
+        );
+
+        set_trust_of_stored_transaction(receiver.wallet_mut().db_mut(), txid, true)
+            .expect("trusts the stored transaction");
+
+        assert_eq!(
+            row(&receiver),
+            (None, Some(1)),
+            "trusted, and still unmined"
+        );
     }
 }

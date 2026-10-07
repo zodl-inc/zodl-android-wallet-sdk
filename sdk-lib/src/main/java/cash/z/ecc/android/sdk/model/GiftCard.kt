@@ -57,7 +57,14 @@ class GiftCard private constructor(
             .toHex()
     }
 
-    // Override to prevent leaking the card's key, or the link's free-form text, to logs
+    /**
+     * Overwrites the card's key in memory. Call it once the card is no longer needed, after every
+     * [cash.z.ecc.android.sdk.GiftCardRedeemer] for it has been closed: a redeemer that still needs
+     * the key afterwards fails. Idempotent.
+     */
+    fun wipe() = seed.wipe()
+
+    /** Leaves out the card's key and the link's free-form text, so that neither reaches logs. */
     override fun toString() =
         "GiftCard(origin=$origin, network=${network.networkName}, birthdayHeight=${birthdayHeight.value}, " +
             "statedAmount=${statedAmount?.value}, seed=***)"
@@ -95,7 +102,10 @@ class GiftCard private constructor(
             return fromJni(jni)
         }
 
-        /** Builds the card from what the backend parsed, then wipes the backend's seed copy. */
+        /**
+         * Builds the card from what the backend parsed, then wipes the backend's seed copy: the card keeps its
+         * own copy, and the one the backend handed over is not needed.
+         */
         internal fun fromJni(jni: JniGiftCard): GiftCard =
             try {
                 val origin =
@@ -114,7 +124,6 @@ class GiftCard private constructor(
                     fundingAddress = jni.fundingAddress
                 )
             } finally {
-                // The card keeps its own copy; the one the backend handed over is not needed.
                 jni.seed.fill(0)
             }
     }
@@ -177,18 +186,36 @@ enum class GiftCardLinkError(
 /**
  * The 64-byte BIP 39 seed of a gift card wallet: spend authority over the card's funds.
  *
- * Never exposed outside the SDK, and redacted in [toString].
+ * Never exposed outside the SDK, and redacted in [toString]. [wipe] overwrites it in memory.
  */
 internal class GiftCardSeed(
     private val bytes: ByteArray
 ) {
+    private var isWiped = false
+
     init {
         require(bytes.size == SEED_BYTES) { "A gift card seed is $SEED_BYTES bytes" }
     }
 
-    fun copyBytes(): ByteArray = bytes.copyOf()
+    /**
+     * A copy of the seed, for the caller to wipe after use.
+     *
+     * @throws IllegalStateException if the seed was wiped.
+     */
+    @Synchronized
+    fun copyBytes(): ByteArray {
+        check(!isWiped) { "The gift card's key was wiped" }
+        return bytes.copyOf()
+    }
 
-    // Override to prevent leaking the card's key to logs
+    /** Overwrites the seed with zeros. Idempotent. */
+    @Synchronized
+    fun wipe() {
+        bytes.fill(0)
+        isWiped = true
+    }
+
+    /** Leaves the key out, so that it never reaches logs. */
     override fun toString() = "GiftCardSeed(***)"
 
     private companion object {

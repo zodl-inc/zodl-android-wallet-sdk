@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -181,6 +182,7 @@ class SynchronizerWalletInitializationTest {
                 )
 
             assertSame(fallbackTreeState, result.treeState)
+            assertFalse(result.isBirthdayExact)
             assertEquals(BlockHeight(tipHeight.value), result.recoverUntil)
             assertEquals(listOf<ServiceMode>(ServiceMode.Direct), walletClient.latestBlockHeightRequests)
             assertTrue(walletClient.treeStateRequests.isEmpty())
@@ -209,6 +211,7 @@ class SynchronizerWalletInitializationTest {
                 )
 
             assertTrue(exactTreeState.encoded.contentEquals(result.treeState.encoded))
+            assertTrue(result.isBirthdayExact)
             assertEquals(BlockHeight(tipHeight.value), result.recoverUntil)
             assertEquals(listOf<ServiceMode>(ServiceMode.Direct), walletClient.latestBlockHeightRequests)
             assertEquals(listOf(TreeStateRequest(treeStateHeight, ServiceMode.Direct)), walletClient.treeStateRequests)
@@ -236,6 +239,7 @@ class SynchronizerWalletInitializationTest {
                 )
 
             assertSame(fallbackTreeState, result.treeState)
+            assertFalse(result.isBirthdayExact, "a fallback is reported, so that a scan from it is not repeated")
             assertEquals(BlockHeight(tipHeight.value), result.recoverUntil)
             assertEquals(
                 listOf(TreeStateRequest(BlockHeightUnsafe(birthday.value - 1), ServiceMode.Direct)),

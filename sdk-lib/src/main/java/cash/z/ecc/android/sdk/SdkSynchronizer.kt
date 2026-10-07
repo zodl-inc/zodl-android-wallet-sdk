@@ -43,6 +43,7 @@ import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
 import cash.z.ecc.android.sdk.internal.recordTrustedTransaction
 import cash.z.ecc.android.sdk.internal.repository.CompactBlockRepository
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
+import cash.z.ecc.android.sdk.internal.requireNotMainWalletAlias
 import cash.z.ecc.android.sdk.internal.storage.block.FileCompactBlockRepository
 import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
@@ -192,6 +193,8 @@ class SdkSynchronizer private constructor(
          *
          * @return Synchronizer instance as CloseableSynchronizer
          *
+         * @param onCriticalErrorHandler installed as [onCriticalErrorHandler] before the synchronizer starts.
+         *
          * @throws IllegalStateException If multiple instances of synchronizer with the same network+alias are
          * active at the same time.  Call `close` to finish one synchronizer before starting another one with the same
          * network+alias.
@@ -213,7 +216,8 @@ class SdkSynchronizer private constructor(
             walletClientFactory: WalletClientFactory,
             defaultSubmitEndpoint: LightWalletEndpoint,
             pendingSubmitPlanStore: PendingSubmitPlanStore,
-            sdkFlags: SdkFlags
+            sdkFlags: SdkFlags,
+            onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null
         ): CloseableSynchronizer {
             val synchronizerKey = SynchronizerKey(zcashNetwork, alias)
             return mutex.withLock {
@@ -236,6 +240,7 @@ class SdkSynchronizer private constructor(
                     pendingSubmitPlanStore = pendingSubmitPlanStore,
                     sdkFlags = sdkFlags
                 ).apply {
+                    this.onCriticalErrorHandler = onCriticalErrorHandler
                     instances[synchronizerKey] = InstanceState.Active
                     start()
                 }
@@ -290,6 +295,7 @@ class SdkSynchronizer private constructor(
             network: ZcashNetwork,
             alias: String
         ): Boolean {
+            requireNotMainWalletAlias(alias, "Use erase() for the default wallet")
             val key = SynchronizerKey(network, alias)
 
             return mutex.withLock {
@@ -694,14 +700,25 @@ class SdkSynchronizer private constructor(
         }
     }
 
-    // Straight to the wallet database: this must work while the synchronizer is not synced or
-    // is stopped, so no sync state is awaited.
+    /**
+     * Writes straight to the wallet database: this must work while the synchronizer is not synced
+     * or is stopped, so no sync state is awaited.
+     */
     override suspend fun recordTrustedTransaction(
         rawTransaction: RawTransaction,
         txId: TransactionId
     ) {
         backend.recordTrustedTransaction(rawTransaction, txId)
         storage.invalidate()
+        // The claim is recorded at this point; a failed balance refresh must not report otherwise.
+        @Suppress("TooGenericExceptionCaught")
+        try {
+            refreshAllBalances()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Twig.warn { "Refreshing balances after a trusted claim failed: ${e::class.simpleName}" }
+        }
     }
 
     /**

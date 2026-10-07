@@ -18,7 +18,7 @@ class RecipientAddress private constructor(
 
     override fun hashCode(): Int = 31 * encoding.hashCode() + network.hashCode()
 
-    // Override to keep addresses out of logs
+    /** Masks the address, so that it never reaches logs in full. */
     override fun toString() = "RecipientAddress(${encoding.masked()})"
 
     companion object {

@@ -14,8 +14,13 @@ import cash.z.ecc.android.sdk.model.TransactionId
  * mined. Trust is only set once the stored transaction's id has been checked against [txId], so
  * a caller mixing up ids cannot trust the wrong transaction.
  *
+ * A transaction that does not involve this wallet is not stored, so there is nothing to trust and
+ * recording fails rather than returning as if it had been trusted.
+ *
  * @throws IllegalArgumentException if [txId] is not the id of [rawTransaction]. The transaction
  * has been stored by then, as untrusted.
+ * @throws RuntimeException if the transaction does not involve this wallet and so was not stored,
+ * or if its trust status cannot be recorded.
  */
 internal suspend fun TypesafeBackend.recordTrustedTransaction(
     rawTransaction: RawTransaction,
@@ -23,7 +28,7 @@ internal suspend fun TypesafeBackend.recordTrustedTransaction(
 ) {
     val storedTxId = decryptAndStoreTransaction(rawTransaction.data, minedHeight = null)
     require(storedTxId == txId.value) {
-        "txId does not match the transaction" // $NON-NLS
+        "txId does not match the transaction"
     }
     setTransactionTrust(txId.value.byteArray, trusted = true)
 }

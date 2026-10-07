@@ -11,7 +11,6 @@
 
 package com.zodl.slipstream
 
-import android.app.ActivityManager
 import android.content.Context
 import cash.z.ecc.android.sdk.Broadcaster
 import cash.z.ecc.android.sdk.CloseableSynchronizer
@@ -41,6 +40,7 @@ import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.TorDormantMode
 import cash.z.ecc.android.sdk.internal.model.TorHttp
 import cash.z.ecc.android.sdk.internal.model.TreeState
+import cash.z.ecc.android.sdk.internal.requireNotMainWalletAlias
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
@@ -50,12 +50,14 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FetchFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.ObserveFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RawTransaction
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
 import cash.z.ecc.android.sdk.model.TransactionId
@@ -88,8 +90,12 @@ import com.zodl.slipstream.internal.InstanceGuard
 import com.zodl.slipstream.internal.PrepareInputs
 import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.internal.SlipstreamKey
+import com.zodl.slipstream.internal.copyOwningSeed
 import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
 import com.zodl.slipstream.internal.db.TransactionsController
+import com.zodl.slipstream.internal.engineMemoryBytes
+import com.zodl.slipstream.internal.engineMemoryHint
+import com.zodl.slipstream.internal.fetchExactBirthdayTreeState
 import com.zodl.slipstream.internal.newestBundledCheckpointHeight
 import com.zodl.slipstream.internal.resolveIntent
 import com.zodl.slipstream.internal.runCatchingCancellable
@@ -99,20 +105,24 @@ import com.zodl.slipstream.internal.spend.SaplingParams
 import com.zodl.slipstream.internal.spend.SlipstreamBroadcaster
 import com.zodl.slipstream.internal.spend.SlipstreamSpendService
 import com.zodl.slipstream.internal.spend.SubmitPlanStore
+import com.zodl.slipstream.internal.spend.submitPlanPreferencesName
 import com.zodl.slipstream.internal.toProcessorInfo
 import com.zodl.slipstream.internal.validateAlias
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.HttpClientEngineConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -154,11 +164,18 @@ import kotlin.time.Duration
  * `resolveWalletInitializationState` -> `DerivedDataDb.new` (`Synchronizer.kt` ~1138,
  * `DerivedDataDb.kt` ~126) to provision the fresh-wallet account row. Bundled together so the
  * `when(intent)` block computes each of an anchor's three derived facts exactly once.
+ *
+ * [exactTreeState] is the tree state at the requested birthday minus one, fetched only for a restore
+ * asked to start exactly at its birthday ([PrepareInputs.exactBirthdayTreeState]); the account is
+ * created from it rather than from [treeState], the bundled checkpoint, whenever it is present. Such a
+ * restore's [treeState] is read from the bundled checkpoints only when the account is created from it;
+ * every other wallet's is read while the plan is resolved, before the accounts are.
  */
 private data class WalletProvisioningPlan(
     val startBirthday: BlockHeight,
-    val treeState: TreeState,
-    val recoverUntil: Long?
+    val treeState: suspend () -> TreeState,
+    val recoverUntil: Long?,
+    val exactTreeState: TreeState? = null
 )
 
 /**
@@ -282,6 +299,10 @@ class SlipstreamSynchronizer internal constructor(
 
     /** The job running [runPrepare]; cancelled and joined as [close]'s first shutdown step. */
     private var prepareJob: Job? = null
+
+    /** [close]'s shutdown job, once [close] has run; see [closeAndAwaitShutdown]. */
+    @Volatile
+    private var shutdownJob: Job? = null
 
     /**
      * The preparation failure, latched so it can be replayed to an [onSetupErrorHandler] that is
@@ -513,7 +534,17 @@ class SlipstreamSynchronizer internal constructor(
         if (inputs == null) {
             engine.startPolling()
         } else {
-            prepareJob = scope.launch { runPrepare(inputs) }
+            /*
+             * The seed goes as soon as preparation has settled - completed, failed, or cancelled by
+             * close(), including before it ever ran - since nothing reads it afterwards.
+             */
+            prepareJob =
+                scope.launch { runPrepare(inputs) }.also { job ->
+                    job.invokeOnCompletion {
+                        inputs.birthdayResolved?.complete(false)
+                        inputs.releaseSetup()
+                    }
+                }
         }
     }
 
@@ -588,7 +619,7 @@ class SlipstreamSynchronizer internal constructor(
      * because the row is not written YET from one that is empty because there is nothing to read.
      */
     private fun isAccountCreationPending(): Boolean =
-        prepareInputs?.setup != null && prepareState.value !is PrepareState.Ready
+        prepareInputs?.hasSetup == true && prepareState.value !is PrepareState.Ready
 
     /**
      * Completes [this] - rather than letting it fail, or idle forever on a tick that will never
@@ -683,10 +714,55 @@ class SlipstreamSynchronizer internal constructor(
      * The final [SlipstreamEngine.startPolling] is unconditional, including under a migration
      * [pause]: polling only performs local JNI reads, and a pause that suppressed them left the
      * balances and status frozen at whatever the last tick saw.
+     *
+     * A restore asked to start exactly at its birthday ([PrepareInputs.exactBirthdayTreeState], which
+     * only a helper wallet such as a gift card's asks for) does not wait for the database: its anchor
+     * and its exact tree state are resolved while `initDataDb` runs (see
+     * [resolveExactBirthdayProvisioning]). Every other wallet, the main wallet included, keeps the order
+     * above.
      */
     private suspend fun prepare(inputs: PrepareInputs) {
         val fallbackCheckpoint = inputs.fallbackCheckpointHeight()
+        val fetchExactTreeState = inputs.exactBirthdayTreeState
+        val provisioning =
+            if (fetchExactTreeState == null) {
+                if (!provisionDataDb(inputs)) return
+                resolveProvisioning(inputs, fallbackCheckpoint)
+            } else {
+                resolveExactBirthdayProvisioning(inputs, fallbackCheckpoint, fetchExactTreeState) ?: return
+            }
+        startBirthday = provisioning.startBirthday
 
+        var startsAtBirthday = false
+        if (shouldCreateAccount(
+                hasSetup = inputs.setup != null,
+                accountsAreEmpty = backend.getAccounts().isEmpty()
+            )
+        ) {
+            startsAtBirthday = createAccount(requireNotNull(inputs.setup), provisioning)
+            /*
+             * Releases [accountsFlow], which suppressed the empty reads of the whole DbReady window.
+             */
+            accountsVersion.update { it + 1 }
+        }
+        inputs.birthdayResolved?.complete(startsAtBirthday)
+
+        engine.open(totalMemoryBytes = inputs.totalMemoryBytes)
+        /*
+         * `ufvk` stays non-null even though the account row already exists: `FFI_JNI_CONTRACT.md`
+         * section 3.5's `start(ufvk != null)` is a no-op when an account is already present.
+         */
+        engine.start(inputs.ufvk, provisioning.startBirthday.value)
+        engine.startPolling()
+    }
+
+    /**
+     * [prepare]'s data-DB step: `initDataDb`, then [PrepareState.DbReady] and its balance seed.
+     *
+     * @return false when [close] already published [PrepareState.Closed], in which case nothing after
+     * this step may run.
+     */
+    private suspend fun provisionDataDb(inputs: PrepareInputs): Boolean {
         /*
          * Mirrors `DerivedDataDb.new`: unconditional [Backend.initDataDb], then
          * [Backend.createAccount] gated on `setup != null && accounts.isEmpty()`.
@@ -703,11 +779,12 @@ class SlipstreamSynchronizer internal constructor(
          * Losing this compare-and-set means [close] already published [PrepareState.Closed]. Bail
          * out before the anchor rather than after it: the anchor is a blocking, engine-bounded
          * network call that close()'s `cancelAndJoin` would otherwise have to wait out for a result
-         * nothing will ever read.
+         * nothing will ever read. An exact-birthday restore, whose anchor is already in flight, cancels
+         * it instead (see [resolveExactBirthdayProvisioning]).
          */
         val dbReady =
             prepareState.updateAndGet { if (it is PrepareState.Preparing) PrepareState.DbReady else it }
-        if (dbReady !is PrepareState.DbReady) return
+        if (dbReady !is PrepareState.DbReady) return false
 
         /*
          * Truthful FROM DbReady, not merely from the engine's first tick: the account row and the
@@ -722,39 +799,87 @@ class SlipstreamSynchronizer internal constructor(
         runCatchingCancellable { inputs.dbWalletSummary() }
             .getOrNull()
             ?.let { engine.walletBalances.value = it.accountBalances }
-
-        val provisioning = resolveProvisioning(inputs, fallbackCheckpoint)
-        startBirthday = provisioning.startBirthday
-
-        if (shouldCreateAccount(
-                hasSetup = inputs.setup != null,
-                accountsAreEmpty = backend.getAccounts().isEmpty()
-            )
-        ) {
-            val accountSetup = requireNotNull(inputs.setup)
-            runCatchingCancellable {
-                backend.createAccount(
-                    accountName = accountSetup.accountName,
-                    keySource = accountSetup.keySource,
-                    seed = accountSetup.seed.byteArray,
-                    treeState = provisioning.treeState.encoded,
-                    recoverUntil = provisioning.recoverUntil
-                )
-            }.getOrElse { throw InitializeException.CreateAccountException(it) }
-            /*
-             * Releases [accountsFlow], which suppressed the empty reads of the whole DbReady window.
-             */
-            accountsVersion.update { it + 1 }
-        }
-
-        engine.open(totalMemoryBytes = inputs.totalMemoryBytes)
-        /*
-         * `ufvk` stays non-null even though the account row already exists: `FFI_JNI_CONTRACT.md`
-         * section 3.5's `start(ufvk != null)` is a no-op when an account is already present.
-         */
-        engine.start(inputs.ufvk, provisioning.startBirthday.value)
-        engine.startPolling()
+        return true
     }
+
+    /**
+     * Creates the wallet's account from [provisioning]: from its exact birthday's tree state when
+     * there is one, else from the bundled checkpoint. An exact tree state the backend rejects falls
+     * back to the checkpoint too, as long as the rejected attempt left no account behind.
+     *
+     * @return whether the account was created from the exact tree state.
+     */
+    private suspend fun createAccount(
+        setup: AccountCreateSetup,
+        provisioning: WalletProvisioningPlan
+    ): Boolean {
+        suspend fun createAccountFrom(treeState: TreeState) =
+            backend.createAccount(
+                accountName = setup.accountName,
+                keySource = setup.keySource,
+                seed = setup.seed.byteArray,
+                treeState = treeState.encoded,
+                recoverUntil = provisioning.recoverUntil
+            )
+
+        val exactTreeState = provisioning.exactTreeState
+        if (exactTreeState != null) {
+            val failure = runCatchingCancellable { createAccountFrom(exactTreeState) }.exceptionOrNull() ?: return true
+            if (backend.getAccounts().isNotEmpty()) throw InitializeException.CreateAccountException(failure)
+            Twig.warn {
+                "Creating the account at its exact birthday failed (${failure::class.simpleName}); using the checkpoint"
+            }
+        }
+        val treeState = provisioning.treeState()
+        runCatchingCancellable { createAccountFrom(treeState) }
+            .getOrElse { throw InitializeException.CreateAccountException(it) }
+        return false
+    }
+
+    /**
+     * [prepare] for a restore asked to start exactly at its birthday: the anchor and the tree state at
+     * `birthday - 1` ([fetchExactTreeState]) need no database, so both are resolved while [provisionDataDb]
+     * runs, and the account is created from that tree state when there is one. The bundled checkpoint is
+     * read only when the account is created from it. The anchor is a blocking native call, so it runs on
+     * [Dispatchers.IO] rather than on the preparation's own dispatcher.
+     *
+     * Closing stays clean: the anchor runs as a child of this call, so [close]'s cancel-and-join of the
+     * preparation still waits for a `restoreAnchor` in flight and leaves nothing running; it never waits
+     * for more than what remains of that one call, which started together with `initDataDb` rather than
+     * after it. A [close] that lands before [PrepareState.DbReady] cancels the anchor and the fetch and
+     * returns `null`. A failing anchor fails the preparation as it does after the database step.
+     *
+     * @return `null` when [close] already published [PrepareState.Closed].
+     */
+    private suspend fun resolveExactBirthdayProvisioning(
+        inputs: PrepareInputs,
+        fallbackCheckpoint: Long,
+        fetchExactTreeState: suspend (BlockHeight) -> TreeState?
+    ): WalletProvisioningPlan? =
+        coroutineScope {
+            val requestedBirthday = requireNotNull(inputs.requestedBirthday)
+            val exactTreeState = async { runCatchingCancellable { fetchExactTreeState(requestedBirthday) }.getOrNull() }
+            val anchor =
+                async(Dispatchers.IO) {
+                    inputs.anchorSource(
+                        intent = requireNotNull(resolveIntent(inputs.walletInitMode)),
+                        birthdayHeight = requestedBirthday.value,
+                        fallbackCheckpointHeight = fallbackCheckpoint
+                    )
+                }
+            if (!provisionDataDb(inputs)) {
+                exactTreeState.cancel()
+                anchor.cancel()
+                return@coroutineScope null
+            }
+            val anchorHeight = anchor.await().height
+            WalletProvisioningPlan(
+                startBirthday = BlockHeight.new(anchorHeight),
+                treeState = { inputs.treeState(requestedBirthday) },
+                recoverUntil = anchorHeight,
+                exactTreeState = exactTreeState.await()
+            )
+        }
 
     /** The `when(intent)` block of the original `newLocked`, verbatim but behind [PrepareInputs]' lambdas. */
     private suspend fun resolveProvisioning(
@@ -770,9 +895,10 @@ class SlipstreamSynchronizer internal constructor(
                         birthdayHeight = requestedBirthday.value,
                         fallbackCheckpointHeight = fallbackCheckpoint
                     )
+                val treeState = inputs.treeState(requestedBirthday)
                 WalletProvisioningPlan(
                     startBirthday = BlockHeight.new(anchor.height),
-                    treeState = inputs.treeState(requestedBirthday),
+                    treeState = { treeState },
                     recoverUntil = anchor.height
                 )
             }
@@ -784,22 +910,21 @@ class SlipstreamSynchronizer internal constructor(
                         birthdayHeight = 0L,
                         fallbackCheckpointHeight = fallbackCheckpoint
                     )
+                val treeState = anchor.treestate?.let(::TreeState) ?: inputs.lastCheckpointTreeState()
                 WalletProvisioningPlan(
                     startBirthday =
                         anchor.height.takeIf { it > 0 }?.let(BlockHeight::new)
                             ?: BlockHeight.new(fallbackCheckpoint),
-                    treeState = anchor.treestate?.let(::TreeState) ?: inputs.lastCheckpointTreeState(),
+                    treeState = { treeState },
                     recoverUntil = null
                 )
             }
 
             else -> {
+                val treeState = inputs.treeState(inputs.requestedBirthday ?: network.saplingActivationHeight)
                 WalletProvisioningPlan(
                     startBirthday = inputs.requestedBirthday ?: BlockHeight.new(fallbackCheckpoint),
-                    treeState =
-                        inputs.treeState(
-                            inputs.requestedBirthday ?: network.saplingActivationHeight
-                        ),
+                    treeState = { treeState },
                     recoverUntil = null
                 )
             }
@@ -989,6 +1114,27 @@ class SlipstreamSynchronizer internal constructor(
     ): Proposal {
         awaitReady()
         return spendService.proposeTransfer(account, recipient, amount, memo)
+    }
+
+    /**
+     * The send-max proposal [Synchronizer.proposeSendMax] documents, over the same backend call the
+     * upstream `SdkSynchronizer` uses: the account's entire spendable shielded balance, minus the ZIP
+     * 317 fee, to [recipient]. Transparent funds are not swept.
+     *
+     * @throws IllegalArgumentException if [recipient] is for another network.
+     * @throws cash.z.ecc.android.sdk.exception.TransactionEncoderException.InsufficientFundsException
+     * if nothing is spendable, or the spendable balance does not cover the fee.
+     * @throws cash.z.ecc.android.sdk.exception.TransactionEncoderException.ProposalFromParametersException
+     * if the proposal cannot be created for any other reason.
+     */
+    override suspend fun proposeSendMax(
+        account: Account,
+        recipient: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal {
+        require(recipient.network == network) { "The recipient is for a different network" }
+        awaitReady()
+        return spendService.proposeSendMax(account, recipient, memo)
     }
 
     override suspend fun proposeFulfillingPaymentUri(
@@ -1421,7 +1567,8 @@ class SlipstreamSynchronizer internal constructor(
      * this device must work while this wallet is not synced, and `decryptAndStoreTransaction` and
      * `setTransactionTrust` need nothing but the schema. Trust is set only once the stored
      * transaction's id has been checked against [txId], so a mixed-up id cannot trust the wrong
-     * transaction.
+     * transaction. Recording fails, throwing from `setTransactionTrust`, when the transaction does
+     * not involve this wallet and so was not stored: there is nothing to trust.
      */
     override suspend fun recordTrustedTransaction(
         rawTransaction: RawTransaction,
@@ -1712,12 +1859,23 @@ class SlipstreamSynchronizer internal constructor(
                     step("walletClient.dispose") { walletClient.dispose() }
                     step("exchangeRateFetcher.dispose") { exchangeRateFetcher?.dispose() }
                 }
+            this.shutdownJob = shutdownJob
             InstanceGuard.markShuttingDown(key, shutdownJob)
             shutdownJob.invokeOnCompletion {
                 InstanceGuard.release(key)
                 scope.cancel()
             }
         }
+    }
+
+    /**
+     * [close], then suspends until its shutdown has finished: preparation cancelled, the engine
+     * freed, and the [InstanceGuard] key released. [Companion.new] uses it to dispose of an instance
+     * its caller never received.
+     */
+    internal suspend fun closeAndAwaitShutdown() {
+        close()
+        shutdownJob?.join()
     }
 
     /**
@@ -1754,10 +1912,25 @@ class SlipstreamSynchronizer internal constructor(
          * - every engine- or database-backed member awaits preparation, so a call made immediately
          *   after this returns suspends rather than failing;
          * - a preparation failure does NOT release the [InstanceGuard] key - the instance owns it
-         *   until [close], which the host's `awaitClose` always calls.
+         *   until [close], which the host's `awaitClose` always calls;
+         * - the instance works on its own copy of [setup]'s seed, which it overwrites with zeros once
+         *   preparation has settled, so the caller may wipe its own seed as soon as this returns;
+         * - a call cancelled after the instance was built closes that instance and waits for its
+         *   shutdown before rethrowing, so no running instance, nor its [InstanceGuard] key, outlives
+         *   a call whose caller never received it.
          *
          * Runs on `Dispatchers.IO`: even the cheap wiring touches disk, and callers include
          * `Dispatchers.Main` scopes, so dispatching here keeps every caller agnostic to that.
+         *
+         * [engineMemoryFraction] is the one parameter `Synchronizer.new` does not have: the share of
+         * the device's RAM this instance's engine is told the device has, which only decides whether
+         * it takes its smaller, small-device budgets (see [engineMemoryHint]). The main wallet keeps
+         * the default, the whole device; a helper wallet running beside it (such as a gift card's
+         * temporary wallet) passes less, so that its engine never plans with larger budgets than the
+         * main wallet's.
+         *
+         * @param engineMemoryFraction in `(0, 1]`; [FULL_ENGINE_MEMORY] by default.
+         * @throws IllegalArgumentException if [engineMemoryFraction] is not in `(0, 1]`.
          */
         suspend fun new(
             alias: String = ZcashSdk.DEFAULT_ALIAS,
@@ -1768,33 +1941,111 @@ class SlipstreamSynchronizer internal constructor(
             walletInitMode: WalletInitMode,
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
-            isExchangeRateEnabled: Boolean
+            isExchangeRateEnabled: Boolean,
+            engineMemoryFraction: Float = FULL_ENGINE_MEMORY
+        ): CloseableSynchronizer =
+            new(
+                alias = alias,
+                birthday = birthday,
+                context = context,
+                lightWalletEndpoint = lightWalletEndpoint,
+                setup = setup,
+                walletInitMode = walletInitMode,
+                zcashNetwork = zcashNetwork,
+                isTorEnabled = isTorEnabled,
+                isExchangeRateEnabled = isExchangeRateEnabled,
+                engineMemoryFraction = engineMemoryFraction,
+                birthdayResolved = null
+            )
+
+        /**
+         * [new] with one extra, SDK-internal option, as `Synchronizer.new` has it.
+         *
+         * @param birthdayResolved when non-null and [walletInitMode] is [WalletInitMode.RestoreWallet], the
+         * preparation fetches the tree state at `birthday - 1` from [lightWalletEndpoint], over a fresh Tor
+         * circuit when [isTorEnabled], while it resolves its anchor, and creates the account from it, so the
+         * account's birthday is exactly [birthday] and the engine scans from there instead of from the
+         * nearest bundled checkpoint below it, which can be thousands of blocks earlier. If the fetch fails,
+         * times out or yields a tree state the backend rejects, the bundled checkpoint is used as before.
+         * Fetching reveals the exact height to the server; `null` keeps the checkpoint granularity that the
+         * app's main wallet relies on for privacy. The preparation completes it with `true` when the account
+         * was created from the exact tree state, and `false` otherwise: when the bundled checkpoint was used,
+         * or when preparation failed or was cancelled before the account was created.
+         */
+        @Suppress("LongParameterList")
+        internal suspend fun new(
+            alias: String,
+            birthday: BlockHeight?,
+            context: Context,
+            lightWalletEndpoint: LightWalletEndpoint,
+            setup: AccountCreateSetup?,
+            walletInitMode: WalletInitMode,
+            zcashNetwork: ZcashNetwork,
+            isTorEnabled: Boolean,
+            isExchangeRateEnabled: Boolean,
+            engineMemoryFraction: Float,
+            birthdayResolved: CompletableDeferred<Boolean>?
         ): CloseableSynchronizer {
             validateAlias(alias)
+            require(engineMemoryFraction > 0f && engineMemoryFraction <= 1f) {
+                "The engine memory fraction must be in (0, 1]"
+            }
             val applicationContext = context.applicationContext
             val key = SlipstreamKey(zcashNetwork, alias)
-            InstanceGuard.acquire(key)
+            val ownedSetup = setup?.copyOwningSeed()
             try {
-                return withContext(Dispatchers.IO) {
+                return newGuarded(key) {
                     newLocked(
                         alias = alias,
                         birthday = birthday,
                         applicationContext = applicationContext,
                         lightWalletEndpoint = lightWalletEndpoint,
-                        setup = setup,
+                        setup = ownedSetup,
                         walletInitMode = walletInitMode,
                         zcashNetwork = zcashNetwork,
                         isTorEnabled = isTorEnabled,
                         isExchangeRateEnabled = isExchangeRateEnabled,
+                        engineMemoryFraction = engineMemoryFraction,
+                        birthdayResolved = birthdayResolved,
                         key = key
                     )
                 }
             } catch (t: Throwable) {
                 /*
-                 * Only cheap-wiring failures can land here now; the preparation tail's failures are
-                 * latched on the instance, which keeps the guard key until its own close().
+                 * No instance survives a failure here, so nothing else will wipe the copy; an
+                 * instance that was built has already wiped it when its preparation was cancelled.
                  */
-                InstanceGuard.release(key)
+                ownedSetup?.seed?.byteArray?.fill(0)
+                throw t
+            }
+        }
+
+        /**
+         * [new]'s single-instance bracket around [construct], which builds the instance for [key] on
+         * `Dispatchers.IO`: acquires [key] first and releases it if [construct] fails. When the call
+         * fails after [construct] returned (a cancelled caller, while the result is on its way back),
+         * it closes the instance and waits for its shutdown, which releases [key], before rethrowing.
+         */
+        internal suspend fun newGuarded(
+            key: SlipstreamKey,
+            construct: suspend () -> SlipstreamSynchronizer
+        ): SlipstreamSynchronizer {
+            InstanceGuard.acquire(key)
+            var constructed: SlipstreamSynchronizer? = null
+            try {
+                withContext(Dispatchers.IO) { constructed = construct() }
+                return checkNotNull(constructed)
+            } catch (t: Throwable) {
+                val orphan = constructed
+                if (orphan == null) {
+                    /*
+                     * Only cheap-wiring failures can land here; the preparation tail's failures are
+                     * latched on the instance, which keeps the guard key until its own close().
+                     */
+                    InstanceGuard.release(key)
+                } else {
+                    withContext(NonCancellable) { orphan.closeAndAwaitShutdown() }
+                }
                 throw t
             }
         }
@@ -1811,8 +2062,10 @@ class SlipstreamSynchronizer internal constructor(
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean,
+            engineMemoryFraction: Float,
+            birthdayResolved: CompletableDeferred<Boolean>?,
             key: SlipstreamKey
-        ): CloseableSynchronizer {
+        ): SlipstreamSynchronizer {
             SlipstreamNative.ensureLoaded(logLevel = "info")
             val sdkFlags =
                 SdkFlags(isTorEnabled = isTorEnabled, isExchangeRateEnabled = isExchangeRateEnabled)
@@ -1890,9 +2143,7 @@ class SlipstreamSynchronizer internal constructor(
                     CoroutineScope(SupervisorJob() + Dispatchers.Default)
                 )
 
-            val activityManager =
-                applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            val memoryInfo = ActivityManager.MemoryInfo().also { activityManager.getMemoryInfo(it) }
+            val totalMemoryBytes = engineMemoryBytes(applicationContext, engineMemoryFraction)
 
             /*
              * Tor is only needed for on-demand/background work, never on the cold-start critical
@@ -1935,7 +2186,7 @@ class SlipstreamSynchronizer internal constructor(
 
             val submitPlanPreferences =
                 applicationContext.getSharedPreferences(
-                    "com.zodl.slipstream.submit_plan_${zcashNetwork.id}_$alias",
+                    submitPlanPreferencesName(zcashNetwork.id, alias),
                     Context.MODE_PRIVATE
                 )
             val broadcaster =
@@ -1966,8 +2217,8 @@ class SlipstreamSynchronizer internal constructor(
              * The deferred tail's every JNI/assets touch, captured as a lambda: `restoreAnchor`
              * behind [SlipstreamAnchorSource], the bundled-checkpoint height, the two
              * [CheckpointTool] reads and the DbReady balance seed's summary read behind their own.
-             * `totalMemoryBytes` is a plain value - the
-             * `ActivityManager` binder call above is cheap enough to stay on this path.
+             * `totalMemoryBytes` is a plain value - the `ActivityManager` binder call behind
+             * [engineMemoryBytes] above is cheap enough to stay on this path.
              */
             val prepareInputs =
                 PrepareInputs(
@@ -2001,7 +2252,14 @@ class SlipstreamSynchronizer internal constructor(
                             .treeState()
                     },
                     dbWalletSummary = { typesafeBackend.getWalletSummary() },
-                    totalMemoryBytes = memoryInfo.totalMem
+                    totalMemoryBytes = totalMemoryBytes,
+                    exactBirthdayTreeState =
+                        if (birthdayResolved != null && walletInitMode == WalletInitMode.RestoreWallet) {
+                            { height -> fetchExactBirthdayTreeState(walletClient, sdkFlags, height) }
+                        } else {
+                            null
+                        },
+                    birthdayResolved = birthdayResolved
                 )
 
             return SlipstreamSynchronizer(
@@ -2061,36 +2319,124 @@ class SlipstreamSynchronizer internal constructor(
             }
 
         /**
-         * Deletes `data.sqlite3` + `-wal` + `-shm`; refuses while an instance is `Active`. No
-         * separate on-disk block cache directory to delete alongside it - every persisted fact
-         * Slipstream keeps lives inside `data.sqlite3` itself.
+         * Deletes `data.sqlite3` + `-wal` + `-shm` and the wallet's submit-plan preferences (the
+         * store [SlipstreamBroadcaster] records created and submitted transactions in); refuses
+         * while an instance is `Active`. No separate on-disk block cache directory to delete
+         * alongside it - every other persisted fact Slipstream keeps lives inside `data.sqlite3`
+         * itself. Only [alias]'s files and preferences are touched.
          *
          * Like `SdkSynchronizer.erase`, this awaits an in-flight shutdown of the same key before
          * deleting, and holds the [InstanceGuard] mutex across the deletion. That await is what
          * makes the reset path safe: [close] marks the key shutting down synchronously, but the
          * engine teardown that drops the database handles runs asynchronously afterwards, and
          * unlinking the files under a live engine mmap is corruption territory.
+         *
+         * @return true when none of the wallet's files or preferences remain.
+         * @throws IllegalStateException if a synchronizer for [network] and [alias] is active.
          */
         suspend fun erase(
             appContext: Context,
             network: ZcashNetwork,
             alias: String = ZcashSdk.DEFAULT_ALIAS
+        ): Boolean = eraseGuarded(appContext, network, alias, eraseLegacyLayout = null)
+
+        /**
+         * Deletes the local data of the helper wallet at [network] and [alias], such as a gift card's
+         * temporary wallet, while the main wallet keeps running: everything [erase] deletes, plus
+         * whatever an `SdkSynchronizer` left under the same alias, as `Synchronizer.eraseAlias`
+         * deletes it. Files only: no synchronizer of either engine is started, nothing shared by every
+         * wallet in the process is cleared, and both deletions run under one [InstanceGuard] hold.
+         *
+         * The legacy deletion runs only when one of [DataDbPath.legacyOnlyFiles] exists, so a wallet
+         * only this engine ever ran never reaches the SDK's encrypted preferences. It is best-effort:
+         * a failure is logged by its type only and never fails this erase.
+         *
+         * A shutdown of the wallet still in flight (a helper wallet closed just before) is waited for
+         * before the [InstanceGuard] mutex is taken, so that a slow engine teardown of the helper wallet
+         * never keeps the main wallet, or any other wallet, from being opened meanwhile.
+         *
+         * @return true when none of this engine's files or preferences for the wallet remain, including
+         * when there was nothing to delete; what the legacy deletion found is not part of the result.
+         * @throws IllegalArgumentException if [alias] is not a valid alias, or addresses the main
+         * wallet's files: [ZcashSdk.DEFAULT_ALIAS], also with trailing underscores, or the legacy
+         * `ZcashSdk`. Nothing is touched then.
+         * @throws IllegalStateException if a synchronizer for [network] and [alias] is active.
+         */
+        suspend fun eraseAlias(
+            appContext: Context,
+            network: ZcashNetwork,
+            alias: String
+        ): Boolean =
+            eraseAlias(appContext, network, alias) {
+                Synchronizer.eraseAlias(appContext, network, alias)
+            }
+
+        /** [eraseAlias] with the legacy layout's deletion replaced, for unit tests. */
+        internal suspend fun eraseAlias(
+            appContext: Context,
+            network: ZcashNetwork,
+            alias: String,
+            eraseLegacyLayout: suspend () -> Unit
         ): Boolean {
-            val key = SlipstreamKey(network, alias)
-            return InstanceGuard.withKeyInactive(key) {
-                withContext(Dispatchers.IO) {
-                    val dbFile =
-                        DataDbPath.dataDbFile(
-                            appContext.applicationContext.getNoBackupFilesDirSuspend(),
-                            alias,
-                            network
-                        )
-                    val walFile = File("${dbFile.path}-wal")
-                    val shmFile = File("${dbFile.path}-shm")
-                    listOf(dbFile, walFile, shmFile).map { !it.exists() || it.delete() }.all { it }
+            validateAlias(alias)
+            requireNotMainWalletAlias(alias, "eraseAlias never erases the main wallet")
+            InstanceGuard.awaitShutdown(SlipstreamKey(network, alias))
+            return eraseGuarded(appContext, network, alias) {
+                runCatchingCancellable {
+                    if (hasLegacyLayout(appContext.applicationContext, network, alias)) eraseLegacyLayout()
+                }.onFailure {
+                    Twig.warn { "Erasing a helper wallet's legacy layout failed: ${it::class.simpleName}" }
                 }
             }
         }
+
+        /** Whether any of [DataDbPath.legacyOnlyFiles] exists for [alias] on [network]. */
+        private suspend fun hasLegacyLayout(
+            applicationContext: Context,
+            network: ZcashNetwork,
+            alias: String
+        ): Boolean =
+            withContext(Dispatchers.IO) {
+                DataDbPath
+                    .legacyOnlyFiles(applicationContext.getNoBackupFilesDirSuspend(), alias, network)
+                    .any { it.exists() }
+            }
+
+        /**
+         * [erase] and [eraseAlias]: deletes this engine's files and preferences for [alias], then runs
+         * [eraseLegacyLayout], if given, all while [InstanceGuard] holds the key inactive.
+         */
+        private suspend fun eraseGuarded(
+            appContext: Context,
+            network: ZcashNetwork,
+            alias: String,
+            eraseLegacyLayout: (suspend () -> Unit)?
+        ): Boolean {
+            val key = SlipstreamKey(network, alias)
+            return InstanceGuard.withKeyInactive(key) {
+                val applicationContext = appContext.applicationContext
+                val deleted =
+                    withContext(Dispatchers.IO) {
+                        val dbFile =
+                            DataDbPath.dataDbFile(
+                                applicationContext.getNoBackupFilesDirSuspend(),
+                                alias,
+                                network
+                            )
+                        val walFile = File("${dbFile.path}-wal")
+                        val shmFile = File("${dbFile.path}-shm")
+                        val filesDeleted = listOf(dbFile, walFile, shmFile).map { !it.exists() || it.delete() }.all { it }
+                        val preferencesDeleted =
+                            applicationContext.deleteSharedPreferences(submitPlanPreferencesName(network.id, alias))
+                        filesDeleted && preferencesDeleted
+                    }
+                eraseLegacyLayout?.invoke()
+                deleted
+            }
+        }
+
+        /** The default `engineMemoryFraction` of [new]: the engine is told the whole device's memory. */
+        const val FULL_ENGINE_MEMORY: Float = 1f
 
         private const val ENGINE_TOR_SUBDIR = "slipstream_tor"
     }

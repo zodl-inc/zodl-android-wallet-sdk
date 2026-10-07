@@ -54,9 +54,13 @@ impl std::error::Error for InsufficientFunds {}
 /// trusted outputs and 10 for untrusted ones.
 ///
 /// A gift card's notes were sent by the card's issuer, who still holds the card's key, so they
-/// are untrusted and wait 10 confirmations before the claim spends them. That is what makes it
-/// sound for the destination wallet to then record the claim itself as trusted (see
-/// `Synchronizer.recordTrustedTransaction` in the Kotlin SDK): it must never be lowered here.
+/// are untrusted and wait 10 confirmations before the claim spends them; this must never be
+/// lowered here. The destination wallet then records the claim itself as trusted (see
+/// `Synchronizer.recordTrustedTransaction` in the Kotlin SDK), which waits only 3
+/// confirmations. Because the issuer still holds the card's key, a reorg deep enough to drop
+/// the claim transaction (the trusted count, 3 blocks) would let the issuer get a competing
+/// spend of the card's notes mined instead. Recording the claim as trusted is therefore sound
+/// only when the issuer is trusted, as for cards issued by ZODL.
 pub(crate) fn send_max_confirmations_policy() -> ConfirmationsPolicy {
     ConfirmationsPolicy::default()
 }

@@ -450,10 +450,12 @@ interface Backend {
      * Marks the transaction with [txId] as trusted or untrusted (ZIP 315). The outputs of a
      * trusted transaction become spendable after the trusted number of confirmations (3) instead
      * of the untrusted one (10), even though the wallet did not create the transaction. The
-     * transaction must already be stored, e.g. by [decryptAndStoreTransaction]; otherwise this
-     * changes nothing.
+     * transaction must already be stored, e.g. by [decryptAndStoreTransaction], which stores
+     * nothing for a transaction that does not involve this wallet.
      *
-     * @throws RuntimeException as a common indicator of the operation failure
+     * @throws RuntimeException as a common indicator of the operation failure, including when the
+     * transaction is not found among this wallet's stored transactions; a stored transaction whose
+     * raw bytes the wallet does not hold also counts as not found
      */
     @Throws(RuntimeException::class)
     suspend fun setTransactionTrust(
