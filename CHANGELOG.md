@@ -93,6 +93,32 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   start over with a new one to retry.
 - `GiftCardRedeemer.close()` cancels a `check()` in progress (which then fails with
   `GiftCardException.Closed`), so it returns promptly instead of waiting for the sync.
+- `GiftCardRedeemer.redeem` can be cancelled until the claim transaction starts being created.
+  From then on it creates, submits and records the claim in the `destination` to the end even if
+  its caller is cancelled (the caller then gets the `CancellationException`), and `close()` waits
+  for it before tearing the card wallet down. Before, a cancellation between creating and
+  submitting left a created but unsubmitted claim, and one between submitting and recording left
+  the claim untrusted in the destination (10 confirmations instead of 3).
+- `GiftCardRedeemer.close()` returns after at most `GiftCardRedeemer.CLOSE_TIMEOUT` (30 seconds),
+  and at once when its caller is cancelled, while the teardown (closing the card wallet, then
+  erasing it) goes on in the background; a card wallet whose engine does not stop no longer keeps
+  `close()` waiting forever. The card's alias stays held until the card wallet has been erased, so
+  no other redeemer can use the card while its files may remain. A failed erase is retried after
+  1, 2, 4, 8, 16 and then every 30 seconds, at most `GiftCardRedeemer.MAX_ERASE_RETRIES` (10)
+  times, after which the alias stays held until a later `close()` erases the card wallet. Only the
+  `close()` that starts a teardown throws its failures: the card wallet's failure to close, once it
+  has been erased, or the first failure to erase it, while the retries go on. Before, a failed
+  erase released the alias anyway. A `redeem` still preparing when `close()` stops waiting fails
+  with `GiftCardException.Closed` rather than create its claim. A redeemer dropped without
+  `close()` keeps its alias and its card wallet's synchronizer for the rest of the process.
+- `GiftCardException.RedemptionIncomplete`: `GiftCardRedeemer.redeem` throws it when the proposal
+  creates no transaction or no transaction is submitted, instead of returning a `Redemption` with
+  no results (whose `isSubmitted` was vacuously `true`).
+- `GiftCardRedeemer.redeem` records each transaction the server accepted in the `destination` on
+  its own: one that fails to record no longer keeps the others from being recorded, and they are
+  recorded also when a later submission is cancelled, before the cancellation is rethrown.
+  `Redemption.recordedInDestination` stays `true` only when every accepted transaction was
+  recorded, so `false` can now also mean that only some were.
 - `GiftCardRedeemer.storedAliases(context, network)`, the aliases of the card wallets whose
   data is stored on the device, to erase with `Synchronizer.eraseAlias` those left behind by a
   redeemer that was never closed (for example when the app was killed).

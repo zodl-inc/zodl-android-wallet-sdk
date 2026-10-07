@@ -30,6 +30,9 @@ import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -44,7 +47,8 @@ import kotlin.test.assertIs
  * [fee]), and whatever [submitResult] says about each transaction. [setupError] is the setup
  * failure it has latched, if any, [accounts] its account list (`null` while not loaded yet, as
  * [Synchronizer.accountsFlow] reports it), [progress] its sync progress, and [networkHeight] and
- * [fullyScannedHeight] its heights, both [CARD_WALLET_TIP] unless a test moves them.
+ * [fullyScannedHeight] its heights, both [CARD_WALLET_TIP] unless a test moves them. [onCreate] runs while its
+ * transactions are being created, after [creations] has counted the creation.
  */
 @Suppress("LongParameterList")
 internal class FakeCardWallet(
@@ -58,6 +62,7 @@ internal class FakeCardWallet(
     private val sent: Long? = null,
     private val closeFailure: Exception? = null,
     override val status: Flow<Synchronizer.Status> = MutableStateFlow(Synchronizer.Status.SYNCED),
+    private val onCreate: suspend () -> Unit = {},
     private val submitResult: (CreatedTransaction) -> TransactionSubmitResult = {
         TransactionSubmitResult.Success(it.txId)
     }
@@ -67,6 +72,7 @@ internal class FakeCardWallet(
     val submitted = mutableListOf<CreatedTransaction>()
     var ovkPolicy: OvkPolicy? = null
     var transactionReads = 0
+    var creations = 0
 
     override val network: ZcashNetwork = ZcashNetwork.Mainnet
     override var onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null
@@ -116,6 +122,8 @@ internal class FakeCardWallet(
                 ovkPolicy: OvkPolicy
             ): List<CreatedTransaction> {
                 this@FakeCardWallet.ovkPolicy = ovkPolicy
+                creations++
+                onCreate()
                 return created
             }
 
@@ -144,19 +152,25 @@ internal class FakeCardWallet(
  * wallet is being opened, with the critical error handler the redeemer passed. A wallet asked
  * to start exactly at the birthday does so only when [isExactBirthdayAvailable]. Every wallet
  * reports [isDisconnectedUntilFirstPass], as the Slipstream engine's do. [seeds] holds the seed
- * array each open was handed, and [seedsAtOpen] a copy of its contents taken during that open.
+ * array each open was handed, and [seedsAtOpen] a copy of its contents taken during that open. [onErase] runs at
+ * every erase with its number, from 1, before [erased] records it: throwing fails that erase.
+ * [onDeriveSpendingKey] runs while a redemption derives the card's spending key.
  */
+@Suppress("LongParameterList")
 internal class FakeWallets(
     private val cardWallets: List<FakeCardWallet>,
     private val openFailure: Exception? = null,
     private val isExactBirthdayAvailable: Boolean = true,
     private val isDisconnectedUntilFirstPass: Boolean = false,
-    private val onOpen: suspend ((Throwable?) -> Boolean) -> Unit = {}
+    private val onOpen: suspend ((Throwable?) -> Boolean) -> Unit = {},
+    private val onErase: suspend (Int) -> Unit = {},
+    private val onDeriveSpendingKey: suspend () -> Unit = {}
 ) : GiftCardWallets {
     constructor(cardWallet: FakeCardWallet, openFailure: Exception? = null) :
         this(listOf(cardWallet), openFailure)
 
     val erased = mutableListOf<String>()
+    var eraseAttempts = 0
     val torSettings = mutableListOf<Boolean>()
     val exactBirthdays = mutableListOf<Boolean>()
     val seeds = mutableListOf<ByteArray>()
@@ -168,6 +182,8 @@ internal class FakeWallets(
         network: ZcashNetwork,
         alias: String
     ) {
+        eraseAttempts++
+        onErase(eraseAttempts)
         erased += alias
     }
 
@@ -209,7 +225,10 @@ internal class FakeWallets(
     override suspend fun deriveSpendingKey(
         seed: ByteArray,
         network: ZcashNetwork
-    ): UnifiedSpendingKey = mock(UnifiedSpendingKey::class.java)
+    ): UnifiedSpendingKey {
+        onDeriveSpendingKey()
+        return mock(UnifiedSpendingKey::class.java)
+    }
 }
 
 /**
@@ -226,9 +245,13 @@ internal fun engineWallets(
     isDisconnectedUntilFirstPass = true
 )
 
-/** The user's wallet, remembering what it was asked to record, or refusing to. */
+/**
+ * The user's wallet, remembering what it was asked to record, or refusing to with [failure] the transactions
+ * [refuses] picks (all of them by default).
+ */
 internal class FakeDestination(
-    private val failure: Exception? = null
+    private val failure: Exception? = null,
+    private val refuses: (TransactionId) -> Boolean = { true }
 ) : Synchronizer by mock(Synchronizer::class.java) {
     val recorded = mutableListOf<Pair<ByteArray, ByteArray>>()
 
@@ -238,7 +261,7 @@ internal class FakeDestination(
         rawTransaction: RawTransaction,
         txId: TransactionId
     ) {
-        failure?.let { throw it }
+        failure?.takeIf { refuses(txId) }?.let { throw it }
         recorded += rawTransaction.data to txId.value.byteArray
     }
 }
@@ -341,7 +364,8 @@ internal fun redeemer(
     cardWallet: FakeCardWallet,
     wallets: FakeWallets = FakeWallets(cardWallet),
     aliases: GiftCardAliases = GiftCardAliases(),
-    isTorEnabled: Boolean = false
+    isTorEnabled: Boolean = false,
+    teardownScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ): Pair<GiftCardRedeemer, FakeWallets> {
     val redeemer =
         GiftCardRedeemer.new(
@@ -352,7 +376,8 @@ internal fun redeemer(
             isTorEnabled = isTorEnabled,
             alias = GiftCardRedeemer.defaultAlias(card()),
             wallets = wallets,
-            aliases = aliases
+            aliases = aliases,
+            teardownScope = teardownScope
         )
     return redeemer to wallets
 }
