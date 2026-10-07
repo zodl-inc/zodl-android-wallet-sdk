@@ -117,12 +117,11 @@ object GiftCardRedeemers {
 
 /**
  * The [GiftCardWallets] of [GiftCardRedeemers]: the card wallet is opened and erased by [factory]'s
- * engine, telling it the device has [engineMemoryFraction] of its memory; the fee probe's address and the
+ * engine, which is never asked to open the main wallet's files; the fee probe's address and the
  * spending key are engine-independent and come from [GiftCardWallets.Default].
  */
 internal class EngineGiftCardWallets(
-    private val factory: SynchronizerEngineFactory,
-    private val engineMemoryFraction: Float = CARD_ENGINE_MEMORY_FRACTION
+    private val factory: SynchronizerEngineFactory
 ) : GiftCardWallets {
     override suspend fun erase(
         context: Context,
@@ -142,8 +141,9 @@ internal class EngineGiftCardWallets(
         isTorEnabled: Boolean,
         setup: AccountCreateSetup,
         onCriticalError: (Throwable?) -> Boolean
-    ): OpenedCardWallet =
-        factory.openHelperWallet(
+    ): OpenedCardWallet {
+        requireNotMainWalletAlias(alias, "A gift card wallet never uses the default wallet alias")
+        return factory.openHelperWallet(
             context = context,
             zcashNetwork = network,
             alias = alias,
@@ -152,9 +152,9 @@ internal class EngineGiftCardWallets(
             lightWalletEndpoint = lightWalletEndpoint,
             setup = setup,
             isTorEnabled = isTorEnabled,
-            onCriticalError = onCriticalError,
-            engineMemoryFraction = engineMemoryFraction
+            onCriticalError = onCriticalError
         )
+    }
 
     override suspend fun feeEstimateRecipient(
         synchronizer: Synchronizer,
@@ -166,16 +166,4 @@ internal class EngineGiftCardWallets(
         seed: ByteArray,
         network: ZcashNetwork
     ): UnifiedSpendingKey = GiftCardWallets.Default.deriveSpendingKey(seed, network)
-
-    companion object {
-        /**
-         * The share of the device's memory a card wallet's engine is told the device has: half. The
-         * Slipstream engine uses that figure only to switch to its smaller, fixed budgets below its
-         * 3 GiB small-device threshold, so the card wallet's engine takes those smaller budgets on
-         * devices below 6 GiB, where the main wallet's engine (told the whole device) may still take
-         * its defaults, and the same default budgets as the main wallet's on larger devices; never
-         * larger ones.
-         */
-        const val CARD_ENGINE_MEMORY_FRACTION = 0.5f
-    }
 }

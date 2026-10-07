@@ -167,10 +167,8 @@ class GiftCardRedeemer private constructor(
     private var isDisconnectedUntilFirstPass = false
 
     /**
-     * Whether the open card wallet has reported a failed sync pass through
-     * [Synchronizer.onProcessorErrorHandler]. Tracked only for a wallet that
-     * [isDisconnectedUntilFirstPass], for which it marks the end of the idle wait before the first
-     * pass.
+     * Whether the open card wallet, one that [isDisconnectedUntilFirstPass], has reported a failed
+     * sync pass, which ends its idle wait before the first pass.
      */
     private val processorErrorReported = MutableStateFlow(false)
 
@@ -185,6 +183,11 @@ class GiftCardRedeemer private constructor(
 
     private class WalletFailure(
         val cause: Throwable?
+    )
+
+    private class SyncedWallet(
+        val account: Account,
+        val balance: Balance
     )
 
     /** The card wallet's balance, as found on chain. */
@@ -351,22 +354,15 @@ class GiftCardRedeemer private constructor(
         processorFailure.update { null }
         try {
             var synchronizer = openSynchronizer(isBirthdayExact = isBirthdayExact)
-            var (account, accountBalance) = awaitSyncedWallet(synchronizer, timeout, disconnectedTimeout)
-            if (isBirthdayExact && accountBalance.toGiftCardBalance().total.value == 0L &&
-                !hasHistory(synchronizer, account)
-            ) {
+            var synced = awaitSyncedWallet(synchronizer, timeout, disconnectedTimeout)
+            if (isBirthdayExact && synced.balance.total.value == 0L && !hasHistory(synchronizer, synced.account)) {
                 Twig.info { "Gift card wallet found nothing from the exact birthday; rescanning from the checkpoint" }
                 synchronizer.close()
                 this.synchronizer = null
                 synchronizer = openSynchronizer(isBirthdayExact = false)
-                awaitSyncedWallet(synchronizer, timeout, disconnectedTimeout).let {
-                    account = it.first
-                    accountBalance = it.second
-                }
+                synced = awaitSyncedWallet(synchronizer, timeout, disconnectedTimeout)
             }
-            val status = statusOf(synchronizer, account, accountBalance.toGiftCardBalance())
-            checkedAccount = account
-            return status
+            return statusOf(synchronizer, synced.account, synced.balance).also { checkedAccount = synced.account }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -718,10 +714,10 @@ class GiftCardRedeemer private constructor(
         synchronizer: Synchronizer,
         timeout: Duration,
         disconnectedTimeout: Duration
-    ): Pair<Account, AccountBalance> =
+    ): SyncedWallet =
         withTimeoutOrNull(timeout) {
             val account = awaitAccount(synchronizer)
-            account to awaitSyncedBalance(synchronizer, account, disconnectedTimeout)
+            SyncedWallet(account, awaitSyncedBalance(synchronizer, account, disconnectedTimeout).toGiftCardBalance())
         } ?: throw GiftCardException.SyncFailed(criticalError.value?.cause ?: synchronizer.setupError.value)
 
     /**
@@ -762,21 +758,20 @@ class GiftCardRedeemer private constructor(
     ): AccountBalance {
         var isPastFirstPass = !isDisconnectedUntilFirstPass
         val statusUntilDisconnectedTooLong =
-            combine(synchronizer.status, processorErrorReported) { status, errorReported ->
-                status to errorReported
-            }.transformLatest { (current, errorReported) ->
-                emit(current)
-                if (errorReported ||
-                    current == Synchronizer.Status.SYNCING ||
-                    current == Synchronizer.Status.SYNCED
-                ) {
-                    isPastFirstPass = true
+            combine(synchronizer.status, processorErrorReported, ::Pair)
+                .transformLatest { (current, errorReported) ->
+                    emit(current)
+                    if (errorReported ||
+                        current == Synchronizer.Status.SYNCING ||
+                        current == Synchronizer.Status.SYNCED
+                    ) {
+                        isPastFirstPass = true
+                    }
+                    if (current == Synchronizer.Status.DISCONNECTED && isPastFirstPass) {
+                        delay(disconnectedTimeout)
+                        throw GiftCardException.SyncFailed(null)
+                    }
                 }
-                if (current == Synchronizer.Status.DISCONNECTED && isPastFirstPass) {
-                    delay(disconnectedTimeout)
-                    throw GiftCardException.SyncFailed(null)
-                }
-            }
         val status =
             if (isDisconnectedUntilFirstPass) {
                 merge(statusUntilDisconnectedTooLong, failWhenStalled(synchronizer, disconnectedTimeout))
@@ -1092,14 +1087,11 @@ internal interface GiftCardWallets {
  * @property startsAtBirthday whether it starts exactly at the card's birthday; `false` when it
  * starts at the bundled checkpoint below it, whether asked to or because the exact tree state
  * was not available.
- * @property isDisconnectedUntilFirstPass whether its synchronizer reports
- * [Synchronizer.Status.DISCONNECTED] while it is merely idle, after it has started and before its
- * first sync pass, as the Slipstream engine does. Such a wallet reports trouble reaching the server
- * as being idle or as syncing that does not advance, and an engine error (a failed sync pass, such as
- * a logic error or a panic) through [Synchronizer.onProcessorErrorHandler], which [GiftCardRedeemer]
- * then takes over: it has the engine retry at most [GiftCardRedeemer.MAX_PROCESSOR_ERROR_RETRIES]
- * times per check. `false` for a wallet that reports DISCONNECTED only when it cannot reach the
- * server.
+ * @property isDisconnectedUntilFirstPass whether its synchronizer, as the Slipstream engine's does,
+ * reports [Synchronizer.Status.DISCONNECTED] while merely idle before its first sync pass, trouble
+ * reaching the server as being idle or as syncing that does not advance, and engine errors through
+ * [Synchronizer.onProcessorErrorHandler], which [GiftCardRedeemer] then takes over. `false` for a
+ * wallet that reports DISCONNECTED only when it cannot reach the server.
  */
 internal class OpenedCardWallet(
     val synchronizer: CloseableSynchronizer,

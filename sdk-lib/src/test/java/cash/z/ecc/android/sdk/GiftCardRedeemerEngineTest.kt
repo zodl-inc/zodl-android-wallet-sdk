@@ -16,6 +16,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -37,31 +38,30 @@ class GiftCardRedeemerEngineTest {
             cardWallet.setupError.value = setupFailure
             val (redeemer, _) = redeemer(cardWallet, wallets = engineWallets(cardWallet))
 
-            val thrown =
-                withTimeout(5.seconds) {
-                    runCatching { redeemer.check(timeout = 10.minutes, disconnectedTimeout = 10.minutes) }
-                }.exceptionOrNull()
-
-            val failure = assertIs<GiftCardException.SyncFailed>(thrown)
-            assertTrue(generateSequence(failure.cause) { it.cause }.any { it.message == "setup" })
+            assertSyncFailedBy("setup", failedCheck(redeemer))
         }
 
+    /** Whether the account is already there or still being created, a setup error fails the waiting check. */
     @Test
-    fun aSetupErrorLatchedWhileTheCheckWaitsFailsIt() =
+    fun aSetupErrorLatchedWhileTheCheckWaitsFailsItAtOnce() =
         runBlocking<Unit> {
-            val cardWallet = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.INITIALIZING))
-            val wallets = engineWallets(cardWallet)
-            val (redeemer, _) = redeemer(cardWallet, wallets = wallets)
+            listOf(listOf(AccountFixture.new()), null).forEach { accounts ->
+                val cardWallet =
+                    FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.INITIALIZING))
+                cardWallet.accounts.value = accounts
+                val wallets = engineWallets(cardWallet)
+                val (redeemer, _) = redeemer(cardWallet, wallets = wallets)
 
-            val check = async { runCatching { redeemer.check(timeout = 10.minutes) } }
-            wallets.opened.await()
-            delay(50.milliseconds)
-            assertFalse(check.isCompleted)
-            cardWallet.setupError.value = IllegalStateException("anchor")
+                val check =
+                    async { runCatching { redeemer.check(timeout = 10.minutes, disconnectedTimeout = 10.minutes) } }
+                wallets.opened.await()
+                delay(50.milliseconds)
+                assertFalse(check.isCompleted)
+                cardWallet.setupError.value = IllegalStateException("anchor")
 
-            val outcome = withTimeout(5.seconds) { check.await() }
-            val failure = assertIs<GiftCardException.SyncFailed>(outcome.exceptionOrNull())
-            assertTrue(generateSequence(failure.cause) { it.cause }.any { it.message == "anchor" })
+                assertSyncFailedBy("anchor", withTimeout(5.seconds) { check.await() }.exceptionOrNull())
+                redeemer.close()
+            }
         }
 
     @Test
@@ -81,33 +81,21 @@ class GiftCardRedeemerEngineTest {
             assertIs<GiftCardRedeemer.Status.Ready>(withTimeout(5.seconds) { check.await() })
         }
 
+    /** Idle before its first pass, or syncing without advancing: either way the wallet fails after the grace. */
     @Test
-    fun aCardWalletIdleBeforeItsFirstPassForLongerThanTheGraceFails() =
+    fun aCardWalletWithoutSyncProgressFailsAfterTheGrace() =
         runBlocking<Unit> {
-            val cardWallet = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.DISCONNECTED))
-            val (redeemer, _) = redeemer(cardWallet, wallets = engineWallets(cardWallet))
+            listOf(
+                Synchronizer.Status.DISCONNECTED to PercentDecimal.ZERO_PERCENT,
+                Synchronizer.Status.SYNCING to PercentDecimal(0.4f)
+            ).forEach { (status, progress) ->
+                val cardWallet = FakeCardWallet(emptyList(), status = MutableStateFlow(status))
+                cardWallet.progress.value = progress
+                val (redeemer, _) = redeemer(cardWallet, wallets = engineWallets(cardWallet))
 
-            val outcome =
-                withTimeout(5.seconds) {
-                    runCatching { redeemer.check(timeout = 10.minutes, disconnectedTimeout = 100.milliseconds) }
-                }
-
-            assertIs<GiftCardException.SyncFailed>(outcome.exceptionOrNull())
-        }
-
-    @Test
-    fun aCardWalletSyncingWithoutProgressFailsAfterTheGrace() =
-        runBlocking<Unit> {
-            val cardWallet = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.SYNCING))
-            cardWallet.progress.value = PercentDecimal(0.4f)
-            val (redeemer, _) = redeemer(cardWallet, wallets = engineWallets(cardWallet))
-
-            val outcome =
-                withTimeout(5.seconds) {
-                    runCatching { redeemer.check(timeout = 10.minutes, disconnectedTimeout = 100.milliseconds) }
-                }
-
-            assertIs<GiftCardException.SyncFailed>(outcome.exceptionOrNull())
+                assertIs<GiftCardException.SyncFailed>(failedCheck(redeemer, disconnectedTimeout = 100.milliseconds))
+                redeemer.close()
+            }
         }
 
     @Test
@@ -168,25 +156,6 @@ class GiftCardRedeemerEngineTest {
         }
 
     @Test
-    fun aSetupErrorWhileWaitingForTheAccountFailsTheCheckAtOnce() =
-        runBlocking<Unit> {
-            val cardWallet = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.INITIALIZING))
-            cardWallet.accounts.value = null
-            val wallets = engineWallets(cardWallet)
-            val (redeemer, _) = redeemer(cardWallet, wallets = wallets)
-
-            val check = async { runCatching { redeemer.check(timeout = 10.minutes, disconnectedTimeout = 10.minutes) } }
-            wallets.opened.await()
-            delay(50.milliseconds)
-            assertFalse(check.isCompleted)
-            cardWallet.setupError.value = IllegalStateException("anchor")
-
-            val outcome = withTimeout(5.seconds) { check.await() }
-            val failure = assertIs<GiftCardException.SyncFailed>(outcome.exceptionOrNull())
-            assertTrue(generateSequence(failure.cause) { it.cause }.any { it.message == "anchor" })
-        }
-
-    @Test
     fun aSecondCheckAfterALatchedSetupErrorOpensANewCardWallet() =
         runBlocking<Unit> {
             val broken = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.DISCONNECTED))
@@ -226,9 +195,7 @@ class GiftCardRedeemerEngineTest {
             assertFalse(check.isCompleted)
             assertFalse(handler(IllegalStateException("panic")), "the retries are spent")
 
-            val outcome = withTimeout(5.seconds) { check.await() }
-            val failure = assertIs<GiftCardException.SyncFailed>(outcome.exceptionOrNull())
-            assertTrue(generateSequence(failure.cause) { it.cause }.any { it.message == "panic" })
+            assertSyncFailedBy("panic", withTimeout(5.seconds) { check.await() }.exceptionOrNull())
         }
 
     @Test
@@ -329,6 +296,24 @@ class GiftCardRedeemerEngineTest {
             assertEquals(listOf(claim), cardWallet.submitted)
             assertEquals(OvkPolicy.Discard, cardWallet.ovkPolicy)
         }
+
+    /** Runs a check of [redeemer] expected to fail, and returns its failure. */
+    private suspend fun failedCheck(
+        redeemer: GiftCardRedeemer,
+        disconnectedTimeout: Duration = 10.minutes
+    ): Throwable? =
+        withTimeout(5.seconds) {
+            runCatching { redeemer.check(timeout = 10.minutes, disconnectedTimeout = disconnectedTimeout) }
+        }.exceptionOrNull()
+
+    /** Asserts that [thrown] is a [GiftCardException.SyncFailed] caused, at some depth, by a failure with [message]. */
+    private fun assertSyncFailedBy(
+        message: String,
+        thrown: Throwable?
+    ) {
+        val failure = assertIs<GiftCardException.SyncFailed>(thrown)
+        assertTrue(generateSequence(failure.cause) { it.cause }.any { it.message == message })
+    }
 
     /** Card wallets as the Slipstream engine opens them: at the checkpoint, and idle before the first pass. */
     private fun engineWallets(cardWallet: FakeCardWallet) =

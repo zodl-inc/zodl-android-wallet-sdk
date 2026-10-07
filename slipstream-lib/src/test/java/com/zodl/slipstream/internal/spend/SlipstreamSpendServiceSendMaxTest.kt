@@ -26,7 +26,9 @@ import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
 import java.io.IOException
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertSame
 
 /**
@@ -79,64 +81,38 @@ class SlipstreamSpendServiceSendMaxTest {
         }
 
     @Test
-    fun anEmptyWalletIsInsufficientFunds() =
-        runBlocking<Unit> {
-            val backend = mock(Backend::class.java)
-            val refusal = ProposalInsufficientFundsException("nothing spendable")
-            `when`(backend.proposeSendMaxTransfer(account.accountUuid.value, RECIPIENT, null)).thenThrow(refusal)
+    fun anEmptyWalletIsInsufficientFunds() {
+        val refusal = ProposalInsufficientFundsException("nothing spendable")
 
-            val exception =
-                assertFailsWith<TransactionEncoderException.InsufficientFundsException> {
-                    service(backend).proposeSendMax(account, recipient, null)
-                }
+        val exception = assertIs<TransactionEncoderException.InsufficientFundsException>(sendMaxFailure(refusal))
 
-            assertSame(refusal, exception.rootCause)
-        }
+        assertSame(refusal, exception.rootCause)
+    }
 
     @Test
-    fun aBalanceBelowTheFeeReportedAsTextIsInsufficientFunds() =
-        runBlocking<Unit> {
-            val backend = mock(Backend::class.java)
-            val refusal = RuntimeException("Insufficient balance (have 5000, need 10000 including fee)")
-            `when`(backend.proposeSendMaxTransfer(account.accountUuid.value, RECIPIENT, null)).thenThrow(refusal)
+    fun aBalanceBelowTheFeeReportedAsTextIsInsufficientFunds() {
+        val refusal = RuntimeException("Insufficient balance (have 5000, need 10000 including fee)")
 
-            val exception =
-                assertFailsWith<TransactionEncoderException.InsufficientFundsException> {
-                    service(backend).proposeSendMax(account, recipient, null)
-                }
+        val exception = assertIs<TransactionEncoderException.InsufficientFundsException>(sendMaxFailure(refusal))
 
-            assertSame(refusal, exception.rootCause)
-        }
+        assertSame(refusal, exception.rootCause)
+    }
 
     @Test
-    fun anyOtherFailureIsAParametersProposalFailure() =
-        runBlocking<Unit> {
-            val backend = mock(Backend::class.java)
-            val failure = RuntimeException("the database is locked")
-            `when`(backend.proposeSendMaxTransfer(account.accountUuid.value, RECIPIENT, null)).thenThrow(failure)
+    fun anyOtherFailureIsAParametersProposalFailure() {
+        val refusal = RuntimeException("the database is locked")
 
-            val exception =
-                assertFailsWith<TransactionEncoderException.ProposalFromParametersException> {
-                    service(backend).proposeSendMax(account, recipient, null)
-                }
+        val exception = assertIs<TransactionEncoderException.ProposalFromParametersException>(sendMaxFailure(refusal))
 
-            assertSame(failure, exception.rootCause)
-        }
+        assertSame(refusal, exception.rootCause)
+    }
 
     @Test
-    fun aCancellationTravelsAsItself() =
-        runBlocking<Unit> {
-            val backend = mock(Backend::class.java)
-            val cancellation = CancellationException("cancelled")
-            `when`(backend.proposeSendMaxTransfer(account.accountUuid.value, RECIPIENT, null)).thenThrow(cancellation)
+    fun aCancellationTravelsAsItself() {
+        val cancellation = CancellationException("cancelled")
 
-            val thrown =
-                assertFailsWith<CancellationException> {
-                    service(backend).proposeSendMax(account, recipient, null)
-                }
-
-            assertSame(cancellation, thrown)
-        }
+        assertSame(cancellation, sendMaxFailure(cancellation))
+    }
 
     @Test
     fun proposingNeverTouchesTheEngineOrTheSaplingParameters() =
@@ -158,18 +134,12 @@ class SlipstreamSpendServiceSendMaxTest {
     @Test
     fun sendingAnOrchardOnlyProposalNeverFetchesTheSaplingParameters() =
         runBlocking<Unit> {
-            val backend = mock(Backend::class.java)
-            val proposalUnsafe = mock(ProposalUnsafe::class.java)
-            `when`(proposalUnsafe.totalFeeRequired()).thenReturn(FEE)
-            val proposal = Proposal.fromUnsafe(proposalUnsafe)
-            val usk = mock(UnifiedSpendingKey::class.java)
-            val uskBytes = byteArrayOf(1, 2, 3)
-            `when`(usk.copyBytes()).thenReturn(uskBytes)
-            `when`(backend.proposalRequiresSaplingProofs(proposalUnsafe)).thenReturn(false)
-            `when`(backend.createProposedTransactions(proposalUnsafe, uskBytes)).thenReturn(emptyList())
+            val send = Send(requiresSapling = false)
+            `when`(send.backend.createProposedTransactions(send.proposalUnsafe, send.uskBytes))
+                .thenReturn(emptyList())
             var ensured = 0
 
-            service(backend) { ensured++ }.createProposedTransactions(proposal, usk).toList()
+            service(send.backend) { ensured++ }.createProposedTransactions(send.proposal, send.usk).toList()
 
             assertEquals(0, ensured)
         }
@@ -177,21 +147,14 @@ class SlipstreamSpendServiceSendMaxTest {
     @Test
     fun sendingASaplingProposalFetchesTheSaplingParametersOnceBeforeCreating() =
         runBlocking<Unit> {
-            val backend = mock(Backend::class.java)
-            val proposalUnsafe = mock(ProposalUnsafe::class.java)
-            `when`(proposalUnsafe.totalFeeRequired()).thenReturn(FEE)
-            val proposal = Proposal.fromUnsafe(proposalUnsafe)
-            val usk = mock(UnifiedSpendingKey::class.java)
-            val uskBytes = byteArrayOf(1, 2, 3)
-            `when`(usk.copyBytes()).thenReturn(uskBytes)
+            val send = Send(requiresSapling = true)
             val steps = mutableListOf<String>()
-            `when`(backend.proposalRequiresSaplingProofs(proposalUnsafe)).thenReturn(true)
-            `when`(backend.createProposedTransactions(proposalUnsafe, uskBytes)).thenAnswer {
+            `when`(send.backend.createProposedTransactions(send.proposalUnsafe, send.uskBytes)).thenAnswer {
                 steps += "create"
                 emptyList<ByteArray>()
             }
 
-            service(backend) { steps += "ensure" }.createProposedTransactions(proposal, usk).toList()
+            service(send.backend) { steps += "ensure" }.createProposedTransactions(send.proposal, send.usk).toList()
 
             assertEquals(listOf("ensure", "create"), steps)
         }
@@ -199,22 +162,41 @@ class SlipstreamSpendServiceSendMaxTest {
     @Test
     fun aFailedSaplingParameterFetchFailsTheSendBeforeAnythingIsCreated() =
         runBlocking<Unit> {
-            val backend = mock(Backend::class.java)
-            val proposalUnsafe = mock(ProposalUnsafe::class.java)
-            `when`(proposalUnsafe.totalFeeRequired()).thenReturn(FEE)
-            val proposal = Proposal.fromUnsafe(proposalUnsafe)
-            val usk = mock(UnifiedSpendingKey::class.java)
-            `when`(usk.copyBytes()).thenReturn(byteArrayOf(1, 2, 3))
-            `when`(backend.proposalRequiresSaplingProofs(proposalUnsafe)).thenReturn(true)
+            val send = Send(requiresSapling = true)
             val failure = IOException("download.z.cash unreachable")
 
             val thrown =
                 assertFailsWith<IOException> {
-                    service(backend) { throw failure }.createProposedTransactions(proposal, usk).toList()
+                    service(send.backend) { throw failure }.createProposedTransactions(send.proposal, send.usk).toList()
                 }
 
             assertEquals(failure.message, thrown.message)
-            verify(backend, never()).createProposedTransactions(proposalUnsafe, byteArrayOf(1, 2, 3))
+            verify(send.backend, never()).createProposedTransactions(send.proposalUnsafe, send.uskBytes)
+        }
+
+    /** A proposal paying [FEE], whose Sapling proofs the backend [requiresSapling], and the key to send it with. */
+    private class Send(
+        requiresSapling: Boolean
+    ) {
+        val backend: Backend = mock(Backend::class.java)
+        val proposalUnsafe: ProposalUnsafe =
+            mock(ProposalUnsafe::class.java).also { `when`(it.totalFeeRequired()).thenReturn(FEE) }
+        val proposal: Proposal = Proposal.fromUnsafe(proposalUnsafe)
+        val uskBytes = byteArrayOf(1, 2, 3)
+        val usk: UnifiedSpendingKey =
+            mock(UnifiedSpendingKey::class.java).also { `when`(it.copyBytes()).thenReturn(uskBytes) }
+
+        init {
+            runBlocking { `when`(backend.proposalRequiresSaplingProofs(proposalUnsafe)).thenReturn(requiresSapling) }
+        }
+    }
+
+    /** What [SlipstreamSpendService.proposeSendMax] throws when the backend's send-max call throws [backendFailure]. */
+    private fun sendMaxFailure(backendFailure: Exception): Throwable =
+        runBlocking {
+            val backend = mock(Backend::class.java)
+            `when`(backend.proposeSendMaxTransfer(account.accountUuid.value, RECIPIENT, null)).thenThrow(backendFailure)
+            assertFails { service(backend).proposeSendMax(account, recipient, null) }
         }
 
     private fun service(

@@ -23,31 +23,20 @@ import kotlin.test.assertTrue
 
 /**
  * [GiftCardRedeemers] and [EngineGiftCardWallets] against a fake engine factory: the card wallet is opened and erased
- * by the engine the SDK was built with, telling it half the device's memory, under the card's alias, and the
- * engine-backed redeemer erases the card wallet through that engine both before opening it and when closed. No
- * spelling of the main wallet's alias is ever opened or erased.
+ * by the engine the SDK was built with, under the card's alias, and the engine-backed redeemer erases the card wallet
+ * through that engine both before opening it and when closed. No spelling of the main wallet's alias is ever opened or
+ * erased.
  */
 class GiftCardRedeemersTest {
     @Test
-    fun theCardWalletIsOpenedByTheEngineUnderItsAliasWithHalfTheMemory() =
+    fun theCardWalletIsOpenedByTheEngineUnderItsAlias() =
         runBlocking<Unit> {
             val factory = FakeEngineFactory()
             val setup =
                 AccountCreateSetup(accountName = "Gift card", keySource = null, seed = FirstClassByteArray(SEED))
             val handler: (Throwable?) -> Boolean = { false }
 
-            val opened =
-                EngineGiftCardWallets(factory).open(
-                    context = context(),
-                    network = ZcashNetwork.Mainnet,
-                    alias = ALIAS,
-                    birthday = BlockHeight.new(BIRTHDAY),
-                    isBirthdayExact = true,
-                    lightWalletEndpoint = ENDPOINT,
-                    isTorEnabled = true,
-                    setup = setup,
-                    onCriticalError = handler
-                )
+            val opened = openCardWallet(factory, ALIAS, setup, handler)
 
             assertSame(factory.openedWallet, opened)
             val request = factory.openRequests.single()
@@ -59,14 +48,19 @@ class GiftCardRedeemersTest {
             assertTrue(request.isTorEnabled)
             assertSame(setup, request.setup)
             assertSame(handler, request.onCriticalError)
-            assertEquals(EngineGiftCardWallets.CARD_ENGINE_MEMORY_FRACTION, request.engineMemoryFraction)
         }
 
     @Test
-    fun theCardWalletsEngineNeverPlansWithMoreThanHalfTheDevice() {
-        assertTrue(EngineGiftCardWallets.CARD_ENGINE_MEMORY_FRACTION > 0f)
-        assertTrue(EngineGiftCardWallets.CARD_ENGINE_MEMORY_FRACTION <= HALF)
-    }
+    fun theCardWalletIsNeverOpenedUnderTheMainWalletsAlias() =
+        runBlocking<Unit> {
+            val factory = FakeEngineFactory()
+
+            MAIN_WALLET_ALIASES.forEach { alias ->
+                assertFailsWith<IllegalArgumentException>(alias) { openCardWallet(factory, alias) }
+            }
+
+            assertTrue(factory.openRequests.isEmpty())
+        }
 
     @Test
     fun theCardWalletIsErasedByTheEngine() =
@@ -100,10 +94,6 @@ class GiftCardRedeemersTest {
             val alias = GiftCardRedeemer.defaultAlias(card)
             assertEquals(alias, redeemer.alias)
             assertEquals(listOf(alias), factory.openRequests.map { it.alias })
-            assertEquals(
-                EngineGiftCardWallets.CARD_ENGINE_MEMORY_FRACTION,
-                factory.openRequests.single().engineMemoryFraction
-            )
             assertEquals(listOf(ZcashNetwork.Mainnet to alias, ZcashNetwork.Mainnet to alias), factory.erased)
         }
 
@@ -163,6 +153,24 @@ class GiftCardRedeemersTest {
             assertTrue(factory.erased.isEmpty())
         }
 
+    private suspend fun openCardWallet(
+        factory: FakeEngineFactory,
+        alias: String,
+        setup: AccountCreateSetup =
+            AccountCreateSetup(accountName = "Gift card", keySource = null, seed = FirstClassByteArray(SEED)),
+        onCriticalError: (Throwable?) -> Boolean = { false }
+    ) = EngineGiftCardWallets(factory).open(
+        context = context(),
+        network = ZcashNetwork.Mainnet,
+        alias = alias,
+        birthday = BlockHeight.new(BIRTHDAY),
+        isBirthdayExact = true,
+        lightWalletEndpoint = ENDPOINT,
+        isTorEnabled = true,
+        setup = setup,
+        onCriticalError = onCriticalError
+    )
+
     /** What [FakeEngineFactory.openHelperWallet] was asked for. */
     @Suppress("LongParameterList")
     private class OpenRequest(
@@ -173,8 +181,7 @@ class GiftCardRedeemersTest {
         val endpoint: LightWalletEndpoint,
         val setup: AccountCreateSetup,
         val isTorEnabled: Boolean,
-        val onCriticalError: (Throwable?) -> Boolean,
-        val engineMemoryFraction: Float
+        val onCriticalError: (Throwable?) -> Boolean
     )
 
     /** Records helper wallet requests; opens [openedWallet], or fails with [openFailure]. Never opens a main wallet. */
@@ -210,8 +217,7 @@ class GiftCardRedeemersTest {
             lightWalletEndpoint: LightWalletEndpoint,
             setup: AccountCreateSetup,
             isTorEnabled: Boolean,
-            onCriticalError: (Throwable?) -> Boolean,
-            engineMemoryFraction: Float
+            onCriticalError: (Throwable?) -> Boolean
         ): OpenedCardWallet {
             openRequests +=
                 OpenRequest(
@@ -222,8 +228,7 @@ class GiftCardRedeemersTest {
                     endpoint = lightWalletEndpoint,
                     setup = setup,
                     isTorEnabled = isTorEnabled,
-                    onCriticalError = onCriticalError,
-                    engineMemoryFraction = engineMemoryFraction
+                    onCriticalError = onCriticalError
                 )
             openFailure?.let { throw it }
             return openedWallet
@@ -242,7 +247,6 @@ class GiftCardRedeemersTest {
     private companion object {
         const val ALIAS = "giftcard_test"
         const val BIRTHDAY = 3_000_000L
-        const val HALF = 0.5f
         val SEED = ByteArray(64)
 
         /** Every spelling of an alias that addresses the main wallet's files. */

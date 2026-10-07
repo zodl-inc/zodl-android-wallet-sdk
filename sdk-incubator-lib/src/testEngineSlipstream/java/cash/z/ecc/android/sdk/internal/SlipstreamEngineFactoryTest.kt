@@ -12,9 +12,13 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import com.zodl.slipstream.SlipstreamSynchronizer
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
+import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
+import org.mockito.Mockito.`when`
+import java.io.File
+import java.nio.file.Files
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -22,10 +26,11 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * [SlipstreamEngineFactory] with [SlipstreamSynchronizer]'s companion replaced: a helper wallet is a second
- * Slipstream synchronizer under its own alias, restored from the card's seed without exchange rates and with its
- * share of the device's memory, which starts at the checkpoint and is idle before its first pass; the main wallet
- * keeps the default alias and the whole device; helper wallets are erased by alias, never the main wallet.
+ * [SlipstreamEngineFactory] with [SlipstreamSynchronizer]'s `new` replaced: a helper wallet is a second Slipstream
+ * synchronizer under its own alias, restored from the card's seed without exchange rates and with its share of the
+ * device's memory, which starts at the checkpoint and is idle before its first pass; the main wallet keeps the default
+ * alias and the whole device; helper wallets are erased by alias through [SlipstreamSynchronizer.Companion.eraseAlias],
+ * never the main wallet.
  */
 class SlipstreamEngineFactoryTest {
     @Test
@@ -33,13 +38,7 @@ class SlipstreamEngineFactoryTest {
         runBlocking<Unit> {
             val synchronizer = mock(CloseableSynchronizer::class.java)
             val requests = mutableListOf<SlipstreamWalletRequest>()
-            val factory =
-                SlipstreamEngineFactory(
-                    newSynchronizer = {
-                        requests += it
-                        synchronizer
-                    }
-                )
+            val factory = recordingFactory(requests, synchronizer)
             val context = mock(Context::class.java)
             val setup = setup()
 
@@ -53,8 +52,7 @@ class SlipstreamEngineFactoryTest {
                     lightWalletEndpoint = ENDPOINT,
                     setup = setup,
                     isTorEnabled = true,
-                    onCriticalError = { false },
-                    engineMemoryFraction = HALF
+                    onCriticalError = { false }
                 )
 
             val request = requests.single()
@@ -67,9 +65,15 @@ class SlipstreamEngineFactoryTest {
             assertEquals(ZcashNetwork.Mainnet, request.zcashNetwork)
             assertTrue(request.isTorEnabled)
             assertFalse(request.isExchangeRateEnabled)
-            assertEquals(HALF, request.engineMemoryFraction)
+            assertEquals(SlipstreamEngineFactory.HELPER_ENGINE_MEMORY_FRACTION, request.engineMemoryFraction)
             assertSame(synchronizer, opened.synchronizer)
         }
+
+    @Test
+    fun aHelperWalletsEngineNeverPlansWithMoreThanHalfTheDevice() {
+        assertTrue(SlipstreamEngineFactory.HELPER_ENGINE_MEMORY_FRACTION > 0f)
+        assertTrue(SlipstreamEngineFactory.HELPER_ENGINE_MEMORY_FRACTION <= HALF)
+    }
 
     @Test
     fun aHelperWalletStartsAtTheCheckpointAndIsIdleBeforeItsFirstPass() =
@@ -95,38 +99,12 @@ class SlipstreamEngineFactoryTest {
         }
 
     @Test
-    fun aHelperWalletNeverUsesTheMainWalletsAlias() =
-        runBlocking<Unit> {
-            val requests = mutableListOf<SlipstreamWalletRequest>()
-            val factory =
-                SlipstreamEngineFactory(
-                    newSynchronizer = {
-                        requests += it
-                        mock(CloseableSynchronizer::class.java)
-                    }
-                )
-
-            MAIN_WALLET_ALIASES.forEach { alias ->
-                assertFailsWith<IllegalArgumentException>(alias) { openHelper(factory, alias = alias) }
-            }
-
-            assertTrue(requests.isEmpty())
-        }
-
-    @Test
     fun theMainWalletKeepsTheDefaultAliasAndTheWholeDevice() =
         runBlocking<Unit> {
             val requests = mutableListOf<SlipstreamWalletRequest>()
-            val factory =
-                SlipstreamEngineFactory(
-                    newSynchronizer = {
-                        requests += it
-                        mock(CloseableSynchronizer::class.java)
-                    }
-                )
             val setup = setup()
 
-            factory.new(
+            recordingFactory(requests).new(
                 context = mock(Context::class.java),
                 zcashNetwork = ZcashNetwork.Mainnet,
                 lightWalletEndpoint = ENDPOINT,
@@ -148,49 +126,52 @@ class SlipstreamEngineFactoryTest {
     @Test
     fun aHelperWalletIsErasedByItsAlias() =
         runBlocking<Unit> {
-            val erased = mutableListOf<Pair<ZcashNetwork, String>>()
-            val newSynchronizer: suspend (SlipstreamWalletRequest) -> CloseableSynchronizer = { error("not opened") }
-            val factory =
-                SlipstreamEngineFactory(
-                    newSynchronizer = newSynchronizer,
-                    eraseHelperAlias = { _, network, alias ->
-                        erased += network to alias
-                        true
-                    }
+            val noBackupRoot = Files.createTempDirectory("helper-erase").toFile()
+            try {
+                val walletDir = File(noBackupRoot, "co.electricoin.zcash").apply { mkdirs() }
+                val helper = File(walletDir, "${ALIAS}_testnet_data.sqlite3").apply { writeText("x") }
+                val main = File(walletDir, "${ZcashSdk.DEFAULT_ALIAS}_testnet_data.sqlite3").apply { writeText("x") }
+                val context = mock(Context::class.java)
+                `when`(context.applicationContext).thenReturn(context)
+                `when`(context.noBackupFilesDir).thenReturn(noBackupRoot)
+                `when`(context.deleteSharedPreferences(anyString())).thenReturn(true)
+
+                assertTrue(SlipstreamEngineFactory().eraseHelperWallet(context, ZcashNetwork.Testnet, ALIAS))
+
+                assertFalse(helper.exists())
+                assertTrue(main.exists())
+                verify(context).deleteSharedPreferences(
+                    "com.zodl.slipstream.submit_plan_${ZcashNetwork.Testnet.id}_$ALIAS"
                 )
-
-            assertTrue(factory.eraseHelperWallet(mock(Context::class.java), ZcashNetwork.Testnet, ALIAS))
-
-            assertEquals(listOf(ZcashNetwork.Testnet to ALIAS), erased)
+            } finally {
+                noBackupRoot.deleteRecursively()
+            }
         }
 
     @Test
     fun theMainWalletIsNeverErasedAsAHelperWallet() =
         runBlocking<Unit> {
             val context = mock(Context::class.java)
-            val erased = mutableListOf<String>()
-            val newSynchronizer: suspend (SlipstreamWalletRequest) -> CloseableSynchronizer = { error("not opened") }
-            val injected =
-                SlipstreamEngineFactory(
-                    newSynchronizer = newSynchronizer,
-                    eraseHelperAlias = { _, _, alias ->
-                        erased += alias
-                        true
-                    }
-                )
 
             MAIN_WALLET_ALIASES.forEach { alias ->
                 assertFailsWith<IllegalArgumentException>(alias) {
                     SlipstreamEngineFactory().eraseHelperWallet(context, ZcashNetwork.Mainnet, alias)
                 }
-                assertFailsWith<IllegalArgumentException>(alias) {
-                    injected.eraseHelperWallet(context, ZcashNetwork.Mainnet, alias)
-                }
             }
 
             verifyNoInteractions(context)
-            assertTrue(erased.isEmpty())
         }
+
+    /** A factory whose `new` records each request in [requests] and returns [synchronizer]. */
+    private fun recordingFactory(
+        requests: MutableList<SlipstreamWalletRequest>,
+        synchronizer: CloseableSynchronizer = mock(CloseableSynchronizer::class.java)
+    ) = SlipstreamEngineFactory(
+        newSynchronizer = {
+            requests += it
+            synchronizer
+        }
+    )
 
     private suspend fun openHelper(
         factory: SlipstreamEngineFactory,
@@ -206,8 +187,7 @@ class SlipstreamEngineFactoryTest {
         lightWalletEndpoint = ENDPOINT,
         setup = setup(),
         isTorEnabled = false,
-        onCriticalError = onCriticalError,
-        engineMemoryFraction = HALF
+        onCriticalError = onCriticalError
     )
 
     private fun setup() =

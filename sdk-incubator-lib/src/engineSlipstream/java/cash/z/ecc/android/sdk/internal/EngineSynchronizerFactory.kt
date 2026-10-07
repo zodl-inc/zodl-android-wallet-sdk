@@ -40,16 +40,12 @@ internal class SlipstreamWalletRequest(
 /**
  * Every wallet of this SDK build runs on [SlipstreamSynchronizer]: the main wallet under the
  * default alias, and each helper wallet as a second instance under its own alias, with its own
- * database and engine handle, beside it. [newSynchronizer] and [eraseHelperAlias] default to
- * [SlipstreamSynchronizer]'s companion and are replaced only by unit tests.
+ * database and engine handle, beside it. [newSynchronizer] is [SlipstreamSynchronizer.Companion.new]
+ * except in unit tests.
  */
 internal class SlipstreamEngineFactory(
     private val newSynchronizer: suspend (SlipstreamWalletRequest) -> CloseableSynchronizer =
-        ::newSlipstreamSynchronizer,
-    private val eraseHelperAlias: suspend (Context, ZcashNetwork, String) -> Boolean =
-        { context, network, alias ->
-            SlipstreamSynchronizer.eraseAlias(appContext = context, network = network, alias = alias)
-        }
+        ::newSlipstreamSynchronizer
 ) : SynchronizerEngineFactory {
     override suspend fun new(
         context: Context,
@@ -91,7 +87,8 @@ internal class SlipstreamEngineFactory(
      * bundled checkpoint at or below [birthday], so [isBirthdayExact] cannot be honoured and the
      * wallet reports [OpenedCardWallet.startsAtBirthday] `false`. Its engine reports
      * `DISCONNECTED` while idle before the first sync pass, hence
-     * [OpenedCardWallet.isDisconnectedUntilFirstPass].
+     * [OpenedCardWallet.isDisconnectedUntilFirstPass]. Its engine is told
+     * [HELPER_ENGINE_MEMORY_FRACTION] of the device's memory.
      *
      * The engine's Tor state directory is fixed per app, so the helper wallet's engine uses the
      * main wallet's rather than bootstrapping a directory of its own.
@@ -99,9 +96,6 @@ internal class SlipstreamEngineFactory(
      * [onCriticalError] is installed as soon as [SlipstreamSynchronizer.Companion.new] returns: its
      * preparation (anchor, database, engine open) is still running then, and critical errors only
      * come from the poll loop, which starts at the end of that preparation.
-     *
-     * @throws IllegalArgumentException if [alias] addresses the main wallet's files (see
-     * [isMainWalletAlias]); nothing is opened then.
      */
     override suspend fun openHelperWallet(
         context: Context,
@@ -113,9 +107,7 @@ internal class SlipstreamEngineFactory(
         setup: AccountCreateSetup,
         isTorEnabled: Boolean,
         onCriticalError: (Throwable?) -> Boolean,
-        engineMemoryFraction: Float,
     ): OpenedCardWallet {
-        requireNotMainWalletAlias(alias, "A helper wallet must not use the default wallet alias")
         val synchronizer =
             newSynchronizer(
                 SlipstreamWalletRequest(
@@ -128,7 +120,7 @@ internal class SlipstreamEngineFactory(
                     zcashNetwork = zcashNetwork,
                     isTorEnabled = isTorEnabled,
                     isExchangeRateEnabled = false,
-                    engineMemoryFraction = engineMemoryFraction
+                    engineMemoryFraction = HELPER_ENGINE_MEMORY_FRACTION
                 )
             )
         synchronizer.onCriticalErrorHandler = onCriticalError
@@ -142,17 +134,20 @@ internal class SlipstreamEngineFactory(
     /**
      * [SlipstreamSynchronizer.Companion.eraseAlias]: this engine's files and preferences for
      * [alias], and whatever an `SdkSynchronizer` left under it, by file-level deletion.
-     *
-     * @throws IllegalArgumentException if [alias] addresses the main wallet's files (see
-     * [isMainWalletAlias]); nothing is touched then.
      */
     override suspend fun eraseHelperWallet(
         appContext: Context,
         network: ZcashNetwork,
         alias: String
-    ): Boolean {
-        requireNotMainWalletAlias(alias, "A helper wallet must not use the default wallet alias")
-        return eraseHelperAlias(appContext, network, alias)
+    ): Boolean = SlipstreamSynchronizer.eraseAlias(appContext = appContext, network = network, alias = alias)
+
+    companion object {
+        /**
+         * The share of the device's memory a helper wallet's engine is told the device has: half, so
+         * it never plans with larger budgets than the main wallet's engine (see
+         * [SlipstreamSynchronizer.Companion.new]).
+         */
+        const val HELPER_ENGINE_MEMORY_FRACTION = 0.5f
     }
 }
 

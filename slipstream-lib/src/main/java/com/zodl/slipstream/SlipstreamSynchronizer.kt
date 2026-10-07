@@ -1815,14 +1815,11 @@ class SlipstreamSynchronizer internal constructor(
          * `Dispatchers.Main` scopes, so dispatching here keeps every caller agnostic to that.
          *
          * [engineMemoryFraction] is the one parameter `Synchronizer.new` does not have: the share of
-         * the device's RAM this instance's engine is told the device has. The engine uses that figure
-         * for one decision only: below its small-device threshold (3 GiB) it switches from its
-         * default fetch and split budgets to fixed, smaller ones. The main wallet keeps the default,
-         * the whole device. A helper wallet running beside it (such as a gift card's temporary
-         * wallet) passes less, so that its engine takes the smaller budgets on devices where the main
-         * wallet's still takes the defaults (with `0.5`, on devices below 6 GiB), and never larger
-         * budgets than the main wallet's; on larger devices both get the defaults (see
-         * [engineMemoryHint]).
+         * the device's RAM this instance's engine is told the device has, which only decides whether
+         * it takes its smaller, small-device budgets (see [engineMemoryHint]). The main wallet keeps
+         * the default, the whole device; a helper wallet running beside it (such as a gift card's
+         * temporary wallet) passes less, so that its engine never plans with larger budgets than the
+         * main wallet's.
          *
          * @param engineMemoryFraction in `(0, 1]`; [FULL_ENGINE_MEMORY] by default.
          * @throws IllegalArgumentException if [engineMemoryFraction] is not in `(0, 1]`.
@@ -1874,11 +1871,9 @@ class SlipstreamSynchronizer internal constructor(
 
         /**
          * [new]'s single-instance bracket around [construct], which builds the instance for [key] on
-         * `Dispatchers.IO`: acquires [key] first, releases it if [construct] fails, and - when the call
-         * fails after [construct] returned, as a cancellation of the caller does while the result is on
-         * its way back - closes the instance and waits for its shutdown, which releases [key], before
-         * rethrowing. Without that, an instance whose preparation was already running would outlive a
-         * call whose caller never received it, holding [key] and its database open.
+         * `Dispatchers.IO`: acquires [key] first and releases it if [construct] fails. When the call
+         * fails after [construct] returned (a cancelled caller, while the result is on its way back),
+         * it closes the instance and waits for its shutdown, which releases [key], before rethrowing.
          */
         internal suspend fun newGuarded(
             key: SlipstreamKey,
@@ -2187,24 +2182,15 @@ class SlipstreamSynchronizer internal constructor(
         ): Boolean = eraseGuarded(appContext, network, alias, eraseLegacyLayout = null)
 
         /**
-         * Deletes the local data of the helper wallet at [network] and [alias] - never the main
-         * wallet's, which [alias] may therefore not name: everything [erase] deletes, plus whatever
-         * an `SdkSynchronizer` left under the same alias (its compact block cache, its pending
-         * transactions database and its submit plans in the SDK's encrypted preferences), as
-         * `Synchronizer.eraseAlias` deletes them. Both are file-level deletions: no synchronizer of
-         * either engine is created or started. The legacy deletion runs under the same
-         * [InstanceGuard] hold as this engine's own, so no Slipstream instance can open the alias in
-         * between.
+         * Deletes the local data of the helper wallet at [network] and [alias], such as a gift card's
+         * temporary wallet, while the main wallet keeps running: everything [erase] deletes, plus
+         * whatever an `SdkSynchronizer` left under the same alias, as `Synchronizer.eraseAlias`
+         * deletes it. Files only: no synchronizer of either engine is started, nothing shared by every
+         * wallet in the process is cleared, and both deletions run under one [InstanceGuard] hold.
          *
-         * Use it to dispose of a temporary wallet, such as a gift card's, while the main wallet keeps
-         * running; unlike `Synchronizer.erase`, nothing shared by every wallet in the process is
-         * cleared.
-         *
-         * The legacy deletion runs only when the files only `SdkSynchronizer` creates are present
-         * (see [DataDbPath.legacyOnlyFiles]), so a wallet only this engine ever ran never reaches it,
-         * nor the SDK's encrypted preferences it opens. It is best-effort: a failure is logged by its
-         * type only and never fails this erase, as the files this engine itself needs are already gone
-         * by then.
+         * The legacy deletion runs only when one of [DataDbPath.legacyOnlyFiles] exists, so a wallet
+         * only this engine ever ran never reaches the SDK's encrypted preferences. It is best-effort:
+         * a failure is logged by its type only and never fails this erase.
          *
          * @return true when none of this engine's files or preferences for the wallet remain; what
          * the legacy deletion found is not part of the result.
