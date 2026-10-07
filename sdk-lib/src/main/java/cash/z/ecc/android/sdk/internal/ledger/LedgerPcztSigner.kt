@@ -8,7 +8,9 @@ import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -25,6 +27,9 @@ import kotlin.coroutines.cancellation.CancellationException
  * - A failed exchange closes the transport (see [LedgerExchanger]); cancellation closes it too. A
  *   refusal by the device leaves it open: the channel is still in step, and a restartable failure can
  *   be retried with a fresh ceremony over the same transport.
+ * - Cancellation is checked before each command and before the signatures are applied, so a
+ *   cancellation that lands between two exchanges stops the ceremony before the next command, even
+ *   over a transport that does not check cancellation itself.
  */
 internal class LedgerPcztSigner(
     private val backend: TypesafeLedgerBackend
@@ -65,6 +70,7 @@ internal class LedgerPcztSigner(
                 }
             return session.use {
                 pump(it, exchanger, policy, progress)
+                currentCoroutineContext().ensureActive()
                 val signed = it.finish()
                 progress.report(LedgerSigningProgress.Complete)
                 signed
@@ -87,6 +93,7 @@ internal class LedgerPcztSigner(
         val total = session.totalCommands
         var sent = 0
         while (true) {
+            currentCoroutineContext().ensureActive()
             when (val step = session.nextStep()) {
                 is SignStep.Send -> {
                     progress.report(progressFor(step, session.stage(), sent, total))

@@ -47,7 +47,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memos and the randomness of every shielded action - and the user reviews its outputs on the device.
   Nothing is sent to a device whose identity is not the binding's. `onProgress` receives
   `LedgerSigningProgress` values (`IdentifyingDevice`, `Streaming(sent, total)`, `AwaitingReviewOnDevice`,
-  `Signing`, `Complete`). A failed exchange or a cancellation closes the transport. `Synchronizer` gains
+  `Signing`, `Complete`). A failed exchange or a cancellation closes the transport; a cancellation
+  between two exchanges stops the ceremony before the next command, also over an app's own transport
+  that does not check cancellation. `Synchronizer` gains
   the member as abstract, so any implementer or test fake must now provide it.
 - `signPcztWithLedger` fails with `LedgerException.InvalidInput` before any device I/O for an account
   whose key source is not `Account.LEDGER_KEY_SOURCE` (compared case-insensitively), the same check that

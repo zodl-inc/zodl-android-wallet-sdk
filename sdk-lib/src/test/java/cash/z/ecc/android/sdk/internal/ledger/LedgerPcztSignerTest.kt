@@ -22,6 +22,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import java.io.File
@@ -158,6 +160,43 @@ class LedgerPcztSignerTest {
 
             assertTrue(error.isTransient)
             assertFalse(transport.closed)
+        }
+
+    @Test
+    fun a_cancellation_between_exchanges_closes_the_transport_and_sends_nothing_more() =
+        runBlocking<Unit> {
+            val backend = FakeLedgerBackend(streamPackets = 2)
+            val transport =
+                object : LedgerApduTransport {
+                    val sent = mutableListOf<Byte>()
+                    var closed = false
+
+                    // Answers at once, without suspending, and checks no cancellation: a
+                    // cancellation that lands while it runs is seen only by the signer.
+                    override suspend fun exchange(
+                        apdu: ByteArray,
+                        timeout: Duration?
+                    ): ByteArray {
+                        check(!closed) { "exchange on a closed transport" }
+                        sent.add(apdu.single())
+                        if (apdu.single() == CMD_STREAM) {
+                            currentCoroutineContext().cancel()
+                        }
+                        return ok(1)
+                    }
+
+                    override suspend fun close() {
+                        closed = true
+                    }
+                }
+
+            val ceremony = async { sign(backend, transport) }
+
+            assertFailsWith<CancellationException> { ceremony.await() }
+            assertTrue(transport.closed)
+            assertEquals(CMD_STREAM, transport.sent.last(), "nothing is sent after the cancellation")
+            assertEquals(1, transport.sent.count { it == CMD_STREAM })
+            assertEquals(1, backend.sessionsClosed)
         }
 
     @Test

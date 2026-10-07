@@ -214,7 +214,9 @@ and never under another one, such as the device model.
 
 ### Failures
 
-- A failed exchange (timeout, disconnect) or a cancelled call closes the transport; open a new one.
+- A failed exchange (timeout, disconnect) or a cancelled call closes the transport; open a new one. A
+  cancellation between two exchanges stops the ceremony before the next command is sent, also over a
+  transport of the app's own that does not check cancellation.
 - A refusal by the device leaves the transport open. When `LedgerException.isRestartable` is true (the
   user rejected the review, a transient device condition such as a locked device), run the ceremony
   again with the same PCZT.
