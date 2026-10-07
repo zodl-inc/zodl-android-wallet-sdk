@@ -4,10 +4,15 @@ import cash.z.ecc.android.sdk.exception.GiftCardException
 import cash.z.ecc.android.sdk.fixture.AccountFixture
 import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.PercentDecimal
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import kotlin.test.assertEquals
@@ -29,6 +34,7 @@ import kotlin.time.Duration.Companion.seconds
  * [Synchronizer.onProcessorErrorHandler], its account appears only once its preparation has created it, and it always
  * starts at the bundled checkpoint.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class GiftCardRedeemerEngineTest {
     @Test
     fun aLatchedSetupErrorFailsTheCheckAtOnceWithItsCause() =
@@ -272,7 +278,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun aCardWalletStartedAtTheCheckpointThatFindsNothingIsEmptyWithoutARescan() =
-        runBlocking<Unit> {
+        runTest {
             val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
             val wallets = engineWallets(nothing)
             val (redeemer, _) = redeemer(nothing, wallets = wallets)
@@ -297,6 +303,121 @@ class GiftCardRedeemerEngineTest {
             assertEquals(OvkPolicy.Discard, cardWallet.ovkPolicy)
         }
 
+    /**
+     * The poll that first reports SYNCED carries a summary taken before the last range was scanned: the card's
+     * funding block is in that range, so the summary has no funds and is scanned to one block below the tip. The
+     * next poll, two seconds later, carries the refreshed summary.
+     */
+    @Test
+    fun aSyncedTickWithAStaleSummaryIsNotReportedEmpty() =
+        runTest {
+            val cardWallet = FakeCardWallet(emptyList(), spendable = 0)
+            cardWallet.fullyScannedHeight.value = CARD_WALLET_TIP - 1
+            val (redeemer, _) = redeemer(cardWallet, wallets = engineWallets(cardWallet))
+
+            val check = async { redeemer.check() }
+            advanceTimeBy(2.seconds)
+            assertFalse(check.isCompleted, "a balance scanned below the tip must not be reported")
+            cardWallet.walletBalances.value = cardBalances(pending = 1_000_000)
+            cardWallet.fullyScannedHeight.value = CARD_WALLET_TIP
+
+            assertIs<GiftCardRedeemer.Status.Pending>(check.await())
+            assertEquals(2.seconds.inWholeMilliseconds, currentTime)
+        }
+
+    /** A summary scanned below the tip that never catches up is bounded by the stall grace, never reported. */
+    @Test
+    fun aStaleSummaryThatNeverCatchesUpFailsAfterTheGrace() =
+        runTest {
+            val cardWallet = FakeCardWallet(emptyList(), spendable = 0)
+            cardWallet.fullyScannedHeight.value = CARD_WALLET_TIP - 5
+            val (redeemer, _) = redeemer(cardWallet, wallets = engineWallets(cardWallet))
+
+            val check = async { runCatching { redeemer.check(disconnectedTimeout = 30.seconds) } }
+            advanceTimeBy(29.seconds)
+            assertFalse(check.isCompleted)
+
+            assertIs<GiftCardException.SyncFailed>(check.await().exceptionOrNull())
+            assertEquals(30.seconds.inWholeMilliseconds, currentTime)
+        }
+
+    /**
+     * As observed on a device: the card wallet reports SYNCED scanned up to its own tip, but with the summary
+     * cached before its pass stored the funding transaction it enhanced; the next poll reports the funds.
+     */
+    @Test
+    fun aBalanceFromASummaryTakenBeforeEnhancementIsNotReportedEmpty() =
+        runTest {
+            val cardWallet = FakeCardWallet(emptyList(), spendable = 0)
+            val (redeemer, _) = redeemer(cardWallet, wallets = engineWallets(cardWallet))
+
+            val check = async { redeemer.check() }
+            advanceTimeBy(2.seconds)
+            assertFalse(check.isCompleted)
+            cardWallet.walletBalances.value = cardBalances(pending = 1_000_000)
+
+            assertIs<GiftCardRedeemer.Status.Pending>(check.await())
+        }
+
+    @Test
+    fun aMempoolReceiveShortlyAfterTheFirstSyncIsPendingNotEmpty() =
+        runTest {
+            val cardWallet = FakeCardWallet(emptyList(), spendable = 0)
+            val (redeemer, _) = redeemer(cardWallet, wallets = engineWallets(cardWallet))
+
+            val check = async { redeemer.check() }
+            advanceTimeBy(1.seconds)
+            cardWallet.walletBalances.value = cardBalances(pending = 1_000_000)
+
+            val status = assertIs<GiftCardRedeemer.Status.Pending>(check.await())
+            assertEquals(1_000_000L, status.balance.pending.value)
+            assertEquals(1.seconds.inWholeMilliseconds, currentTime)
+        }
+
+    /** Dust that does not exceed the minimum fee does not end the wait: the card is still empty. */
+    @Test
+    fun aTrulyEmptyCardIsEmptyOnceTheSettleHasElapsed() =
+        runTest {
+            listOf(false to GiftCardRedeemer.EMPTY_SETTLE, true to GiftCardRedeemer.TOR_EMPTY_SETTLE)
+                .forEach { (isTorEnabled, settle) ->
+                    val cardWallet = FakeCardWallet(emptyList(), spendable = 0)
+                    val (redeemer, _) =
+                        redeemer(cardWallet, wallets = engineWallets(cardWallet), isTorEnabled = isTorEnabled)
+                    val start = currentTime
+
+                    val check = async { redeemer.check() }
+                    advanceTimeBy(settle - 1.seconds)
+                    cardWallet.walletBalances.value = cardBalances(pending = GiftCardRedeemer.MINIMUM_FEE.value)
+                    runCurrent()
+                    assertFalse(check.isCompleted, "the settle must last ${settle.inWholeSeconds} seconds")
+
+                    assertEquals(GiftCardRedeemer.Status.Empty, check.await())
+                    assertEquals(settle.inWholeMilliseconds, currentTime - start)
+                    redeemer.close()
+                }
+        }
+
+    @Test
+    fun aLegacyCardWalletThatFindsNothingIsEmptyAtOnce() =
+        runTest {
+            val cardWallet = FakeCardWallet(emptyList(), spendable = 0)
+            cardWallet.fullyScannedHeight.value = CARD_WALLET_TIP - 5
+            val (redeemer, _) = redeemer(cardWallet, wallets = FakeWallets(listOf(cardWallet)))
+
+            assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
+            assertEquals(0L, currentTime)
+        }
+
+    @Test
+    fun aFundedAndConfirmedCardIsReadyWithoutTheSettle() =
+        runTest {
+            val cardWallet = FakeCardWallet(emptyList())
+            val (redeemer, _) = redeemer(cardWallet, wallets = engineWallets(cardWallet))
+
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+            assertEquals(0L, currentTime)
+        }
+
     /** Runs a check of [redeemer] expected to fail, and returns its failure. */
     private suspend fun failedCheck(
         redeemer: GiftCardRedeemer,
@@ -314,6 +435,10 @@ class GiftCardRedeemerEngineTest {
         val failure = assertIs<GiftCardException.SyncFailed>(thrown)
         assertTrue(generateSequence(failure.cause) { it.cause }.any { it.message == message })
     }
+
+    /** The card wallet's balances, with [pending] in Orchard and nothing spendable. */
+    private fun cardBalances(pending: Long) =
+        mapOf(AccountFixture.new().accountUuid to cardAccountBalance(pending = pending))
 
     /** Card wallets as the Slipstream engine opens them: at the checkpoint, and idle before the first pass. */
     private fun engineWallets(cardWallet: FakeCardWallet) =

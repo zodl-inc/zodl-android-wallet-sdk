@@ -42,7 +42,8 @@ import kotlin.test.assertIs
  * transactions, one proposal paying [fee] and sending [sent] (by default [spendable] minus
  * [fee]), and whatever [submitResult] says about each transaction. [setupError] is the setup
  * failure it has latched, if any, [accounts] its account list (`null` while not loaded yet, as
- * [Synchronizer.accountsFlow] reports it), and [progress] its sync progress.
+ * [Synchronizer.accountsFlow] reports it), [progress] its sync progress, and [networkHeight] and
+ * [fullyScannedHeight] its heights, both [CARD_WALLET_TIP] unless a test moves them.
  */
 @Suppress("LongParameterList")
 internal class FakeCardWallet(
@@ -75,6 +76,8 @@ internal class FakeCardWallet(
         MutableStateFlow(
             mapOf(AccountFixture.new().accountUuid to cardAccountBalance(available = spendable, pending = pending))
         )
+    override val networkHeight: MutableStateFlow<BlockHeight?> = MutableStateFlow(CARD_WALLET_TIP)
+    override val fullyScannedHeight: MutableStateFlow<BlockHeight?> = MutableStateFlow(CARD_WALLET_TIP)
 
     override suspend fun getAccounts(): List<Account> = accounts.value.orEmpty()
 
@@ -260,6 +263,9 @@ internal fun cardAccountBalance(
     ironwood = WalletBalance(Zatoshi(0), Zatoshi(0), Zatoshi(0)),
     unshielded = Zatoshi(0)
 )
+
+/** The chain tip a [FakeCardWallet] has seen and scanned up to, unless a test moves it. */
+internal val CARD_WALLET_TIP: BlockHeight = BlockHeight.new(3_000_100)
 
 internal val GIFT_CARD_TEST_ENDPOINT = LightWalletEndpoint("localhost", 9067, false)
 

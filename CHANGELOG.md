@@ -149,7 +149,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   idle before its first pass included, and the check then fails with `SyncFailed`. A failed sync
   pass the engine reports (an engine error, not a network outage) is retried at most
   `GiftCardRedeemer.MAX_PROCESSOR_ERROR_RETRIES` (2) times per check, after which the check fails
-  with it.
+  with it. On the Slipstream engine, `check` counts the card wallet's balance only once the wallet
+  has scanned up to the chain tip, and watches a card that still looks empty for 15 more seconds
+  (30 over Tor) before it reports `Empty`, so that a freshly funded card is no longer reported
+  `Empty` on its first check and `Pending` only on the next.
 - `SlipstreamSynchronizer.new` works on its own copy of the setup's seed, which it overwrites with
   zeros once its deferred preparation has settled, so a caller may wipe its seed as soon as `new`
   returns; before, a caller that did so (as the gift card redeemer does) left the preparation

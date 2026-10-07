@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.merge
@@ -137,6 +138,13 @@ class GiftCardRedeemer private constructor(
      */
     private val defaultDisconnectedTimeout: Duration =
         if (isTorEnabled) DEFAULT_TOR_DISCONNECTED_TIMEOUT else DEFAULT_DISCONNECTED_TIMEOUT
+
+    /**
+     * How long [check] waits for funds to show up on a card that looks empty once its wallet, one that
+     * [isDisconnectedUntilFirstPass], has synced: longer over Tor, where the engine's mempool stream needs a new
+     * circuit.
+     */
+    private val emptySettle: Duration = if (isTorEnabled) TOR_EMPTY_SETTLE else EMPTY_SETTLE
 
     /** Set as soon as [close] is called, before it waits for [mutex]. */
     @Volatile
@@ -285,6 +293,11 @@ class GiftCardRedeemer private constructor(
      * below the birthday before the card is reported [Status.Empty], in case the link's height
      * was above the card's funding. A card wallet that started at the checkpoint is not rescanned.
      *
+     * On an engine that reports its balance from a summary refreshed after the sync and watches the mempool only
+     * after its first pass (the Slipstream engine), the balance counts only once the wallet has scanned up to the
+     * chain tip, and a card that still looks empty then is watched for 15 seconds more (30 seconds over Tor) before
+     * it is reported [Status.Empty], so that a funding transaction found just after the sync is not missed.
+     *
      * A card that looks redeemable is checked against the fee its actual notes require (see
      * [Status.Ready.fee]), so [Status.Ready] means that [redeem] can send something.
      *
@@ -362,7 +375,13 @@ class GiftCardRedeemer private constructor(
                 synchronizer = openSynchronizer(isBirthdayExact = false)
                 synced = awaitSyncedWallet(synchronizer, timeout, disconnectedTimeout)
             }
-            return statusOf(synchronizer, synced.account, synced.balance).also { checkedAccount = synced.account }
+            val balance =
+                if (isDisconnectedUntilFirstPass && synced.balance.toStatus() == Status.Empty) {
+                    awaitLateFunds(synchronizer, synced.account) ?: synced.balance
+                } else {
+                    synced.balance
+                }
+            return statusOf(synchronizer, synced.account, balance).also { checkedAccount = synced.account }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -392,6 +411,27 @@ class GiftCardRedeemer private constructor(
             Twig.warn { "Discarding a gift card wallet whose setup failed did not complete: ${e::class.simpleName}" }
         }
     }
+
+    /**
+     * The card's balance once it holds more than [Status.Empty] allows, if that happens within [emptySettle];
+     * `null` otherwise.
+     *
+     * A card wallet that [isDisconnectedUntilFirstPass] (the Slipstream engine's) can report funds a few seconds
+     * after it first reports [Synchronizer.Status.SYNCED]: it opens its mempool stream only after its initial pass,
+     * so a funding transaction that is not mined yet arrives later, and the balance it reports with that status can
+     * come from a cached summary taken before the pass stored the transactions it enhanced. Waiting here keeps such
+     * a card from being reported [Status.Empty]; only a card that really is empty pays the wait. It runs after the
+     * sync wait, so it neither counts against the stall and disconnection graces nor can trip them.
+     */
+    private suspend fun awaitLateFunds(
+        synchronizer: Synchronizer,
+        account: Account
+    ): Balance? =
+        withTimeoutOrNull(emptySettle) {
+            synchronizer.walletBalances
+                .mapNotNull { it?.get(account.accountUuid)?.toGiftCardBalance() }
+                .first { it.toStatus() != Status.Empty }
+        }
 
     /** Whether the card wallet has seen any transaction at all. */
     private suspend fun hasHistory(
@@ -772,41 +812,67 @@ class GiftCardRedeemer private constructor(
                         throw GiftCardException.SyncFailed(null)
                     }
                 }
+        val isScannedToTip = if (isDisconnectedUntilFirstPass) isScannedToTip(synchronizer) else flowOf(true)
         val status =
             if (isDisconnectedUntilFirstPass) {
-                merge(statusUntilDisconnectedTooLong, failWhenStalled(synchronizer, disconnectedTimeout))
+                merge(
+                    statusUntilDisconnectedTooLong,
+                    failWhenStalled(synchronizer, isScannedToTip, disconnectedTimeout)
+                )
             } else {
                 statusUntilDisconnectedTooLong
             }
         return combine(
-            status,
+            combine(status, isScannedToTip, ::Pair),
             synchronizer.walletBalances,
             criticalError,
             synchronizer.setupError,
             processorFailure
-        ) { current, balances, error, setupError, failedPass ->
+        ) { (current, scannedToTip), balances, error, setupError, failedPass ->
             error?.let { throw GiftCardException.SyncFailed(it.cause) }
             setupError?.let { throw GiftCardException.SyncFailed(it) }
             failedPass?.let { throw GiftCardException.SyncFailed(it.cause) }
             if (current == Synchronizer.Status.STOPPED) throw GiftCardException.SyncFailed(null)
-            balances?.get(account.accountUuid).takeIf { current == Synchronizer.Status.SYNCED }
+            balances?.get(account.accountUuid).takeIf { current == Synchronizer.Status.SYNCED && scannedToTip }
         }.filterNotNull().first()
     }
 
     /**
+     * Whether the balance [synchronizer] reports is known to cover the whole chain it has seen: its
+     * [Synchronizer.fullyScannedHeight] has reached its [Synchronizer.networkHeight].
+     *
+     * The Slipstream engine reports the balance and the fully scanned height of a cached wallet summary,
+     * refreshed in the background for the next poll, so the poll that first reports
+     * [Synchronizer.Status.SYNCED] can still carry the summary taken before the last range was scanned: a card
+     * funded in that range would read as empty. Both values come from the same summary, so a summary taken before
+     * the last range never passes this, and the next refresh, about two seconds later, does. Exact: the engine's
+     * chain tip is the card wallet's own, which its initial pass scans up to before it reports
+     * [Synchronizer.Status.SYNCED]. A summary taken after the last range but before the pass stored the
+     * transactions it enhanced does pass; [awaitLateFunds] covers that case.
+     */
+    private fun isScannedToTip(synchronizer: Synchronizer): Flow<Boolean> =
+        combine(synchronizer.networkHeight, synchronizer.fullyScannedHeight) { networkHeight, fullyScannedHeight ->
+            networkHeight != null && fullyScannedHeight != null && fullyScannedHeight >= networkHeight
+        }.distinctUntilChanged()
+
+    /**
      * Fails with [GiftCardException.SyncFailed] once [synchronizer] has gone [grace] without any sync
      * progress (its [Synchronizer.progress] rising above the highest value seen) while it is not
-     * [Synchronizer.Status.SYNCED]: idle before its first pass, for example while its engine cannot
-     * reach the server, or syncing without advancing, as the Slipstream engine does while a download
-     * keeps failing. The grace restarts with every rise in progress. Never emits.
+     * [Synchronizer.Status.SYNCED] with [isScannedToTip]: idle before its first pass, for example while
+     * its engine cannot reach the server, syncing without advancing, as the Slipstream engine does while
+     * a download keeps failing, or synced with a balance that never catches up with the chain tip. The
+     * grace restarts with every rise in progress. Never emits.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     private fun failWhenStalled(
         synchronizer: Synchronizer,
+        isScannedToTip: Flow<Boolean>,
         grace: Duration
     ): Flow<Nothing> =
         combine(
-            synchronizer.status.map { it == Synchronizer.Status.SYNCED }.distinctUntilChanged(),
+            combine(synchronizer.status, isScannedToTip) { current, scannedToTip ->
+                current == Synchronizer.Status.SYNCED && scannedToTip
+            }.distinctUntilChanged(),
             synchronizer.progress
                 .map { it.decimal }
                 .runningReduce { highest, current -> maxOf(highest, current) }
@@ -839,6 +905,15 @@ class GiftCardRedeemer private constructor(
          * timeout.
          */
         const val MAX_PROCESSOR_ERROR_RETRIES = 2
+
+        /**
+         * How long [check] waits, on an engine that opens its mempool stream only after its initial sync
+         * pass (the Slipstream engine), for funds to show up on a card that looks empty once synced.
+         */
+        internal val EMPTY_SETTLE: Duration = 15.seconds
+
+        /** [EMPTY_SETTLE] for a temporary wallet that connects over Tor. */
+        internal val TOR_EMPTY_SETTLE: Duration = 30.seconds
 
         /**
          * The [TransactionSubmitResult.Failure.code] of a submission that threw instead of
