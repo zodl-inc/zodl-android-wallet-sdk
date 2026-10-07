@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal.ledger
 
 import cash.z.ecc.android.sdk.exception.LedgerException
 import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.BAD_STATE
+import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.CMD_ADDRESS
 import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.CMD_IDENTITY
 import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.CMD_VERSION
 import cash.z.ecc.android.sdk.internal.ledger.FakeLedgerProtocol.CMD_VK
@@ -35,6 +36,7 @@ import kotlin.time.Duration.Companion.seconds
 
 class LedgerDeviceTest {
     private val account = Zip32AccountIndex.new(0)
+    private val accountUfvk = UnifiedFullViewingKey("uviewtest1fake")
 
     private fun pairingReplies(tag: Char = 'a') =
         listOf(ok(1), ok(tag.code.toByte()), ok(), ok(), ok(tag.code.toByte()))
@@ -236,9 +238,43 @@ class LedgerDeviceTest {
             val transport = ScriptedTransport(listOf(status(DENY)))
 
             assertFailsWith<LedgerException.UserRejected> {
-                device(transport).displayUnifiedAddress(account)
+                device(transport).displayUnifiedAddress(accountUfvk, account)
             }
             assertEquals(listOf<Duration?>(null), transport.timeouts, "the display waits on the user")
+        }
+
+    @Test
+    fun a_displayed_address_equal_to_the_derived_one_is_returned() =
+        runBlocking<Unit> {
+            val expected = FakeLedgerBackend().expectedUnifiedAddress(accountUfvk, ZcashNetwork.Testnet)
+            val transport = ScriptedTransport(listOf(ok(*expected.toByteArray())))
+
+            val address = device(transport).displayUnifiedAddress(accountUfvk, account, transparentAddressIndex = 3)
+
+            assertEquals(expected, address)
+            assertEquals(listOf(CMD_ADDRESS), transport.sent.map { it.single() })
+        }
+
+    @Test
+    fun a_displayed_address_other_than_the_derived_one_is_a_device_mismatch() =
+        runBlocking<Unit> {
+            val transport = ScriptedTransport(listOf(ok(*"utest1-another".toByteArray())))
+
+            assertFailsWith<LedgerException.DeviceMismatch> {
+                device(transport).displayUnifiedAddress(accountUfvk, account)
+            }
+            assertFalse(transport.closed, "the device answered; the channel is still in step")
+        }
+
+    @Test
+    fun an_invalid_viewing_key_is_refused_before_the_address_is_shown() =
+        runBlocking<Unit> {
+            val transport = ScriptedTransport(emptyList())
+
+            assertFailsWith<LedgerException.InvalidInput> {
+                device(transport).displayUnifiedAddress(UnifiedFullViewingKey(""), account)
+            }
+            assertTrue(transport.sent.isEmpty(), "nothing is shown on the device")
         }
 
     @Test

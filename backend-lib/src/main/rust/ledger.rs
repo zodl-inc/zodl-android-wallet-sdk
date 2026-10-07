@@ -289,6 +289,32 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_LedgerRustBackend_che
     unwrap_or(&mut env, res, ())
 }
 
+/// The unified address the device shows for the account whose viewing key is `ufvk`: its Orchard
+/// receiver at diversifier index 0 of the external scope, alone, encoded as the Zcash app encodes
+/// it. Throws `InvalidInput` when `ufvk` does not decode for the network or has no Orchard
+/// component.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_LedgerRustBackend_expectedUnifiedAddressNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    network_id: jint,
+    ufvk: JString<'local>,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        let network = crate::parse_network(network_id)
+            .map_err(|_| LedgerError::invalid_input("unknown network id"))?;
+        let ufvk = Zeroizing::new(
+            java_string_to_rust(env, &ufvk)
+                .map_err(|_| LedgerError::internal("a string could not be read"))?,
+        );
+        let address = account_keys::displayed_unified_address(&network, &ufvk)?;
+        string_to_java(env, &address)
+    });
+    unwrap_or(&mut env, res, ptr::null_mut())
+}
+
 /// The `GET_SHIELD_ADDR` command for the account's unified address, optionally displayed on the
 /// device for the user to compare.
 #[unsafe(no_mangle)]

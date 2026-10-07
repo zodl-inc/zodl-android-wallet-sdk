@@ -234,7 +234,7 @@ command". A refusal by the device leaves the transport open; a failure on the tr
 | `AppNotInstalled` | `ensureZcashAppOpen` asked the device to open the Zcash app and it has none installed. | No | Ask the user to install the Zcash app with Ledger Live, then start again. |
 | `AppOpenRejected` | The user declined opening the Zcash app on the device during `ensureZcashAppOpen`. | Yes | Offer to try again; the device asks the user once more. |
 | `AppTooOld` | The Zcash app predates PCZT signing (checked before anything is exported), or the Ironwood pool a version 6 transaction needs, or is older than 3.9.4 and the transaction has a memo the device would show as a hash. Raised only when updating the app is all that stands in the way; a transaction that also breaks another rule is `TransactionNotSignable`. | No | Ask the user to update the Zcash app with Ledger Live. |
-| `DeviceMismatch` | Signing found that the connected device is not the one the account was paired with; nothing of the transaction was sent. Or pairing account 0 found that the exported viewing key does not belong to the device that answered the identity read; the key was discarded. | No | When signing, ask the user to connect the paired device. When pairing, do not import anything; check the connection and pair again. |
+| `DeviceMismatch` | Signing found that the connected device is not the one the account was paired with; nothing of the transaction was sent. Or pairing account 0 found that the exported viewing key does not belong to the device that answered the identity read; the key was discarded. Or `displayUnifiedAddress` got an address other than the one derived from the account's viewing key. | No | When signing, ask the user to connect the paired device. When pairing or verifying an address, do not use the account's addresses; check the connection and pair again. |
 | `CapsMismatch` | The Zcash app was updated or swapped during the operation. Nothing of the transaction was sent. | No | Connect again and start over. |
 | `DerivationBudgetExhausted` | The Zcash app's per-run Orchard key derivation budget is spent. | Yes | Ask the user to close and reopen the Zcash app, then start again. |
 | `DeviceRefused` | Any other refusal; `statusWord` and `isTransient` describe it (a locked device is transient). | As reported | When restartable, ask the user to unlock the device and try again; otherwise report the status word. |
@@ -266,12 +266,27 @@ Not every failure is a `LedgerException`:
 
 ## Verifying an address on the device
 
-`LedgerDevice.displayUnifiedAddress(zip32AccountIndex, transparentAddressIndex)` shows an address on the
-device and returns it once the user confirms. The returned address carries only the account's Orchard
-receiver at diversifier index 0 — whatever `transparentAddressIndex` is, which only selects the
-transparent address shown next to it on screen. Compare it with a unified address built from that
-Orchard receiver alone; the account's full unified address carries a transparent receiver too and
-never matches.
+```kotlin
+val expected = LedgerDevice.expectedUnifiedAddress(ufvk, synchronizer.network)
+showToUser(expected) // "Check that your Ledger shows this address"
+device.displayUnifiedAddress(ufvk, zip32AccountIndex) // the user confirms on the device
+```
+
+`LedgerDevice.expectedUnifiedAddress(ufvk, network)` derives, on the phone, the address the device
+shows for the account: its Orchard receiver at diversifier index 0, alone in a unified address,
+encoded as the Zcash app encodes it. It is not the account's full unified address, which carries a
+transparent receiver too.
+
+`LedgerDevice.displayUnifiedAddress(ufvk, zip32AccountIndex, transparentAddressIndex)` shows the
+address on the device, and returns it once the user confirms. `transparentAddressIndex` selects only
+the transparent address the device shows next to it on its screen. The SDK compares the device's reply
+with the derived address and fails with `LedgerException.DeviceMismatch` if they differ: the device
+does not hold that account, or the link replaced its reply.
+
+Show the user the derived address, never the device's reply: a compromised link can replace the reply,
+but not the device's screen. The user's comparison of the two is the only check that protects against
+a link that replaces every reply, and the only check of an account other than 0 against the device.
+Do it after pairing, before the account's addresses are given out.
 
 ## Pool migration
 
@@ -291,7 +306,8 @@ Flex running the Zcash app 3.6.0 or later (3.9.4 preferred) with a testnet-confi
    (`PairingRefused`), then accept.
 4. Pair account 0: approve the viewing key export on the device. Decline once first (`UserRejected`).
    Import it with `pairing.accountImportSetup(...)` and sync; the account's balance matches the device's.
-5. `displayUnifiedAddress`: the address on the device matches the returned one; reject once.
+5. `displayUnifiedAddress`: the address on the device matches `expectedUnifiedAddress`; reject once.
+   For account 1, pair it and verify its address the same way.
 6. Receive testnet funds to the account's Orchard address and to its transparent address.
 7. Send from Orchard to another wallet: review on the device (recipient, amount, fee), approve; the
    transaction confirms. Repeat and reject the review: `UserRejected` with `isRestartable`, then sign

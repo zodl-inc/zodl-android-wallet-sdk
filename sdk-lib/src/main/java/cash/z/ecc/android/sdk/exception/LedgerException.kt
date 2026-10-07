@@ -82,6 +82,8 @@ sealed class LedgerException(
      * - Pairing account 0 found that the exported viewing key does not belong to the device that
      *   answered the identity read. The SDK discarded the key. Pairing cannot check other accounts
      *   this way; see `LedgerDevice.pairAccount`.
+     * - `LedgerDevice.displayUnifiedAddress` got an address other than the one the SDK derives from
+     *   the account's viewing key.
      */
     class DeviceMismatch internal constructor() :
         LedgerException("The connected Ledger device is not the one this account was paired with.")

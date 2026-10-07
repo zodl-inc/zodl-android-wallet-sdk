@@ -119,6 +119,17 @@ internal class FakeLedgerBackend(
         }
     }
 
+    /** `utest1-` followed by the key, or [LedgerException.InvalidInput] for an empty key. */
+    override fun expectedUnifiedAddress(
+        ufvk: UnifiedFullViewingKey,
+        network: ZcashNetwork
+    ): String =
+        if (ufvk.encoding.isEmpty()) {
+            throw LedgerException.InvalidInput(reason = "empty key")
+        } else {
+            "utest1-" + ufvk.encoding
+        }
+
     override fun unifiedAddressApdu(
         network: ZcashNetwork,
         zip32AccountIndex: Zip32AccountIndex,

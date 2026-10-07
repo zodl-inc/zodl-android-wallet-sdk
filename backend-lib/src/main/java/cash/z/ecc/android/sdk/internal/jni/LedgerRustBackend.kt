@@ -37,6 +37,11 @@ class LedgerRustBackend private constructor() : LedgerBackend {
         deviceIdentity: String
     ) = checkUfvkDeviceIdentityNative(networkId, ufvk, deviceIdentity)
 
+    override fun expectedUnifiedAddress(
+        networkId: Int,
+        ufvk: String
+    ): String = expectedUnifiedAddressNative(networkId, ufvk)
+
     override fun unifiedAddressApdu(
         networkId: Int,
         zip32AccountIndex: Long,
@@ -165,6 +170,12 @@ class LedgerRustBackend private constructor() : LedgerBackend {
             ufvk: String,
             deviceIdentity: String
         )
+
+        @JvmStatic
+        private external fun expectedUnifiedAddressNative(
+            networkId: Int,
+            ufvk: String
+        ): String
 
         @JvmStatic
         private external fun unifiedAddressApduNative(

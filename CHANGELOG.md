@@ -13,8 +13,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   site changes.
 - Ledger hardware wallets, in the new `cash.z.ecc.android.sdk.ledger` package. `LedgerDevice.new(transport, network)`
   wraps a `LedgerApduTransport` (an app-provided channel to the device) and offers `appVersion()`,
-  `deviceIdentity()`, `pairAccount(zip32AccountIndex)` and `displayUnifiedAddress(zip32AccountIndex,
-  transparentAddressIndex)`. `pairAccount` exports the account's `UnifiedFullViewingKey` (the user
+  `deviceIdentity()`, `pairAccount(zip32AccountIndex)` and `displayUnifiedAddress(ufvk,
+  zip32AccountIndex, transparentAddressIndex)`. `pairAccount` exports the account's `UnifiedFullViewingKey` (the user
   approves it on the device) and returns it in a `LedgerAccountPairing` with a `LedgerAccountBinding`
   (the device's `LedgerDeviceIdentity` and the ZIP 32 account index) and the device's `LedgerAppVersion`.
   Import the account with `Synchronizer.importAccountByUfvk(pairing.accountImportSetup(name, birthday))`,
@@ -33,9 +33,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transparent component. No such check is possible for other accounts. The check is against the
   identity reply, which a compromised link can also replace; the user's comparison of the address on
   the device's screen is the protection against that.
-- `displayUnifiedAddress` returns a unified address carrying only the account's Orchard receiver at
-  diversifier index 0, whatever the transparent address index; compare it with an address built from
-  that receiver alone, not with the account's full unified address, which never matches.
+- `LedgerDevice.expectedUnifiedAddress(ufvk, network)` derives the unified address the device shows
+  for an account: its Orchard receiver at diversifier index 0, alone, encoded as the Zcash app encodes
+  it. It is not the account's full unified address. `displayUnifiedAddress` shows that address on the
+  device, whatever the transparent address index, and fails with `LedgerException.DeviceMismatch` when
+  the device replies with another one. Show the user the derived address to compare with the device's
+  screen, not the device's reply, which a compromised link can replace; for accounts other than 0 this
+  comparison is the only check that the device holds the paired key.
 - `Synchronizer.signPcztWithLedger(pczt, accountUuid, binding, transport, onProgress)` signs the PCZT
   `createPcztFromProposal` returned, over the transport, and returns the PCZT carrying the device's
   signatures, which `createTransactionFromPczt` takes as `pcztWithSignatures` next to the result of

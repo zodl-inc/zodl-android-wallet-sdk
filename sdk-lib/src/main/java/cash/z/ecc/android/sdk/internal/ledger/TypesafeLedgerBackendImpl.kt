@@ -75,6 +75,11 @@ internal class TypesafeLedgerBackendImpl(
         deviceIdentity: LedgerDeviceIdentity
     ) = ledgerCall { backend.checkUfvkDeviceIdentity(network.id, ufvk.encoding, deviceIdentity.encoding) }
 
+    override fun expectedUnifiedAddress(
+        ufvk: UnifiedFullViewingKey,
+        network: ZcashNetwork
+    ): String = ledgerCall { backend.expectedUnifiedAddress(network.id, ufvk.encoding) }
+
     override fun unifiedAddressApdu(
         network: ZcashNetwork,
         zip32AccountIndex: Zip32AccountIndex,

@@ -56,7 +56,7 @@ use zcash_protocol::{
 };
 
 use super::{
-    account_keys::check_ufvk_device_identity,
+    account_keys::{check_ufvk_device_identity, displayed_unified_address},
     error::{Kind, LedgerError},
     handles::Registry,
     session::{PreparedSession, SessionRequest, new_sign_session},
@@ -532,6 +532,111 @@ fn an_undecodable_ufvk_or_identity_is_refused() {
 
     let err = check_ufvk_device_identity(&TEST_NETWORK, &ufvk, "tpk0-nothex")
         .expect_err("not an identity");
+    assert_eq!(err.kind, Kind::InvalidInput);
+}
+
+/// The reply the Zcash app sends to `GET_SHIELD_ADDR` for `usk`'s account, built the way
+/// `handler_get_shielded_addr` builds it, from the Orchard spending key rather than a viewing key.
+fn shielded_address_reply(usk: &UnifiedSpendingKey) -> Vec<u8> {
+    let receiver = orchard::keys::FullViewingKey::from(usk.orchard())
+        .address_at(0u32, orchard::keys::Scope::External)
+        .to_raw_address_bytes();
+    let address = unified::Address::try_from_items(
+        unified::Revision::R0,
+        vec![unified::Uitem::Data(unified::Receiver::Orchard(receiver))],
+    )
+    .expect("a valid container")
+    .encode(&TEST_NETWORK.network_type());
+    let mut reply = u16::try_from(address.len())
+        .expect("short")
+        .to_be_bytes()
+        .to_vec();
+    reply.extend_from_slice(address.as_bytes());
+    reply.extend_from_slice(&StatusWord::Ok.to_u16().to_be_bytes());
+    reply
+}
+
+/// The address string the SDK hands Kotlin for a `GET_SHIELD_ADDR` reply, as
+/// `parseUnifiedAddressNative` produces it.
+fn parsed_shielded_address(reply: &[u8]) -> String {
+    pczt_ledger::pairing::parse_unified_address(reply, LedgerNetwork::Test)
+        .expect("the reply parses")
+        .encode(&TEST_NETWORK.network_type())
+}
+
+#[test]
+fn the_displayed_address_is_the_one_the_device_replies_with() {
+    let usk = pairing_usk(&PAIRING_SEED, zip32::AccountId::ZERO);
+    let ufvk = exported_ufvk(&usk, true);
+
+    let displayed = displayed_unified_address(&TEST_NETWORK, &ufvk).expect("an address");
+
+    assert_eq!(
+        displayed,
+        parsed_shielded_address(&shielded_address_reply(&usk))
+    );
+    let (network, revision, address) = unified::Address::decode(&displayed).expect("decodes");
+    assert_eq!(network, TEST_NETWORK.network_type());
+    assert_eq!(revision, unified::Revision::R0);
+    assert!(matches!(
+        unified::Container::items(&address).as_slice(),
+        [unified::Receiver::Orchard(_)]
+    ));
+}
+
+/// The address depends only on the Orchard item, so a key without a transparent component gives
+/// the same address, and another account or device gives another one.
+#[test]
+fn the_displayed_address_differs_for_another_account_or_device() {
+    let usk = pairing_usk(&PAIRING_SEED, zip32::AccountId::ZERO);
+    let displayed =
+        displayed_unified_address(&TEST_NETWORK, &exported_ufvk(&usk, true)).expect("an address");
+    assert_eq!(
+        displayed_unified_address(&TEST_NETWORK, &exported_ufvk(&usk, false)),
+        Ok(displayed.clone())
+    );
+
+    let other_device = pairing_usk(&[0x3D; 32], zip32::AccountId::ZERO);
+    assert_ne!(
+        displayed,
+        parsed_shielded_address(&shielded_address_reply(&other_device))
+    );
+    let account_1 = pairing_usk(
+        &PAIRING_SEED,
+        zip32::AccountId::try_from(1).expect("account 1"),
+    );
+    assert_ne!(
+        displayed,
+        parsed_shielded_address(&shielded_address_reply(&account_1))
+    );
+}
+
+#[test]
+fn the_displayed_address_needs_an_orchard_key_for_the_network() {
+    let usk = pairing_usk(&PAIRING_SEED, zip32::AccountId::ZERO);
+    let err = displayed_unified_address(&MAIN_NETWORK, &exported_ufvk(&usk, true))
+        .expect_err("a testnet key on mainnet");
+    assert_eq!(err.kind, Kind::InvalidInput);
+
+    let p2pkh: [u8; 65] = usk
+        .to_unified_full_viewing_key()
+        .p2pkh()
+        .expect("a transparent key")
+        .serialize()
+        .try_into()
+        .expect("65 bytes");
+    // Revision 0 forbids a transparent-only container; revision 2 allows it.
+    let transparent_only = unified::Ufvk::try_from_items(
+        unified::Revision::R2,
+        vec![unified::Uitem::Data(unified::Fvk::P2pkh(p2pkh))],
+    )
+    .expect("a valid container")
+    .encode(&TEST_NETWORK.network_type());
+    let err =
+        displayed_unified_address(&TEST_NETWORK, &transparent_only).expect_err("no Orchard key");
+    assert_eq!(err.kind, Kind::InvalidInput);
+
+    let err = displayed_unified_address(&TEST_NETWORK, "uviewtest1garbage").expect_err("not a key");
     assert_eq!(err.kind, Kind::InvalidInput);
 }
 

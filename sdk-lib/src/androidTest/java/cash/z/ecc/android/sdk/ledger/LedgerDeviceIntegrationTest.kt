@@ -93,13 +93,10 @@ class LedgerDeviceIntegrationTest {
         private fun statusWord(sw: Int) = byteArrayOf((sw shr 8).toByte(), sw.toByte())
     }
 
-    private suspend fun fixture(): ScriptedDevice {
-        val seed = ByteArray(32) { 7 }
-        val derivation = DerivationTool.getInstance()
-        val ufvk = derivation.deriveUnifiedFullViewingKeys(seed, network, 1).first().encoding
-        val address = derivation.deriveUnifiedAddress(seed, network, account)
-        return ScriptedDevice(ufvk, address)
-    }
+    private suspend fun seedUfvk(): UnifiedFullViewingKey =
+        DerivationTool.getInstance().deriveUnifiedFullViewingKeys(ByteArray(32) { 7 }, network, 1).first()
+
+    private suspend fun fixture(): ScriptedDevice = ScriptedDevice(seedUfvk().encoding, SEED_7_DISPLAYED_ADDRESS)
 
     @Test
     @SmallTest
@@ -168,7 +165,7 @@ class LedgerDeviceIntegrationTest {
             assertTrue(ledger.appVersion().supportsPczt)
             val error =
                 assertFailsWith<LedgerException.UserRejected> {
-                    ledger.displayUnifiedAddress(account)
+                    ledger.displayUnifiedAddress(seedUfvk(), account)
                 }
             assertTrue(error.isRestartable)
             assertFalse(device.closed)
@@ -176,12 +173,30 @@ class LedgerDeviceIntegrationTest {
 
     @Test
     @SmallTest
-    fun the_device_shows_the_unified_address() =
+    fun the_device_shows_the_address_derived_from_the_viewing_key() =
         runTest {
             val device = fixture()
-            val address = LedgerDevice.new(device, network).displayUnifiedAddress(account, transparentAddressIndex = 3)
-            assertTrue(address.startsWith("utest1"))
+            val ufvk = seedUfvk()
+
+            assertEquals(SEED_7_DISPLAYED_ADDRESS, LedgerDevice.expectedUnifiedAddress(ufvk, network))
+            val address =
+                LedgerDevice
+                    .new(device, network)
+                    .displayUnifiedAddress(ufvk, account, transparentAddressIndex = 3)
+            assertEquals(SEED_7_DISPLAYED_ADDRESS, address)
             assertNull(device.timeouts.single())
+        }
+
+    @Test
+    @SmallTest
+    fun a_device_showing_another_address_is_a_device_mismatch() =
+        runTest {
+            val device = ScriptedDevice(seedUfvk().encoding, SEED_8_DISPLAYED_ADDRESS)
+
+            assertFailsWith<LedgerException.DeviceMismatch> {
+                LedgerDevice.new(device, network).displayUnifiedAddress(seedUfvk(), account)
+            }
+            assertFalse(device.closed)
         }
 
     @Test
@@ -192,7 +207,9 @@ class LedgerDeviceIntegrationTest {
                 LedgerDeviceIdentity.new("tpk0-not-an-identity")
             }
             assertFailsWith<LedgerException.InvalidInput> {
-                LedgerDevice.new(fixture(), network).displayUnifiedAddress(account, transparentAddressIndex = 50_001)
+                LedgerDevice
+                    .new(fixture(), network)
+                    .displayUnifiedAddress(seedUfvk(), account, transparentAddressIndex = 50_001)
             }
         }
 
@@ -267,6 +284,19 @@ class LedgerDeviceIntegrationTest {
                 "046BA36F35DFB3979AB7610E2839BD1F25C00DF98BF9087F24D55488B485910F94" +
                     "041CFEB04D9DE99C47918F2A5A5979B65AF2BAB10718B62467854FA9AF217FE6"
             )
+
+        /**
+         * The address the Zcash app shows for account 0 of the seed `[7; 32]` on testnet: its
+         * Orchard receiver at diversifier index 0, alone, in a revision 0 unified address.
+         */
+        private const val SEED_7_DISPLAYED_ADDRESS =
+            "utest1qzf74qz7g56frxcxlttm475jdqd3wrtzy042kc33myjnhhhzr0mxty70tk" +
+                "zcqfzsfqz0cva4czqy6jz2xvj4y2xjsrwekpg8r5d6xqua"
+
+        /** The same address for the seed `[8; 32]`. */
+        private const val SEED_8_DISPLAYED_ADDRESS =
+            "utest1qzfval40gydlu8sczr8ftepr0kz8esxvrkpgrtqcxz3stlvsre8phj0hn4" +
+                "r69fpmav6sqnjan25l8g99dpwytsc7ja5w5arr5ylk2y32"
 
         /** The secp256k1 generator, uncompressed: a valid public key. */
         private val GENERATOR_UNCOMPRESSED =

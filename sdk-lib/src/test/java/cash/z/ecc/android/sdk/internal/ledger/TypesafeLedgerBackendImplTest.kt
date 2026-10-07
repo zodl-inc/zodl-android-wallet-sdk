@@ -89,6 +89,11 @@ class TypesafeLedgerBackendImplTest {
             deviceIdentity: String
         ): Unit = unused()
 
+        override fun expectedUnifiedAddress(
+            networkId: Int,
+            ufvk: String
+        ): String = unused()
+
         override fun unifiedAddressApdu(
             networkId: Int,
             zip32AccountIndex: Long,

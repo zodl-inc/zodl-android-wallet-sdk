@@ -40,6 +40,14 @@ interface LedgerBackend {
         deviceIdentity: String
     )
 
+    /**
+     * The unified address the device shows for the account whose viewing key is [ufvk].
+     */
+    fun expectedUnifiedAddress(
+        networkId: Int,
+        ufvk: String
+    ): String
+
     fun unifiedAddressApdu(
         networkId: Int,
         zip32AccountIndex: Long,

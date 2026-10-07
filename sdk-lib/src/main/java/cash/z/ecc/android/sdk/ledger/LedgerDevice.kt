@@ -96,6 +96,11 @@ class LedgerDevice internal constructor(
      * For every other account, the exported key carries no key on that path, so the SDK cannot
      * check it against the identity. It checks only that the key decodes for this network.
      *
+     * To check any account against a link that replaces the device's replies, show the user the
+     * address that [expectedUnifiedAddress] derives from the returned key, and call
+     * [displayUnifiedAddress] with that key. The user compares the address on the device's screen
+     * with the one the app shows, and the SDK refuses a device that replies with another address.
+     *
      * The reads before the export (the app version and the device's identity) each have
      * [readTimeout] to answer. Nothing waits on the user there, so a device that does not answer
      * within [DEFAULT_PAIRING_READ_TIMEOUT] is stalled; the default is still the engine's normal
@@ -149,32 +154,56 @@ class LedgerDevice internal constructor(
         }
 
     /**
-     * Shows the account's unified address on the device for the user to compare, and returns it
-     * once the user confirms.
+     * Shows the account's unified address on the device for the user to compare, and checks the
+     * device's reply against the address the SDK derives from [ufvk].
      *
-     * The returned address carries only the account's Orchard receiver, at diversifier index 0,
-     * whatever [transparentAddressIndex] is: the device encodes nothing else into it. Compare it
-     * with a unified address built from the account's Orchard receiver at diversifier index 0
-     * alone — the account's full unified address also carries a transparent receiver and never
-     * matches. [transparentAddressIndex] selects the transparent address the device shows next to
-     * it on screen.
+     * The device shows a unified address that carries only the account's Orchard receiver at
+     * diversifier index 0, whatever [transparentAddressIndex] is. [transparentAddressIndex] selects
+     * only the transparent address the device shows next to it on its screen.
      *
+     * Before you call this function, show the user the address that [expectedUnifiedAddress]
+     * derives from [ufvk], and ask the user to compare it with the address on the device's screen.
+     * Do not show the address that the device replies with: a compromised link can replace the
+     * reply, but not the device's screen. The SDK compares the reply with the derived address after
+     * the user confirms, and refuses a reply that differs.
+     *
+     * @param ufvk The account's unified full viewing key, as [pairAccount] returned it.
+     * @param zip32AccountIndex The ZIP 32 account index of [ufvk] on the device.
      * @param transparentAddressIndex The external-chain transparent address index to show, at most
      *        50000.
+     * @return The address the device showed, which is equal to the one [expectedUnifiedAddress]
+     *         derives from [ufvk].
+     * @throws LedgerException.DeviceMismatch if the device replies with another address: the
+     *         device does not hold [ufvk] at [zip32AccountIndex], or the link replaced the reply.
      * @throws LedgerException.UserRejected if the user rejects the address on the device.
-     * @throws LedgerException.InvalidInput if an index is outside what the device accepts.
+     * @throws LedgerException.InvalidInput if [ufvk] does not decode for this network or has no
+     *         Orchard component, before anything is sent, or if an index is outside what the device
+     *         accepts.
      * @throws LedgerException for any other failure.
      */
     suspend fun displayUnifiedAddress(
+        ufvk: UnifiedFullViewingKey,
         zip32AccountIndex: Zip32AccountIndex,
         transparentAddressIndex: Long = 0
     ): String =
         mutex.withLock {
-            exchanger.query(
-                apdu = backend.unifiedAddressApdu(network, zip32AccountIndex, transparentAddressIndex, display = true),
-                // The reply waits for the user to confirm the address on screen.
-                timeout = null
-            ) { reply -> backend.parseUnifiedAddress(reply, network) }
+            val expected = backend.expectedUnifiedAddress(ufvk, network)
+            val shown =
+                exchanger.query(
+                    apdu =
+                        backend.unifiedAddressApdu(
+                            network,
+                            zip32AccountIndex,
+                            transparentAddressIndex,
+                            display = true
+                        ),
+                    // The reply waits for the user to confirm the address on screen.
+                    timeout = null
+                ) { reply -> backend.parseUnifiedAddress(reply, network) }
+            if (shown != expected) {
+                throw LedgerException.DeviceMismatch()
+            }
+            expected
         }
 
     /**
@@ -273,6 +302,23 @@ class LedgerDevice internal constructor(
          * which is the engine's normal timeout.
          */
         val DEFAULT_PAIRING_READ_TIMEOUT: Duration = 10.seconds
+
+        /**
+         * The unified address a Ledger device shows for the account whose viewing key is [ufvk]:
+         * the account's Orchard receiver at diversifier index 0 of the external scope, alone in a
+         * unified address, encoded as the Zcash app encodes it. It is not the account's full
+         * unified address, which also carries a transparent receiver.
+         *
+         * Show this address to the user while [displayUnifiedAddress] shows the device's address,
+         * for the user to compare the two. Loads the SDK's native library. Uses no device.
+         *
+         * @throws LedgerException.InvalidInput if [ufvk] does not decode for [network] or has no
+         *         Orchard component.
+         */
+        suspend fun expectedUnifiedAddress(
+            ufvk: UnifiedFullViewingKey,
+            network: ZcashNetwork
+        ): String = TypesafeLedgerBackendImpl.new().expectedUnifiedAddress(ufvk, network)
 
         /**
          * A device reached over [transport], for [network]. Loads the SDK's native library. The

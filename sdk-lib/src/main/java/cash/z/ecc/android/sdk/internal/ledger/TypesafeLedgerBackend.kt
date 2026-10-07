@@ -44,6 +44,17 @@ internal interface TypesafeLedgerBackend {
         deviceIdentity: LedgerDeviceIdentity
     )
 
+    /**
+     * The unified address the device shows for the account whose viewing key is [ufvk].
+     *
+     * @throws LedgerException.InvalidInput if [ufvk] does not decode for [network] or has no
+     *         Orchard component.
+     */
+    fun expectedUnifiedAddress(
+        ufvk: UnifiedFullViewingKey,
+        network: ZcashNetwork
+    ): String
+
     fun unifiedAddressApdu(
         network: ZcashNetwork,
         zip32AccountIndex: Zip32AccountIndex,
