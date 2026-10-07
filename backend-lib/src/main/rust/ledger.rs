@@ -1,12 +1,14 @@
 //! Ledger hardware-wallet support over Bluetooth LE: the JNI surface over `pczt_ledger`.
 //!
 //! The engine is sans-I/O. Everything here builds commands and absorbs replies; the Kotlin layer
-//! (`cash.z.ecc.android.sdk.internal.jni.LedgerRustBackend`) moves the bytes over BLE. Four groups
+//! (`cash.z.ecc.android.sdk.internal.jni.LedgerRustBackend`) moves the bytes over BLE. Five groups
 //! of functions:
 //!
 //! - **one-shot pairing commands** — firmware version, device identity, unified address display —
 //!   each an APDU builder and a reply parser. A `0x6901` reply surfaces as the `CmdNotAccepted`
 //!   kind for the caller to resend the same bytes after the engine's backoff;
+//! - **checks of the device's answers** against what the wallet derives from the account's viewing
+//!   key (see [`account_keys`]);
 //! - **the UFVK export**, an opaque handle over `VkExchange`, which absorbs `0x6901` itself and is
 //!   terminal on any other error, so the approval screen is never re-issued by a retrying caller;
 //! - **BLE framing** — the MTU handshake, frame splitting, and a handle over the BLE `Deframer`;
@@ -47,6 +49,7 @@ use zeroize::Zeroizing;
 
 use crate::utils::{self, catch_unwind, java_string_to_rust};
 
+mod account_keys;
 mod error;
 mod handles;
 mod session;
@@ -255,6 +258,35 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_LedgerRustBackend_isV
         })
     });
     unwrap_or(&mut env, res, JNI_FALSE)
+}
+
+/// Checks that `ufvk`, which the device exported for ZIP 32 account 0, belongs to the device
+/// whose identity is `device_identity`: the identity has to be the hash of the external address
+/// key at index 0 under the UFVK's transparent component. Throws `DeviceMismatch` when it is not,
+/// and `MalformedReply` when the UFVK does not decode or has no transparent component. Valid for
+/// account 0 only.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_LedgerRustBackend_checkUfvkDeviceIdentityNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    network_id: jint,
+    ufvk: JString<'local>,
+    device_identity: JString<'local>,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let network = crate::parse_network(network_id)
+            .map_err(|_| LedgerError::invalid_input("unknown network id"))?;
+        let ufvk = Zeroizing::new(
+            java_string_to_rust(env, &ufvk)
+                .map_err(|_| LedgerError::internal("a string could not be read"))?,
+        );
+        let device_identity = java_string_to_rust(env, &device_identity)
+            .map_err(|_| LedgerError::internal("a string could not be read"))?;
+        account_keys::check_ufvk_device_identity(&network, &ufvk, &device_identity)
+    });
+    unwrap_or(&mut env, res, ())
 }
 
 /// The `GET_SHIELD_ADDR` command for the account's unified address, optionally displayed on the

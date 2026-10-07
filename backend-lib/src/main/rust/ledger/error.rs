@@ -57,7 +57,8 @@ pub(crate) enum Kind {
     WrongApp = 2,
     /// The Zcash app on the device predates PCZT signing.
     AppTooOld = 3,
-    /// The connected device is not the one the account was paired with.
+    /// The connected device is not the one the account was paired with, or a key or address
+    /// the device answered with is not the one the wallet derives for the account.
     DeviceMismatch = 4,
     /// The connected device runs a different app version from the one the session was built for.
     CapsMismatch = 5,
@@ -128,6 +129,16 @@ impl LedgerError {
     /// A caller-supplied value refused before any device I/O, with fixed text.
     pub(crate) fn invalid_input(reason: impl Into<String>) -> Self {
         LedgerError::new(Kind::InvalidInput).with_reason(reason)
+    }
+
+    /// A reply that does not have the shape the protocol promises, with fixed text.
+    pub(crate) fn malformed_reply(reason: &'static str) -> Self {
+        LedgerError::new(Kind::MalformedReply).with_reason(reason)
+    }
+
+    /// A device that is not the one expected, with fixed text.
+    pub(crate) fn device_mismatch(reason: &'static str) -> Self {
+        LedgerError::new(Kind::DeviceMismatch).with_reason(reason)
     }
 
     /// An app too old to sign PCZTs.

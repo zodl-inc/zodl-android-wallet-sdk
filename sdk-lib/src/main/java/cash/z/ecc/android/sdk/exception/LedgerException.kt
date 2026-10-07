@@ -75,9 +75,13 @@ sealed class LedgerException(
     }
 
     /**
-     * Signing found that the connected device is not the one the account's binding names.
-     * Pairing reads the device identity once and can no longer raise this. Nothing of the
-     * transaction was sent to it.
+     * The device is not the one the wallet expects:
+     *
+     * - Signing found that the connected device is not the one the account's binding names. Nothing
+     *   of the transaction was sent to it.
+     * - Pairing account 0 found that the exported viewing key does not belong to the device that
+     *   answered the identity read. The SDK discarded the key. Pairing cannot check other accounts
+     *   this way; see `LedgerDevice.pairAccount`.
      */
     class DeviceMismatch internal constructor() :
         LedgerException("The connected Ledger device is not the one this account was paired with.")

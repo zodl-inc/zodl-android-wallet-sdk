@@ -30,6 +30,16 @@ interface LedgerBackend {
 
     fun isValidDeviceIdentity(identity: String): Boolean
 
+    /**
+     * Checks that [ufvk], exported for ZIP 32 account 0, derives [deviceIdentity]. Valid for account
+     * 0 only.
+     */
+    fun checkUfvkDeviceIdentity(
+        networkId: Int,
+        ufvk: String,
+        deviceIdentity: String
+    )
+
     fun unifiedAddressApdu(
         networkId: Int,
         zip32AccountIndex: Long,

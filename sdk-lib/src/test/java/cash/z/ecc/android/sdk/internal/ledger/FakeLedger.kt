@@ -79,10 +79,13 @@ internal class FakeLedgerBackend(
     /** How many continuation replies the viewing-key export takes after its first reply. */
     private val vkContinuations: Int = 1,
     /** The commands the signing session streams before the review packet. */
-    private val streamPackets: Int = 2
+    private val streamPackets: Int = 2,
+    /** The tag of the device identity the exported viewing key derives. */
+    private val ufvkIdentityTag: Char = 'a'
 ) : TypesafeLedgerBackend {
     var sessionsClosed = 0
     var exportsClosed = 0
+    var identityChecks = 0
 
     override val policy =
         LedgerPolicy(
@@ -104,6 +107,17 @@ internal class FakeLedgerBackend(
         LedgerDeviceIdentity(FakeLedgerProtocol.identity(FakeLedgerProtocol.payload(reply)[0].toInt().toChar()))
 
     override fun deviceIdentity(encoding: String) = LedgerDeviceIdentity(encoding)
+
+    override fun checkUfvkDeviceIdentity(
+        network: ZcashNetwork,
+        ufvk: UnifiedFullViewingKey,
+        deviceIdentity: LedgerDeviceIdentity
+    ) {
+        identityChecks++
+        if (deviceIdentity.encoding != FakeLedgerProtocol.identity(ufvkIdentityTag)) {
+            throw LedgerException.DeviceMismatch()
+        }
+    }
 
     override fun unifiedAddressApdu(
         network: ZcashNetwork,

@@ -26,6 +26,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `proposeFulfillingPaymentUri` and `proposeShielding` build at most one change output for an account
   whose key source is `Account.LEDGER_KEY_SOURCE` (compared case-insensitively), because the Ledger
   Zcash app signs only one; every other account keeps splitting change into notes.
+- `LedgerDevice.pairAccount` for ZIP 32 account 0 checks that the exported key belongs to the device
+  that answered the identity read: the hash of the key at `m/44'/coin'/0'/0/0`, derived from the
+  key's transparent component, has to equal the identity. Otherwise it discards the key and fails with
+  `LedgerException.DeviceMismatch`, or with `LedgerException.MalformedReply` for a key without a
+  transparent component. No such check is possible for other accounts. The check is against the
+  identity reply, which a compromised link can also replace; the user's comparison of the address on
+  the device's screen is the protection against that.
 - `displayUnifiedAddress` returns a unified address carrying only the account's Orchard receiver at
   diversifier index 0, whatever the transparent address index; compare it with an address built from
   that receiver alone, not with the account's full unified address, which never matches.

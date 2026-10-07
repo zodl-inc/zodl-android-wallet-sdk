@@ -118,6 +118,43 @@ class LedgerDeviceTest {
         }
 
     @Test
+    fun pairing_account_0_checks_the_exported_key_against_the_identity() =
+        runBlocking<Unit> {
+            val backend = FakeLedgerBackend()
+            val transport = ScriptedTransport(pairingReplies().take(4))
+
+            val pairing = device(transport, backend).pairAccount(account)
+
+            assertEquals(identity('a'), pairing.binding.deviceIdentity.encoding)
+            assertEquals(1, backend.identityChecks)
+        }
+
+    @Test
+    fun pairing_account_0_refuses_a_key_of_another_device() =
+        runBlocking<Unit> {
+            val backend = FakeLedgerBackend(ufvkIdentityTag = 'b')
+            val transport = ScriptedTransport(pairingReplies().take(4))
+
+            assertFailsWith<LedgerException.DeviceMismatch> {
+                device(transport, backend).pairAccount(account)
+            }
+            assertEquals(1, backend.exportsClosed)
+            assertFalse(transport.closed, "the device answered; the channel is still in step")
+        }
+
+    @Test
+    fun pairing_another_account_cannot_check_the_key_against_the_identity() =
+        runBlocking<Unit> {
+            val backend = FakeLedgerBackend(ufvkIdentityTag = 'b')
+            val transport = ScriptedTransport(pairingReplies().take(4))
+
+            val pairing = device(transport, backend).pairAccount(Zip32AccountIndex.new(1))
+
+            assertEquals(identity('a'), pairing.binding.deviceIdentity.encoding)
+            assertEquals(0, backend.identityChecks)
+        }
+
+    @Test
     fun pairing_is_refused_before_the_export_on_an_app_without_pczt_support() =
         runBlocking<Unit> {
             val transport = ScriptedTransport(listOf(ok(0)))

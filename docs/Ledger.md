@@ -149,9 +149,18 @@ closed any whose exchange failed).
 
 `pairAccount` reads the device's identity, and asks the user to approve the viewing key export on the
 device. The identity is read once, before the export: the Zcash app leaves a status screen up after
-the export and drops the next command until the user dismisses it, and a transport speaks to exactly
-one peripheral, so the device that answered the probe is the device that exported the key. It refuses
-an app that cannot sign PCZTs (`LedgerException.AppTooOld`) before exporting anything.
+the export and drops the next command until the user dismisses it. It refuses an app that cannot sign
+PCZTs (`LedgerException.AppTooOld`) before exporting anything.
+
+For account 0, `pairAccount` checks that the exported key belongs to the device that answered the
+identity read: it derives the public key at `m/44'/coin'/0'/0/0` from the key's transparent component
+and compares its hash with the identity. On a mismatch it discards the key and fails with
+`LedgerException.DeviceMismatch`; a key without a transparent component, which the Zcash app never
+exports, fails with `LedgerException.MalformedReply`. For any other account the key carries nothing on
+that path, and no such check is possible. The check binds the key to the identity, not to the
+hardware: a link that also replaces the identity reply passes it. Have the user compare the address on
+the device's screen (see [Verifying an address on the device](#verifying-an-address-on-the-device))
+to protect against such a link, and for every account other than 0.
 
 The device identity is a hash of the public key at `m/44'/coin'/0'/0/0`. It is not secret, but it is
 linkable: once that address has spent on chain, anyone can match the identity to it. Store it as you
@@ -225,7 +234,7 @@ command". A refusal by the device leaves the transport open; a failure on the tr
 | `AppNotInstalled` | `ensureZcashAppOpen` asked the device to open the Zcash app and it has none installed. | No | Ask the user to install the Zcash app with Ledger Live, then start again. |
 | `AppOpenRejected` | The user declined opening the Zcash app on the device during `ensureZcashAppOpen`. | Yes | Offer to try again; the device asks the user once more. |
 | `AppTooOld` | The Zcash app predates PCZT signing (checked before anything is exported), or the Ironwood pool a version 6 transaction needs, or is older than 3.9.4 and the transaction has a memo the device would show as a hash. Raised only when updating the app is all that stands in the way; a transaction that also breaks another rule is `TransactionNotSignable`. | No | Ask the user to update the Zcash app with Ledger Live. |
-| `DeviceMismatch` | Signing found that the connected device is not the one the account was paired with. Pairing reads the identity once and no longer raises it. Nothing of the transaction was sent. | No | Ask the user to connect the paired device. |
+| `DeviceMismatch` | Signing found that the connected device is not the one the account was paired with; nothing of the transaction was sent. Or pairing account 0 found that the exported viewing key does not belong to the device that answered the identity read; the key was discarded. | No | When signing, ask the user to connect the paired device. When pairing, do not import anything; check the connection and pair again. |
 | `CapsMismatch` | The Zcash app was updated or swapped during the operation. Nothing of the transaction was sent. | No | Connect again and start over. |
 | `DerivationBudgetExhausted` | The Zcash app's per-run Orchard key derivation budget is spent. | Yes | Ask the user to close and reopen the Zcash app, then start again. |
 | `DeviceRefused` | Any other refusal; `statusWord` and `isTransient` describe it (a locked device is transient). | As reported | When restartable, ask the user to unlock the device and try again; otherwise report the status word. |

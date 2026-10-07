@@ -26,6 +26,7 @@ use transparent::{
     bundle::{OutPoint, TxOut},
     keys::{NonHardenedChildIndex, TransparentKeyScope},
 };
+use zcash_address::unified::{self, Encoding as _};
 use zcash_client_backend::{
     data_api::{
         AccountBirthday, AccountPurpose, CoinbaseFilter, WalletWrite,
@@ -49,12 +50,13 @@ use zcash_client_sqlite::{
 use zcash_primitives::{block::BlockHash, transaction::builder::BundlePadding};
 use zcash_protocol::{
     ShieldedPool,
-    consensus::{NetworkUpgrade, Parameters, ZIP212_GRACE_PERIOD},
+    consensus::{MAIN_NETWORK, NetworkUpgrade, Parameters, TEST_NETWORK, ZIP212_GRACE_PERIOD},
     local_consensus::LocalNetwork,
     value::Zatoshis,
 };
 
 use super::{
+    account_keys::check_ufvk_device_identity,
     error::{Kind, LedgerError},
     handles::Registry,
     session::{PreparedSession, SessionRequest, new_sign_session},
@@ -402,6 +404,135 @@ fn a_deny_status_word_is_a_user_rejection() {
     let err = pczt_ledger::pairing::parse_unified_address(&deny, LedgerNetwork::Test)
         .expect_err("denied");
     assert_eq!(LedgerError::from_pairing(&err).kind, Kind::UserRejected);
+}
+
+// ---------------------------------------------------------------------------
+// The device's answers against the account's viewing key
+// ---------------------------------------------------------------------------
+
+/// The seed of the device the account-key checks run against.
+const PAIRING_SEED: [u8; 32] = [0x3C; 32];
+
+fn pairing_usk(seed: &[u8; 32], account: zip32::AccountId) -> UnifiedSpendingKey {
+    UnifiedSpendingKey::from_seed(&TEST_NETWORK, seed, account).expect("a spending key")
+}
+
+/// The UFVK the Zcash app exports for `usk`'s account, built the way `handler_get_vk` builds it:
+/// an Orchard item and, when `with_p2pkh`, a P2PKH item, in a revision 0 container.
+fn exported_ufvk(usk: &UnifiedSpendingKey, with_p2pkh: bool) -> String {
+    let ufvk = usk.to_unified_full_viewing_key();
+    let mut items = vec![unified::Uitem::Data(unified::Fvk::Orchard(
+        ufvk.orchard().expect("an Orchard key").to_bytes(),
+    ))];
+    if with_p2pkh {
+        let p2pkh: [u8; 65] = ufvk
+            .p2pkh()
+            .expect("a transparent key")
+            .serialize()
+            .try_into()
+            .expect("65 bytes");
+        items.push(unified::Uitem::Data(unified::Fvk::P2pkh(p2pkh)));
+    }
+    unified::Ufvk::try_from_items(pczt_ledger::pairing::DEVICE_UNIFIED_REVISION, items)
+        .expect("a valid container")
+        .encode(&TEST_NETWORK.network_type())
+}
+
+/// The identity a device holding `seed` answers the identity probe with: the secret key at
+/// `m/44'/1'/0'/0/0`, derived from the seed, put in a `GET_WALLET_PUBLIC_KEY` reply and parsed the
+/// way pairing parses it. This route uses no viewing key.
+fn probed_identity(seed: &[u8; 32]) -> DeviceIdentity {
+    let secret = pairing_usk(seed, zip32::AccountId::ZERO)
+        .transparent()
+        .derive_external_secret_key(NonHardenedChildIndex::ZERO)
+        .expect("a secret key");
+    let secret =
+        secp256k1::SecretKey::from_slice(&secret.to_secret_bytes()).expect("a valid secret key");
+    let public =
+        secp256k1::PublicKey::from_secret_key(&secp256k1::Secp256k1::signing_only(), &secret);
+    pczt_ledger::pairing::parse_device_identity_response(&wallet_public_key_reply(&public))
+        .expect("the reply parses")
+}
+
+/// The identity a device holding [`PAIRING_SEED`] answers on testnet, computed once through
+/// [`probed_identity`] and pinned, so a change to how either side derives it fails here.
+const PAIRING_SEED_TESTNET_IDENTITY: &str =
+    "tpk0-b4a1180c3fadd98030a1da376059b394b5fac9c6970abe1d4ff98a7ccd0445c9";
+
+#[test]
+fn an_account_0_ufvk_derives_the_identity_of_the_device_that_exported_it() {
+    let identity = probed_identity(&PAIRING_SEED);
+    assert_eq!(identity.to_string(), PAIRING_SEED_TESTNET_IDENTITY);
+
+    let ufvk = exported_ufvk(&pairing_usk(&PAIRING_SEED, zip32::AccountId::ZERO), true);
+    assert_eq!(
+        check_ufvk_device_identity(&TEST_NETWORK, &ufvk, PAIRING_SEED_TESTNET_IDENTITY),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_ufvk_of_another_device_is_a_device_mismatch() {
+    let identity = probed_identity(&PAIRING_SEED).to_string();
+    let other = exported_ufvk(&pairing_usk(&[0x3D; 32], zip32::AccountId::ZERO), true);
+
+    let err = check_ufvk_device_identity(&TEST_NETWORK, &other, &identity)
+        .expect_err("another device's key");
+    assert_eq!(err.kind, Kind::DeviceMismatch);
+    let reason = err.reason.expect("a reason");
+    assert!(
+        !reason.contains(&identity[5..]),
+        "the reason never echoes the identity"
+    );
+    assert!(!reason.contains(&other), "the reason never echoes the key");
+}
+
+/// The identity path is in account 0, so the same device's key for another account never binds.
+#[test]
+fn a_ufvk_of_another_account_never_matches_the_identity() {
+    let identity = probed_identity(&PAIRING_SEED).to_string();
+    let account_1 = exported_ufvk(
+        &pairing_usk(
+            &PAIRING_SEED,
+            zip32::AccountId::try_from(1).expect("account 1"),
+        ),
+        true,
+    );
+
+    let err = check_ufvk_device_identity(&TEST_NETWORK, &account_1, &identity)
+        .expect_err("account 1 carries no key on the identity path");
+    assert_eq!(err.kind, Kind::DeviceMismatch);
+}
+
+/// The Zcash app always exports a P2PKH item, so a key without one is refused rather than
+/// accepted unchecked.
+#[test]
+fn a_ufvk_without_a_transparent_component_is_refused() {
+    let identity = probed_identity(&PAIRING_SEED).to_string();
+    let orchard_only = exported_ufvk(&pairing_usk(&PAIRING_SEED, zip32::AccountId::ZERO), false);
+
+    let err = check_ufvk_device_identity(&TEST_NETWORK, &orchard_only, &identity)
+        .expect_err("no transparent component");
+    assert_eq!(err.kind, Kind::MalformedReply);
+}
+
+#[test]
+fn an_undecodable_ufvk_or_identity_is_refused() {
+    let identity = probed_identity(&PAIRING_SEED).to_string();
+    let ufvk = exported_ufvk(&pairing_usk(&PAIRING_SEED, zip32::AccountId::ZERO), true);
+
+    let err = check_ufvk_device_identity(&TEST_NETWORK, "uviewtest1garbage", &identity)
+        .expect_err("not a key");
+    assert_eq!(err.kind, Kind::MalformedReply);
+    assert!(!err.reason.expect("a reason").contains("garbage"));
+
+    let err = check_ufvk_device_identity(&MAIN_NETWORK, &ufvk, &identity)
+        .expect_err("a testnet key on mainnet");
+    assert_eq!(err.kind, Kind::MalformedReply);
+
+    let err = check_ufvk_device_identity(&TEST_NETWORK, &ufvk, "tpk0-nothex")
+        .expect_err("not an identity");
+    assert_eq!(err.kind, Kind::InvalidInput);
 }
 
 // ---------------------------------------------------------------------------

@@ -30,6 +30,20 @@ internal interface TypesafeLedgerBackend {
 
     fun deviceIdentity(encoding: String): LedgerDeviceIdentity
 
+    /**
+     * Checks that [ufvk], exported for ZIP 32 account 0, belongs to the device whose identity is
+     * [deviceIdentity].
+     *
+     * @throws LedgerException.DeviceMismatch if the key derives another identity.
+     * @throws LedgerException.MalformedReply if the key does not decode or has no transparent
+     *         component.
+     */
+    fun checkUfvkDeviceIdentity(
+        network: ZcashNetwork,
+        ufvk: UnifiedFullViewingKey,
+        deviceIdentity: LedgerDeviceIdentity
+    )
+
     fun unifiedAddressApdu(
         network: ZcashNetwork,
         zip32AccountIndex: Zip32AccountIndex,

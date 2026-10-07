@@ -81,9 +81,20 @@ class LedgerDevice internal constructor(
      * which the user approves on the device, and binds it to the device's identity.
      *
      * The identity is read once, before the export. The Zcash app leaves a status screen up after
-     * the export and drops the next command until the user dismisses it, and a transport speaks to
-     * exactly one peripheral, so the device that answered the probe is the device that exported
-     * the key.
+     * the export and drops the next command until the user dismisses it, so no identity is read
+     * after the export.
+     *
+     * For account 0, the SDK checks that the exported key belongs to the device that answered the
+     * identity read. The identity is a hash of the public key at `m/44'/coin'/0'/0/0`, which is the
+     * first external transparent address key of account 0. The SDK derives that key from the
+     * exported key's transparent component and compares the two. If they differ, or if the exported
+     * key has no transparent component (the Zcash app always exports one), the SDK discards the key.
+     * This check binds the key to the identity, not to the hardware: the identity read is not a
+     * challenge, so a link that also replaces the identity reply passes it. The user's comparison of
+     * the address on the device's screen is the check against such a link.
+     *
+     * For every other account, the exported key carries no key on that path, so the SDK cannot
+     * check it against the identity. It checks only that the key decodes for this network.
      *
      * The reads before the export (the app version and the device's identity) each have
      * [readTimeout] to answer. Nothing waits on the user there, so a device that does not answer
@@ -112,6 +123,10 @@ class LedgerDevice internal constructor(
      * @throws LedgerException.AppTooOld if the Zcash app cannot sign PCZTs, before anything is
      *         exported.
      * @throws LedgerException.UserRejected if the user declines the export.
+     * @throws LedgerException.DeviceMismatch if [zip32AccountIndex] is 0 and the exported key does
+     *         not belong to the device that answered the identity read.
+     * @throws LedgerException.MalformedReply if the exported key does not decode, or if
+     *         [zip32AccountIndex] is 0 and the key has no transparent component.
      * @throws LedgerException.DerivationBudgetExhausted if the user has to reopen the Zcash app.
      * @throws LedgerException for any other failure.
      */
@@ -123,6 +138,9 @@ class LedgerDevice internal constructor(
         mutex.withLock {
             val (version, identity) = readBeforeExport(readTimeout, reconnect)
             val ufvk = exportUfvk(zip32AccountIndex)
+            if (zip32AccountIndex.index == IDENTITY_ACCOUNT_INDEX) {
+                backend.checkUfvkDeviceIdentity(network, ufvk, identity)
+            }
             LedgerAccountPairing(
                 ufvk = ufvk,
                 binding = LedgerAccountBinding(identity, zip32AccountIndex),
@@ -246,6 +264,9 @@ class LedgerDevice internal constructor(
     }
 
     companion object {
+        /** The ZIP 32 account whose transparent key the device identity hashes. */
+        private const val IDENTITY_ACCOUNT_INDEX = 0L
+
         /**
          * A [pairAccount] `readTimeout` suited to a pairing: the reads before the export answer at
          * once on a healthy link, so a device silent this long is stalled. It is not the default,

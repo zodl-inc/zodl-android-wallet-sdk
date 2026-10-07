@@ -83,6 +83,12 @@ class TypesafeLedgerBackendImplTest {
 
         override fun isValidDeviceIdentity(identity: String): Boolean = unused()
 
+        override fun checkUfvkDeviceIdentity(
+            networkId: Int,
+            ufvk: String,
+            deviceIdentity: String
+        ): Unit = unused()
+
         override fun unifiedAddressApdu(
             networkId: Int,
             zip32AccountIndex: Long,

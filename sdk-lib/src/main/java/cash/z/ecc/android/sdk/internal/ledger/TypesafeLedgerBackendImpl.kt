@@ -69,6 +69,12 @@ internal class TypesafeLedgerBackendImpl(
             throw LedgerException.InvalidInput(reason = "the value is not a Ledger device identity")
         }
 
+    override fun checkUfvkDeviceIdentity(
+        network: ZcashNetwork,
+        ufvk: UnifiedFullViewingKey,
+        deviceIdentity: LedgerDeviceIdentity
+    ) = ledgerCall { backend.checkUfvkDeviceIdentity(network.id, ufvk.encoding, deviceIdentity.encoding) }
+
     override fun unifiedAddressApdu(
         network: ZcashNetwork,
         zip32AccountIndex: Zip32AccountIndex,
