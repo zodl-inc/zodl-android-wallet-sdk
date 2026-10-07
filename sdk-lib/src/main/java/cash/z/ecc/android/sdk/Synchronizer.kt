@@ -1567,7 +1567,8 @@ interface Synchronizer {
          *
          * @return true if any of the wallet's files were found and deleted.
          *
-         * @throws IllegalArgumentException if [alias] is not a valid alias.
+         * @throws IllegalArgumentException if [alias] is not a valid alias, or is the default alias
+         * (also spelled with trailing underscores) or the legacy one; use [erase] for the default wallet.
          * @throws IllegalStateException if a synchronizer for [network] and [alias] is active.
          */
         suspend fun eraseAlias(

@@ -18,6 +18,7 @@ import cash.z.ecc.android.sdk.exception.TorInitializationErrorException
 import cash.z.ecc.android.sdk.exception.TorUnavailableException
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.ext.ConsensusBranchId
+import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
 import cash.z.ecc.android.sdk.internal.ImportAccountErrors
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
@@ -294,6 +295,11 @@ class SdkSynchronizer private constructor(
             network: ZcashNetwork,
             alias: String
         ): Boolean {
+            // A trailing '_' maps to the same files as the default wallet.
+            require(
+                alias.trimEnd('_') != ZcashSdk.DEFAULT_ALIAS &&
+                    !alias.trimEnd('_').equals(DatabaseCoordinator.ALIAS_LEGACY, ignoreCase = true)
+            ) { "Use erase() for the default wallet" }
             val key = SynchronizerKey(network, alias)
 
             return mutex.withLock {
@@ -708,6 +714,15 @@ class SdkSynchronizer private constructor(
     ) {
         backend.recordTrustedTransaction(rawTransaction, txId)
         storage.invalidate()
+        // The claim is recorded at this point; a failed balance refresh must not report otherwise.
+        @Suppress("TooGenericExceptionCaught")
+        try {
+            refreshAllBalances()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Twig.warn { "Refreshing balances after a trusted claim failed: ${e::class.simpleName}" }
+        }
     }
 
     /**
