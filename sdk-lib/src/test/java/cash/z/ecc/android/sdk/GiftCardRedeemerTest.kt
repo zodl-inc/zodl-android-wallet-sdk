@@ -86,6 +86,7 @@ class GiftCardRedeemerTest {
             ZcashSdk.DEFAULT_ALIAS,
             "${ZcashSdk.DEFAULT_ALIAS}_",
             "ZcashSdk",
+            "ZcashSdk_",
             "",
             "a/b",
             "x".repeat(ZcashSdk.ALIAS_MAX_LENGTH + 1)

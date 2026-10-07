@@ -758,7 +758,8 @@ class GiftCardRedeemer private constructor(
             // A trailing '_' or the legacy alias name would address the files of the default wallet, which this
             // redeemer erases before it opens the card wallet.
             require(
-                alias.trimEnd('_') != ZcashSdk.DEFAULT_ALIAS && !alias.equals("ZcashSdk", ignoreCase = true)
+                alias.trimEnd('_') != ZcashSdk.DEFAULT_ALIAS &&
+                    !alias.trimEnd('_').equals(DatabaseCoordinator.ALIAS_LEGACY, ignoreCase = true)
             ) { "A gift card must not use the default wallet alias" }
             require(
                 alias.length in ZcashSdk.ALIAS_MIN_LENGTH..ZcashSdk.ALIAS_MAX_LENGTH &&
