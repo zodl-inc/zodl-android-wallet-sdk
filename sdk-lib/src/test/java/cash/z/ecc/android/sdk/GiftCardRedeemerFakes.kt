@@ -132,7 +132,8 @@ internal class FakeCardWallet(
  * Opens [cardWallets] in turn (the last one again once they run out). [onOpen] runs while a
  * wallet is being opened, with the critical error handler the redeemer passed. A wallet asked
  * to start exactly at the birthday does so only when [isExactBirthdayAvailable]. Every wallet
- * reports [isDisconnectedUntilFirstPass], as the Slipstream engine's do.
+ * reports [isDisconnectedUntilFirstPass], as the Slipstream engine's do. [seeds] holds the seed
+ * array each open was handed, and [seedsAtOpen] a copy of its contents taken during that open.
  */
 internal class FakeWallets(
     private val cardWallets: List<FakeCardWallet>,
@@ -147,6 +148,8 @@ internal class FakeWallets(
     val erased = mutableListOf<String>()
     val torSettings = mutableListOf<Boolean>()
     val exactBirthdays = mutableListOf<Boolean>()
+    val seeds = mutableListOf<ByteArray>()
+    val seedsAtOpen = mutableListOf<ByteArray>()
     val opened = CompletableDeferred<Unit>()
 
     override suspend fun erase(
@@ -170,6 +173,8 @@ internal class FakeWallets(
     ): OpenedCardWallet {
         torSettings += isTorEnabled
         exactBirthdays += isBirthdayExact
+        seeds += setup.seed.byteArray
+        seedsAtOpen += setup.seed.byteArray.copyOf()
         openFailure?.let { throw it }
         onOpen(onCriticalError)
         opened.complete(Unit)

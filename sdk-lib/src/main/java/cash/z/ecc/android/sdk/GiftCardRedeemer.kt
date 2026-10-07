@@ -281,10 +281,8 @@ class GiftCardRedeemer private constructor(
      *
      * The first call scans the chain from the card's birthday, which needs network access and
      * may take a while for an old card. The wallet starts exactly at [GiftCard.birthdayHeight],
-     * using the tree state fetched from [lightWalletEndpoint], when its engine supports that; if
-     * the server cannot provide it, or the engine always starts a restored wallet at a bundled
-     * checkpoint (as the Slipstream engine does), the scan starts at the nearest bundled checkpoint
-     * below it instead, which takes longer.
+     * using the tree state fetched from [lightWalletEndpoint]; if the server cannot provide it, the
+     * scan starts at the nearest bundled checkpoint below it instead, which takes longer.
      * Later calls reuse the synced wallet and return quickly, so polling a [Status.Pending] card
      * is cheap.
      *

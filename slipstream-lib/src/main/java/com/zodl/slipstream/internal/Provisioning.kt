@@ -2,14 +2,25 @@ package com.zodl.slipstream.internal
 
 import android.content.Context
 import cash.z.ecc.android.sdk.WalletInitMode
+import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.model.WalletSummary
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.tool.CheckpointTool
+import co.electriccoin.lightwallet.client.CombinedWalletClient
+import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
+import co.electriccoin.lightwallet.client.model.Response
+import co.electriccoin.lightwallet.client.model.TreeStateUnsafe
 import com.zodl.slipstream.model.SlipstreamRestoreAnchor
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * `FFI_JNI_CONTRACT.md` section 8: 1 = restore, 0 = new, null = no anchor call.
@@ -95,6 +106,12 @@ internal fun interface SlipstreamAnchorSource {
  * wallet database so an existing wallet renders its real balances in the same phase its account row
  * surfaces. `null` means no summary is available yet - a fresh or never-scanned database - and skips
  * the seed, leaving the host on its shimmer until the engine's first tick.
+ * @property exactBirthdayTreeState set only for a [WalletInitMode.RestoreWallet] asked to start
+ * exactly at [requestedBirthday]: fetches the tree state at `requestedBirthday - 1` (see
+ * [fetchExactBirthdayTreeState]), or answers `null` when it is not available, so that the account
+ * is created from the bundled checkpoint instead. `null` keeps the checkpoint start.
+ * @param onBirthdayResolved called once, through [reportBirthdayResolved], with whether the
+ * account was created from the exact tree state.
  */
 @Suppress("LongParameterList")
 internal class PrepareInputs(
@@ -107,10 +124,23 @@ internal class PrepareInputs(
     val treeState: suspend (BlockHeight?) -> TreeState,
     val lastCheckpointTreeState: suspend () -> TreeState,
     val dbWalletSummary: suspend () -> WalletSummary?,
-    val totalMemoryBytes: Long
+    val totalMemoryBytes: Long,
+    val exactBirthdayTreeState: (suspend (BlockHeight) -> TreeState?)? = null,
+    private val onBirthdayResolved: ((isExact: Boolean) -> Unit)? = null
 ) {
+    private val isBirthdayReported = AtomicBoolean(false)
+
     /** Whether these inputs were given a [setup], which stays known after [releaseSetup]. */
     val hasSetup: Boolean = setup != null
+
+    /**
+     * Tells the `onBirthdayResolved` callback whether the account starts exactly at
+     * [requestedBirthday]. Only the first call counts: preparation reports once the account is
+     * created, and the end of preparation reports `false` in case it never got that far.
+     */
+    fun reportBirthdayResolved(isExact: Boolean) {
+        if (isBirthdayReported.compareAndSet(false, true)) onBirthdayResolved?.invoke(isExact)
+    }
 
     /** The account setup, with its seed; `null` once [releaseSetup] ran, or when none was given. */
     @Volatile
@@ -133,3 +163,77 @@ internal class PrepareInputs(
  */
 internal fun AccountCreateSetup.copyOwningSeed(): AccountCreateSetup =
     copy(seed = FirstClassByteArray(seed.byteArray.copyOf()))
+
+/**
+ * How long [fetchExactBirthdayTreeState] waits for the server before the wallet starts at the
+ * bundled checkpoint instead: longer than a fetch over a fresh Tor circuit takes, and short enough
+ * that giving up still costs less than the scan from the checkpoint it would have saved.
+ */
+internal val EXACT_BIRTHDAY_TREE_STATE_TIMEOUT: Duration = 30.seconds
+
+/**
+ * Fetches the tree state at `birthday - 1` from [walletClient], which seeds an account whose
+ * birthday is exactly [birthday] (the backend sets the birthday to the tree state's height plus
+ * one), as `Synchronizer.new` does for an exact birthday. With Tor enabled in [sdkFlags] the request
+ * goes over a fresh Tor circuit ([ServiceMode.UniqueTor]), which never falls back to a direct
+ * connection; without Tor it goes directly to the server, as the rest of the wallet's traffic does.
+ *
+ * Returns `null`, after logging, when the server does not answer within [timeout], fails, or answers
+ * with an empty tree state, and for a birthday at the genesis block, below which there is no tree
+ * state, so that the caller starts at the bundled checkpoint instead.
+ */
+internal suspend fun fetchExactBirthdayTreeState(
+    walletClient: CombinedWalletClient,
+    sdkFlags: SdkFlags,
+    birthday: BlockHeight,
+    timeout: Duration = EXACT_BIRTHDAY_TREE_STATE_TIMEOUT
+): TreeState? {
+    if (birthday.value < 1) return null
+    val treeStateHeight = BlockHeightUnsafe(birthday.value - 1)
+    return runCatchingCancellable {
+        withTimeoutOrNull(timeout) {
+            walletClient.getTreeState(treeStateHeight, sdkFlags ifTor ServiceMode.UniqueTor)
+        }
+    }.fold(
+        onSuccess = { response -> exactTreeStateOf(response, treeStateHeight, timeout) },
+        onFailure = {
+            Twig.warn {
+                "Tree state fetch for the exact birthday failed (${it::class.simpleName}); using the checkpoint"
+            }
+            null
+        }
+    )
+}
+
+/** The tree state in [response] to [fetchExactBirthdayTreeState]'s request, or `null`, after logging why not. */
+private fun exactTreeStateOf(
+    response: Response<TreeStateUnsafe>?,
+    treeStateHeight: BlockHeightUnsafe,
+    timeout: Duration
+): TreeState? =
+    when (response) {
+        null -> {
+            Twig.warn { "Tree state fetch for the exact birthday timed out after $timeout; using the checkpoint" }
+            null
+        }
+
+        is Response.Success -> {
+            response.result.encoded
+                .takeIf { it.isNotEmpty() }
+                ?.let { TreeState(it) }
+                .also {
+                    if (it == null) {
+                        Twig.warn { "The server sent an empty tree state for the exact birthday; using the checkpoint" }
+                    } else {
+                        Twig.info { "Restore: using tree state at height ${treeStateHeight.value} for exact birthday" }
+                    }
+                }
+        }
+
+        is Response.Failure -> {
+            Twig.warn {
+                "Tree state fetch for the exact birthday failed (${response::class.simpleName}); using the checkpoint"
+            }
+            null
+        }
+    }

@@ -95,6 +95,7 @@ import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
 import com.zodl.slipstream.internal.db.TransactionsController
 import com.zodl.slipstream.internal.engineMemoryBytes
 import com.zodl.slipstream.internal.engineMemoryHint
+import com.zodl.slipstream.internal.fetchExactBirthdayTreeState
 import com.zodl.slipstream.internal.newestBundledCheckpointHeight
 import com.zodl.slipstream.internal.resolveIntent
 import com.zodl.slipstream.internal.runCatchingCancellable
@@ -117,8 +118,10 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -160,11 +163,16 @@ import kotlin.time.Duration
  * `resolveWalletInitializationState` -> `DerivedDataDb.new` (`Synchronizer.kt` ~1138,
  * `DerivedDataDb.kt` ~126) to provision the fresh-wallet account row. Bundled together so the
  * `when(intent)` block computes each of an anchor's three derived facts exactly once.
+ *
+ * [exactTreeState] is the tree state at the requested birthday minus one, fetched only for a restore
+ * asked to start exactly at its birthday ([PrepareInputs.exactBirthdayTreeState]); the account is
+ * created from it rather than from [treeState], the bundled checkpoint, whenever it is present.
  */
 private data class WalletProvisioningPlan(
     val startBirthday: BlockHeight,
     val treeState: TreeState,
-    val recoverUntil: Long?
+    val recoverUntil: Long?,
+    val exactTreeState: TreeState? = null
 )
 
 /**
@@ -529,7 +537,10 @@ class SlipstreamSynchronizer internal constructor(
              */
             prepareJob =
                 scope.launch { runPrepare(inputs) }.also { job ->
-                    job.invokeOnCompletion { inputs.releaseSetup() }
+                    job.invokeOnCompletion {
+                        inputs.reportBirthdayResolved(isExact = false)
+                        inputs.releaseSetup()
+                    }
                 }
         }
     }
@@ -743,26 +754,19 @@ class SlipstreamSynchronizer internal constructor(
         val provisioning = resolveProvisioning(inputs, fallbackCheckpoint)
         startBirthday = provisioning.startBirthday
 
+        var startsAtBirthday = false
         if (shouldCreateAccount(
                 hasSetup = inputs.setup != null,
                 accountsAreEmpty = backend.getAccounts().isEmpty()
             )
         ) {
-            val accountSetup = requireNotNull(inputs.setup)
-            runCatchingCancellable {
-                backend.createAccount(
-                    accountName = accountSetup.accountName,
-                    keySource = accountSetup.keySource,
-                    seed = accountSetup.seed.byteArray,
-                    treeState = provisioning.treeState.encoded,
-                    recoverUntil = provisioning.recoverUntil
-                )
-            }.getOrElse { throw InitializeException.CreateAccountException(it) }
+            startsAtBirthday = createAccount(requireNotNull(inputs.setup), provisioning)
             /*
              * Releases [accountsFlow], which suppressed the empty reads of the whole DbReady window.
              */
             accountsVersion.update { it + 1 }
         }
+        inputs.reportBirthdayResolved(isExact = startsAtBirthday)
 
         engine.open(totalMemoryBytes = inputs.totalMemoryBytes)
         /*
@@ -773,25 +777,75 @@ class SlipstreamSynchronizer internal constructor(
         engine.startPolling()
     }
 
-    /** The `when(intent)` block of the original `newLocked`, verbatim but behind [PrepareInputs]' lambdas. */
+    /**
+     * Creates the wallet's account from [provisioning]: from its exact birthday's tree state when
+     * there is one, else from the bundled checkpoint. An exact tree state the backend rejects falls
+     * back to the checkpoint too, as long as the rejected attempt left no account behind.
+     *
+     * @return whether the account was created from the exact tree state.
+     */
+    private suspend fun createAccount(
+        setup: AccountCreateSetup,
+        provisioning: WalletProvisioningPlan
+    ): Boolean {
+        val exactTreeState = provisioning.exactTreeState
+        if (exactTreeState != null) {
+            val failure =
+                runCatchingCancellable { createAccount(setup, exactTreeState, provisioning.recoverUntil) }
+                    .exceptionOrNull() ?: return true
+            if (backend.getAccounts().isNotEmpty()) throw InitializeException.CreateAccountException(failure)
+            Twig.warn {
+                "Creating the account at its exact birthday failed (${failure::class.simpleName}); using the checkpoint"
+            }
+        }
+        runCatchingCancellable { createAccount(setup, provisioning.treeState, provisioning.recoverUntil) }
+            .getOrElse { throw InitializeException.CreateAccountException(it) }
+        return false
+    }
+
+    private suspend fun createAccount(
+        setup: AccountCreateSetup,
+        treeState: TreeState,
+        recoverUntil: Long?
+    ) {
+        backend.createAccount(
+            accountName = setup.accountName,
+            keySource = setup.keySource,
+            seed = setup.seed.byteArray,
+            treeState = treeState.encoded,
+            recoverUntil = recoverUntil
+        )
+    }
+
+    /**
+     * The `when(intent)` block of the original `newLocked`, verbatim but behind [PrepareInputs]' lambdas, plus the
+     * exact birthday's tree state of a restore asked for one, fetched while the anchor resolves.
+     */
     private suspend fun resolveProvisioning(
         inputs: PrepareInputs,
         fallbackCheckpoint: Long
     ): WalletProvisioningPlan =
         when (val intent = resolveIntent(inputs.walletInitMode)) {
             1 -> {
-                val requestedBirthday = requireNotNull(inputs.requestedBirthday)
-                val anchor =
-                    inputs.anchorSource(
-                        intent = intent,
-                        birthdayHeight = requestedBirthday.value,
-                        fallbackCheckpointHeight = fallbackCheckpoint
+                coroutineScope {
+                    val requestedBirthday = requireNotNull(inputs.requestedBirthday)
+                    val exactTreeState =
+                        inputs.exactBirthdayTreeState?.let { fetch ->
+                            async { runCatchingCancellable { fetch(requestedBirthday) }.getOrNull() }
+                        }
+                    val anchor =
+                        inputs.anchorSource(
+                            intent = intent,
+                            birthdayHeight = requestedBirthday.value,
+                            fallbackCheckpointHeight = fallbackCheckpoint
+                        )
+                    WalletProvisioningPlan(
+                        startBirthday = BlockHeight.new(anchor.height),
+                        treeState = inputs.treeState(requestedBirthday),
+                        recoverUntil = anchor.height,
+                        exactTreeState = exactTreeState?.await()
                     )
-                WalletProvisioningPlan(
-                    startBirthday = BlockHeight.new(anchor.height),
-                    treeState = inputs.treeState(requestedBirthday),
-                    recoverUntil = anchor.height
-                )
+                }
             }
 
             0 -> {
@@ -1835,6 +1889,52 @@ class SlipstreamSynchronizer internal constructor(
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean,
             engineMemoryFraction: Float = FULL_ENGINE_MEMORY
+        ): CloseableSynchronizer =
+            new(
+                alias = alias,
+                birthday = birthday,
+                context = context,
+                lightWalletEndpoint = lightWalletEndpoint,
+                setup = setup,
+                walletInitMode = walletInitMode,
+                zcashNetwork = zcashNetwork,
+                isTorEnabled = isTorEnabled,
+                isExchangeRateEnabled = isExchangeRateEnabled,
+                engineMemoryFraction = engineMemoryFraction,
+                isBirthdayExact = false,
+                onBirthdayResolved = null
+            )
+
+        /**
+         * [new] with one extra, SDK-internal option, as `Synchronizer.new` has it.
+         *
+         * @param isBirthdayExact when `true` and [walletInitMode] is [WalletInitMode.RestoreWallet], the
+         * preparation fetches the tree state at `birthday - 1` from [lightWalletEndpoint], over a fresh Tor
+         * circuit when [isTorEnabled], while it resolves its anchor, and creates the account from it, so the
+         * account's birthday is exactly [birthday] and the engine scans from there instead of from the
+         * nearest bundled checkpoint below it, which can be thousands of blocks earlier. If the fetch fails,
+         * times out or yields a tree state the backend rejects, the bundled checkpoint is used as before.
+         * Fetching reveals the exact height to the server; `false` keeps the checkpoint granularity that the
+         * app's main wallet relies on for privacy.
+         * @param onBirthdayResolved called once, from the preparation, with `true` when the account was
+         * created from the exact tree state [isBirthdayExact] asked for, and `false` otherwise: when the
+         * bundled checkpoint was used, or when preparation failed or was cancelled before the account was
+         * created.
+         */
+        @Suppress("LongParameterList")
+        internal suspend fun new(
+            alias: String,
+            birthday: BlockHeight?,
+            context: Context,
+            lightWalletEndpoint: LightWalletEndpoint,
+            setup: AccountCreateSetup?,
+            walletInitMode: WalletInitMode,
+            zcashNetwork: ZcashNetwork,
+            isTorEnabled: Boolean,
+            isExchangeRateEnabled: Boolean,
+            engineMemoryFraction: Float,
+            isBirthdayExact: Boolean,
+            onBirthdayResolved: ((isExact: Boolean) -> Unit)?
         ): CloseableSynchronizer {
             validateAlias(alias)
             require(engineMemoryFraction > 0f && engineMemoryFraction <= 1f) {
@@ -1856,6 +1956,8 @@ class SlipstreamSynchronizer internal constructor(
                         isTorEnabled = isTorEnabled,
                         isExchangeRateEnabled = isExchangeRateEnabled,
                         engineMemoryFraction = engineMemoryFraction,
+                        isBirthdayExact = isBirthdayExact,
+                        onBirthdayResolved = onBirthdayResolved,
                         key = key
                     )
                 }
@@ -1912,6 +2014,8 @@ class SlipstreamSynchronizer internal constructor(
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean,
             engineMemoryFraction: Float,
+            isBirthdayExact: Boolean,
+            onBirthdayResolved: ((isExact: Boolean) -> Unit)?,
             key: SlipstreamKey
         ): SlipstreamSynchronizer {
             SlipstreamNative.ensureLoaded(logLevel = "info")
@@ -2100,7 +2204,14 @@ class SlipstreamSynchronizer internal constructor(
                             .treeState()
                     },
                     dbWalletSummary = { typesafeBackend.getWalletSummary() },
-                    totalMemoryBytes = totalMemoryBytes
+                    totalMemoryBytes = totalMemoryBytes,
+                    exactBirthdayTreeState =
+                        if (isBirthdayExact && walletInitMode == WalletInitMode.RestoreWallet) {
+                            { height -> fetchExactBirthdayTreeState(walletClient, sdkFlags, height) }
+                        } else {
+                            null
+                        },
+                    onBirthdayResolved = onBirthdayResolved
                 )
 
             return SlipstreamSynchronizer(

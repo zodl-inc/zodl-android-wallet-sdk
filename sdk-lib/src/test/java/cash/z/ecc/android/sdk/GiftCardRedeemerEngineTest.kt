@@ -15,10 +15,12 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import org.junit.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNotSame
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
@@ -31,8 +33,8 @@ import kotlin.time.Duration.Companion.seconds
  * failures in [Synchronizer.setupError] instead of throwing them out of its creation, it reports
  * [Synchronizer.Status.DISCONNECTED] while idle before its first sync pass and reports trouble reaching the server
  * as being idle or as syncing that does not advance, it reports a failed sync pass through
- * [Synchronizer.onProcessorErrorHandler], its account appears only once its preparation has created it, and it always
- * starts at the bundled checkpoint.
+ * [Synchronizer.onProcessorErrorHandler], its account appears only once its preparation has created it, and it
+ * starts at the bundled checkpoint unless it could fetch the tree state at the card's exact birthday.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class GiftCardRedeemerEngineTest {
@@ -418,6 +420,89 @@ class GiftCardRedeemerEngineTest {
             assertEquals(0L, currentTime)
         }
 
+    /**
+     * A card wallet that started exactly at the birthday and found nothing is reopened once from the checkpoint,
+     * which finds the funds: the empty exact scan is not settled, as only the final classification is.
+     */
+    @Test
+    fun anExactBirthdayScanThatFindsNothingIsRescannedOnceFromTheCheckpoint() =
+        runTest {
+            val pending = FakeCardWallet(emptyList(), spendable = 0, pending = 1_000_000)
+            listOf(
+                FakeCardWallet(emptyList()) to GiftCardRedeemer.Status.Ready::class,
+                pending to GiftCardRedeemer.Status.Pending::class
+            ).forEach { (found, expected) ->
+                val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
+                val wallets = exactEngineWallets(nothing, found)
+                val (redeemer, _) = redeemer(nothing, wallets = wallets)
+                val start = currentTime
+
+                val status = redeemer.check()
+
+                assertEquals(expected, status::class)
+                assertEquals(listOf(true, false), wallets.exactBirthdays)
+                assertTrue(nothing.closed)
+                assertFalse(found.closed)
+                assertEquals(0L, currentTime - start, "no settle for a card the checkpoint scan found funded")
+                redeemer.close()
+            }
+        }
+
+    /** A card that is empty from the checkpoint as well is reported Empty after one settle, not two. */
+    @Test
+    fun aCardEmptyFromItsExactBirthdayAndFromTheCheckpointIsEmptyAfterOneSettle() =
+        runTest {
+            val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
+            val stillNothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
+            val wallets = exactEngineWallets(nothing, stillNothing)
+            val (redeemer, _) = redeemer(nothing, wallets = wallets)
+
+            assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
+
+            assertEquals(listOf(true, false), wallets.exactBirthdays)
+            assertEquals(GiftCardRedeemer.EMPTY_SETTLE.inWholeMilliseconds, currentTime)
+            assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
+            assertEquals(2, wallets.exactBirthdays.size, "a checkpoint scan is never rescanned")
+        }
+
+    @Test
+    fun aCardFundedFromItsExactBirthdayIsNotRescanned() =
+        runTest {
+            val funded = FakeCardWallet(emptyList())
+            val wallets = exactEngineWallets(funded)
+            val (redeemer, _) = redeemer(funded, wallets = wallets)
+
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+
+            assertEquals(listOf(true), wallets.exactBirthdays)
+            assertFalse(funded.closed)
+            assertEquals(0L, currentTime)
+        }
+
+    /**
+     * The reopen erases the card wallet and opens it again under the same alias, which the redeemer holds
+     * throughout, and hands each open its own copy of the card's seed.
+     */
+    @Test
+    fun theRescanFromTheCheckpointKeepsTheAliasAndHandsOverAFreshSeedCopy() =
+        runTest {
+            val aliases = GiftCardAliases()
+            val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
+            val wallets = exactEngineWallets(nothing, FakeCardWallet(emptyList()))
+            val (redeemer, _) = redeemer(nothing, wallets = wallets, aliases = aliases)
+
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+
+            val alias = GiftCardRedeemer.defaultAlias(card())
+            assertEquals(listOf(alias, alias), wallets.erased)
+            assertNotSame(wallets.seeds[0], wallets.seeds[1])
+            assertContentEquals(wallets.seedsAtOpen[0], wallets.seedsAtOpen[1])
+            val other = FakeCardWallet(emptyList())
+            val (contender, _) = redeemer(other, wallets = exactEngineWallets(other), aliases = aliases)
+            assertIs<GiftCardException.InUse>(runCatching { contender.check() }.exceptionOrNull())
+            redeemer.close()
+        }
+
     /** Runs a check of [redeemer] expected to fail, and returns its failure. */
     private suspend fun failedCheck(
         redeemer: GiftCardRedeemer,
@@ -439,6 +524,17 @@ class GiftCardRedeemerEngineTest {
     /** The card wallet's balances, with [pending] in Orchard and nothing spendable. */
     private fun cardBalances(pending: Long) =
         mapOf(AccountFixture.new().accountUuid to cardAccountBalance(pending = pending))
+
+    /**
+     * Card wallets as the Slipstream engine opens them when the exact birthday's tree state is available: [cardWallets]
+     * in turn, at the birthday when asked to, and idle before the first pass.
+     */
+    private fun exactEngineWallets(vararg cardWallets: FakeCardWallet) =
+        FakeWallets(
+            cardWallets.toList(),
+            isExactBirthdayAvailable = true,
+            isDisconnectedUntilFirstPass = true
+        )
 
     /** Card wallets as the Slipstream engine opens them: at the checkpoint, and idle before the first pass. */
     private fun engineWallets(cardWallet: FakeCardWallet) =

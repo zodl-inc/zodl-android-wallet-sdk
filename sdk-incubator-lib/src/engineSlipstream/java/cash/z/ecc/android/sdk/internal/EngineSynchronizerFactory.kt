@@ -12,6 +12,8 @@ import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import com.zodl.slipstream.SlipstreamSynchronizer
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 
 /**
  * The `IS_SLIPSTREAM_ENABLED=true` variant of the engine seam, compiled only when this SDK build
@@ -34,7 +36,9 @@ internal class SlipstreamWalletRequest(
     val zcashNetwork: ZcashNetwork,
     val isTorEnabled: Boolean,
     val isExchangeRateEnabled: Boolean,
-    val engineMemoryFraction: Float
+    val engineMemoryFraction: Float,
+    val isBirthdayExact: Boolean = false,
+    val onBirthdayResolved: ((isExact: Boolean) -> Unit)? = null
 )
 
 /**
@@ -83,9 +87,13 @@ internal class SlipstreamEngineFactory(
 
     /**
      * A second [SlipstreamSynchronizer] under [alias], restored with [WalletInitMode.RestoreWallet]
-     * and without exchange rates. The Slipstream engine always starts a restored wallet at the
-     * bundled checkpoint at or below [birthday], so [isBirthdayExact] cannot be honoured and the
-     * wallet reports [OpenedCardWallet.startsAtBirthday] `false`. Its engine reports
+     * and without exchange rates. With [isBirthdayExact], its preparation fetches the tree state at
+     * `birthday - 1` from [lightWalletEndpoint], over Tor when [isTorEnabled] (through the wallet's own
+     * client, never directly), and creates the account from it, so the engine scans from [birthday]
+     * rather than from the bundled checkpoint below it. This waits until the preparation knows which
+     * of the two the account starts at, and reports it as [OpenedCardWallet.startsAtBirthday]: `false`
+     * when the fetch failed and the checkpoint was used, as always without [isBirthdayExact]. A
+     * caller cancelled during that wait closes the wallet. Its engine reports
      * `DISCONNECTED` while idle before the first sync pass, hence
      * [OpenedCardWallet.isDisconnectedUntilFirstPass]. Its engine is told
      * [HELPER_ENGINE_MEMORY_FRACTION] of the device's memory.
@@ -108,6 +116,7 @@ internal class SlipstreamEngineFactory(
         isTorEnabled: Boolean,
         onCriticalError: (Throwable?) -> Boolean,
     ): OpenedCardWallet {
+        val birthdayResolved = CompletableDeferred<Boolean>()
         val synchronizer =
             newSynchronizer(
                 SlipstreamWalletRequest(
@@ -120,13 +129,31 @@ internal class SlipstreamEngineFactory(
                     zcashNetwork = zcashNetwork,
                     isTorEnabled = isTorEnabled,
                     isExchangeRateEnabled = false,
-                    engineMemoryFraction = HELPER_ENGINE_MEMORY_FRACTION
+                    engineMemoryFraction = HELPER_ENGINE_MEMORY_FRACTION,
+                    isBirthdayExact = isBirthdayExact,
+                    onBirthdayResolved =
+                        if (isBirthdayExact) {
+                            { isExact -> birthdayResolved.complete(isExact) }
+                        } else {
+                            null
+                        }
                 )
             )
         synchronizer.onCriticalErrorHandler = onCriticalError
+        val startsAtBirthday =
+            if (isBirthdayExact) {
+                try {
+                    birthdayResolved.await()
+                } catch (e: CancellationException) {
+                    synchronizer.close()
+                    throw e
+                }
+            } else {
+                false
+            }
         return OpenedCardWallet(
             synchronizer = synchronizer,
-            startsAtBirthday = false,
+            startsAtBirthday = startsAtBirthday,
             isDisconnectedUntilFirstPass = true
         )
     }
@@ -162,5 +189,7 @@ private suspend fun newSlipstreamSynchronizer(request: SlipstreamWalletRequest):
         zcashNetwork = request.zcashNetwork,
         isTorEnabled = request.isTorEnabled,
         isExchangeRateEnabled = request.isExchangeRateEnabled,
-        engineMemoryFraction = request.engineMemoryFraction
+        engineMemoryFraction = request.engineMemoryFraction,
+        isBirthdayExact = request.isBirthdayExact,
+        onBirthdayResolved = request.onBirthdayResolved
     )

@@ -68,11 +68,14 @@ android {
  * sdk-lib's `internal` card wallet interface, the way slipstream-lib uses sdk-lib's `internal`
  * declarations. Registering sdk-lib as a Kotlin friend module gives that access at compile time
  * without widening sdk-lib's public API; the build directory prefix covers every variant and
- * compilation (main and unit test).
+ * compilation (main and unit test). With Slipstream, slipstream-lib is a friend module too, so the
+ * seam can open a helper wallet through `SlipstreamSynchronizer`'s `internal` exact-birthday option.
  */
 val sdkLibBuildDir = project(":sdk-lib").layout.buildDirectory
+val slipstreamLibBuildDir = if (isSlipstreamEnabled) project(":slipstream-lib").layout.buildDirectory else null
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
     friendPaths.from(sdkLibBuildDir)
+    slipstreamLibBuildDir?.let { friendPaths.from(it) }
 }
 
 tasks.dokkaHtml.configure {

@@ -111,8 +111,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   isTorEnabled, alias = GiftCardRedeemer.defaultAlias(card))` creates a `GiftCardRedeemer`
   whose temporary card wallet runs on the same sync engine as `WalletCoordinator`'s main
   wallet. On the Slipstream engine the card wallet is a second `SlipstreamSynchronizer` under
-  the card's alias, beside the main one, with its own database and engine; it starts at the
-  bundled checkpoint at or below the card's birthday, so it is never rescanned. `storedAliases`
+  the card's alias, beside the main one, with its own database and engine; like the default
+  engine's, it starts scanning exactly at the card's birthday, from the tree state fetched over Tor
+  when `isTorEnabled`, and at the bundled checkpoint below it only when that fetch fails. `storedAliases`
   lists the card wallets left on the device, and `erase(context, network, alias)` deletes one,
   including any files an earlier engine left under the same alias, without starting a
   synchronizer. It refuses, before touching any file, an alias that addresses the main wallet's

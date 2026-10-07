@@ -10,7 +10,11 @@ import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import com.zodl.slipstream.SlipstreamSynchronizer
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Test
 import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mockito.mock
@@ -22,15 +26,17 @@ import java.nio.file.Files
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
  * [SlipstreamEngineFactory] with [SlipstreamSynchronizer]'s `new` replaced: a helper wallet is a second Slipstream
  * synchronizer under its own alias, restored from the card's seed without exchange rates and with its share of the
- * device's memory, which starts at the checkpoint and is idle before its first pass; the main wallet keeps the default
- * alias and the whole device; helper wallets are erased by alias through [SlipstreamSynchronizer.Companion.eraseAlias],
- * never the main wallet.
+ * device's memory, which starts exactly at its birthday when asked to and the preparation could fetch that birthday's
+ * tree state, else at the checkpoint, and is idle before its first pass; the main wallet keeps the default alias, the
+ * whole device and the checkpoint start; helper wallets are erased by alias through
+ * [SlipstreamSynchronizer.Companion.eraseAlias], never the main wallet.
  */
 class SlipstreamEngineFactoryTest {
     @Test
@@ -38,7 +44,7 @@ class SlipstreamEngineFactoryTest {
         runBlocking<Unit> {
             val synchronizer = mock(CloseableSynchronizer::class.java)
             val requests = mutableListOf<SlipstreamWalletRequest>()
-            val factory = recordingFactory(requests, synchronizer)
+            val factory = recordingFactory(requests, synchronizer, resolveBirthdayAs = true)
             val context = mock(Context::class.java)
             val setup = setup()
 
@@ -66,6 +72,7 @@ class SlipstreamEngineFactoryTest {
             assertTrue(request.isTorEnabled)
             assertFalse(request.isExchangeRateEnabled)
             assertEquals(SlipstreamEngineFactory.HELPER_ENGINE_MEMORY_FRACTION, request.engineMemoryFraction)
+            assertTrue(request.isBirthdayExact)
             assertSame(synchronizer, opened.synchronizer)
         }
 
@@ -75,15 +82,55 @@ class SlipstreamEngineFactoryTest {
         assertTrue(SlipstreamEngineFactory.HELPER_ENGINE_MEMORY_FRACTION <= HALF)
     }
 
+    /**
+     * The helper wallet starts at its birthday exactly when it asked to and its preparation, which fetches the tree
+     * state over Tor or directly as the wallet's own client does, created the account from it; without the exact
+     * birthday nothing is fetched or waited for.
+     */
     @Test
-    fun aHelperWalletStartsAtTheCheckpointAndIsIdleBeforeItsFirstPass() =
+    fun aHelperWalletStartsAtItsBirthdayOnlyWhenItsPreparationUsedTheExactTreeState() =
         runBlocking<Unit> {
-            val factory = SlipstreamEngineFactory(newSynchronizer = { mock(CloseableSynchronizer::class.java) })
+            listOf(
+                Triple(true, true, true),
+                Triple(true, false, false),
+                Triple(false, null, false)
+            ).forEach { (isBirthdayExact, resolved, startsAtBirthday) ->
+                listOf(true, false).forEach { isTorEnabled ->
+                    val requests = mutableListOf<SlipstreamWalletRequest>()
+                    val factory = recordingFactory(requests, resolveBirthdayAs = resolved)
 
-            val opened = openHelper(factory, isBirthdayExact = true)
+                    val opened = openHelper(factory, isBirthdayExact = isBirthdayExact, isTorEnabled = isTorEnabled)
 
-            assertFalse(opened.startsAtBirthday, "the engine cannot start a restore exactly at the birthday")
-            assertTrue(opened.isDisconnectedUntilFirstPass)
+                    val request = requests.single()
+                    assertEquals(startsAtBirthday, opened.startsAtBirthday)
+                    assertTrue(opened.isDisconnectedUntilFirstPass)
+                    assertEquals(isBirthdayExact, request.isBirthdayExact)
+                    assertEquals(isBirthdayExact, request.onBirthdayResolved != null)
+                    assertEquals(isTorEnabled, request.isTorEnabled)
+                }
+            }
+        }
+
+    /** A caller cancelled while the preparation resolves the start closes the wallet nobody else could close. */
+    @Test
+    fun aHelperWalletWhoseOpenIsCancelledIsClosed() =
+        runBlocking<Unit> {
+            val synchronizer = mock(CloseableSynchronizer::class.java)
+            val created = CompletableDeferred<Unit>()
+            val factory =
+                SlipstreamEngineFactory(
+                    newSynchronizer = {
+                        created.complete(Unit)
+                        synchronizer
+                    }
+                )
+
+            val open = launch { openHelper(factory, isBirthdayExact = true) }
+            created.await()
+            yield()
+            open.cancelAndJoin()
+
+            verify(synchronizer).close()
         }
 
     @Test
@@ -117,6 +164,8 @@ class SlipstreamEngineFactoryTest {
 
             val request = requests.single()
             assertEquals(ZcashSdk.DEFAULT_ALIAS, request.alias)
+            assertFalse(request.isBirthdayExact, "the main wallet never reveals an exact height")
+            assertNull(request.onBirthdayResolved)
             assertEquals(SlipstreamSynchronizer.FULL_ENGINE_MEMORY, request.engineMemoryFraction)
             assertEquals(WalletInitMode.ExistingWallet, request.walletInitMode)
             assertTrue(request.isExchangeRateEnabled)
@@ -162,13 +211,19 @@ class SlipstreamEngineFactoryTest {
             verifyNoInteractions(context)
         }
 
-    /** A factory whose `new` records each request in [requests] and returns [synchronizer]. */
+    /**
+     * A factory whose `new` records each request in [requests] and returns [synchronizer]. Its preparation, when
+     * [resolveBirthdayAs] is set, reports through the request's callback whether the account starts exactly at the
+     * birthday, as the real preparation does once it has created the account.
+     */
     private fun recordingFactory(
         requests: MutableList<SlipstreamWalletRequest>,
-        synchronizer: CloseableSynchronizer = mock(CloseableSynchronizer::class.java)
+        synchronizer: CloseableSynchronizer = mock(CloseableSynchronizer::class.java),
+        resolveBirthdayAs: Boolean? = null
     ) = SlipstreamEngineFactory(
-        newSynchronizer = {
-            requests += it
+        newSynchronizer = { request ->
+            requests += request
+            resolveBirthdayAs?.let { request.onBirthdayResolved?.invoke(it) }
             synchronizer
         }
     )
@@ -177,6 +232,7 @@ class SlipstreamEngineFactoryTest {
         factory: SlipstreamEngineFactory,
         alias: String = ALIAS,
         isBirthdayExact: Boolean = false,
+        isTorEnabled: Boolean = false,
         onCriticalError: (Throwable?) -> Boolean = { false }
     ) = factory.openHelperWallet(
         context = mock(Context::class.java),
@@ -186,18 +242,18 @@ class SlipstreamEngineFactoryTest {
         isBirthdayExact = isBirthdayExact,
         lightWalletEndpoint = ENDPOINT,
         setup = setup(),
-        isTorEnabled = false,
+        isTorEnabled = isTorEnabled,
         onCriticalError = onCriticalError
     )
 
-    private fun setup() =
-        AccountCreateSetup(
-            accountName = "Gift card",
-            keySource = null,
-            seed = FirstClassByteArray(ByteArray(SEED_BYTES))
-        )
-
     private companion object {
+        fun setup() =
+            AccountCreateSetup(
+                accountName = "Gift card",
+                keySource = null,
+                seed = FirstClassByteArray(ByteArray(SEED_BYTES))
+            )
+
         const val ALIAS = "giftcard_test"
         const val BIRTHDAY = 3_000_000L
         const val HALF = 0.5f

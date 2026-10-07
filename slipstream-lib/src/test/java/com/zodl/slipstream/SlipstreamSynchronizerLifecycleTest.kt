@@ -78,6 +78,7 @@ import org.mockito.Mockito.timeout
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -1810,6 +1811,212 @@ class SlipstreamSynchronizerLifecycleTest {
     }
 
     /**
+     * A restore asked to start exactly at its birthday fetches that birthday's tree state while the anchor
+     * resolves, creates the account from it - never from the bundled checkpoint - and reports the exact start,
+     * once, although the end of preparation reports again.
+     */
+    @Test
+    fun an_exact_birthday_restore_creates_the_account_from_the_exact_tree_state() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val anchorGate = CompletableDeferred<Unit>()
+        val fetchStarted = CompletableDeferred<BlockHeight>()
+        val resolutions = CopyOnWriteArrayList<Boolean>()
+        val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES) { 5 }))
+        val seed = setup.seed.byteArray
+        stubPrepareBackend(backend, seed)
+        val inputs =
+            prepareInputs(
+                setup = setup,
+                anchorSource = gatedAnchor(anchorGate),
+                exactBirthdayTreeState = { height ->
+                    fetchStarted.complete(height)
+                    TreeState(EXACT_TREE_STATE)
+                },
+                onBirthdayResolved = { resolutions += it }
+            )
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend, prepareInputs = inputs)
+        try {
+            val fetchedAt = runBlocking { withTimeout(TIMEOUT_MS) { fetchStarted.await() } }
+            assertEquals(BlockHeight.new(REQUESTED_BIRTHDAY_VALUE), fetchedAt, "fetched while the anchor resolves")
+            anchorGate.complete(Unit)
+
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).startPolling()
+                verify(backend).createAccount(ACCOUNT_NAME, KEY_SOURCE, seed, EXACT_TREE_STATE, ANCHOR_HEIGHT)
+                verify(backend, never()).createAccount(ACCOUNT_NAME, KEY_SOURCE, seed, TREE_STATE, ANCHOR_HEIGHT)
+            }
+            awaitCondition { inputs.setup == null }
+            assertEquals(listOf(true), resolutions.toList())
+        } finally {
+            synchronizer.close()
+        }
+    }
+
+    /** No exact tree state from the server: the account starts at the bundled checkpoint, as without the option. */
+    @Test
+    fun an_exact_birthday_restore_without_the_tree_state_starts_at_the_checkpoint() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val resolutions = CopyOnWriteArrayList<Boolean>()
+        val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES) { 5 }))
+        val seed = setup.seed.byteArray
+        stubPrepareBackend(backend, seed)
+        val inputs =
+            prepareInputs(
+                setup = setup,
+                exactBirthdayTreeState = { null },
+                onBirthdayResolved = { resolutions += it }
+            )
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend, prepareInputs = inputs)
+        try {
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).startPolling()
+                verify(backend).createAccount(ACCOUNT_NAME, KEY_SOURCE, seed, TREE_STATE, ANCHOR_HEIGHT)
+            }
+            awaitCondition { inputs.setup == null }
+            assertEquals(listOf(false), resolutions.toList())
+        } finally {
+            synchronizer.close()
+        }
+    }
+
+    /** A fetch that throws is a missing tree state, never a failed preparation. */
+    @Test
+    fun an_exact_birthday_fetch_that_throws_starts_at_the_checkpoint() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val resolutions = CopyOnWriteArrayList<Boolean>()
+        val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES) { 5 }))
+        val seed = setup.seed.byteArray
+        stubPrepareBackend(backend, seed)
+        val inputs =
+            prepareInputs(
+                setup = setup,
+                exactBirthdayTreeState = { error("no tree state") },
+                onBirthdayResolved = { resolutions += it }
+            )
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend, prepareInputs = inputs)
+        try {
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).startPolling()
+                verify(backend).createAccount(ACCOUNT_NAME, KEY_SOURCE, seed, TREE_STATE, ANCHOR_HEIGHT)
+            }
+            assertEquals(null, synchronizer.setupError.value)
+            awaitCondition { resolutions.isNotEmpty() }
+            assertEquals(listOf(false), resolutions.toList())
+        } finally {
+            synchronizer.close()
+        }
+    }
+
+    /** An exact tree state the backend rejects, leaving no account behind, falls back to the checkpoint. */
+    @Test
+    fun a_rejected_exact_tree_state_falls_back_to_the_checkpoint() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val resolutions = CopyOnWriteArrayList<Boolean>()
+        val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES) { 5 }))
+        val seed = setup.seed.byteArray
+        stubPrepareBackend(backend, seed)
+        runBlocking {
+            `when`(backend.createAccount(ACCOUNT_NAME, KEY_SOURCE, seed, EXACT_TREE_STATE, ANCHOR_HEIGHT))
+                .thenThrow(RuntimeException("invalid tree state"))
+        }
+        val inputs =
+            prepareInputs(
+                setup = setup,
+                exactBirthdayTreeState = { TreeState(EXACT_TREE_STATE) },
+                onBirthdayResolved = { resolutions += it }
+            )
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend, prepareInputs = inputs)
+        try {
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).startPolling()
+                verify(backend).createAccount(ACCOUNT_NAME, KEY_SOURCE, seed, TREE_STATE, ANCHOR_HEIGHT)
+            }
+            assertEquals(null, synchronizer.setupError.value)
+            awaitCondition { resolutions.isNotEmpty() }
+            assertEquals(listOf(false), resolutions.toList())
+        } finally {
+            synchronizer.close()
+        }
+    }
+
+    /** A rejected exact tree state that left an account behind is a setup error, never a second account. */
+    @Test
+    fun a_rejected_exact_tree_state_that_left_an_account_fails_the_preparation() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val resolutions = CopyOnWriteArrayList<Boolean>()
+        val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES) { 5 }))
+        val seed = setup.seed.byteArray
+        runBlocking {
+            `when`(backend.initDataDb(seed)).thenReturn(0)
+            `when`(backend.getAccounts()).thenReturn(emptyList(), listOf(jniAccount(AccountUuid.new(ByteArray(16)))))
+            `when`(backend.createAccount(ACCOUNT_NAME, KEY_SOURCE, seed, EXACT_TREE_STATE, ANCHOR_HEIGHT))
+                .thenThrow(RuntimeException("failed after writing"))
+        }
+        val inputs =
+            prepareInputs(
+                setup = setup,
+                exactBirthdayTreeState = { TreeState(EXACT_TREE_STATE) },
+                onBirthdayResolved = { resolutions += it }
+            )
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend, prepareInputs = inputs)
+        try {
+            val error = runBlocking { withTimeout(TIMEOUT_MS) { synchronizer.setupError.filterNotNull().first() } }
+
+            assertTrue(error is InitializeException.CreateAccountException)
+            runBlocking {
+                verify(backend, never()).createAccount(ACCOUNT_NAME, KEY_SOURCE, seed, TREE_STATE, ANCHOR_HEIGHT)
+            }
+            awaitCondition { resolutions.isNotEmpty() }
+            assertEquals(listOf(false), resolutions.toList())
+        } finally {
+            synchronizer.close()
+        }
+    }
+
+    /** A caller waiting for the start never waits forever: a failed or cancelled preparation reports `false`. */
+    @Test
+    fun a_preparation_that_ends_before_the_account_reports_no_exact_start() {
+        listOf(true, false).forEach { closeEarly ->
+            val engine = mock(SlipstreamEngine::class.java)
+            val backend = mock(Backend::class.java)
+            val key = newKey()
+            val resolutions = CopyOnWriteArrayList<Boolean>()
+            val anchorStarted = CompletableDeferred<Unit>()
+            stubPrepareBackend(backend, null)
+            runBlocking { InstanceGuard.acquire(key) }
+            val synchronizer =
+                buildSynchronizer(
+                    engine = engine,
+                    backend = backend,
+                    key = key,
+                    prepareInputs =
+                        prepareInputs(
+                            anchorSource =
+                                SlipstreamAnchorSource { _, _, _ ->
+                                    anchorStarted.complete(Unit)
+                                    if (closeEarly) awaitCancellation() else error("anchor unreachable")
+                                },
+                            exactBirthdayTreeState = { TreeState(EXACT_TREE_STATE) },
+                            onBirthdayResolved = { resolutions += it }
+                        )
+                )
+            runBlocking { withTimeout(TIMEOUT_MS) { anchorStarted.await() } }
+            if (closeEarly) {
+                runBlocking { withTimeout(TIMEOUT_MS) { synchronizer.closeAndAwaitShutdown() } }
+            }
+
+            awaitCondition { resolutions.isNotEmpty() }
+            assertEquals(listOf(false), resolutions.toList(), "closed early: $closeEarly")
+            if (!closeEarly) runBlocking { withTimeout(TIMEOUT_MS) { synchronizer.closeAndAwaitShutdown() } }
+        }
+    }
+
+    /**
      * S2: a `new` whose caller is cancelled once the instance is built - the instance comes back on a
      * switch back from `Dispatchers.IO`, which a cancelled caller turns into a
      * [CancellationException] - must not leave that instance running, with its preparation in flight
@@ -2060,7 +2267,9 @@ class SlipstreamSynchronizerLifecycleTest {
         treeState: suspend (BlockHeight?) -> TreeState = { TreeState(TREE_STATE) },
         lastCheckpointTreeState: suspend () -> TreeState = { TreeState(TREE_STATE) },
         dbWalletSummary: suspend () -> WalletSummary? = { null },
-        totalMemoryBytes: Long = TOTAL_MEMORY_BYTES
+        totalMemoryBytes: Long = TOTAL_MEMORY_BYTES,
+        exactBirthdayTreeState: (suspend (BlockHeight) -> TreeState?)? = null,
+        onBirthdayResolved: ((Boolean) -> Unit)? = null
     ) = PrepareInputs(
         walletInitMode = walletInitMode,
         requestedBirthday = requestedBirthday,
@@ -2071,7 +2280,9 @@ class SlipstreamSynchronizerLifecycleTest {
         treeState = treeState,
         lastCheckpointTreeState = lastCheckpointTreeState,
         dbWalletSummary = dbWalletSummary,
-        totalMemoryBytes = totalMemoryBytes
+        totalMemoryBytes = totalMemoryBytes,
+        exactBirthdayTreeState = exactBirthdayTreeState,
+        onBirthdayResolved = onBirthdayResolved
     )
 
     companion object {
@@ -2098,6 +2309,9 @@ class SlipstreamSynchronizerLifecycleTest {
         private const val NULL_HD_ACCOUNT_INDEX = -1L
         private const val USK_BYTES = 8
         private val TREE_STATE = byteArrayOf(1, 2, 3, 4)
+
+        /** The tree state one block below the requested birthday, as an exact-birthday fetch returns it. */
+        private val EXACT_TREE_STATE = byteArrayOf(5, 6, 7, 8)
 
         /** What a never-scanned database answers the summary read with, per the Rust backend. */
         private const val SEED_FAILURE_MESSAGE = "Target height not available"
