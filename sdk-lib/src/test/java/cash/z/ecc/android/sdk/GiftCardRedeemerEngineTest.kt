@@ -421,11 +421,41 @@ class GiftCardRedeemerEngineTest {
         }
 
     /**
-     * A card wallet that started exactly at the birthday and found nothing is reopened once from the checkpoint,
-     * which finds the funds: the empty exact scan is not settled, as only the final classification is.
+     * As observed on a device: the funding transaction is still in the mempool, so the exact scan finds no history,
+     * and the engine stores the receive shortly after its first SYNCED. The exact wallet's settle catches it, and the
+     * card is not rescanned from the checkpoint.
      */
     @Test
-    fun anExactBirthdayScanThatFindsNothingIsRescannedOnceFromTheCheckpoint() =
+    fun aMempoolFundedCardAtItsExactBirthdayIsReportedWithoutARescan() =
+        runTest {
+            listOf(
+                cardAccountBalance(pending = 1_000_000) to GiftCardRedeemer.Status.Pending::class,
+                cardAccountBalance(available = 1_000_000) to GiftCardRedeemer.Status.Ready::class
+            ).forEach { (late, expected) ->
+                val cardWallet = FakeCardWallet(emptyList(), spendable = 0, history = 0)
+                val wallets = exactEngineWallets(cardWallet)
+                val (redeemer, _) = redeemer(cardWallet, wallets = wallets)
+                val start = currentTime
+
+                val check = async { redeemer.check() }
+                advanceTimeBy(1.seconds)
+                assertFalse(check.isCompleted)
+                cardWallet.walletBalances.value = mapOf(AccountFixture.new().accountUuid to late)
+
+                assertEquals(expected, check.await()::class)
+                assertEquals(listOf(true), wallets.exactBirthdays, "the card wallet is opened once")
+                assertFalse(cardWallet.closed)
+                assertEquals(1.seconds.inWholeMilliseconds, currentTime - start)
+                redeemer.close()
+            }
+        }
+
+    /**
+     * A card wallet that started exactly at the birthday, found nothing and saw nothing arrive within the settle is
+     * reopened once from the checkpoint, which finds the funds of a card whose link's height was above its funding.
+     */
+    @Test
+    fun anExactBirthdayScanThatStaysEmptyThroughTheSettleIsRescannedOnceFromTheCheckpoint() =
         runTest {
             val pending = FakeCardWallet(emptyList(), spendable = 0, pending = 1_000_000)
             listOf(
@@ -443,26 +473,56 @@ class GiftCardRedeemerEngineTest {
                 assertEquals(listOf(true, false), wallets.exactBirthdays)
                 assertTrue(nothing.closed)
                 assertFalse(found.closed)
-                assertEquals(0L, currentTime - start, "no settle for a card the checkpoint scan found funded")
+                assertEquals(GiftCardRedeemer.EMPTY_SETTLE.inWholeMilliseconds, currentTime - start)
                 redeemer.close()
             }
         }
 
-    /** A card that is empty from the checkpoint as well is reported Empty after one settle, not two. */
+    /**
+     * A card that is empty from the checkpoint as well is reported Empty after one settle, paid on the exact wallet
+     * before the rescan: the rescan's result is classified at once.
+     */
     @Test
     fun aCardEmptyFromItsExactBirthdayAndFromTheCheckpointIsEmptyAfterOneSettle() =
         runTest {
+            listOf(false to GiftCardRedeemer.EMPTY_SETTLE, true to GiftCardRedeemer.TOR_EMPTY_SETTLE)
+                .forEach { (isTorEnabled, settle) ->
+                    val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
+                    val stillNothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
+                    val wallets = exactEngineWallets(nothing, stillNothing)
+                    val (redeemer, _) = redeemer(nothing, wallets = wallets, isTorEnabled = isTorEnabled)
+                    val start = currentTime
+
+                    val check = async { redeemer.check() }
+                    advanceTimeBy(settle - 1.seconds)
+                    assertEquals(listOf(true), wallets.exactBirthdays, "the exact wallet settles before the rescan")
+                    assertFalse(nothing.closed)
+
+                    assertEquals(GiftCardRedeemer.Status.Empty, check.await())
+                    assertEquals(listOf(true, false), wallets.exactBirthdays)
+                    assertTrue(nothing.closed)
+                    assertEquals(settle.inWholeMilliseconds, currentTime - start)
+                    assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
+                    assertEquals(2, wallets.exactBirthdays.size, "a checkpoint scan is never rescanned")
+                    redeemer.close()
+                }
+        }
+
+    /** Closing the redeemer while the exact wallet settles fails the check as closed, without a rescan. */
+    @Test
+    fun closingDuringTheExactWalletsSettleFailsTheCheckWithoutARescan() =
+        runTest {
             val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
-            val stillNothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
-            val wallets = exactEngineWallets(nothing, stillNothing)
+            val wallets = exactEngineWallets(nothing, FakeCardWallet(emptyList()))
             val (redeemer, _) = redeemer(nothing, wallets = wallets)
 
-            assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
+            val check = async { runCatching { redeemer.check() } }
+            advanceTimeBy(1.seconds)
+            redeemer.close()
 
-            assertEquals(listOf(true, false), wallets.exactBirthdays)
-            assertEquals(GiftCardRedeemer.EMPTY_SETTLE.inWholeMilliseconds, currentTime)
-            assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
-            assertEquals(2, wallets.exactBirthdays.size, "a checkpoint scan is never rescanned")
+            assertIs<GiftCardException.Closed>(check.await().exceptionOrNull())
+            assertEquals(listOf(true), wallets.exactBirthdays)
+            assertTrue(nothing.closed)
         }
 
     @Test

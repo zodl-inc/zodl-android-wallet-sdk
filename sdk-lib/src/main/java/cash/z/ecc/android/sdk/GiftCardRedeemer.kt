@@ -290,6 +290,10 @@ class GiftCardRedeemer private constructor(
      * opposed to funds received and then spent) is scanned once more from the bundled checkpoint
      * below the birthday before the card is reported [Status.Empty], in case the link's height
      * was above the card's funding. A card wallet that started at the checkpoint is not rescanned.
+     * On an engine that watches the mempool only after its first pass (the Slipstream engine), the
+     * exact wallet is first watched for funds as described below, so a card whose funding transaction
+     * is not mined yet is reported without the rescan; the rescan's result is then classified at once,
+     * without a second wait.
      *
      * On an engine that reports its balance from a summary refreshed after the sync and watches the mempool only
      * after its first pass (the Slipstream engine), the balance counts only once the wallet has scanned up to the
@@ -366,15 +370,21 @@ class GiftCardRedeemer private constructor(
         try {
             var synchronizer = openSynchronizer(isBirthdayExact = isBirthdayExact)
             var synced = awaitSyncedWallet(synchronizer, timeout, disconnectedTimeout)
+            var isSettled = false
             if (isBirthdayExact && synced.balance.total.value == 0L && !hasHistory(synchronizer, synced.account)) {
+                val lateFunds = if (isDisconnectedUntilFirstPass) awaitLateFunds(synchronizer, synced.account) else null
+                if (lateFunds != null) {
+                    return statusOf(synchronizer, synced.account, lateFunds).also { checkedAccount = synced.account }
+                }
                 Twig.info { "Gift card wallet found nothing from the exact birthday; rescanning from the checkpoint" }
+                isSettled = isDisconnectedUntilFirstPass
                 synchronizer.close()
                 this.synchronizer = null
                 synchronizer = openSynchronizer(isBirthdayExact = false)
                 synced = awaitSyncedWallet(synchronizer, timeout, disconnectedTimeout)
             }
             val balance =
-                if (isDisconnectedUntilFirstPass && synced.balance.toStatus() == Status.Empty) {
+                if (!isSettled && isDisconnectedUntilFirstPass && synced.balance.toStatus() == Status.Empty) {
                     awaitLateFunds(synchronizer, synced.account) ?: synced.balance
                 } else {
                     synced.balance
