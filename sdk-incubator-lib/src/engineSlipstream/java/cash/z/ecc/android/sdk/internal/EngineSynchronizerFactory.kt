@@ -1,21 +1,55 @@
+@file:Suppress("LongParameterList")
+
 package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
 import cash.z.ecc.android.sdk.CloseableSynchronizer
+import cash.z.ecc.android.sdk.OpenedCardWallet
 import cash.z.ecc.android.sdk.WalletInitMode
+import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import com.zodl.slipstream.SlipstreamSynchronizer
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 
 /**
  * The `IS_SLIPSTREAM_ENABLED=true` variant of the engine seam, compiled only when this SDK build
  * includes `:slipstream-lib`.
  */
-internal val engineSynchronizerFactory: SynchronizerEngineFactory = SlipstreamEngineFactory
+internal val engineSynchronizerFactory: SynchronizerEngineFactory = SlipstreamEngineFactory()
 
-private object SlipstreamEngineFactory : SynchronizerEngineFactory {
+/**
+ * What [SlipstreamEngineFactory] asks [SlipstreamSynchronizer.Companion.new] for, one property per
+ * parameter. Deliberately not a data class: [setup] carries a seed, which must never end up in a
+ * generated `toString`. A non-null [birthdayResolved] asks for the exact birthday.
+ */
+internal class SlipstreamWalletRequest(
+    val context: Context,
+    val alias: String,
+    val birthday: BlockHeight?,
+    val lightWalletEndpoint: LightWalletEndpoint,
+    val setup: AccountCreateSetup?,
+    val walletInitMode: WalletInitMode,
+    val zcashNetwork: ZcashNetwork,
+    val isTorEnabled: Boolean,
+    val isExchangeRateEnabled: Boolean,
+    val engineMemoryFraction: Float,
+    val birthdayResolved: CompletableDeferred<Boolean>? = null
+)
+
+/**
+ * Every wallet of this SDK build runs on [SlipstreamSynchronizer]: the main wallet under the
+ * default alias, and each helper wallet as a second instance under its own alias, with its own
+ * database and engine handle, beside it. [newSynchronizer] is [SlipstreamSynchronizer.Companion.new]
+ * except in unit tests.
+ */
+internal class SlipstreamEngineFactory(
+    private val newSynchronizer: suspend (SlipstreamWalletRequest) -> CloseableSynchronizer =
+        ::newSlipstreamSynchronizer
+) : SynchronizerEngineFactory {
     override suspend fun new(
         context: Context,
         zcashNetwork: ZcashNetwork,
@@ -26,15 +60,19 @@ private object SlipstreamEngineFactory : SynchronizerEngineFactory {
         isTorEnabled: Boolean,
         isExchangeRateEnabled: Boolean,
     ): CloseableSynchronizer =
-        SlipstreamSynchronizer.new(
-            context = context,
-            zcashNetwork = zcashNetwork,
-            lightWalletEndpoint = lightWalletEndpoint,
-            birthday = birthday,
-            setup = setup,
-            walletInitMode = walletInitMode,
-            isTorEnabled = isTorEnabled,
-            isExchangeRateEnabled = isExchangeRateEnabled
+        newSynchronizer(
+            SlipstreamWalletRequest(
+                context = context,
+                alias = ZcashSdk.DEFAULT_ALIAS,
+                birthday = birthday,
+                lightWalletEndpoint = lightWalletEndpoint,
+                setup = setup,
+                walletInitMode = walletInitMode,
+                zcashNetwork = zcashNetwork,
+                isTorEnabled = isTorEnabled,
+                isExchangeRateEnabled = isExchangeRateEnabled,
+                engineMemoryFraction = SlipstreamSynchronizer.FULL_ENGINE_MEMORY
+            )
         )
 
     override suspend fun erase(
@@ -45,4 +83,90 @@ private object SlipstreamEngineFactory : SynchronizerEngineFactory {
             appContext = appContext,
             network = network
         )
+
+    /**
+     * A second [SlipstreamSynchronizer] under [alias], told [HELPER_ENGINE_MEMORY_FRACTION] of the device's memory,
+     * whose engine shares the main wallet's Tor state directory (fixed per app) and is
+     * [OpenedCardWallet.isDisconnectedUntilFirstPass]. With [isBirthdayExact], its preparation fetches the exact
+     * tree state through the wallet's own client (over Tor when [isTorEnabled]), and this waits until it knows
+     * which start the account got; a caller cancelled during that wait closes the wallet. [onCriticalError] is
+     * installed as soon as [SlipstreamSynchronizer.Companion.new] returns, before the poll loop that reports
+     * critical errors starts at the end of the preparation.
+     */
+    override suspend fun openHelperWallet(
+        context: Context,
+        zcashNetwork: ZcashNetwork,
+        alias: String,
+        birthday: BlockHeight,
+        isBirthdayExact: Boolean,
+        lightWalletEndpoint: LightWalletEndpoint,
+        setup: AccountCreateSetup,
+        isTorEnabled: Boolean,
+        onCriticalError: (Throwable?) -> Boolean,
+    ): OpenedCardWallet {
+        val birthdayResolved = if (isBirthdayExact) CompletableDeferred<Boolean>() else null
+        val synchronizer =
+            newSynchronizer(
+                SlipstreamWalletRequest(
+                    context = context,
+                    alias = alias,
+                    birthday = birthday,
+                    lightWalletEndpoint = lightWalletEndpoint,
+                    setup = setup,
+                    walletInitMode = WalletInitMode.RestoreWallet,
+                    zcashNetwork = zcashNetwork,
+                    isTorEnabled = isTorEnabled,
+                    isExchangeRateEnabled = false,
+                    engineMemoryFraction = HELPER_ENGINE_MEMORY_FRACTION,
+                    birthdayResolved = birthdayResolved
+                )
+            )
+        synchronizer.onCriticalErrorHandler = onCriticalError
+        val startsAtBirthday =
+            try {
+                birthdayResolved?.await() ?: false
+            } catch (e: CancellationException) {
+                synchronizer.close()
+                throw e
+            }
+        return OpenedCardWallet(
+            synchronizer = synchronizer,
+            startsAtBirthday = startsAtBirthday,
+            isDisconnectedUntilFirstPass = true
+        )
+    }
+
+    /**
+     * [SlipstreamSynchronizer.Companion.eraseAlias]: this engine's files and preferences for
+     * [alias], and whatever an `SdkSynchronizer` left under it, by file-level deletion.
+     */
+    override suspend fun eraseHelperWallet(
+        appContext: Context,
+        network: ZcashNetwork,
+        alias: String
+    ): Boolean = SlipstreamSynchronizer.eraseAlias(appContext = appContext, network = network, alias = alias)
+
+    companion object {
+        /**
+         * The share of the device's memory a helper wallet's engine is told the device has: half, so
+         * it never plans with larger budgets than the main wallet's engine (see
+         * [SlipstreamSynchronizer.Companion.new]).
+         */
+        const val HELPER_ENGINE_MEMORY_FRACTION = 0.5f
+    }
 }
+
+private suspend fun newSlipstreamSynchronizer(request: SlipstreamWalletRequest): CloseableSynchronizer =
+    SlipstreamSynchronizer.new(
+        alias = request.alias,
+        birthday = request.birthday,
+        context = request.context,
+        lightWalletEndpoint = request.lightWalletEndpoint,
+        setup = request.setup,
+        walletInitMode = request.walletInitMode,
+        zcashNetwork = request.zcashNetwork,
+        isTorEnabled = request.isTorEnabled,
+        isExchangeRateEnabled = request.isExchangeRateEnabled,
+        engineMemoryFraction = request.engineMemoryFraction,
+        birthdayResolved = request.birthdayResolved
+    )

@@ -18,7 +18,7 @@ use jni::{
 };
 use nonempty::NonEmpty;
 use prost::Message;
-use rand::rngs::OsRng;
+use rand::CryptoRng;
 use secrecy::{ExposeSecret, SecretVec};
 use tor_rtcompat::ToplevelBlockOn;
 use tracing::{debug, error};
@@ -61,7 +61,7 @@ use zcash_client_backend::{
     fees::{DustOutputPolicy, SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
     keys::{
         DecodingError, Era, ReceiverRequirement, ReceiverRequirementError, UnifiedAddressRequest,
-        UnifiedFullViewingKey, UnifiedSpendingKey,
+        UnifiedFullViewingKey, UnifiedIncomingViewingKey, UnifiedSpendingKey,
     },
     proposal::ProposalError,
     proto::{proposal::Proposal, service::TreeState},
@@ -108,13 +108,24 @@ use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
 };
 
+// `liberated_payment` is shared verbatim with the other wallet backends and the payment-minting
+// tooling, so it is neither edited nor reformatted here; the minting helpers it carries are
+// unused by this crate, which only reads links.
+#[allow(dead_code)]
+#[rustfmt::skip]
+mod liberated_payment;
+mod gift_card;
 mod migration;
 mod migration_engine;
 mod migration_keystone;
 mod migration_plan_cache;
 mod migration_send_max;
 mod payment_uri;
+mod proving;
+mod send_max;
 mod tor;
+#[cfg(test)]
+mod unified_r0;
 mod utils;
 mod voting;
 
@@ -162,11 +173,24 @@ fn anchor_retention_interval(network: NetworkType) -> AnchorRetentionInterval {
     }
 }
 
-fn wallet_db<P: Parameters>(
+/// The system RNG's type, in the form the NU7 crates' APIs accept. The wallet type aliases name
+/// it; everything else is generic over its RNG.
+pub(crate) type SystemRng = rand::rand_core::UnwrapErr<rand::rngs::SysRng>;
+
+/// The system RNG.
+///
+/// Functions below the JNI layer take their RNG as an argument, so the entry points are where
+/// it comes into being and where a caller can see that randomness is involved.
+pub(crate) fn system_rng() -> SystemRng {
+    rand::rand_core::UnwrapErr(rand::rngs::SysRng)
+}
+
+fn wallet_db<P: Parameters, R: CryptoRng>(
+    rng: R,
     env: &mut JNIEnv,
     params: P,
     db_data: JString,
-) -> anyhow::Result<WalletDb<rusqlite::Connection, P, SystemClock, OsRng>> {
+) -> anyhow::Result<WalletDb<rusqlite::Connection, P, SystemClock, R>> {
     let retention_interval = anchor_retention_interval(params.network_type());
     let db_path = path_from_jni(env, db_data)?;
     // busy_timeout: this connection races the synchronizer engine's block-write bursts on the
@@ -182,7 +206,7 @@ fn wallet_db<P: Parameters>(
         .map_err(|e| anyhow!("Error loading SQLite array module: {}", e))?;
     conn.busy_timeout(std::time::Duration::from_secs(15))
         .map_err(|e| anyhow!("Error setting wallet busy_timeout: {}", e))?;
-    Ok(WalletDb::from_connection(conn, params, SystemClock, OsRng)
+    Ok(WalletDb::from_connection(conn, params, SystemClock, rng)
         .with_anchor_retention_interval(retention_interval))
 }
 
@@ -299,7 +323,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_initDataD
 ) -> jint {
     let res = catch_unwind(&mut env, |env| {
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)
             .map_err(|e| anyhow!("Error while opening data DB: {}", e))?;
 
         let seed = utils::java_nullable_bytes_to_rust(env, &seed)?.map(SecretVec::new);
@@ -330,21 +354,66 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_initDataD
 
 const JNI_ACCOUNT: &str = "cash/z/ecc/android/sdk/internal/model/JniAccount";
 
-fn encode_account<'a, P: Parameters>(
-    env: &mut JNIEnv<'a>,
+/// An account with its viewing keys encoded as strings for Kotlin.
+struct EncodedAccount {
+    account: zcash_client_sqlite::wallet::Account,
+    ufvk: Option<String>,
+    uivk: Option<String>,
+}
+
+/// Encodes the viewing keys of `account` for the given network.
+fn encoded_account<P: Parameters>(
     network: &P,
     account: zcash_client_sqlite::wallet::Account,
+) -> anyhow::Result<EncodedAccount> {
+    let ufvk = account
+        .ufvk()
+        .map(|ufvk| encode_ufvk(ufvk, network))
+        .transpose()?;
+    let uivk = account
+        .ufvk()
+        .map(|ufvk| encode_uivk(&ufvk.to_unified_incoming_viewing_key(), network))
+        .transpose()?;
+    Ok(EncodedAccount {
+        account,
+        ufvk,
+        uivk,
+    })
+}
+
+/// Returns the ZIP 316 string encoding of a unified full viewing key. The encoding uses
+/// revision 0 if revision 0 can represent the key, and revision 2 otherwise.
+fn encode_ufvk<P: Parameters>(ufvk: &UnifiedFullViewingKey, network: &P) -> anyhow::Result<String> {
+    ufvk.encode(network)
+        .map_err(|e| anyhow!("Error encoding a unified full viewing key: {e}"))
+}
+
+/// Returns the ZIP 316 string encoding of a unified incoming viewing key. The encoding uses
+/// revision 0 if revision 0 can represent the key, and revision 2 otherwise.
+fn encode_uivk<P: Parameters>(
+    uivk: &UnifiedIncomingViewingKey,
+    network: &P,
+) -> anyhow::Result<String> {
+    uivk.encode(network)
+        .map_err(|e| anyhow!("Error encoding a unified incoming viewing key: {e}"))
+}
+
+fn encode_account<'a>(
+    env: &mut JNIEnv<'a>,
+    encoded: EncodedAccount,
 ) -> jni::errors::Result<JObject<'a>> {
-    let ufvk = match account.ufvk() {
-        Some(ufvk) => env.new_string(ufvk.encode(network))?.into(),
+    let EncodedAccount {
+        account,
+        ufvk,
+        uivk,
+    } = encoded;
+    let ufvk = match ufvk {
+        Some(ufvk) => env.new_string(ufvk)?.into(),
         None => JObject::null(),
     };
 
-    let uivk = match account.ufvk() {
-        Some(ufvk) => {
-            let uivk = ufvk.to_unified_incoming_viewing_key();
-            env.new_string(uivk.encode(network))?.into()
-        }
+    let uivk = match uivk {
+        Some(uivk) => env.new_string(uivk)?.into(),
         None => JObject::null(),
     };
 
@@ -396,7 +465,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getAccoun
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         let accounts = db_data
             .get_account_ids()?
@@ -407,14 +476,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getAccoun
                     .transpose()
                     .expect("account_id exists")
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|account| encoded_account(&network, account))
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
-        Ok(
-            utils::rust_vec_to_java(env, accounts, JNI_ACCOUNT, |env, account| {
-                encode_account(env, &network, account)
-            })?
-            .into_raw(),
-        )
+        Ok(utils::rust_vec_to_java(env, accounts, JNI_ACCOUNT, encode_account)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -429,13 +496,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getAccoun
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
         let ufvk = parse_ufvk(env, ufvk_string, &network)?;
 
         let account = db_data.get_account_for_ufvk(&ufvk)?;
 
         if let Some(account) = account {
-            Ok(encode_account(env, &network, account)?.into_raw())
+            Ok(encode_account(env, encoded_account(&network, account)?)?.into_raw())
         } else {
             Ok(ptr::null_mut())
         }
@@ -448,7 +515,7 @@ fn encode_usk<'a>(
     account_uuid: AccountUuid,
     usk: UnifiedSpendingKey,
 ) -> jni::errors::Result<JObject<'a>> {
-    let encoded = SecretVec::new(usk.to_bytes(Era::Orchard));
+    let encoded = usk.to_bytes(Era::Orchard);
     let bytes = env.byte_array_from_slice(encoded.expose_secret())?;
     env.new_object(
         "cash/z/ecc/android/sdk/internal/model/JniAccountUsk",
@@ -520,7 +587,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createAcc
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let seed = secret_from_jni(env, seed)?;
         let treestate = parse_treestate(env, treestate)?;
         let recover_until = recover_until.try_into().ok();
@@ -641,7 +708,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_importAcc
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let ufvk = parse_ufvk(env, ufvk_str, &network)?;
         let treestate = parse_treestate(env, treestate)?;
         let recover_until = recover_until.try_into().ok();
@@ -694,7 +761,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_importAcc
             )
             .map_err(map_import_account_error)?;
 
-        Ok(encode_account(env, &network, account)?.into_raw())
+        Ok(encode_account(env, encoded_account(&network, account)?)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -712,7 +779,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_isSeedRel
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
         let seed = secret_from_jni(env, seed)?;
 
         // Replicate the logic from `initWalletDb`.
@@ -741,7 +808,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_deleteAcc
 ) -> jboolean {
     let res = catch_unwind(&mut env, |env| {
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
 
         db_data.delete_account(account_uuid)?;
@@ -762,7 +829,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getCurren
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.getCurrentAddress").entered();
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
 
         match db_data.get_last_generated_address_matching(
@@ -770,7 +837,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getCurren
             UnifiedAddressRequest::AllAvailableKeys,
         ) {
             Ok(Some(addr)) => {
-                let addr_str = addr.encode(&network);
+                let addr_str = addr.encode_receiver_preserving(&network);
                 let output = env
                     .new_string(addr_str)
                     .expect("Couldn't create Java string!");
@@ -816,7 +883,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getSingle
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.getSingleUseTaddr").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
 
         match db_data.reserve_next_n_ephemeral_addresses(account_uuid, 1) {
@@ -915,7 +982,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getNextAv
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.getNextAvailableAddress").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
 
         let receiver_flags = <u32>::try_from(receiver_flags)
@@ -931,7 +998,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getNextAv
 
         match db_data.get_next_available_address(account_uuid, address_request) {
             Ok(Some((ua, _))) => {
-                let addr_str = ua.encode(&network);
+                let addr_str = ua.encode_receiver_preserving(&network);
                 let output = env
                     .new_string(addr_str)
                     .expect("Couldn't create Java string!");
@@ -1040,7 +1107,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_listTrans
         let _span = tracing::info_span!("RustBackend.listTransparentReceivers").entered();
         let network = parse_network(network_id)?;
         let zcash_network = network.network_type();
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account = account_id_from_jni(env, account_uuid)?;
 
         // Zashi does not support standalone keys, so we do not request standalone receivers.
@@ -1204,7 +1271,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getTotalT
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.getTotalTransparentBalance").entered();
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
         let addr = utils::java_string_to_rust(env, &address)?;
         let taddr = TransparentAddress::decode(&network, &addr)?;
 
@@ -1250,7 +1317,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getMemoAs
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.getMemoAsUtf8").entered();
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         let txid = parse_txid(env, txid_bytes)?;
         let protocol = parse_protocol(pool_type)?;
@@ -1460,7 +1527,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_rewindToH
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.rewindToHeight").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         let height = BlockHeight::try_from(height)?;
         let rewind_result = db_data.truncate_to_height(height);
@@ -1492,7 +1559,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_truncateT
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.truncateToChainState").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let chain_state = parse_treestate(env, chain_state)?.to_chain_state()?;
 
         db_data
@@ -1541,7 +1608,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_putSubtre
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.putSubtreeRoots").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         fn parse_roots<H>(
             env: &mut JNIEnv,
@@ -1607,7 +1674,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_updateCha
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.updateChainTip").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let height = BlockHeight::try_from(height)?;
 
         db_data
@@ -1630,7 +1697,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getFullyS
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.getFullyScannedHeight").entered();
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         match db_data.block_fully_scanned() {
             Ok(Some(metadata)) => Ok(i64::from(u32::from(metadata.block_height()))),
@@ -1657,7 +1724,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getMaxSca
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.getMaxScannedHeight").entered();
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         match db_data.block_max_scanned() {
             Ok(Some(metadata)) => Ok(i64::from(u32::from(metadata.block_height()))),
@@ -1797,7 +1864,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getWallet
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.getWalletSummary").entered();
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         match db_data
             .get_wallet_summary(wallet::ConfirmationsPolicy::default())
@@ -1844,7 +1911,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_suggestSc
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.suggestScanRanges").entered();
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         let ranges = db_data
             .suggest_scan_ranges()
@@ -1893,7 +1960,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_scanBlock
         let _span = tracing::info_span!("RustBackend.scanBlocks").entered();
         let network = parse_network(network_id)?;
         let db_cache = block_db(env, db_cache)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let from_height = BlockHeight::try_from(from_height)?;
         let from_state = parse_treestate(env, from_state)?.to_chain_state()?;
         let limit = usize::try_from(limit)?;
@@ -2027,7 +2094,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_transacti
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.transactionDataRequests").entered();
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(env, network, db_data)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         let ranges = db_data
             .transaction_data_requests()
@@ -2055,7 +2122,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_fixWitnes
 ) {
     let res = catch_unwind(&mut env, |env| {
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         let corrupt_ranges = db_data.check_witnesses()?;
         if let Some(nel_ranges) = NonEmpty::from_vec(corrupt_ranges) {
@@ -2090,7 +2157,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_putUtxo<'
             u32::try_from(index).map_err(|_| anyhow!("Invalid UTXO output index: {}", index))?;
 
         let script_pubkey = Script(script::Code(utils::java_bytes_to_rust(env, &script)?));
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         let output = WalletTransparentOutput::from_parts(
             OutPoint::new(*txid.as_ref(), index),
@@ -2099,7 +2166,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_putUtxo<'
                     .map_err(|_| anyhow!("Invalid UTXO value"))?,
                 script_pubkey,
             },
-            Some(BlockHeight::from(height as u32)),
+            Some(
+                BlockHeight::try_from(height)
+                    .map_err(|_| anyhow!("Invalid block height: {}", height))?,
+            ),
             // This JNI entry point has no account context to attribute the UTXO to.
             None,
             None,
@@ -2130,7 +2200,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_decryptAn
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.decryptAndStoreTransaction").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let tx_bytes = utils::java_bytes_to_rust(env, &tx)?;
         // The consensus branch ID passed in here does not matter:
         // - v4 and below cache it internally, but all we do with this transaction while
@@ -2164,7 +2234,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransa
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.setTransactionStatus").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let txid = parse_txid(env, txid_bytes)?;
         let status = match status {
             -2 => TransactionStatus::TxidNotRecognized,
@@ -2178,6 +2248,85 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransa
     });
 
     unwrap_exc_or(&mut env, res, ())
+}
+
+/// Marks a transaction the wallet knows about as trusted or untrusted (ZIP 315).
+///
+/// The outputs of a trusted transaction become spendable after the policy's `trusted` number of
+/// confirmations (3 by default) instead of its `untrusted` one (10 by default), even when the
+/// transaction was not created by this wallet. This only updates an existing `transactions` row:
+/// store the transaction first, e.g. with `decryptAndStoreTransaction`, which stores nothing for a
+/// transaction that does not involve this wallet. A transaction not found among the wallet's
+/// stored transactions throws rather than succeeding with nothing recorded, so a normal return
+/// always means the status was set; see `set_trust_of_stored_transaction` for what "found" covers.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransactionTrust<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    txid_bytes: JByteArray<'local>,
+    trusted: jboolean,
+    network_id: jint,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.setTransactionTrust").entered();
+        let network = parse_network(network_id)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
+        let txid = parse_txid(env, txid_bytes)?;
+
+        set_trust_of_stored_transaction(&mut db_data, txid, trusted != JNI_FALSE)
+    });
+
+    unwrap_exc_or(&mut env, res, ())
+}
+
+/// Sets the trust status of a transaction this wallet has stored, failing when it has not.
+///
+/// `WalletWrite::set_tx_trust` is an update that succeeds without touching a row when the
+/// transaction is unknown, and `decrypt_and_store_transaction` stores nothing for a transaction
+/// that does not involve the wallet. Checking first is what lets a caller tell "trusted" apart from
+/// "there was nothing to trust".
+///
+/// The check is `WalletRead::get_transaction`, which `WalletRead` offers as the only lookup of a
+/// `transactions` row by txid that also covers unmined transactions (`get_tx_height` answers `None`
+/// for those as well as for unknown ones). It reads more than whether the row exists, so it is
+/// narrower than "the row exists" in two cases, both of which fail here although `set_tx_trust`
+/// would have updated the row:
+///
+/// - a row whose raw transaction bytes were never stored, such as a mined transaction found by
+///   block scanning and not yet enhanced, is reported as not found;
+/// - an unmined row whose expiry height is 0 cannot be parsed, because no consensus branch can be
+///   chosen for it, and the lookup errors.
+///
+/// Neither arises after `decrypt_and_store_transaction`, which writes the raw bytes and the
+/// transaction's own expiry height, for a transaction this SDK builds, whose expiry height is
+/// never 0; that store-then-trust sequence is how `recordTrustedTransaction` calls this.
+fn set_trust_of_stored_transaction<W>(
+    db_data: &mut W,
+    txid: TxId,
+    trusted: bool,
+) -> anyhow::Result<()>
+where
+    W: WalletRead + WalletWrite,
+    <W as WalletRead>::Error: std::fmt::Display,
+{
+    let stored = db_data
+        .get_transaction(txid)
+        .map_err(|e| anyhow!("Error looking up txid {}: {}", txid, e))?
+        .is_some();
+    if !stored {
+        return Err(anyhow!(
+            "Transaction {} was not found in this wallet's stored transactions; its trust status \
+             was not set",
+            txid
+        ));
+    }
+
+    db_data
+        .set_tx_trust(txid, trusted)
+        .map_err(|e| anyhow!("Error setting the trust status of txid {}: {}", txid, e))
 }
 
 fn zip317_helper<DbT>(
@@ -2215,7 +2364,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.proposeTransfer").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
         let payment_uri = utils::java_string_to_rust(env, &payment_uri)?;
 
@@ -2264,7 +2413,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.proposeTransfer").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
         let to = utils::java_string_to_rust(env, &to)?;
         let value = Zatoshis::from_nonnegative_i64(value)
@@ -2328,7 +2477,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.proposeShielding").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
         let shielding_threshold = Zatoshis::from_nonnegative_i64(shielding_threshold)
             .map_err(|_| anyhow!("Invalid shielding threshold, out of range"))?;
@@ -2491,6 +2640,72 @@ where
     anyhow!("{}: {}", context, e)
 }
 
+/// Returns the [`OvkPolicy`] selected over JNI: the account's OVK, or none at all.
+fn ovk_policy_from_jni(discard_ovk: jboolean) -> OvkPolicy {
+    if discard_ovk == JNI_FALSE {
+        OvkPolicy::Sender
+    } else {
+        OvkPolicy::Discard
+    }
+}
+
+/// Builds the transactions of `proposal`, loading the Sapling parameters only when the
+/// proposal has a Sapling component (see [`proving::proposal_requires_sapling_proofs`]).
+#[allow(clippy::too_many_arguments)]
+fn create_transactions_for_proposal(
+    env: &mut JNIEnv,
+    db_data: &mut WalletDb<rusqlite::Connection, Network, SystemClock, SystemRng>,
+    network: &Network,
+    proposal: &zcash_client_backend::proposal::Proposal<
+        StandardFeeRule,
+        zcash_client_sqlite::ReceivedNoteId,
+    >,
+    usk: UnifiedSpendingKey,
+    ovk_policy: OvkPolicy,
+    spend_params: JString,
+    output_params: JString,
+) -> anyhow::Result<NonEmpty<TxId>> {
+    let spending_keys = wallet::SpendingKeys::from_unified_spending_key(usk);
+    let txids = if proving::proposal_requires_sapling_proofs(proposal) {
+        let spend_params = path_from_jni(env, spend_params)?;
+        let output_params = path_from_jni(env, output_params)?;
+        let prover = LocalTxProver::new(&spend_params, &output_params);
+        create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
+            db_data,
+            network,
+            &SystemClock,
+            &mut system_rng(),
+            &prover,
+            &prover,
+            &spending_keys,
+            ovk_policy,
+            proposal,
+            None,
+        )
+    } else {
+        let prover = proving::NoSaplingProver;
+        create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
+            db_data,
+            network,
+            &SystemClock,
+            &mut system_rng(),
+            &prover,
+            &prover,
+            &spending_keys,
+            ovk_policy,
+            proposal,
+            None,
+        )
+    };
+    txids.map_err(|e| map_proposal_error(env, "Error while creating transactions", e))
+}
+
+/// Creates the transactions of the given proposal and stores them in the wallet.
+///
+/// `discard_ovk` selects [`OvkPolicy::Discard`] instead of [`OvkPolicy::Sender`]: the outputs
+/// are then not recoverable with the account's outgoing viewing key, so nobody holding the
+/// spending key can later learn their recipients. The Sapling parameter paths are read only
+/// when the proposal spends or creates a Sapling note.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createProposedTransactions<
     'local,
@@ -2502,33 +2717,29 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
     usk: JByteArray<'local>,
     spend_params: JString<'local>,
     output_params: JString<'local>,
+    discard_ovk: jboolean,
     network_id: jint,
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.createProposedTransaction").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let usk = decode_usk(env, usk)?;
-        let spend_params = path_from_jni(env, spend_params)?;
-        let output_params = path_from_jni(env, output_params)?;
-
-        let prover = LocalTxProver::new(&spend_params, &output_params);
 
         let proposal = Proposal::decode(utils::java_bytes_to_rust(env, &proposal)?.as_slice())
             .map_err(|e| anyhow!("Invalid proposal: {}", e))?
             .try_into_standard_proposal(&network, &db_data)?;
 
-        let txids = create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
+        let txids = create_transactions_for_proposal(
+            env,
             &mut db_data,
             &network,
-            &prover,
-            &prover,
-            &wallet::SpendingKeys::from_unified_spending_key(usk),
-            OvkPolicy::Sender,
             &proposal,
-            None,
-        )
-        .map_err(|e| map_proposal_error(env, "Error while creating transactions", e))?;
+            usk,
+            ovk_policy_from_jni(discard_ovk),
+            spend_params,
+            output_params,
+        )?;
 
         Ok(
             utils::rust_vec_to_java(env, txids.into(), "[B", |env, txid| {
@@ -2536,6 +2747,98 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
             })?
             .into_raw(),
         )
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Returns `true` if creating the transactions of the given proposal needs the Sapling
+/// parameter files, which is the case only when it spends or creates a Sapling note.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposalRequiresSaplingProofs<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    proposal: JByteArray<'local>,
+    network_id: jint,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.proposalRequiresSaplingProofs").entered();
+        let network = parse_network(network_id)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
+
+        let proposal = Proposal::decode(utils::java_bytes_to_rust(env, &proposal)?.as_slice())
+            .map_err(|e| anyhow!("Invalid proposal: {}", e))?
+            .try_into_standard_proposal(&network, &db_data)?;
+
+        Ok(if proving::proposal_requires_sapling_proofs(&proposal) {
+            JNI_TRUE
+        } else {
+            JNI_FALSE
+        })
+    });
+    unwrap_exc_or(&mut env, res, JNI_TRUE)
+}
+
+/// The JVM class thrown when a proposal fails because the account cannot cover it. The
+/// `(String)` constructor signature is part of the JNI contract with the Kotlin class.
+const INSUFFICIENT_FUNDS_EXCEPTION_CLASS: &str =
+    "cash/z/ecc/android/sdk/internal/jni/ProposalInsufficientFundsException";
+
+/// Proposes sending the account's entire currently spendable shielded balance to `to`, with
+/// the ZIP 317 fee deducted from it (see [`send_max::propose_send_max`]). When the spendable
+/// value does not exceed the fee, throws `ProposalInsufficientFundsException`, so callers can
+/// tell that case apart without matching message text.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSendMaxTransfer<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    account_uuid: JByteArray<'local>,
+    to: JString<'local>,
+    memo: JByteArray<'local>,
+    network_id: jint,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.proposeSendMaxTransfer").entered();
+        let network = parse_network(network_id)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
+        let account_uuid = account_id_from_jni(env, account_uuid)?;
+        let to = utils::java_string_to_rust(env, &to)?;
+        let to = to
+            .parse::<ZcashAddress>()
+            .map_err(|e| anyhow!("Can't parse recipient address: {}", e))?;
+
+        let memo = utils::java_nullable_bytes_to_rust(env, &memo)?
+            .as_deref()
+            .map(MemoBytes::from_bytes)
+            .transpose()
+            .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
+
+        let proposal = send_max::propose_send_max(&mut db_data, &network, account_uuid, to, memo)
+            .inspect_err(|e| {
+            if e.downcast_ref::<send_max::InsufficientFunds>().is_some() {
+                utils::exception::throw_object(env, INSUFFICIENT_FUNDS_EXCEPTION_CLASS, |env| {
+                    let message = env.new_string(e.to_string())?;
+                    env.new_object(
+                        INSUFFICIENT_FUNDS_EXCEPTION_CLASS,
+                        "(Ljava/lang/String;)V",
+                        &[JValue::Object(&message)],
+                    )
+                });
+            }
+        })?;
+
+        Ok(utils::rust_bytes_to_java(
+            env,
+            Proposal::from_standard_proposal(&proposal)
+                .encode_to_vec()
+                .as_ref(),
+        )?
+        .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -2560,7 +2863,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.createPcztFromProposal").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_id = account_id_from_jni(env, account_uuid)?;
 
         let proposal = Proposal::decode(utils::java_bytes_to_rust(env, &proposal)?.as_slice())
@@ -2571,6 +2874,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
             let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
                 &mut db_data,
                 &network,
+                &SystemClock,
+                &mut system_rng(),
                 account_id,
                 OvkPolicy::Sender,
                 &proposal,
@@ -2702,7 +3007,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
             // version: building a proving key is expensive, and this entry point runs on
             // every ordinary shielded send, not only on migrations.
             prover = prover
-                .create_orchard_proof(cached_orchard_proving_key(circuit_version))
+                .create_orchard_proof(system_rng(), cached_orchard_proving_key(circuit_version))
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_orchard_proof());
@@ -2712,7 +3017,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
                 anyhow!("PCZT requires an Ironwood proof but its consensus branch does not support Ironwood")
             })?;
             prover = prover
-                .create_ironwood_proof(cached_orchard_proving_key(circuit_version))
+                .create_ironwood_proof(system_rng(), cached_orchard_proving_key(circuit_version))
                 .map_err(|e| anyhow!("Failed to create Ironwood proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_ironwood_proof());
@@ -2723,7 +3028,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_addProofs
             let local_prover = LocalTxProver::new(&spend_params, &output_params);
 
             prover = prover
-                .create_sapling_proofs(&local_prover, &local_prover)
+                .create_sapling_proofs(system_rng(), &local_prover, &local_prover)
                 .map_err(|e| anyhow!("Failed to create Sapling proofs for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_sapling_proofs());
@@ -2761,7 +3066,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_extractAn
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.extractAndStoreTxFromPczt").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
 
         let pczt_with_proofs = parse_pczt(env, pczt_with_proofs)
             .map_err(|e| anyhow!("Invalid PCZT-with-proofs: {:?}", e))?;
@@ -2780,6 +3085,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_extractAn
 
         let txid = extract_and_store_transaction_from_pczt::<_, ()>(
             &mut db_data,
+            &SystemClock,
+            &mut system_rng(),
             pczt,
             Some((&spend_vk, &output_vk)),
             Some(&orchard::circuit::VerifyingKey::build(
@@ -2803,7 +3110,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_branchIdF
     let res = panic::catch_unwind(|| {
         let _span = tracing::info_span!("RustBackend.branchIdForHeight").entered();
         let network = parse_network(network_id)?;
-        let branch: BranchId = BranchId::for_height(&network, BlockHeight::from(height as u32));
+        let height = BlockHeight::try_from(height)
+            .map_err(|_| anyhow!("Invalid block height: {}", height))?;
+        let branch: BranchId = BranchId::for_height(&network, height);
         let branch_id: u32 = u32::from(branch);
         debug!(
             "For height {} found consensus branch {:?} with id {}",
@@ -2842,7 +3151,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
         let usk = UnifiedSpendingKey::from_seed(&network, seed.expose_secret(), account)
             .map_err(|e| anyhow!("error generating unified spending key from seed: {:?}", e))?;
 
-        let encoded = SecretVec::new(usk.to_bytes(Era::Orchard));
+        let encoded = usk.to_bytes(Era::Orchard);
         Ok(utils::rust_bytes_to_java(env, encoded.expose_secret())?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
@@ -2877,7 +3186,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
                     .map_err(|e| {
                         anyhow!("error generating unified spending key from seed: {:?}", e)
                     })
-                    .map(|usk| usk.to_unified_full_viewing_key().encode(&network))
+                    .and_then(|usk| encode_ufvk(&usk.to_unified_full_viewing_key(), &network))
             })
             .collect::<Result<_, _>>()?;
 
@@ -2918,7 +3227,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
                 UnifiedAddressRequest::AllAvailableKeys,
             )
             .expect("At least one Unified Address should be derivable");
-        let address_str = ua.encode(&network);
+        let address_str = ua.encode_receiver_preserving(&network);
         let output = env
             .new_string(address_str)
             .expect("Couldn't create Java string!");
@@ -2945,7 +3254,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
         // Derive the default Unified Address (containing the default Sapling payment
         // address that older SDKs used).
         let (ua, _) = ufvk.default_address(UnifiedAddressRequest::AllAvailableKeys)?;
-        let address_str = ua.encode(&network);
+        let address_str = ua.encode_receiver_preserving(&network);
         let output = env
             .new_string(address_str)
             .expect("Couldn't create Java string!");
@@ -2971,7 +3280,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
         let ufvk = usk.to_unified_full_viewing_key();
 
         let output = env
-            .new_string(ufvk.encode(&network))
+            .new_string(encode_ufvk(&ufvk, &network)?)
             .expect("Couldn't create Java string!");
 
         Ok(output.into_raw())
@@ -3040,20 +3349,22 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustDerivationTool.derivePrivateUseMetadataKey").entered();
-        let account_metadata_key_sk = utils::java_bytes_to_rust(env, &account_metadata_key_sk)?;
-        let account_metadata_key_c = utils::java_bytes_to_rust(env, &account_metadata_key_c)?;
+        let account_metadata_key_sk = secret_from_jni(env, account_metadata_key_sk)?;
+        let account_metadata_key_c = secret_from_jni(env, account_metadata_key_c)?;
         let ufvk_string = utils::java_nullable_string_to_rust(env, &ufvk_string)?;
         let private_use_subject = utils::java_bytes_to_rust(env, &private_use_subject)?;
         let network = parse_network(network_id)?;
 
         let account_metadata_key = {
             let sk = account_metadata_key_sk
+                .expose_secret()
                 .as_slice()
                 .try_into()
                 .map_err(|_| anyhow!("Incorrect length for account_metadata_key_sk"))?;
 
             let chain_code = ChainCode::new(
                 account_metadata_key_c
+                    .expose_secret()
                     .as_slice()
                     .try_into()
                     .map_err(|_| anyhow!("Incorrect length for account_metadata_key_c"))?,
@@ -3071,7 +3382,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
             ],
             // For the external subtree, we derive keys from the UFVK's items.
             Some(ufvk_string) => {
-                let (net, ufvk) =
+                let (net, _, ufvk) =
                     unified::Ufvk::decode(&ufvk_string).map_err(|e| anyhow!("{e}"))?;
                 let expected_net = network.network_type();
                 if net != expected_net {
@@ -3449,7 +3760,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_getExchan
         let rate = tor_runtime.runtime().block_on(async {
             tor_runtime
                 .client()
-                .get_latest_zec_to_usd_rate(&exchanges)
+                .get_latest_zec_to_usd_rate(&mut system_rng(), &exchanges)
                 .await
         })?;
 
@@ -3652,7 +3963,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_che
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.checkSingleUseTaddr").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
 
         let lwd_conn = ptr::with_exposed_provenance_mut::<crate::tor::LwdConn>(lwd_conn as usize);
@@ -3787,7 +4098,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_upd
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)
             .map_err(|e| anyhow!("Error while opening data DB: {}", e))?;
 
         let address = match Address::decode(&network, &utils::java_string_to_rust(env, &address)?) {
@@ -3853,7 +4164,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_fet
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)
             .map_err(|e| anyhow!("Error while opening data DB: {}", e))?;
 
         let account_uuid = account_id_from_jni(env, account_uuid)?;
@@ -4059,7 +4370,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOr
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.proposeOrchardToIronwoodMigration").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(env, network, db_data)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
 
         let proposal = crate::migration_send_max::propose_orchard_to_ironwood(
@@ -4081,6 +4392,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOr
 
 #[cfg(test)]
 mod tests {
+    use zcash_client_backend::data_api::{
+        Account as _, MaxSpendMode,
+        testing::{AddressType, TestBuilder, TestState},
+        wallet::{
+            ConfirmationsPolicy, SpendingKeys, create_proposed_transactions,
+            input_selection::LockedInputPolicy, propose_send_max_transfer,
+        },
+    };
+    use zcash_client_backend::{fees::StandardFeeRule, wallet::OvkPolicy};
+    use zcash_client_sqlite::testing::{
+        BlockCache,
+        db::{TestDb, TestDbFactory},
+    };
+    use zcash_keys::address::{Address, UnifiedAddress};
+    use zcash_primitives::block::BlockHash;
+    use zcash_protocol::value::Zatoshis;
+
     use super::*;
 
     #[test]
@@ -4125,5 +4453,165 @@ mod tests {
             "did not expect the marker prefix, got {mapped_msg:?}"
         );
         assert!(mapped_msg.starts_with("Error while initializing accounts: "));
+    }
+
+    /// A transaction the wallet never stored, such as one `decrypt_and_store_transaction` skipped
+    /// because it does not involve the wallet, must not report its trust as set: the update
+    /// underneath would succeed on zero rows.
+    ///
+    /// The wallet lives in memory, so a failing assertion leaves no database file behind.
+    #[test]
+    fn trusting_a_transaction_the_wallet_did_not_store_fails() {
+        let conn = rusqlite::Connection::open_in_memory().expect("opens an in-memory database");
+        rusqlite::vtab::array::load_module(&conn).expect("loads the SQLite array module");
+        let mut db = WalletDb::from_connection(conn, TestNetwork, SystemClock, system_rng());
+        init_wallet_db(&mut db, None).expect("initializes the wallet schema");
+
+        let txid = TxId::from_bytes([0x5a; 32]);
+        let error = set_trust_of_stored_transaction(&mut db, txid, true)
+            .expect_err("an unknown transaction cannot be trusted")
+            .to_string();
+
+        assert!(
+            error.contains("was not found in this wallet's stored transactions"),
+            "unexpected error: {error}"
+        );
+        assert!(db.get_transaction(txid).unwrap().is_none());
+    }
+
+    /// Trust on a stored, unmined transaction that involves the wallet, the way
+    /// `recordTrustedTransaction` sets it: `decrypt_and_store_transaction` with no mined height,
+    /// then `set_trust_of_stored_transaction`.
+    ///
+    /// Two synthetic in-memory wallets share the test seed under different ZIP 32 accounts. The
+    /// sender, standing in for a gift card's wallet, holds a scanned Orchard note and sends all of
+    /// it to the receiver's Orchard address. The receiver, standing in for the redemption's
+    /// destination, has scanned only an empty block of its own, which gives it the chain tip that
+    /// storing an unmined transaction needs, so it learns about the transaction only from its raw
+    /// bytes.
+    #[test]
+    fn trusting_a_stored_unmined_transaction_that_involves_the_wallet_sets_its_trust() {
+        let mut receiver = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_block_cache(BlockCache::new())
+            .with_account_from_sapling_activation(BlockHash([0; 32]))
+            .set_account_index(zip32::AccountId::const_from_u32(1))
+            .build();
+        let receiver_address = {
+            let fvk = orchard::keys::FullViewingKey::from(
+                receiver.test_account().unwrap().usk().orchard(),
+            );
+            Address::from(
+                UnifiedAddress::from_receivers(
+                    Some(fvk.address_at(0u32, orchard::keys::Scope::External)),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            )
+            .to_zcash_address(receiver.network())
+        };
+        let (receiver_tip, _) = receiver.generate_empty_block();
+        receiver.scan_cached_blocks(receiver_tip, 1);
+
+        let mut sender = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_block_cache(BlockCache::new())
+            .with_account_from_sapling_activation(BlockHash([0; 32]))
+            .build();
+        let sender_fvk =
+            orchard::keys::FullViewingKey::from(sender.test_account().unwrap().usk().orchard());
+        let (funded_at, _, _) = sender.generate_next_block(
+            &sender_fvk,
+            AddressType::DefaultExternal,
+            Zatoshis::const_from_u64(100_000),
+        );
+        for _ in 0..10 {
+            sender.generate_empty_block();
+        }
+        sender.scan_cached_blocks(funded_at, 11);
+
+        let network = *sender.network();
+        let account = sender.test_account().unwrap().id();
+        let proposal = propose_send_max_transfer::<_, _, _, std::convert::Infallible>(
+            sender.wallet_mut(),
+            &network,
+            account,
+            &crate::send_max::SEND_MAX_POOLS,
+            &StandardFeeRule::Zip317,
+            receiver_address,
+            None,
+            MaxSpendMode::MaxSpendable,
+            ConfirmationsPolicy::default(),
+            &LockedInputPolicy::Exclude,
+            None,
+        )
+        .expect("proposes sending the sender's Orchard note");
+        let usk = sender.test_account().unwrap().usk().clone();
+        let clock = sender.clock().clone();
+        let txids = create_proposed_transactions::<
+            _,
+            _,
+            std::convert::Infallible,
+            _,
+            std::convert::Infallible,
+            _,
+        >(
+            sender.wallet_mut(),
+            &network,
+            &clock,
+            &mut system_rng(),
+            &proving::NoSaplingProver,
+            &proving::NoSaplingProver,
+            &SpendingKeys::from_unified_spending_key(usk),
+            OvkPolicy::Sender,
+            &proposal,
+            None,
+        )
+        .expect("builds the Orchard-only transaction");
+        assert_eq!(txids.len(), 1);
+        let txid = *txids.first();
+
+        let mut raw = vec![];
+        sender
+            .wallet()
+            .get_transaction(txid)
+            .unwrap()
+            .expect("the sender stored the transaction it created")
+            .write(&mut raw)
+            .unwrap();
+        let tx = Transaction::read(&raw[..], BranchId::Sapling).expect("parses as the JNI does");
+
+        assert!(receiver.wallet().get_transaction(txid).unwrap().is_none());
+        decrypt_and_store_transaction(&network, receiver.wallet_mut().db_mut(), &tx, None)
+            .expect("stores the transaction it can decrypt");
+
+        let row = |receiver: &TestState<_, TestDb, _>| -> (Option<u32>, Option<i64>) {
+            receiver
+                .wallet()
+                .conn()
+                .query_row(
+                    "SELECT mined_height, trust_status FROM transactions WHERE txid = ?",
+                    [txid.as_ref()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("the receiver stored the transaction")
+        };
+        assert_eq!(
+            row(&receiver),
+            (None, None),
+            "stored unmined, with no trust status"
+        );
+
+        set_trust_of_stored_transaction(receiver.wallet_mut().db_mut(), txid, true)
+            .expect("trusts the stored transaction");
+
+        assert_eq!(
+            row(&receiver),
+            (None, Some(1)),
+            "trusted, and still unmined"
+        );
     }
 }

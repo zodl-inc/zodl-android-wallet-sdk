@@ -15,4 +15,6 @@ data class AccountCreateSetup(
     val accountName: String,
     val keySource: String?,
     val seed: FirstClassByteArray,
-)
+) {
+    override fun toString() = "AccountCreateSetup(accountName=$accountName, keySource=$keySource, seed=***)"
+}

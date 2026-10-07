@@ -32,7 +32,20 @@ data class SlipstreamTransactionRow(
     val isShielding: Boolean,
     val isExpiredUnmined: Long?,
     /** How the row classifies against ZIP 318 — `Zip318Kind.new(this)` decodes the raw code. */
-    val zip318Kind: Int
+    val zip318Kind: Int,
+    /** `v_transactions.spent_note_count`: how many of the wallet's notes this transaction spends. */
+    val spentNoteCount: Int,
+    /**
+     * `v_transactions.pool_crossing_value`: the value that crossed shielded pools when this is a
+     * wallet-internal pool-crossing transfer, else `null`.
+     */
+    val poolCrossingValue: Long?,
+    /**
+     * `transactions.trust_status` as `v_transactions` projects it: `1` = the wallet explicitly
+     * trusts this transaction (ZIP 315), `0` or `null` = not trusted. Kept `Long?` like
+     * [isExpiredUnmined] so SQL NULL survives the boundary; map with `== 1L`.
+     */
+    val trustStatus: Long?
 )
 
 /**

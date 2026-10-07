@@ -17,6 +17,7 @@ import org.junit.Test
 import org.mockito.Mockito.inOrder
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
+import kotlin.test.assertContentEquals
 
 /**
  * `SDK_ADAPTER_PLAN.md` T8's "failing test first": pins the store-first law - `createProposedTransactions`
@@ -41,11 +42,12 @@ class SlipstreamSpendServiceOrderingTest {
             val proposal = Proposal.fromUnsafe(proposalUnsafe)
 
             val usk = mock(UnifiedSpendingKey::class.java)
-            val uskBytes = ByteArray(0)
+            val uskBytes = byteArrayOf(5, 6, 7, 8)
             `when`(usk.copyBytes()).thenReturn(uskBytes)
 
             val txId = byteArrayOf(1, 2, 3)
             `when`(backend.createProposedTransactions(proposalUnsafe, uskBytes)).thenReturn(listOf(txId))
+            `when`(backend.proposalRequiresSaplingProofs(proposalUnsafe)).thenReturn(true)
 
             val rawBytes = byteArrayOf(9, 9, 9)
             val rawTransaction = FirstClassByteArray(rawBytes)
@@ -67,6 +69,7 @@ class SlipstreamSpendServiceOrderingTest {
 
             kotlin.test.assertEquals(1, results.size)
             kotlin.test.assertTrue(ensureCalled)
+            assertContentEquals(ByteArray(uskBytes.size), uskBytes, "the transient usk copy must be wiped after use")
 
             val order = inOrder(engine, walletClient)
             order.verify(engine).notifyTxChange()

@@ -4,9 +4,11 @@ package com.zodl.slipstream.internal.spend
 
 import cash.z.ecc.android.sdk.Broadcaster
 import cash.z.ecc.android.sdk.internal.Backend
+import cash.z.ecc.android.sdk.internal.ext.clearContents
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
@@ -44,14 +46,35 @@ internal class SlipstreamBroadcaster(
     private val engine: SlipstreamEngine,
     private val planStore: SubmitPlanStore,
     private val saplingParamsDir: File,
-    private val transactionReader: SlipstreamTransactionReader
+    private val transactionReader: SlipstreamTransactionReader,
+    /**
+     * Production: `{ SaplingParams.ensureDownloaded(saplingParamsDir) }`. Injected so tests never
+     * trigger a real download.
+     */
+    private val ensureSaplingParams: suspend () -> Unit = { SaplingParams.ensureDownloaded(saplingParamsDir) }
 ) : Broadcaster {
+    /**
+     * Fetches the Sapling parameters first only when [proposal] needs Sapling proofs (see
+     * [ensureSaplingParamsFor]): a gift card claim or any other Orchard-only send never downloads
+     * them.
+     */
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
     ): List<CreatedTransaction> {
-        SaplingParams.ensureDownloaded(saplingParamsDir)
-        val txIds = backend.createProposedTransactions(proposal.toUnsafe(), usk.copyBytes())
+        ensureSaplingParamsFor(backend, proposal, ensureSaplingParams)
+        val uskBytes = usk.copyBytes()
+        val txIds =
+            try {
+                backend.createProposedTransactions(
+                    proposal.toUnsafe(),
+                    uskBytes,
+                    discardOvk = ovkPolicy == OvkPolicy.Discard
+                )
+            } finally {
+                uskBytes.clearContents()
+            }
         val created = txIds.map { txId -> storeAsAwaitingSubmission(FirstClassByteArray(txId)) }
         engine.notifyTxChange()
         return created

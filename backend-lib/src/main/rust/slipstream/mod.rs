@@ -419,11 +419,12 @@ fn open_handle(
 /// any `Err` as "no retention floor" (log + fall back to `None`) — a wallet DB read glitch here
 /// must never block a sync session from starting.
 fn min_pending_migration_anchor_boundary(
+    rng: crate::SystemRng,
     db_path: &str,
     network: Network,
 ) -> anyhow::Result<Option<u32>> {
     let path = std::path::Path::new(db_path);
-    min_pending_anchor_boundary(path, network)
+    min_pending_anchor_boundary(rng, path, network)
 }
 
 /// The wallet's max scanned block height, for the always-on anchor-retention baseline below —
@@ -451,6 +452,7 @@ fn max_scanned_height(db_path: &str) -> anyhow::Result<Option<u32>> {
 /// performs the quiescence drains, then spawns `run_session` under the panic
 /// supervisor. Behavior matches the iOS/macOS reference wrapper.
 fn start_session(
+    rng: crate::SystemRng,
     handle: &mut JniSlipstreamHandle,
     ufvk: Option<String>,
     birthday: u64,
@@ -506,7 +508,7 @@ fn start_session(
     }
     let pending_floor = db_path_str
         .map_or(Ok(None), |path| {
-            min_pending_migration_anchor_boundary(path, h.network)
+            min_pending_migration_anchor_boundary(rng, path, h.network)
         })
         .unwrap_or_else(|e| {
             tracing::warn!(
@@ -727,7 +729,7 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_start<'local>(
         let tor_dir = java_nullable_string_to_rust(env, &tor_dir)?;
         let birthday = u64::try_from(birthday_height).unwrap_or(0);
         let h = unsafe { handle_from_jlong(handle) }?;
-        start_session(h, ufvk, birthday, tor_dir)?;
+        start_session(crate::system_rng(), h, ufvk, birthday, tor_dir)?;
         Ok(JNI_TRUE)
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)

@@ -178,6 +178,16 @@ class CompactBlockProcessor internal constructor(
      */
     var onSetupErrorListener: ((Throwable) -> Boolean)? = null
 
+    /**
+     * Whether [verifySetup] treats a failure to reach the server as a disconnection rather than a setup error:
+     * when `true`, it only reports [State.Disconnected] and lets the processor's own loop keep retrying, so a
+     * transient failure at startup is not raised as a critical error. Such a failure is not a
+     * [CompactBlockProcessorException], so without this it surfaces as a critical error whatever
+     * [onSetupErrorListener] would decide. Set before the processor starts; the server's network and branch are
+     * then not validated by [verifySetup].
+     */
+    internal var isSetupDisconnectionTolerated: Boolean = false
+
     private val consecutiveChainErrors = AtomicInteger(0)
 
     private val consecutiveBlockProcessingErrors = AtomicInteger(0)
@@ -1005,7 +1015,11 @@ class CompactBlockProcessor internal constructor(
                 }.onFailure {
                     Twig.error { "Unable to obtain server info due to: ${it.message}" }
                 }.getOrElse {
-                    reportSetupException(it as CompactBlockProcessorException)
+                    if (isSetupDisconnectionTolerated && it !is CancellationException) {
+                        Twig.warn { "Server unreachable while verifying setup; retrying as a disconnection" }
+                    } else {
+                        reportSetupException(it as CompactBlockProcessorException)
+                    }
                     setState(State.Disconnected)
                     return
                 }.let { it as LightWalletEndpointInfoUnsafe }

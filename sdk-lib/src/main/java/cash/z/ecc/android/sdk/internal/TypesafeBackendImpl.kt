@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.RustLayerException
+import cash.z.ecc.android.sdk.internal.ext.clearContents
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.JniSubtreeRoot
 import cash.z.ecc.android.sdk.internal.model.RewindResult
@@ -20,8 +21,11 @@ import cash.z.ecc.android.sdk.model.AccountUsk
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.MemoContent
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
@@ -45,8 +49,8 @@ internal class TypesafeBackendImpl(
         seed: FirstClassByteArray,
         treeState: TreeState,
         recoverUntil: BlockHeight?
-    ): AccountUsk =
-        AccountUsk.new(
+    ): AccountUsk {
+        val jniAccountUsk =
             backend.createAccount(
                 accountName = accountName,
                 keySource = keySource,
@@ -54,7 +58,12 @@ internal class TypesafeBackendImpl(
                 treeState = treeState.encoded,
                 recoverUntil = recoverUntil?.value
             )
-        )
+        return try {
+            AccountUsk.new(jniAccountUsk)
+        } finally {
+            jniAccountUsk.bytes.clearContents()
+        }
+    }
 
     override suspend fun importAccountUfvk(
         recoverUntil: BlockHeight?,
@@ -147,15 +156,39 @@ internal class TypesafeBackendImpl(
                 )
             }
 
+    override suspend fun proposeSendMaxTransfer(
+        account: Account,
+        to: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal =
+        Proposal.fromUnsafe(
+            backend.proposeSendMaxTransfer(
+                account.accountUuid.value,
+                to.encoding,
+                memo?.asMemoBytes()?.bytes?.byteArray
+            )
+        )
+
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
-    ): List<FirstClassByteArray> =
-        backend
-            .createProposedTransactions(
-                proposal.toUnsafe(),
-                usk.copyBytes()
-            ).map { FirstClassByteArray(it) }
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
+    ): List<FirstClassByteArray> {
+        val uskBytes = usk.copyBytes()
+        return try {
+            backend
+                .createProposedTransactions(
+                    proposal.toUnsafe(),
+                    uskBytes,
+                    discardOvk = ovkPolicy == OvkPolicy.Discard
+                ).map { FirstClassByteArray(it) }
+        } finally {
+            uskBytes.clearContents()
+        }
+    }
+
+    override suspend fun proposalRequiresSaplingProofs(proposal: Proposal): Boolean =
+        backend.proposalRequiresSaplingProofs(proposal.toUnsafe())
 
     override suspend fun createPcztFromProposal(
         account: Account,
@@ -380,6 +413,14 @@ internal class TypesafeBackendImpl(
     ) = backend.setTransactionStatus(
         txId = txId,
         status = status.toPrimitiveValue()
+    )
+
+    override suspend fun setTransactionTrust(
+        txId: ByteArray,
+        trusted: Boolean
+    ) = backend.setTransactionTrust(
+        txId = txId,
+        trusted = trusted
     )
 
     override fun getSaplingReceiver(ua: String): String? = backend.getSaplingReceiver(ua)
