@@ -32,9 +32,10 @@ android {
     sourceSets.getByName("main") {
         java.srcDir(if (isSlipstreamEnabled) "src/engineSlipstream/java" else "src/engineDefault/java")
     }
-    // The unit tests of the selected engine's sources follow the same switch.
-    sourceSets.getByName("test") {
-        java.srcDir(if (isSlipstreamEnabled) "src/testEngineSlipstream/java" else "src/testEngineDefault/java")
+    if (isSlipstreamEnabled) {
+        sourceSets.getByName("test") {
+            java.srcDir("src/testEngineSlipstream/java")
+        }
     }
 
     defaultConfig {

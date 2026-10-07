@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.exception.GiftCardException
 import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.internal.SynchronizerEngineFactory
 import cash.z.ecc.android.sdk.internal.engineSynchronizerFactory
+import cash.z.ecc.android.sdk.internal.requireNotMainWalletAlias
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -91,7 +92,9 @@ object GiftCardRedeemers {
      *
      * @param context any context; its application context is used.
      * @return true when the engine reports the card wallet's data gone.
-     * @throws IllegalArgumentException if [alias] is not a valid alias, or is the main wallet's.
+     * @throws IllegalArgumentException if [alias] is not a valid alias, or addresses the main
+     * wallet's files: [ZcashSdk.DEFAULT_ALIAS], also with trailing underscores, or the legacy
+     * `ZcashSdk`. Nothing is touched then.
      * @throws IllegalStateException if the card wallet is open.
      */
     suspend fun erase(
@@ -107,14 +110,14 @@ object GiftCardRedeemers {
         alias: String,
         factory: SynchronizerEngineFactory
     ): Boolean {
-        require(alias != ZcashSdk.DEFAULT_ALIAS) { "A gift card wallet never uses the default wallet alias" }
+        requireNotMainWalletAlias(alias, "A gift card wallet never uses the default wallet alias")
         return factory.eraseHelperWallet(context.applicationContext, network, alias)
     }
 }
 
 /**
  * The [GiftCardWallets] of [GiftCardRedeemers]: the card wallet is opened and erased by [factory]'s
- * engine, with [engineMemoryFraction] of the device's memory; the fee probe's address and the
+ * engine, telling it the device has [engineMemoryFraction] of its memory; the fee probe's address and the
  * spending key are engine-independent and come from [GiftCardWallets.Default].
  */
 internal class EngineGiftCardWallets(
@@ -166,8 +169,12 @@ internal class EngineGiftCardWallets(
 
     companion object {
         /**
-         * The share of the device's memory a card wallet's engine plans with: half, so that it
-         * never gets more than the main wallet's engine, which runs beside it with the whole device.
+         * The share of the device's memory a card wallet's engine is told the device has: half. The
+         * Slipstream engine uses that figure only to switch to its smaller, fixed budgets below its
+         * 3 GiB small-device threshold, so the card wallet's engine takes those smaller budgets on
+         * devices below 6 GiB, where the main wallet's engine (told the whole device) may still take
+         * its defaults, and the same default budgets as the main wallet's on larger devices; never
+         * larger ones.
          */
         const val CARD_ENGINE_MEMORY_FRACTION = 0.5f
     }

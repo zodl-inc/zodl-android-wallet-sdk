@@ -17,6 +17,7 @@ import cash.z.ecc.android.sdk.model.GiftCard
 import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
+import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.RecipientAddress
@@ -40,7 +41,8 @@ import kotlin.test.assertIs
  * The card wallet: [status], one account holding [spendable] and [pending], [history]
  * transactions, one proposal paying [fee] and sending [sent] (by default [spendable] minus
  * [fee]), and whatever [submitResult] says about each transaction. [setupError] is the setup
- * failure it has latched, if any.
+ * failure it has latched, if any, [accounts] its account list (`null` while not loaded yet, as
+ * [Synchronizer.accountsFlow] reports it), and [progress] its sync progress.
  */
 @Suppress("LongParameterList")
 internal class FakeCardWallet(
@@ -66,12 +68,15 @@ internal class FakeCardWallet(
     override var onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null
     override var onProcessorErrorHandler: ((Throwable?) -> Boolean)? = null
     override val setupError: MutableStateFlow<Throwable?> = MutableStateFlow(null)
+    val accounts: MutableStateFlow<List<Account>?> = MutableStateFlow(listOf(AccountFixture.new()))
+    override val accountsFlow: Flow<List<Account>?> get() = accounts
+    override val progress: MutableStateFlow<PercentDecimal> = MutableStateFlow(PercentDecimal.ZERO_PERCENT)
     override val walletBalances: MutableStateFlow<Map<AccountUuid, AccountBalance>?> =
         MutableStateFlow(
             mapOf(AccountFixture.new().accountUuid to cardAccountBalance(available = spendable, pending = pending))
         )
 
-    override suspend fun getAccounts(): List<Account> = listOf(AccountFixture.new())
+    override suspend fun getAccounts(): List<Account> = accounts.value.orEmpty()
 
     override suspend fun getTransactions(accountUuid: AccountUuid): Flow<List<TransactionOverview>> =
         flowOf(List(history) { mock(TransactionOverview::class.java) })

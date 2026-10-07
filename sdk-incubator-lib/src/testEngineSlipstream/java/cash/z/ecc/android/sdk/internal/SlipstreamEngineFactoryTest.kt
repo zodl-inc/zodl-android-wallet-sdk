@@ -106,7 +106,9 @@ class SlipstreamEngineFactoryTest {
                     }
                 )
 
-            assertFailsWith<IllegalArgumentException> { openHelper(factory, alias = ZcashSdk.DEFAULT_ALIAS) }
+            MAIN_WALLET_ALIASES.forEach { alias ->
+                assertFailsWith<IllegalArgumentException>(alias) { openHelper(factory, alias = alias) }
+            }
 
             assertTrue(requests.isEmpty())
         }
@@ -166,12 +168,28 @@ class SlipstreamEngineFactoryTest {
     fun theMainWalletIsNeverErasedAsAHelperWallet() =
         runBlocking<Unit> {
             val context = mock(Context::class.java)
+            val erased = mutableListOf<String>()
+            val newSynchronizer: suspend (SlipstreamWalletRequest) -> CloseableSynchronizer = { error("not opened") }
+            val injected =
+                SlipstreamEngineFactory(
+                    newSynchronizer = newSynchronizer,
+                    eraseHelperAlias = { _, _, alias ->
+                        erased += alias
+                        true
+                    }
+                )
 
-            assertFailsWith<IllegalArgumentException> {
-                SlipstreamEngineFactory().eraseHelperWallet(context, ZcashNetwork.Mainnet, ZcashSdk.DEFAULT_ALIAS)
+            MAIN_WALLET_ALIASES.forEach { alias ->
+                assertFailsWith<IllegalArgumentException>(alias) {
+                    SlipstreamEngineFactory().eraseHelperWallet(context, ZcashNetwork.Mainnet, alias)
+                }
+                assertFailsWith<IllegalArgumentException>(alias) {
+                    injected.eraseHelperWallet(context, ZcashNetwork.Mainnet, alias)
+                }
             }
 
             verifyNoInteractions(context)
+            assertTrue(erased.isEmpty())
         }
 
     private suspend fun openHelper(
@@ -204,6 +222,10 @@ class SlipstreamEngineFactoryTest {
         const val BIRTHDAY = 3_000_000L
         const val HALF = 0.5f
         const val SEED_BYTES = 64
+
+        /** Every spelling of an alias that addresses the main wallet's files. */
+        val MAIN_WALLET_ALIASES =
+            listOf(ZcashSdk.DEFAULT_ALIAS, "${ZcashSdk.DEFAULT_ALIAS}_", "ZcashSdk", "ZCASHSDK_")
         val ENDPOINT = LightWalletEndpoint("localhost", 9067, false)
     }
 }

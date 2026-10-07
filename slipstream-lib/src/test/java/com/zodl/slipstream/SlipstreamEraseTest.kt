@@ -18,6 +18,7 @@ import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -29,7 +30,9 @@ import kotlin.test.assertTrue
  * temporary no-backup directory and a mocked [Context]: the wallet's `data.sqlite3`, `-wal` and `-shm` and its
  * submit-plan preferences go, every other alias' files and preferences (the main wallet's in particular) stay, an
  * active instance refuses the erase, and the legacy layout's deletion runs only for
- * [SlipstreamSynchronizer.Companion.eraseAlias], under the same guard.
+ * [SlipstreamSynchronizer.Companion.eraseAlias], under the same guard, only when the legacy layout's own files exist,
+ * and without ever failing the erase. [SlipstreamSynchronizer.Companion.eraseAlias] refuses every spelling of the
+ * main wallet's alias before touching any file.
  */
 class SlipstreamEraseTest {
     private lateinit var noBackupRoot: File
@@ -122,16 +125,81 @@ class SlipstreamEraseTest {
     fun eraseAliasNeverErasesTheMainWallet() =
         runBlocking<Unit> {
             val main = walletFiles(ZcashSdk.DEFAULT_ALIAS)
+            val legacyErases = AtomicInteger(0)
 
-            assertFailsWith<IllegalArgumentException> {
-                SlipstreamSynchronizer.eraseAlias(context, NETWORK, ZcashSdk.DEFAULT_ALIAS)
-            }
-            assertFailsWith<IllegalArgumentException> {
-                SlipstreamSynchronizer.eraseAlias(context, NETWORK, "not a valid alias!")
+            (MAIN_WALLET_ALIASES + "not a valid alias!").forEach { alias ->
+                assertFailsWith<IllegalArgumentException>(alias) {
+                    SlipstreamSynchronizer.eraseAlias(context, NETWORK, alias) { legacyErases.incrementAndGet() }
+                }
             }
 
-            main.forEach { assertTrue(it.exists()) }
+            main.forEach { assertTrue(it.exists(), "${it.name} must be kept") }
+            verify(context, never()).deleteSharedPreferences(preferencesOf(ZcashSdk.DEFAULT_ALIAS))
+            verify(context, never()).deleteSharedPreferences(preferencesOf("${ZcashSdk.DEFAULT_ALIAS}_"))
+            assertEquals(0, legacyErases.get())
         }
+
+    @Test
+    fun theLegacyLayoutIsErasedOnlyWhenItsFilesExist() =
+        runBlocking<Unit> {
+            walletFiles(CARD_ALIAS)
+            val legacyErases = AtomicInteger(0)
+
+            assertTrue(
+                SlipstreamSynchronizer.eraseAlias(context, NETWORK, CARD_ALIAS) { legacyErases.incrementAndGet() }
+            )
+            assertEquals(0, legacyErases.get(), "a wallet only this engine ran has no legacy layout to erase")
+
+            DataDbPath.legacyOnlyFiles(noBackupRoot, CARD_ALIAS, NETWORK).forEach { legacyFile ->
+                walletFiles(CARD_ALIAS)
+                legacyFile.writeText("x")
+                legacyErases.set(0)
+
+                assertTrue(
+                    SlipstreamSynchronizer.eraseAlias(context, NETWORK, CARD_ALIAS) { legacyErases.incrementAndGet() }
+                )
+
+                assertEquals(1, legacyErases.get(), "${legacyFile.name} marks a legacy layout")
+                legacyFile.delete()
+            }
+        }
+
+    @Test
+    fun aFailingLegacyEraseNeverFailsTheErase() =
+        runBlocking<Unit> {
+            val card = walletFiles(CARD_ALIAS)
+            DataDbPath.legacyOnlyFiles(noBackupRoot, CARD_ALIAS, NETWORK).first().mkdirs()
+
+            val erased =
+                SlipstreamSynchronizer.eraseAlias(context, NETWORK, CARD_ALIAS) {
+                    throw IllegalStateException("keystore unavailable")
+                }
+
+            assertTrue(erased)
+            card.forEach { assertFalse(it.exists(), "${it.name} must be deleted") }
+            verify(context).deleteSharedPreferences(preferencesOf(CARD_ALIAS))
+        }
+
+    @Test
+    fun theLegacyLayoutFilesAreNamedAsTheDefaultEngineNamesThem() {
+        val names = DataDbPath.legacyOnlyFiles(noBackupRoot, CARD_ALIAS, NETWORK).map { it.name }
+
+        assertEquals(
+            listOf(
+                "giftcard_abc_mainnet_fs_cache",
+                "giftcard_abc_mainnet_pending_transactions.sqlite3",
+                "giftcard_abc_mainnet_pending_transactions.sqlite3-journal",
+                "giftcard_abc_mainnet_pending_transactions.sqlite3-wal",
+                "giftcard_abc_mainnet_pending_transactions.sqlite3-shm"
+            ),
+            names
+        )
+        assertTrue(
+            DataDbPath.legacyOnlyFiles(noBackupRoot, CARD_ALIAS, NETWORK).all {
+                it.parentFile == DataDbPath.dataDbFile(noBackupRoot, CARD_ALIAS, NETWORK).parentFile
+            }
+        )
+    }
 
     @Test
     fun theLegacyLayoutIsErasedAfterTheEnginesFilesUnderTheGuard() =
@@ -182,5 +250,9 @@ class SlipstreamEraseTest {
         const val CARD_ALIAS = "giftcard_abc"
         const val OTHER_CARD_ALIAS = "giftcard_def"
         const val SHORT_TIMEOUT_MS = 200L
+
+        /** Every spelling of an alias that addresses the main wallet's files. */
+        val MAIN_WALLET_ALIASES =
+            listOf(ZcashSdk.DEFAULT_ALIAS, "${ZcashSdk.DEFAULT_ALIAS}_", "ZcashSdk", "ZCASHSDK_", "zcashsdk")
     }
 }

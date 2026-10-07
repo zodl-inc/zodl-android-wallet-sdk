@@ -52,6 +52,9 @@ private object DefaultEngineFactory : SynchronizerEngineFactory {
      * The helper wallet runs on [Synchronizer.new], exactly as [GiftCardWallets.Default] opens it:
      * it can start exactly at [birthday]. This engine has no memory budget to share, so
      * [engineMemoryFraction] is not used.
+     *
+     * @throws IllegalArgumentException if [alias] addresses the main wallet's files (see
+     * [isMainWalletAlias]); nothing is opened then.
      */
     override suspend fun openHelperWallet(
         context: Context,
@@ -64,8 +67,9 @@ private object DefaultEngineFactory : SynchronizerEngineFactory {
         isTorEnabled: Boolean,
         onCriticalError: (Throwable?) -> Boolean,
         engineMemoryFraction: Float,
-    ): OpenedCardWallet =
-        GiftCardWallets.Default.open(
+    ): OpenedCardWallet {
+        requireNotMainWalletAlias(alias, "A helper wallet must not use the default wallet alias")
+        return GiftCardWallets.Default.open(
             context = context,
             network = zcashNetwork,
             alias = alias,
@@ -76,6 +80,7 @@ private object DefaultEngineFactory : SynchronizerEngineFactory {
             setup = setup,
             onCriticalError = onCriticalError
         )
+    }
 
     override suspend fun eraseHelperWallet(
         appContext: Context,

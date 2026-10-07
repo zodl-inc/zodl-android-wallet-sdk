@@ -11,7 +11,6 @@
 
 package com.zodl.slipstream
 
-import android.app.ActivityManager
 import android.content.Context
 import cash.z.ecc.android.sdk.Broadcaster
 import cash.z.ecc.android.sdk.CloseableSynchronizer
@@ -41,6 +40,7 @@ import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.internal.model.TorDormantMode
 import cash.z.ecc.android.sdk.internal.model.TorHttp
 import cash.z.ecc.android.sdk.internal.model.TreeState
+import cash.z.ecc.android.sdk.internal.requireNotMainWalletAlias
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
@@ -90,8 +90,10 @@ import com.zodl.slipstream.internal.InstanceGuard
 import com.zodl.slipstream.internal.PrepareInputs
 import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.internal.SlipstreamKey
+import com.zodl.slipstream.internal.copyOwningSeed
 import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
 import com.zodl.slipstream.internal.db.TransactionsController
+import com.zodl.slipstream.internal.engineMemoryBytes
 import com.zodl.slipstream.internal.engineMemoryHint
 import com.zodl.slipstream.internal.newestBundledCheckpointHeight
 import com.zodl.slipstream.internal.resolveIntent
@@ -286,6 +288,10 @@ class SlipstreamSynchronizer internal constructor(
 
     /** The job running [runPrepare]; cancelled and joined as [close]'s first shutdown step. */
     private var prepareJob: Job? = null
+
+    /** [close]'s shutdown job, once [close] has run; see [closeAndAwaitShutdown]. */
+    @Volatile
+    private var shutdownJob: Job? = null
 
     /**
      * The preparation failure, latched so it can be replayed to an [onSetupErrorHandler] that is
@@ -517,7 +523,14 @@ class SlipstreamSynchronizer internal constructor(
         if (inputs == null) {
             engine.startPolling()
         } else {
-            prepareJob = scope.launch { runPrepare(inputs) }
+            /*
+             * The seed goes as soon as preparation has settled - completed, failed, or cancelled by
+             * close(), including before it ever ran - since nothing reads it afterwards.
+             */
+            prepareJob =
+                scope.launch { runPrepare(inputs) }.also { job ->
+                    job.invokeOnCompletion { inputs.releaseSetup() }
+                }
         }
     }
 
@@ -592,7 +605,7 @@ class SlipstreamSynchronizer internal constructor(
      * because the row is not written YET from one that is empty because there is nothing to read.
      */
     private fun isAccountCreationPending(): Boolean =
-        prepareInputs?.setup != null && prepareState.value !is PrepareState.Ready
+        prepareInputs?.hasSetup == true && prepareState.value !is PrepareState.Ready
 
     /**
      * Completes [this] - rather than letting it fail, or idle forever on a tick that will never
@@ -1738,12 +1751,23 @@ class SlipstreamSynchronizer internal constructor(
                     step("walletClient.dispose") { walletClient.dispose() }
                     step("exchangeRateFetcher.dispose") { exchangeRateFetcher?.dispose() }
                 }
+            this.shutdownJob = shutdownJob
             InstanceGuard.markShuttingDown(key, shutdownJob)
             shutdownJob.invokeOnCompletion {
                 InstanceGuard.release(key)
                 scope.cancel()
             }
         }
+    }
+
+    /**
+     * [close], then suspends until its shutdown has finished: preparation cancelled, the engine
+     * freed, and the [InstanceGuard] key released. [Companion.new] uses it to dispose of an instance
+     * its caller never received.
+     */
+    internal suspend fun closeAndAwaitShutdown() {
+        close()
+        shutdownJob?.join()
     }
 
     /**
@@ -1780,16 +1804,25 @@ class SlipstreamSynchronizer internal constructor(
          * - every engine- or database-backed member awaits preparation, so a call made immediately
          *   after this returns suspends rather than failing;
          * - a preparation failure does NOT release the [InstanceGuard] key - the instance owns it
-         *   until [close], which the host's `awaitClose` always calls.
+         *   until [close], which the host's `awaitClose` always calls;
+         * - the instance works on its own copy of [setup]'s seed, which it overwrites with zeros once
+         *   preparation has settled, so the caller may wipe its own seed as soon as this returns;
+         * - a call cancelled after the instance was built closes that instance and waits for its
+         *   shutdown before rethrowing, so no running instance, nor its [InstanceGuard] key, outlives
+         *   a call whose caller never received it.
          *
          * Runs on `Dispatchers.IO`: even the cheap wiring touches disk, and callers include
          * `Dispatchers.Main` scopes, so dispatching here keeps every caller agnostic to that.
          *
          * [engineMemoryFraction] is the one parameter `Synchronizer.new` does not have: the share of
-         * the device's RAM this instance's engine may plan with. The main wallet keeps the default,
-         * the whole device; a helper wallet running beside it (such as a gift card's temporary
-         * wallet) passes less, so that its engine never gets a larger budget than the main one and
-         * gets the engine's smaller, small-device budget sooner (see [engineMemoryHint]).
+         * the device's RAM this instance's engine is told the device has. The engine uses that figure
+         * for one decision only: below its small-device threshold (3 GiB) it switches from its
+         * default fetch and split budgets to fixed, smaller ones. The main wallet keeps the default,
+         * the whole device. A helper wallet running beside it (such as a gift card's temporary
+         * wallet) passes less, so that its engine takes the smaller budgets on devices where the main
+         * wallet's still takes the defaults (with `0.5`, on devices below 6 GiB), and never larger
+         * budgets than the main wallet's; on larger devices both get the defaults (see
+         * [engineMemoryHint]).
          *
          * @param engineMemoryFraction in `(0, 1]`; [FULL_ENGINE_MEMORY] by default.
          * @throws IllegalArgumentException if [engineMemoryFraction] is not in `(0, 1]`.
@@ -1812,15 +1845,15 @@ class SlipstreamSynchronizer internal constructor(
             }
             val applicationContext = context.applicationContext
             val key = SlipstreamKey(zcashNetwork, alias)
-            InstanceGuard.acquire(key)
+            val ownedSetup = setup?.copyOwningSeed()
             try {
-                return withContext(Dispatchers.IO) {
+                return newGuarded(key) {
                     newLocked(
                         alias = alias,
                         birthday = birthday,
                         applicationContext = applicationContext,
                         lightWalletEndpoint = lightWalletEndpoint,
-                        setup = setup,
+                        setup = ownedSetup,
                         walletInitMode = walletInitMode,
                         zcashNetwork = zcashNetwork,
                         isTorEnabled = isTorEnabled,
@@ -1831,10 +1864,42 @@ class SlipstreamSynchronizer internal constructor(
                 }
             } catch (t: Throwable) {
                 /*
-                 * Only cheap-wiring failures can land here now; the preparation tail's failures are
-                 * latched on the instance, which keeps the guard key until its own close().
+                 * No instance survives a failure here, so nothing else will wipe the copy; an
+                 * instance that was built has already wiped it when its preparation was cancelled.
                  */
-                InstanceGuard.release(key)
+                ownedSetup?.seed?.byteArray?.fill(0)
+                throw t
+            }
+        }
+
+        /**
+         * [new]'s single-instance bracket around [construct], which builds the instance for [key] on
+         * `Dispatchers.IO`: acquires [key] first, releases it if [construct] fails, and - when the call
+         * fails after [construct] returned, as a cancellation of the caller does while the result is on
+         * its way back - closes the instance and waits for its shutdown, which releases [key], before
+         * rethrowing. Without that, an instance whose preparation was already running would outlive a
+         * call whose caller never received it, holding [key] and its database open.
+         */
+        internal suspend fun newGuarded(
+            key: SlipstreamKey,
+            construct: suspend () -> SlipstreamSynchronizer
+        ): SlipstreamSynchronizer {
+            InstanceGuard.acquire(key)
+            var constructed: SlipstreamSynchronizer? = null
+            try {
+                withContext(Dispatchers.IO) { constructed = construct() }
+                return checkNotNull(constructed)
+            } catch (t: Throwable) {
+                val orphan = constructed
+                if (orphan == null) {
+                    /*
+                     * Only cheap-wiring failures can land here; the preparation tail's failures are
+                     * latched on the instance, which keeps the guard key until its own close().
+                     */
+                    InstanceGuard.release(key)
+                } else {
+                    withContext(NonCancellable) { orphan.closeAndAwaitShutdown() }
+                }
                 throw t
             }
         }
@@ -1853,7 +1918,7 @@ class SlipstreamSynchronizer internal constructor(
             isExchangeRateEnabled: Boolean,
             engineMemoryFraction: Float,
             key: SlipstreamKey
-        ): CloseableSynchronizer {
+        ): SlipstreamSynchronizer {
             SlipstreamNative.ensureLoaded(logLevel = "info")
             val sdkFlags =
                 SdkFlags(isTorEnabled = isTorEnabled, isExchangeRateEnabled = isExchangeRateEnabled)
@@ -1931,9 +1996,7 @@ class SlipstreamSynchronizer internal constructor(
                     CoroutineScope(SupervisorJob() + Dispatchers.Default)
                 )
 
-            val activityManager =
-                applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            val memoryInfo = ActivityManager.MemoryInfo().also { activityManager.getMemoryInfo(it) }
+            val totalMemoryBytes = engineMemoryBytes(applicationContext, engineMemoryFraction)
 
             /*
              * Tor is only needed for on-demand/background work, never on the cold-start critical
@@ -2007,8 +2070,8 @@ class SlipstreamSynchronizer internal constructor(
              * The deferred tail's every JNI/assets touch, captured as a lambda: `restoreAnchor`
              * behind [SlipstreamAnchorSource], the bundled-checkpoint height, the two
              * [CheckpointTool] reads and the DbReady balance seed's summary read behind their own.
-             * `totalMemoryBytes` is a plain value - the
-             * `ActivityManager` binder call above is cheap enough to stay on this path.
+             * `totalMemoryBytes` is a plain value - the `ActivityManager` binder call behind
+             * [engineMemoryBytes] above is cheap enough to stay on this path.
              */
             val prepareInputs =
                 PrepareInputs(
@@ -2042,7 +2105,7 @@ class SlipstreamSynchronizer internal constructor(
                             .treeState()
                     },
                     dbWalletSummary = { typesafeBackend.getWalletSummary() },
-                    totalMemoryBytes = engineMemoryHint(memoryInfo.totalMem, engineMemoryFraction)
+                    totalMemoryBytes = totalMemoryBytes
                 )
 
             return SlipstreamSynchronizer(
@@ -2137,23 +2200,57 @@ class SlipstreamSynchronizer internal constructor(
          * running; unlike `Synchronizer.erase`, nothing shared by every wallet in the process is
          * cleared.
          *
+         * The legacy deletion runs only when the files only `SdkSynchronizer` creates are present
+         * (see [DataDbPath.legacyOnlyFiles]), so a wallet only this engine ever ran never reaches it,
+         * nor the SDK's encrypted preferences it opens. It is best-effort: a failure is logged by its
+         * type only and never fails this erase, as the files this engine itself needs are already gone
+         * by then.
+         *
          * @return true when none of this engine's files or preferences for the wallet remain; what
          * the legacy deletion found is not part of the result.
-         * @throws IllegalArgumentException if [alias] is not a valid alias, or is
-         * [ZcashSdk.DEFAULT_ALIAS].
+         * @throws IllegalArgumentException if [alias] is not a valid alias, or addresses the main
+         * wallet's files: [ZcashSdk.DEFAULT_ALIAS], also with trailing underscores, or the legacy
+         * `ZcashSdk`. Nothing is touched then.
          * @throws IllegalStateException if a synchronizer for [network] and [alias] is active.
          */
         suspend fun eraseAlias(
             appContext: Context,
             network: ZcashNetwork,
             alias: String
-        ): Boolean {
-            validateAlias(alias)
-            require(alias != ZcashSdk.DEFAULT_ALIAS) { "eraseAlias never erases the main wallet" }
-            return eraseGuarded(appContext, network, alias) {
+        ): Boolean =
+            eraseAlias(appContext, network, alias) {
                 Synchronizer.eraseAlias(appContext, network, alias)
             }
+
+        /** [eraseAlias] with the legacy layout's deletion replaced, for unit tests. */
+        internal suspend fun eraseAlias(
+            appContext: Context,
+            network: ZcashNetwork,
+            alias: String,
+            eraseLegacyLayout: suspend () -> Unit
+        ): Boolean {
+            validateAlias(alias)
+            requireNotMainWalletAlias(alias, "eraseAlias never erases the main wallet")
+            return eraseGuarded(appContext, network, alias) {
+                runCatchingCancellable {
+                    if (hasLegacyLayout(appContext.applicationContext, network, alias)) eraseLegacyLayout()
+                }.onFailure {
+                    Twig.warn { "Erasing a helper wallet's legacy layout failed: ${it::class.simpleName}" }
+                }
+            }
         }
+
+        /** Whether any of [DataDbPath.legacyOnlyFiles] exists for [alias] on [network]. */
+        private suspend fun hasLegacyLayout(
+            applicationContext: Context,
+            network: ZcashNetwork,
+            alias: String
+        ): Boolean =
+            withContext(Dispatchers.IO) {
+                DataDbPath
+                    .legacyOnlyFiles(applicationContext.getNoBackupFilesDirSuspend(), alias, network)
+                    .any { it.exists() }
+            }
 
         /**
          * [erase] and [eraseAlias]: deletes this engine's files and preferences for [alias], then runs
@@ -2188,7 +2285,7 @@ class SlipstreamSynchronizer internal constructor(
             }
         }
 
-        /** The default `engineMemoryFraction` of [new]: the engine plans with the whole device. */
+        /** The default `engineMemoryFraction` of [new]: the engine is told the whole device's memory. */
         const val FULL_ENGINE_MEMORY: Float = 1f
 
         private const val ENGINE_TOR_SUBDIR = "slipstream_tor"

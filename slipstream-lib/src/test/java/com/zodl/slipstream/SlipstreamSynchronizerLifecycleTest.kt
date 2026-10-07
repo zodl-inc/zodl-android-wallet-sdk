@@ -39,6 +39,7 @@ import com.zodl.slipstream.internal.PrepareInputs
 import com.zodl.slipstream.internal.SlipstreamAnchorSource
 import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.internal.SlipstreamKey
+import com.zodl.slipstream.internal.copyOwningSeed
 import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
 import com.zodl.slipstream.internal.db.TransactionsController
 import com.zodl.slipstream.internal.spend.ResubmissionTicker
@@ -52,6 +53,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
@@ -60,6 +62,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -82,6 +85,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -1719,6 +1724,172 @@ class SlipstreamSynchronizerLifecycleTest {
     }
 
     /**
+     * B1: `Companion.new` hands the preparation a copy of the caller's seed ([copyOwningSeed]), and the
+     * caller - the gift card redeemer - wipes its own array as soon as `new` returns, long before the
+     * restore's `createAccount` runs behind the anchor. The account must still be created from the
+     * real seed, and the copy must be wiped and dropped once preparation has settled.
+     */
+    @Test
+    fun preparation_creates_the_account_from_its_own_seed_copy_and_wipes_it_once_settled() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorGate = CompletableDeferred<Unit>()
+        val callerSeed = ByteArray(SEED_BYTES) { (it + 1).toByte() }
+        val realSeed = callerSeed.copyOf()
+        val owned = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(callerSeed)).copyOwningSeed()
+        val ownedSeed = owned.seed.byteArray
+        val createdFrom = AtomicReference<ByteArray?>()
+        runBlocking {
+            `when`(backend.initDataDb(realSeed)).thenReturn(0)
+            `when`(backend.getAccounts()).thenReturn(emptyList())
+            `when`(backend.createAccount(ACCOUNT_NAME, KEY_SOURCE, realSeed, TREE_STATE, ANCHOR_HEIGHT)).thenAnswer {
+                createdFrom.set((it.arguments[2] as ByteArray).copyOf())
+                JniAccountUsk(ByteArray(ACCOUNT_UUID_BYTES), ByteArray(USK_BYTES))
+            }
+        }
+        val inputs = prepareInputs(setup = owned, anchorSource = gatedAnchor(anchorGate))
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend, key = key, prepareInputs = inputs)
+        try {
+            callerSeed.fill(0)
+            assertTrue(ownedSeed.contentEquals(realSeed), "the copy is the synchronizer's own")
+
+            anchorGate.complete(Unit)
+
+            runBlocking { verify(engine, timeout(TIMEOUT_MS)).startPolling() }
+            assertTrue(createdFrom.get().contentEquals(realSeed), "the account is created from the real seed")
+            awaitCondition { inputs.setup == null }
+            assertTrue(ownedSeed.all { it == 0.toByte() }, "the copy is wiped once preparation has settled")
+            assertTrue(inputs.hasSetup)
+        } finally {
+            synchronizer.close()
+        }
+    }
+
+    @Test
+    fun the_seed_copy_is_wiped_when_close_cancels_the_preparation() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val owned =
+            AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES) { 7 }))
+                .copyOwningSeed()
+        val ownedSeed = owned.seed.byteArray
+        stubPrepareBackend(backend, ownedSeed.copyOf())
+        val anchorStarted = CompletableDeferred<Unit>()
+        val inputs =
+            prepareInputs(
+                setup = owned,
+                anchorSource =
+                    SlipstreamAnchorSource { _, _, _ ->
+                        anchorStarted.complete(Unit)
+                        awaitCancellation()
+                    }
+            )
+        runBlocking { InstanceGuard.acquire(key) }
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend, key = key, prepareInputs = inputs)
+        runBlocking { withTimeout(TIMEOUT_MS) { anchorStarted.await() } }
+
+        runBlocking { withTimeout(TIMEOUT_MS) { synchronizer.closeAndAwaitShutdown() } }
+
+        assertEquals(null, inputs.setup)
+        assertTrue(ownedSeed.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun copy_owning_seed_leaves_the_callers_seed_alone() {
+        val callerSeed = ByteArray(SEED_BYTES) { 3 }
+        val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(callerSeed))
+
+        val owned = setup.copyOwningSeed()
+        owned.seed.byteArray.fill(0)
+
+        assertTrue(callerSeed.all { it == 3.toByte() })
+        assertEquals(ACCOUNT_NAME, owned.accountName)
+        assertEquals(KEY_SOURCE, owned.keySource)
+    }
+
+    /**
+     * S2: a `new` whose caller is cancelled once the instance is built - the instance comes back on a
+     * switch back from `Dispatchers.IO`, which a cancelled caller turns into a
+     * [CancellationException] - must not leave that instance running, with its preparation in flight
+     * and its guard key `Active`, where a later erase would delete its files under it.
+     */
+    @Test
+    fun a_new_cancelled_after_construction_closes_the_instance_and_releases_its_key() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorStarted = CompletableDeferred<Unit>()
+        val anchorCancelled = CompletableDeferred<Unit>()
+        stubPrepareBackend(backend, null)
+        val built = AtomicReference<SlipstreamSynchronizer?>()
+        val anchor =
+            SlipstreamAnchorSource { _, _, _ ->
+                anchorStarted.complete(Unit)
+                try {
+                    awaitCancellation()
+                } finally {
+                    anchorCancelled.complete(Unit)
+                }
+            }
+
+        runBlocking {
+            val caller =
+                launch(Dispatchers.Default) {
+                    val callerJob = coroutineContext.job
+                    SlipstreamSynchronizer.newGuarded(key) {
+                        buildSynchronizer(
+                            engine = engine,
+                            backend = backend,
+                            key = key,
+                            prepareInputs = prepareInputs(anchorSource = anchor)
+                        ).also {
+                            built.set(it)
+                            anchorStarted.await()
+                            callerJob.cancel()
+                        }
+                    }
+                    error("newGuarded must not return to a cancelled caller")
+                }
+            withTimeout(TIMEOUT_MS) { caller.join() }
+            assertTrue(caller.isCancelled)
+            withTimeout(TIMEOUT_MS) { anchorCancelled.await() }
+        }
+
+        val synchronizer = assertNotNull(built.get())
+        assertFalse(InstanceGuard.isActive(key), "no Active key outlives the cancelled call")
+        runBlocking {
+            verify(engine, timeout(TIMEOUT_MS)).shutdown()
+            verify(engine, never()).open(TOTAL_MEMORY_BYTES)
+            assertFailsWith<SlipstreamNotReadyException> { synchronizer.getAccounts() }
+            withTimeout(TIMEOUT_MS) { InstanceGuard.acquire(key) }
+        }
+        InstanceGuard.release(key)
+    }
+
+    @Test
+    fun a_new_whose_construction_fails_releases_its_key() {
+        val key = newKey()
+
+        assertFailsWith<IllegalStateException> {
+            runBlocking { SlipstreamSynchronizer.newGuarded(key) { error("cheap wiring failed") } }
+        }
+
+        assertFalse(InstanceGuard.isActive(key))
+        runBlocking { withTimeout(TIMEOUT_MS) { InstanceGuard.acquire(key) } }
+        InstanceGuard.release(key)
+    }
+
+    private fun awaitCondition(condition: () -> Boolean) {
+        runBlocking {
+            withTimeout(TIMEOUT_MS) {
+                while (!condition()) delay(POLL_MS)
+            }
+        }
+    }
+
+    /**
      * kotlinx's stack-trace recovery hands the preparation job a COPY of any exception that crossed
      * the tail's `withContext(Dispatchers.IO)` boundary, so identity comparison is not available -
      * assert on the type and message instead.
@@ -1906,6 +2077,7 @@ class SlipstreamSynchronizerLifecycleTest {
     companion object {
         private const val TIMEOUT_MS = 2_000L
         private const val SETTLE_MS = 300L
+        private const val POLL_MS = 10L
         private const val LATCH_TIMEOUT_SECONDS = 2L
         private const val STARTING_BIRTHDAY_VALUE = 2_000_000L
         private const val ACCOUNT_UUID_BYTES = 16

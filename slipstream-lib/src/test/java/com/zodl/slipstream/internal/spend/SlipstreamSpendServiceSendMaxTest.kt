@@ -20,8 +20,11 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.never
+import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
+import java.io.IOException
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
@@ -169,6 +172,49 @@ class SlipstreamSpendServiceSendMaxTest {
             service(backend) { ensured++ }.createProposedTransactions(proposal, usk).toList()
 
             assertEquals(0, ensured)
+        }
+
+    @Test
+    fun sendingASaplingProposalFetchesTheSaplingParametersOnceBeforeCreating() =
+        runBlocking<Unit> {
+            val backend = mock(Backend::class.java)
+            val proposalUnsafe = mock(ProposalUnsafe::class.java)
+            `when`(proposalUnsafe.totalFeeRequired()).thenReturn(FEE)
+            val proposal = Proposal.fromUnsafe(proposalUnsafe)
+            val usk = mock(UnifiedSpendingKey::class.java)
+            val uskBytes = byteArrayOf(1, 2, 3)
+            `when`(usk.copyBytes()).thenReturn(uskBytes)
+            val steps = mutableListOf<String>()
+            `when`(backend.proposalRequiresSaplingProofs(proposalUnsafe)).thenReturn(true)
+            `when`(backend.createProposedTransactions(proposalUnsafe, uskBytes)).thenAnswer {
+                steps += "create"
+                emptyList<ByteArray>()
+            }
+
+            service(backend) { steps += "ensure" }.createProposedTransactions(proposal, usk).toList()
+
+            assertEquals(listOf("ensure", "create"), steps)
+        }
+
+    @Test
+    fun aFailedSaplingParameterFetchFailsTheSendBeforeAnythingIsCreated() =
+        runBlocking<Unit> {
+            val backend = mock(Backend::class.java)
+            val proposalUnsafe = mock(ProposalUnsafe::class.java)
+            `when`(proposalUnsafe.totalFeeRequired()).thenReturn(FEE)
+            val proposal = Proposal.fromUnsafe(proposalUnsafe)
+            val usk = mock(UnifiedSpendingKey::class.java)
+            `when`(usk.copyBytes()).thenReturn(byteArrayOf(1, 2, 3))
+            `when`(backend.proposalRequiresSaplingProofs(proposalUnsafe)).thenReturn(true)
+            val failure = IOException("download.z.cash unreachable")
+
+            val thrown =
+                assertFailsWith<IOException> {
+                    service(backend) { throw failure }.createProposedTransactions(proposal, usk).toList()
+                }
+
+            assertEquals(failure.message, thrown.message)
+            verify(backend, never()).createProposedTransactions(proposalUnsafe, byteArrayOf(1, 2, 3))
         }
 
     private fun service(

@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.model.WalletSummary
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.tool.CheckpointTool
 import com.zodl.slipstream.model.SlipstreamRestoreAnchor
@@ -84,6 +85,12 @@ internal fun interface SlipstreamAnchorSource {
  * caller bug must still throw synchronously out of `new()` rather than becoming an asynchronous
  * setup error.
  *
+ * [setup] carries the seed the tail needs for `initDataDb` and `createAccount`, which run well after
+ * `new()` has returned. The synchronizer owns that seed: `Companion.new` hands over a copy of the
+ * caller's (see [copyOwningSeed]), so a caller that wipes its own seed as soon as `new()` returns
+ * cannot leave the tail creating the account from zeros, and the synchronizer calls [releaseSetup]
+ * once preparation has settled, however it settled.
+ *
  * @property dbWalletSummary the balance seed the tail publishes at `DbReady`, read straight from the
  * wallet database so an existing wallet renders its real balances in the same phase its account row
  * surfaces. `null` means no summary is available yet - a fresh or never-scanned database - and skips
@@ -93,7 +100,7 @@ internal fun interface SlipstreamAnchorSource {
 internal class PrepareInputs(
     val walletInitMode: WalletInitMode,
     val requestedBirthday: BlockHeight?,
-    val setup: AccountCreateSetup?,
+    setup: AccountCreateSetup?,
     val ufvk: String?,
     val anchorSource: SlipstreamAnchorSource,
     val fallbackCheckpointHeight: suspend () -> Long,
@@ -101,4 +108,28 @@ internal class PrepareInputs(
     val lastCheckpointTreeState: suspend () -> TreeState,
     val dbWalletSummary: suspend () -> WalletSummary?,
     val totalMemoryBytes: Long
-)
+) {
+    /** Whether these inputs were given a [setup], which stays known after [releaseSetup]. */
+    val hasSetup: Boolean = setup != null
+
+    /** The account setup, with its seed; `null` once [releaseSetup] ran, or when none was given. */
+    @Volatile
+    var setup: AccountCreateSetup? = setup
+        private set
+
+    /**
+     * Overwrites the seed of [setup] with zeros and drops it. Called once preparation has settled,
+     * when nothing reads it any more. Idempotent.
+     */
+    fun releaseSetup() {
+        setup?.seed?.byteArray?.fill(0)
+        setup = null
+    }
+}
+
+/**
+ * This setup with a copy of its seed, for a holder that must keep the seed beyond the caller's
+ * control and wipe it itself (see [PrepareInputs.releaseSetup]). The caller's array is left as it is.
+ */
+internal fun AccountCreateSetup.copyOwningSeed(): AccountCreateSetup =
+    copy(seed = FirstClassByteArray(seed.byteArray.copyOf()))

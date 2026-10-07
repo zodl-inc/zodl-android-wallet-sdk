@@ -100,7 +100,8 @@ internal class SlipstreamEngineFactory(
      * preparation (anchor, database, engine open) is still running then, and critical errors only
      * come from the poll loop, which starts at the end of that preparation.
      *
-     * @throws IllegalArgumentException if [alias] is the main wallet's alias.
+     * @throws IllegalArgumentException if [alias] addresses the main wallet's files (see
+     * [isMainWalletAlias]); nothing is opened then.
      */
     override suspend fun openHelperWallet(
         context: Context,
@@ -114,7 +115,7 @@ internal class SlipstreamEngineFactory(
         onCriticalError: (Throwable?) -> Boolean,
         engineMemoryFraction: Float,
     ): OpenedCardWallet {
-        require(alias != ZcashSdk.DEFAULT_ALIAS) { "A helper wallet must not use the default wallet alias" }
+        requireNotMainWalletAlias(alias, "A helper wallet must not use the default wallet alias")
         val synchronizer =
             newSynchronizer(
                 SlipstreamWalletRequest(
@@ -141,12 +142,18 @@ internal class SlipstreamEngineFactory(
     /**
      * [SlipstreamSynchronizer.Companion.eraseAlias]: this engine's files and preferences for
      * [alias], and whatever an `SdkSynchronizer` left under it, by file-level deletion.
+     *
+     * @throws IllegalArgumentException if [alias] addresses the main wallet's files (see
+     * [isMainWalletAlias]); nothing is touched then.
      */
     override suspend fun eraseHelperWallet(
         appContext: Context,
         network: ZcashNetwork,
         alias: String
-    ): Boolean = eraseHelperAlias(appContext, network, alias)
+    ): Boolean {
+        requireNotMainWalletAlias(alias, "A helper wallet must not use the default wallet alias")
+        return eraseHelperAlias(appContext, network, alias)
+    }
 }
 
 private suspend fun newSlipstreamSynchronizer(request: SlipstreamWalletRequest): CloseableSynchronizer =

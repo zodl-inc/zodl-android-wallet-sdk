@@ -23,9 +23,9 @@ import kotlin.test.assertTrue
 
 /**
  * [GiftCardRedeemers] and [EngineGiftCardWallets] against a fake engine factory: the card wallet is opened and erased
- * by the engine the SDK was built with, with half the device's memory, under the card's alias, and the engine-backed
- * redeemer erases the card wallet through that engine both before opening it and when closed. The main wallet's
- * alias is never erased.
+ * by the engine the SDK was built with, telling it half the device's memory, under the card's alias, and the
+ * engine-backed redeemer erases the card wallet through that engine both before opening it and when closed. No
+ * spelling of the main wallet's alias is ever opened or erased.
  */
 class GiftCardRedeemersTest {
     @Test
@@ -124,16 +124,18 @@ class GiftCardRedeemersTest {
 
     @Test
     fun aRedeemerNeverUsesTheMainWalletsAlias() {
-        assertFailsWith<IllegalArgumentException> {
-            GiftCardRedeemers.new(
-                context = context(),
-                card = card(),
-                network = ZcashNetwork.Mainnet,
-                lightWalletEndpoint = ENDPOINT,
-                isTorEnabled = false,
-                alias = ZcashSdk.DEFAULT_ALIAS,
-                factory = FakeEngineFactory()
-            )
+        MAIN_WALLET_ALIASES.forEach { alias ->
+            assertFailsWith<IllegalArgumentException>(alias) {
+                GiftCardRedeemers.new(
+                    context = context(),
+                    card = card(),
+                    network = ZcashNetwork.Mainnet,
+                    lightWalletEndpoint = ENDPOINT,
+                    isTorEnabled = false,
+                    alias = alias,
+                    factory = FakeEngineFactory()
+                )
+            }
         }
     }
 
@@ -152,8 +154,10 @@ class GiftCardRedeemersTest {
         runBlocking<Unit> {
             val factory = FakeEngineFactory()
 
-            assertFailsWith<IllegalArgumentException> {
-                GiftCardRedeemers.erase(context(), ZcashNetwork.Mainnet, ZcashSdk.DEFAULT_ALIAS, factory)
+            MAIN_WALLET_ALIASES.forEach { alias ->
+                assertFailsWith<IllegalArgumentException>(alias) {
+                    GiftCardRedeemers.erase(context(), ZcashNetwork.Mainnet, alias, factory)
+                }
             }
 
             assertTrue(factory.erased.isEmpty())
@@ -240,6 +244,10 @@ class GiftCardRedeemersTest {
         const val BIRTHDAY = 3_000_000L
         const val HALF = 0.5f
         val SEED = ByteArray(64)
+
+        /** Every spelling of an alias that addresses the main wallet's files. */
+        val MAIN_WALLET_ALIASES =
+            listOf(ZcashSdk.DEFAULT_ALIAS, "${ZcashSdk.DEFAULT_ALIAS}_", "ZcashSdk", "ZCASHSDK_")
         val ENDPOINT = LightWalletEndpoint("localhost", 9067, false)
 
         fun context(): Context {

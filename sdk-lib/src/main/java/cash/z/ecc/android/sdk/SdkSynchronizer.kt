@@ -18,7 +18,6 @@ import cash.z.ecc.android.sdk.exception.TorInitializationErrorException
 import cash.z.ecc.android.sdk.exception.TorUnavailableException
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.ext.ConsensusBranchId
-import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
 import cash.z.ecc.android.sdk.internal.ImportAccountErrors
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
@@ -44,6 +43,7 @@ import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
 import cash.z.ecc.android.sdk.internal.recordTrustedTransaction
 import cash.z.ecc.android.sdk.internal.repository.CompactBlockRepository
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
+import cash.z.ecc.android.sdk.internal.requireNotMainWalletAlias
 import cash.z.ecc.android.sdk.internal.storage.block.FileCompactBlockRepository
 import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
@@ -295,11 +295,7 @@ class SdkSynchronizer private constructor(
             network: ZcashNetwork,
             alias: String
         ): Boolean {
-            // A trailing '_' maps to the same files as the default wallet.
-            require(
-                alias.trimEnd('_') != ZcashSdk.DEFAULT_ALIAS &&
-                    !alias.trimEnd('_').equals(DatabaseCoordinator.ALIAS_LEGACY, ignoreCase = true)
-            ) { "Use erase() for the default wallet" }
+            requireNotMainWalletAlias(alias, "Use erase() for the default wallet")
             val key = SynchronizerKey(network, alias)
 
             return mutex.withLock {

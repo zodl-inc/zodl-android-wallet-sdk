@@ -115,25 +115,46 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bundled checkpoint at or below the card's birthday, so it is never rescanned. `storedAliases`
   lists the card wallets left on the device, and `erase(context, network, alias)` deletes one,
   including any files an earlier engine left under the same alias, without starting a
-  synchronizer; it refuses the main wallet's alias.
+  synchronizer. It refuses, before touching any file, an alias that addresses the main wallet's
+  files: the default alias, also with trailing underscores, or the legacy `ZcashSdk`.
 - `SlipstreamSynchronizer.eraseAlias(appContext, network, alias)`, which deletes a helper
   wallet's Slipstream database and submit plans together with whatever an `SdkSynchronizer` left
   under the same alias, by deleting files only, while no Slipstream synchronizer can open the
-  alias. It refuses the main wallet's alias.
-- `SlipstreamSynchronizer.new` takes `engineMemoryFraction` (default `FULL_ENGINE_MEMORY`, the
-  whole device): the share of the device's memory the engine plans with. A gift card wallet's
-  engine uses half, so it never gets a larger budget than the main wallet's and gets the
-  engine's small-device budget on devices below twice the engine's threshold.
+  alias. The `SdkSynchronizer` leftovers are looked for only when that synchronizer's own files
+  (its block cache or pending transactions database) are present, and their deletion is
+  best-effort: its failure is logged and never fails the erase. It refuses, before touching any
+  file, an alias that addresses the main wallet's files: the default alias, also with trailing
+  underscores, or the legacy `ZcashSdk`.
+- **Breaking (binary):** `SlipstreamSynchronizer.new` takes a trailing `engineMemoryFraction`
+  (default `FULL_ENGINE_MEMORY`); Kotlin call sites compile unchanged, compiled callers must be
+  rebuilt. It is the share of the device's memory the engine is told the device has. The engine
+  uses that figure for one decision only: below its small-device threshold (3 GiB) it switches
+  from its default fetch and split budgets to fixed, smaller ones. A gift card wallet's engine is
+  told half, so it takes the smaller budgets on devices below 6 GiB, where the main wallet's
+  engine may still take the defaults, and the same default budgets as the main wallet's on larger
+  devices; never larger ones. `newBlocking` does not take it.
 
 ### Changed
 - `GiftCardRedeemer.new` is deprecated: it always runs the card wallet on `SdkSynchronizer`,
   whatever engine the app syncs with. Use `GiftCardRedeemers.new` from the incubator.
 - `GiftCardRedeemer.check` fails at once with `GiftCardException.SyncFailed`, carrying the
   failure, when the card wallet latches a setup error (`Synchronizer.setupError`), as the
-  Slipstream engine does instead of throwing out of its creation. A card wallet on the
-  Slipstream engine reports `DISCONNECTED` while idle before its first sync pass; that no longer
-  counts towards `disconnectedTimeout`, which starts only once the wallet has synced or has
-  failed to reach the server.
+  Slipstream engine does instead of throwing out of its creation; such a card wallet is closed
+  and erased, so the next `check()` starts over with a new one. `check` waits, within its
+  `timeout`, for the card wallet's account to be created, which on the Slipstream engine happens
+  only after the wallet has resolved where to start scanning. A card wallet on the Slipstream
+  engine reports `DISCONNECTED` while idle before its first sync pass, and reports trouble
+  reaching the server as being idle or as syncing that does not advance; for such a wallet,
+  `disconnectedTimeout` bounds how long it may go without any sync progress before it is synced,
+  idle before its first pass included, and the check then fails with `SyncFailed`. A failed sync
+  pass the engine reports (an engine error, not a network outage) is retried at most
+  `GiftCardRedeemer.MAX_PROCESSOR_ERROR_RETRIES` (2) times per check, after which the check fails
+  with it.
+- `SlipstreamSynchronizer.new` works on its own copy of the setup's seed, which it overwrites with
+  zeros once its deferred preparation has settled, so a caller may wipe its seed as soon as `new`
+  returns; before, a caller that did so (as the gift card redeemer does) left the preparation
+  creating the account from a zeroed seed. A `new` call cancelled after the instance was built
+  closes that instance and waits for its shutdown before rethrowing.
 - `SlipstreamSynchronizer.erase` also deletes the wallet's submit-plan preferences, so an erased
   wallet leaves no record of its transactions behind.
 - The Slipstream synchronizer downloads the Sapling parameters only for a proposal that spends
