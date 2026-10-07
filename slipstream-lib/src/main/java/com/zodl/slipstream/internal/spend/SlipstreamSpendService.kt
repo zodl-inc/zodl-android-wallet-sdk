@@ -12,9 +12,11 @@ import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
@@ -64,6 +66,33 @@ internal class SlipstreamSpendService(
     ): Proposal =
         runCatchingCancellable {
             Proposal.fromUnsafe(backend.proposeTransfer(account.accountUuid.value, recipient, amount.value, memo.toMemoBytesOrNull()))
+        }.getOrElse {
+            throw it.toProposalException(TransactionEncoderException::ProposalFromParametersException)
+        }
+
+    /**
+     * Proposes sending the account's entire currently spendable shielded balance to [recipient],
+     * with the ZIP 317 fee deducted from it - the same backend call and the same failure mapping
+     * the upstream `TransactionEncoderImpl.proposeSendMax` uses, so a nothing-spendable or
+     * fee-exceeds-balance refusal surfaces as [TransactionEncoderException.InsufficientFundsException].
+     */
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalFromParametersException::class
+    )
+    suspend fun proposeSendMax(
+        account: Account,
+        recipient: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal =
+        runCatchingCancellable {
+            Proposal.fromUnsafe(
+                backend.proposeSendMaxTransfer(
+                    account.accountUuid.value,
+                    recipient.encoding,
+                    memo?.asMemoBytes()?.bytes?.byteArray
+                )
+            )
         }.getOrElse {
             throw it.toProposalException(TransactionEncoderException::ProposalFromParametersException)
         }
@@ -120,6 +149,9 @@ internal class SlipstreamSpendService(
      * Store-first (S-SPEND): `create` already wrote the transactions into `data.db`, so the FIRST
      * poke fires BEFORE any broadcast; the second poke covers whatever the submit fallback itself
      * stored (mined/expiry updates).
+     *
+     * The Sapling parameters are fetched only when [proposal] needs Sapling proofs (see
+     * [ensureSaplingParamsFor]).
      */
     fun createProposedTransactions(
         proposal: Proposal,
@@ -127,7 +159,7 @@ internal class SlipstreamSpendService(
         ovkPolicy: OvkPolicy = OvkPolicy.Sender
     ): Flow<TransactionSubmitResult> =
         flow {
-            ensureSaplingParams()
+            ensureSaplingParamsFor(backend, proposal, ensureSaplingParams)
             val uskBytes = usk.copyBytes()
             val txIds =
                 try {

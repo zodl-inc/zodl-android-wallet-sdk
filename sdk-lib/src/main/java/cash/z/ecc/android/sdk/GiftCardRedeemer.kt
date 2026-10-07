@@ -59,11 +59,13 @@ import kotlin.time.Duration.Companion.seconds
  *
  * The temporary wallet is fully isolated from the app's main wallet, which can keep running
  * the whole time: it has its own databases and block cache, it never touches the preferences
- * the main wallet uses, and it runs without exchange rates. It connects to the server the way
- * the user chose for the main wallet: pass the main wallet's Tor setting as `isTorEnabled` to
- * [new], so that syncing the card, fetching its birthday tree state and submitting the claim
- * do not reveal the user's IP address when the main wallet hides it. Sending needs no Sapling
- * parameters unless the card holds Sapling funds, which cards do not.
+ * the main wallet uses, and it runs without exchange rates. It runs on the same sync engine as
+ * the main wallet when created with `GiftCardRedeemers.new` from the SDK incubator, which is how
+ * apps should create redeemers; [new] always runs it on [SdkSynchronizer]. It connects to the
+ * server the way the user chose for the main wallet: pass the main wallet's Tor setting as
+ * `isTorEnabled`, so that syncing the card, fetching its birthday tree state and submitting the
+ * claim do not reveal the user's IP address when the main wallet hides it. Sending needs no
+ * Sapling parameters unless the card holds Sapling funds, which cards do not.
  *
  * Only one redeemer at a time may use a card's temporary wallet: a second redeemer for the same
  * card (or the same [alias]) in the same process fails with [GiftCardException.InUse] until the
@@ -81,7 +83,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * ```
  * val card = GiftCard.parse(link)
- * val redeemer = GiftCardRedeemer.new(context, card, network, endpoint, isTorEnabled)
+ * val redeemer = GiftCardRedeemers.new(context, card, network, endpoint, isTorEnabled)
  * try {
  *     when (val status = redeemer.check()) {
  *         is GiftCardRedeemer.Status.Ready ->
@@ -148,6 +150,20 @@ class GiftCardRedeemer private constructor(
 
     /** A critical error reported by the open card wallet's synchronizer. */
     private val criticalError = MutableStateFlow<CriticalError?>(null)
+
+    /**
+     * Whether the open card wallet reports [Synchronizer.Status.DISCONNECTED] while it is merely idle
+     * before its first sync pass (see [OpenedCardWallet.isDisconnectedUntilFirstPass]).
+     */
+    private var isDisconnectedUntilFirstPass = false
+
+    /**
+     * Whether the open card wallet has reported a sync failure through
+     * [Synchronizer.onProcessorErrorHandler]. Tracked only for a wallet that
+     * [isDisconnectedUntilFirstPass], for which it tells a failed attempt to reach the server from
+     * the idle wait before the first pass.
+     */
+    private val processorErrorReported = MutableStateFlow(false)
 
     private class CriticalError(
         val cause: Throwable?
@@ -236,15 +252,17 @@ class GiftCardRedeemer private constructor(
      *
      * The first call scans the chain from the card's birthday, which needs network access and
      * may take a while for an old card. The wallet starts exactly at [GiftCard.birthdayHeight],
-     * using the tree state fetched from [lightWalletEndpoint]; if the server cannot provide it,
-     * the scan starts at the nearest bundled checkpoint below it instead, which takes longer.
+     * using the tree state fetched from [lightWalletEndpoint], when its engine supports that; if
+     * the server cannot provide it, or the engine always starts a restored wallet at a bundled
+     * checkpoint (as the Slipstream engine does), the scan starts at the nearest bundled checkpoint
+     * below it instead, which takes longer.
      * Later calls reuse the synced wallet and return quickly, so polling a [Status.Pending] card
      * is cheap.
      *
      * A card wallet that started exactly at the birthday and found no transaction at all (as
      * opposed to funds received and then spent) is scanned once more from the bundled checkpoint
      * below the birthday before the card is reported [Status.Empty], in case the link's height
-     * was above the card's funding.
+     * was above the card's funding. A card wallet that started at the checkpoint is not rescanned.
      *
      * A card that looks redeemable is checked against the fee its actual notes require (see
      * [Status.Ready.fee]), so [Status.Ready] means that [redeem] can send something.
@@ -258,9 +276,9 @@ class GiftCardRedeemer private constructor(
      * [DEFAULT_DISCONNECTED_TIMEOUT], or [DEFAULT_TOR_DISCONNECTED_TIMEOUT] over Tor. A failure to reach the server
      * while the card wallet starts counts as being disconnected, not as an unrecoverable error.
      *
-     * @throws GiftCardException.SyncFailed if the temporary wallet could not be created, did
-     * not sync within [timeout], stayed disconnected for [disconnectedTimeout], or stopped on an
-     * unrecoverable error. The cause, if any, is attached.
+     * @throws GiftCardException.SyncFailed if the temporary wallet could not be created or set
+     * up, did not sync within [timeout], stayed disconnected for [disconnectedTimeout], or stopped
+     * on an unrecoverable error. The cause, if any, is attached.
      * @throws GiftCardException.InUse if another redeemer in this process is using the same
      * temporary wallet.
      * @throws GiftCardException.Closed if [close] was called.
@@ -517,8 +535,8 @@ class GiftCardRedeemer private constructor(
      *
      * Always call this when done, including after a failure: it also lets another redeemer
      * for the same card be used. If the app is killed before it runs, the data is removed the
-     * next time a redeemer for the same card is used, or explicitly with
-     * [Synchronizer.eraseAlias] and [alias]; [storedAliases] lists the card wallets left on the
+     * next time a redeemer for the same card is used, or explicitly with `GiftCardRedeemers.erase`
+     * from the SDK incubator and [alias]; [storedAliases] lists the card wallets left on the
      * device.
      *
      * A [check] in progress is cancelled, so this returns promptly; a [redeem] in progress is
@@ -594,6 +612,14 @@ class GiftCardRedeemer private constructor(
                 }
             }
         this.isBirthdayExact = opened.startsAtBirthday
+        isDisconnectedUntilFirstPass = opened.isDisconnectedUntilFirstPass
+        processorErrorReported.update { false }
+        if (opened.isDisconnectedUntilFirstPass) {
+            opened.synchronizer.onProcessorErrorHandler = {
+                processorErrorReported.update { true }
+                true
+            }
+        }
         synchronizer = opened.synchronizer
         return opened.synchronizer
     }
@@ -619,8 +645,13 @@ class GiftCardRedeemer private constructor(
 
     /**
      * Waits until the card wallet is synced and returns its balance. Fails fast on a critical
-     * error, when the wallet stops, and when it stays [Synchronizer.Status.DISCONNECTED] for
-     * [disconnectedTimeout].
+     * error, on a setup error the wallet latched in [Synchronizer.setupError], when the wallet
+     * stops, and when it stays [Synchronizer.Status.DISCONNECTED] for [disconnectedTimeout].
+     *
+     * For a wallet that [isDisconnectedUntilFirstPass], [Synchronizer.Status.DISCONNECTED] counts as
+     * being disconnected only once the wallet has synced at least partly or has reported a failed
+     * attempt to reach the server; before that it is idle, waiting for its first pass, and only
+     * [timeout] bounds the wait.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     @Suppress("ThrowsCount")
@@ -630,10 +661,19 @@ class GiftCardRedeemer private constructor(
         timeout: Duration,
         disconnectedTimeout: Duration
     ): AccountBalance {
+        var isPastFirstPass = !isDisconnectedUntilFirstPass
         val statusUntilDisconnectedTooLong =
-            synchronizer.status.transformLatest { current ->
+            combine(synchronizer.status, processorErrorReported) { status, errorReported ->
+                status to errorReported
+            }.transformLatest { (current, errorReported) ->
                 emit(current)
-                if (current == Synchronizer.Status.DISCONNECTED) {
+                if (errorReported ||
+                    current == Synchronizer.Status.SYNCING ||
+                    current == Synchronizer.Status.SYNCED
+                ) {
+                    isPastFirstPass = true
+                }
+                if (current == Synchronizer.Status.DISCONNECTED && isPastFirstPass) {
                     delay(disconnectedTimeout)
                     throw GiftCardException.SyncFailed(null)
                 }
@@ -642,13 +682,15 @@ class GiftCardRedeemer private constructor(
             combine(
                 statusUntilDisconnectedTooLong,
                 synchronizer.walletBalances,
-                criticalError
-            ) { status, balances, error ->
+                criticalError,
+                synchronizer.setupError
+            ) { status, balances, error, setupError ->
                 error?.let { throw GiftCardException.SyncFailed(it.cause) }
+                setupError?.let { throw GiftCardException.SyncFailed(it) }
                 if (status == Synchronizer.Status.STOPPED) throw GiftCardException.SyncFailed(null)
                 balances?.get(account.accountUuid).takeIf { status == Synchronizer.Status.SYNCED }
             }.first { it != null }
-        } ?: throw GiftCardException.SyncFailed(criticalError.value?.cause)
+        } ?: throw GiftCardException.SyncFailed(criticalError.value?.cause ?: synchronizer.setupError.value)
     }
 
     companion object {
@@ -690,8 +732,9 @@ class GiftCardRedeemer private constructor(
          * The aliases of the card wallets whose data is stored on the device for [network], under
          * [defaultAlias]'s naming, whether or not a redeemer is using them. A card wallet whose
          * redeemer was never [close]d, for example because the app was killed, stays on the
-         * device until it is erased with [Synchronizer.eraseAlias]; this finds it. Do not erase
-         * the wallet of a redeemer that is still in use.
+         * device until it is erased with `GiftCardRedeemers.erase` from the SDK incubator; this
+         * finds it, whichever engine stored it: both lay out the wallet database the same way. Do
+         * not erase the wallet of a redeemer that is still in use.
          *
          * @param context any context; its application context is used.
          */
@@ -704,8 +747,11 @@ class GiftCardRedeemer private constructor(
                 .storedAliases(network, ALIAS_PREFIX)
 
         /**
-         * Creates a redeemer for [card]. Nothing is created on disk or the network until
-         * [check] or [redeem] is called.
+         * Creates a redeemer for [card] whose temporary wallet runs on [SdkSynchronizer]. Nothing is
+         * created on disk or the network until [check] or [redeem] is called.
+         *
+         * Deprecated because it ignores the engine the app syncs with: `GiftCardRedeemers.new` from
+         * the SDK incubator takes the same arguments and runs the temporary wallet on that engine.
          *
          * @param context any context; its application context is used.
          * @param card the card to redeem.
@@ -722,6 +768,11 @@ class GiftCardRedeemer private constructor(
          * @throws GiftCardException.NetworkMismatch if [card] is not for [network].
          * @throws IllegalArgumentException if [alias] is not a valid, non-default alias.
          */
+        @Deprecated(
+            message =
+                "Always runs the card wallet on SdkSynchronizer, whatever engine the app syncs with. " +
+                    "Use GiftCardRedeemers.new from the SDK incubator, which runs it on the app's engine."
+        )
         @Suppress("LongParameterList")
         fun new(
             context: Context,
@@ -896,10 +947,17 @@ internal interface GiftCardWallets {
  * @property startsAtBirthday whether it starts exactly at the card's birthday; `false` when it
  * starts at the bundled checkpoint below it, whether asked to or because the exact tree state
  * was not available.
+ * @property isDisconnectedUntilFirstPass whether its synchronizer reports
+ * [Synchronizer.Status.DISCONNECTED] while it is merely idle, after it has started and before its
+ * first sync pass, as the Slipstream engine does. Such a wallet reports a failed attempt to reach the
+ * server through [Synchronizer.onProcessorErrorHandler], which [GiftCardRedeemer] then takes over
+ * (answering `true`, to retry). `false` for a wallet that reports DISCONNECTED only when it cannot
+ * reach the server.
  */
 internal class OpenedCardWallet(
     val synchronizer: CloseableSynchronizer,
-    val startsAtBirthday: Boolean
+    val startsAtBirthday: Boolean,
+    val isDisconnectedUntilFirstPass: Boolean = false
 )
 
 /**

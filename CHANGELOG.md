@@ -69,8 +69,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Throws `TransactionEncoderException.InsufficientFundsException` when nothing is spendable or
   the spendable balance does not exceed the fee; the backend reports that case as a typed
   error, so it does not depend on the wording of its message. The default implementation throws
-  `UnsupportedOperationException`; the SDK's default synchronizer implements it, the
-  Slipstream synchronizer does not yet.
+  `UnsupportedOperationException`; the SDK's default synchronizer and the Slipstream
+  synchronizer implement it.
 - `GiftCardRedeemer.Status.Ready` carries `fee`, the ZIP 317 fee a redemption pays for the
   card's actual notes, and `redeemable`, the spendable balance minus that fee. `check()`
   proposes the redemption to find that fee, so a card whose notes need more than the
@@ -107,8 +107,38 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wallet under one alias (databases, block cache and its stored submit plans) without clearing
   the preferences shared by every wallet in the process, unlike `Synchronizer.erase`. The
   synchronizer for that alias must be closed first.
+- `GiftCardRedeemers` in the incubator: `new(context, card, network, lightWalletEndpoint,
+  isTorEnabled, alias = GiftCardRedeemer.defaultAlias(card))` creates a `GiftCardRedeemer`
+  whose temporary card wallet runs on the same sync engine as `WalletCoordinator`'s main
+  wallet. On the Slipstream engine the card wallet is a second `SlipstreamSynchronizer` under
+  the card's alias, beside the main one, with its own database and engine; it starts at the
+  bundled checkpoint at or below the card's birthday, so it is never rescanned. `storedAliases`
+  lists the card wallets left on the device, and `erase(context, network, alias)` deletes one,
+  including any files an earlier engine left under the same alias, without starting a
+  synchronizer; it refuses the main wallet's alias.
+- `SlipstreamSynchronizer.eraseAlias(appContext, network, alias)`, which deletes a helper
+  wallet's Slipstream database and submit plans together with whatever an `SdkSynchronizer` left
+  under the same alias, by deleting files only, while no Slipstream synchronizer can open the
+  alias. It refuses the main wallet's alias.
+- `SlipstreamSynchronizer.new` takes `engineMemoryFraction` (default `FULL_ENGINE_MEMORY`, the
+  whole device): the share of the device's memory the engine plans with. A gift card wallet's
+  engine uses half, so it never gets a larger budget than the main wallet's and gets the
+  engine's small-device budget on devices below twice the engine's threshold.
 
 ### Changed
+- `GiftCardRedeemer.new` is deprecated: it always runs the card wallet on `SdkSynchronizer`,
+  whatever engine the app syncs with. Use `GiftCardRedeemers.new` from the incubator.
+- `GiftCardRedeemer.check` fails at once with `GiftCardException.SyncFailed`, carrying the
+  failure, when the card wallet latches a setup error (`Synchronizer.setupError`), as the
+  Slipstream engine does instead of throwing out of its creation. A card wallet on the
+  Slipstream engine reports `DISCONNECTED` while idle before its first sync pass; that no longer
+  counts towards `disconnectedTimeout`, which starts only once the wallet has synced or has
+  failed to reach the server.
+- `SlipstreamSynchronizer.erase` also deletes the wallet's submit-plan preferences, so an erased
+  wallet leaves no record of its transactions behind.
+- The Slipstream synchronizer downloads the Sapling parameters only for a proposal that spends
+  or creates a Sapling note, as the default synchronizer already did; an Orchard-only send, such
+  as a gift card redemption, never fetches them.
 - `Synchronizer.createProposedTransactions` and `Broadcaster.createProposedTransactions` take
   an `ovkPolicy: OvkPolicy = OvkPolicy.Sender` parameter. Existing call sites compile
   unchanged and keep the previous behavior. Any implementer or test fake of `Synchronizer` or

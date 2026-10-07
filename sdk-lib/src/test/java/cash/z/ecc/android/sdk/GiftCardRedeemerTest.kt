@@ -66,6 +66,8 @@ import kotlin.time.Duration.Companion.seconds
 class GiftCardRedeemerTest {
     private val endpoint = GIFT_CARD_TEST_ENDPOINT
 
+    /** Still covers the deprecated, SdkSynchronizer-only entry point, which keeps validating its arguments. */
+    @Suppress("DEPRECATION")
     @Test
     fun defaultAliasIsValidUniquePerCardAndNeverTheDefault() {
         val alias = GiftCardRedeemer.defaultAlias(card())
@@ -80,6 +82,8 @@ class GiftCardRedeemerTest {
         assertEquals(ZcashNetwork.Mainnet, redeemer.network)
     }
 
+    /** Still covers the deprecated, SdkSynchronizer-only entry point, which keeps validating its arguments. */
+    @Suppress("DEPRECATION")
     @Test
     fun rejectsTheDefaultAliasAndInvalidAliases() {
         listOf(ZcashSdk.DEFAULT_ALIAS, "", "a/b", "x".repeat(ZcashSdk.ALIAS_MAX_LENGTH + 1)).forEach { alias ->
@@ -96,6 +100,8 @@ class GiftCardRedeemerTest {
         }
     }
 
+    /** Still covers the deprecated, SdkSynchronizer-only entry point, which keeps validating its arguments. */
+    @Suppress("DEPRECATION")
     @Test
     fun rejectsACardForAnotherNetwork() {
         assertFailsWith<GiftCardException.NetworkMismatch> {

@@ -21,6 +21,8 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.PercentDecimal
+import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.WalletBalance
@@ -71,6 +73,7 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.timeout
 import org.mockito.Mockito.verify
+import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -79,6 +82,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -124,6 +128,44 @@ class SlipstreamSynchronizerLifecycleTest {
             }
         } finally {
             InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun propose_send_max_delegates_to_the_spend_service() {
+        val spendService = mock(SlipstreamSpendService::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(key = key, spendService = spendService)
+        val account = Account.new(AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES)))
+        val recipient = mock(RecipientAddress::class.java)
+        `when`(recipient.network).thenReturn(key.network)
+        val proposal = mock(Proposal::class.java)
+        try {
+            runBlocking {
+                `when`(spendService.proposeSendMax(account, recipient, null)).thenReturn(proposal)
+
+                assertSame(proposal, synchronizer.proposeSendMax(account, recipient, null))
+            }
+        } finally {
+            synchronizer.close()
+        }
+    }
+
+    @Test
+    fun propose_send_max_rejects_a_recipient_on_another_network_before_proposing() {
+        val spendService = mock(SlipstreamSpendService::class.java)
+        val key = newKey()
+        val synchronizer = buildSynchronizer(key = key, spendService = spendService)
+        val account = Account.new(AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES)))
+        val recipient = mock(RecipientAddress::class.java)
+        `when`(recipient.network).thenReturn(ZcashNetwork.Mainnet)
+        try {
+            runBlocking {
+                assertFailsWith<IllegalArgumentException> { synchronizer.proposeSendMax(account, recipient, null) }
+            }
+            verifyNoInteractions(spendService)
+        } finally {
+            synchronizer.close()
         }
     }
 
@@ -1791,7 +1833,8 @@ class SlipstreamSynchronizerLifecycleTest {
         engineStatusOverride: MutableStateFlow<Synchronizer.Status>? = null,
         lastSnapshotOverride: MutableStateFlow<SlipstreamSnapshot?>? = null,
         walletBalancesOverride: MutableStateFlow<Map<AccountUuid, AccountBalance>?>? = null,
-        prepareInputs: PrepareInputs? = null
+        prepareInputs: PrepareInputs? = null,
+        spendService: SlipstreamSpendService = mock(SlipstreamSpendService::class.java)
     ): SlipstreamSynchronizer {
         `when`(engine.status).thenReturn(engineStatusOverride ?: MutableStateFlow(Synchronizer.Status.SYNCED))
         `when`(engine.progress).thenReturn(MutableStateFlow(PercentDecimal.ZERO_PERCENT))
@@ -1820,7 +1863,7 @@ class SlipstreamSynchronizerLifecycleTest {
             fastestServerFetcher = mock(FastestServerFetcher::class.java),
             transactionReader = mock(SlipstreamTransactionReader::class.java),
             transactionsController = transactionsController,
-            spendService = mock(SlipstreamSpendService::class.java),
+            spendService = spendService,
             broadcasterImpl = mock(SlipstreamBroadcaster::class.java),
             resubmissionTicker = resubmissionTicker,
             startBirthday = startBirthday,

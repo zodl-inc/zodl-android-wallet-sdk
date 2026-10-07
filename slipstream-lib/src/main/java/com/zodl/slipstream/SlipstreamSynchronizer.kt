@@ -50,12 +50,14 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FetchFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.ObserveFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RawTransaction
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
 import cash.z.ecc.android.sdk.model.TransactionId
@@ -90,6 +92,7 @@ import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.internal.SlipstreamKey
 import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
 import com.zodl.slipstream.internal.db.TransactionsController
+import com.zodl.slipstream.internal.engineMemoryHint
 import com.zodl.slipstream.internal.newestBundledCheckpointHeight
 import com.zodl.slipstream.internal.resolveIntent
 import com.zodl.slipstream.internal.runCatchingCancellable
@@ -99,6 +102,7 @@ import com.zodl.slipstream.internal.spend.SaplingParams
 import com.zodl.slipstream.internal.spend.SlipstreamBroadcaster
 import com.zodl.slipstream.internal.spend.SlipstreamSpendService
 import com.zodl.slipstream.internal.spend.SubmitPlanStore
+import com.zodl.slipstream.internal.spend.submitPlanPreferencesName
 import com.zodl.slipstream.internal.toProcessorInfo
 import com.zodl.slipstream.internal.validateAlias
 import io.ktor.client.HttpClient
@@ -991,6 +995,27 @@ class SlipstreamSynchronizer internal constructor(
         return spendService.proposeTransfer(account, recipient, amount, memo)
     }
 
+    /**
+     * The send-max proposal [Synchronizer.proposeSendMax] documents, over the same backend call the
+     * upstream `SdkSynchronizer` uses: the account's entire spendable shielded balance, minus the ZIP
+     * 317 fee, to [recipient]. Transparent funds are not swept.
+     *
+     * @throws IllegalArgumentException if [recipient] is for another network.
+     * @throws cash.z.ecc.android.sdk.exception.TransactionEncoderException.InsufficientFundsException
+     * if nothing is spendable, or the spendable balance does not cover the fee.
+     * @throws cash.z.ecc.android.sdk.exception.TransactionEncoderException.ProposalFromParametersException
+     * if the proposal cannot be created for any other reason.
+     */
+    override suspend fun proposeSendMax(
+        account: Account,
+        recipient: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal {
+        require(recipient.network == network) { "The recipient is for a different network" }
+        awaitReady()
+        return spendService.proposeSendMax(account, recipient, memo)
+    }
+
     override suspend fun proposeFulfillingPaymentUri(
         account: Account,
         uri: String
@@ -1759,6 +1784,15 @@ class SlipstreamSynchronizer internal constructor(
          *
          * Runs on `Dispatchers.IO`: even the cheap wiring touches disk, and callers include
          * `Dispatchers.Main` scopes, so dispatching here keeps every caller agnostic to that.
+         *
+         * [engineMemoryFraction] is the one parameter `Synchronizer.new` does not have: the share of
+         * the device's RAM this instance's engine may plan with. The main wallet keeps the default,
+         * the whole device; a helper wallet running beside it (such as a gift card's temporary
+         * wallet) passes less, so that its engine never gets a larger budget than the main one and
+         * gets the engine's smaller, small-device budget sooner (see [engineMemoryHint]).
+         *
+         * @param engineMemoryFraction in `(0, 1]`; [FULL_ENGINE_MEMORY] by default.
+         * @throws IllegalArgumentException if [engineMemoryFraction] is not in `(0, 1]`.
          */
         suspend fun new(
             alias: String = ZcashSdk.DEFAULT_ALIAS,
@@ -1769,9 +1803,13 @@ class SlipstreamSynchronizer internal constructor(
             walletInitMode: WalletInitMode,
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
-            isExchangeRateEnabled: Boolean
+            isExchangeRateEnabled: Boolean,
+            engineMemoryFraction: Float = FULL_ENGINE_MEMORY
         ): CloseableSynchronizer {
             validateAlias(alias)
+            require(engineMemoryFraction > 0f && engineMemoryFraction <= 1f) {
+                "The engine memory fraction must be in (0, 1]"
+            }
             val applicationContext = context.applicationContext
             val key = SlipstreamKey(zcashNetwork, alias)
             InstanceGuard.acquire(key)
@@ -1787,6 +1825,7 @@ class SlipstreamSynchronizer internal constructor(
                         zcashNetwork = zcashNetwork,
                         isTorEnabled = isTorEnabled,
                         isExchangeRateEnabled = isExchangeRateEnabled,
+                        engineMemoryFraction = engineMemoryFraction,
                         key = key
                     )
                 }
@@ -1812,6 +1851,7 @@ class SlipstreamSynchronizer internal constructor(
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean,
+            engineMemoryFraction: Float,
             key: SlipstreamKey
         ): CloseableSynchronizer {
             SlipstreamNative.ensureLoaded(logLevel = "info")
@@ -1936,7 +1976,7 @@ class SlipstreamSynchronizer internal constructor(
 
             val submitPlanPreferences =
                 applicationContext.getSharedPreferences(
-                    "com.zodl.slipstream.submit_plan_${zcashNetwork.id}_$alias",
+                    submitPlanPreferencesName(zcashNetwork.id, alias),
                     Context.MODE_PRIVATE
                 )
             val broadcaster =
@@ -2002,7 +2042,7 @@ class SlipstreamSynchronizer internal constructor(
                             .treeState()
                     },
                     dbWalletSummary = { typesafeBackend.getWalletSummary() },
-                    totalMemoryBytes = memoryInfo.totalMem
+                    totalMemoryBytes = engineMemoryHint(memoryInfo.totalMem, engineMemoryFraction)
                 )
 
             return SlipstreamSynchronizer(
@@ -2062,36 +2102,94 @@ class SlipstreamSynchronizer internal constructor(
             }
 
         /**
-         * Deletes `data.sqlite3` + `-wal` + `-shm`; refuses while an instance is `Active`. No
-         * separate on-disk block cache directory to delete alongside it - every persisted fact
-         * Slipstream keeps lives inside `data.sqlite3` itself.
+         * Deletes `data.sqlite3` + `-wal` + `-shm` and the wallet's submit-plan preferences (the
+         * store [SlipstreamBroadcaster] records created and submitted transactions in); refuses
+         * while an instance is `Active`. No separate on-disk block cache directory to delete
+         * alongside it - every other persisted fact Slipstream keeps lives inside `data.sqlite3`
+         * itself. Only [alias]'s files and preferences are touched.
          *
          * Like `SdkSynchronizer.erase`, this awaits an in-flight shutdown of the same key before
          * deleting, and holds the [InstanceGuard] mutex across the deletion. That await is what
          * makes the reset path safe: [close] marks the key shutting down synchronously, but the
          * engine teardown that drops the database handles runs asynchronously afterwards, and
          * unlinking the files under a live engine mmap is corruption territory.
+         *
+         * @return true when none of the wallet's files or preferences remain.
+         * @throws IllegalStateException if a synchronizer for [network] and [alias] is active.
          */
         suspend fun erase(
             appContext: Context,
             network: ZcashNetwork,
             alias: String = ZcashSdk.DEFAULT_ALIAS
+        ): Boolean = eraseGuarded(appContext, network, alias, eraseLegacyLayout = null)
+
+        /**
+         * Deletes the local data of the helper wallet at [network] and [alias] - never the main
+         * wallet's, which [alias] may therefore not name: everything [erase] deletes, plus whatever
+         * an `SdkSynchronizer` left under the same alias (its compact block cache, its pending
+         * transactions database and its submit plans in the SDK's encrypted preferences), as
+         * `Synchronizer.eraseAlias` deletes them. Both are file-level deletions: no synchronizer of
+         * either engine is created or started. The legacy deletion runs under the same
+         * [InstanceGuard] hold as this engine's own, so no Slipstream instance can open the alias in
+         * between.
+         *
+         * Use it to dispose of a temporary wallet, such as a gift card's, while the main wallet keeps
+         * running; unlike `Synchronizer.erase`, nothing shared by every wallet in the process is
+         * cleared.
+         *
+         * @return true when none of this engine's files or preferences for the wallet remain; what
+         * the legacy deletion found is not part of the result.
+         * @throws IllegalArgumentException if [alias] is not a valid alias, or is
+         * [ZcashSdk.DEFAULT_ALIAS].
+         * @throws IllegalStateException if a synchronizer for [network] and [alias] is active.
+         */
+        suspend fun eraseAlias(
+            appContext: Context,
+            network: ZcashNetwork,
+            alias: String
+        ): Boolean {
+            validateAlias(alias)
+            require(alias != ZcashSdk.DEFAULT_ALIAS) { "eraseAlias never erases the main wallet" }
+            return eraseGuarded(appContext, network, alias) {
+                Synchronizer.eraseAlias(appContext, network, alias)
+            }
+        }
+
+        /**
+         * [erase] and [eraseAlias]: deletes this engine's files and preferences for [alias], then runs
+         * [eraseLegacyLayout], if given, all while [InstanceGuard] holds the key inactive.
+         */
+        internal suspend fun eraseGuarded(
+            appContext: Context,
+            network: ZcashNetwork,
+            alias: String,
+            eraseLegacyLayout: (suspend () -> Unit)?
         ): Boolean {
             val key = SlipstreamKey(network, alias)
             return InstanceGuard.withKeyInactive(key) {
-                withContext(Dispatchers.IO) {
-                    val dbFile =
-                        DataDbPath.dataDbFile(
-                            appContext.applicationContext.getNoBackupFilesDirSuspend(),
-                            alias,
-                            network
-                        )
-                    val walFile = File("${dbFile.path}-wal")
-                    val shmFile = File("${dbFile.path}-shm")
-                    listOf(dbFile, walFile, shmFile).map { !it.exists() || it.delete() }.all { it }
-                }
+                val applicationContext = appContext.applicationContext
+                val deleted =
+                    withContext(Dispatchers.IO) {
+                        val dbFile =
+                            DataDbPath.dataDbFile(
+                                applicationContext.getNoBackupFilesDirSuspend(),
+                                alias,
+                                network
+                            )
+                        val walFile = File("${dbFile.path}-wal")
+                        val shmFile = File("${dbFile.path}-shm")
+                        val filesDeleted = listOf(dbFile, walFile, shmFile).map { !it.exists() || it.delete() }.all { it }
+                        val preferencesDeleted =
+                            applicationContext.deleteSharedPreferences(submitPlanPreferencesName(network.id, alias))
+                        filesDeleted && preferencesDeleted
+                    }
+                eraseLegacyLayout?.invoke()
+                deleted
             }
         }
+
+        /** The default `engineMemoryFraction` of [new]: the engine plans with the whole device. */
+        const val FULL_ENGINE_MEMORY: Float = 1f
 
         private const val ENGINE_TOR_SUBDIR = "slipstream_tor"
     }

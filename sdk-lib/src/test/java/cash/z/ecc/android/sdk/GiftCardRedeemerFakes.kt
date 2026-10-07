@@ -39,7 +39,8 @@ import kotlin.test.assertIs
 /**
  * The card wallet: [status], one account holding [spendable] and [pending], [history]
  * transactions, one proposal paying [fee] and sending [sent] (by default [spendable] minus
- * [fee]), and whatever [submitResult] says about each transaction.
+ * [fee]), and whatever [submitResult] says about each transaction. [setupError] is the setup
+ * failure it has latched, if any.
  */
 @Suppress("LongParameterList")
 internal class FakeCardWallet(
@@ -63,6 +64,8 @@ internal class FakeCardWallet(
 
     override val network: ZcashNetwork = ZcashNetwork.Mainnet
     override var onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null
+    override var onProcessorErrorHandler: ((Throwable?) -> Boolean)? = null
+    override val setupError: MutableStateFlow<Throwable?> = MutableStateFlow(null)
     override val walletBalances: MutableStateFlow<Map<AccountUuid, AccountBalance>?> =
         MutableStateFlow(
             mapOf(AccountFixture.new().accountUuid to cardAccountBalance(available = spendable, pending = pending))
@@ -120,12 +123,14 @@ internal class FakeCardWallet(
 /**
  * Opens [cardWallets] in turn (the last one again once they run out). [onOpen] runs while a
  * wallet is being opened, with the critical error handler the redeemer passed. A wallet asked
- * to start exactly at the birthday does so only when [isExactBirthdayAvailable].
+ * to start exactly at the birthday does so only when [isExactBirthdayAvailable]. Every wallet
+ * reports [isDisconnectedUntilFirstPass], as the Slipstream engine's do.
  */
 internal class FakeWallets(
     private val cardWallets: List<FakeCardWallet>,
     private val openFailure: Exception? = null,
     private val isExactBirthdayAvailable: Boolean = true,
+    private val isDisconnectedUntilFirstPass: Boolean = false,
     private val onOpen: suspend ((Throwable?) -> Boolean) -> Unit = {}
 ) : GiftCardWallets {
     constructor(cardWallet: FakeCardWallet, openFailure: Exception? = null) :
@@ -162,7 +167,8 @@ internal class FakeWallets(
         opened.complete(Unit)
         return OpenedCardWallet(
             synchronizer = cardWallets.getOrElse(exactBirthdays.size - 1) { cardWallets.last() },
-            startsAtBirthday = isBirthdayExact && isExactBirthdayAvailable
+            startsAtBirthday = isBirthdayExact && isExactBirthdayAvailable,
+            isDisconnectedUntilFirstPass = isDisconnectedUntilFirstPass
         )
     }
 

@@ -2,6 +2,8 @@ package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
 import cash.z.ecc.android.sdk.CloseableSynchronizer
+import cash.z.ecc.android.sdk.GiftCardWallets
+import cash.z.ecc.android.sdk.OpenedCardWallet
 import cash.z.ecc.android.sdk.Synchronizer
 import cash.z.ecc.android.sdk.WalletInitMode
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
@@ -45,4 +47,39 @@ private object DefaultEngineFactory : SynchronizerEngineFactory {
         appContext: Context,
         network: ZcashNetwork
     ): Boolean = true
+
+    /**
+     * The helper wallet runs on [Synchronizer.new], exactly as [GiftCardWallets.Default] opens it:
+     * it can start exactly at [birthday]. This engine has no memory budget to share, so
+     * [engineMemoryFraction] is not used.
+     */
+    override suspend fun openHelperWallet(
+        context: Context,
+        zcashNetwork: ZcashNetwork,
+        alias: String,
+        birthday: BlockHeight,
+        isBirthdayExact: Boolean,
+        lightWalletEndpoint: LightWalletEndpoint,
+        setup: AccountCreateSetup,
+        isTorEnabled: Boolean,
+        onCriticalError: (Throwable?) -> Boolean,
+        engineMemoryFraction: Float,
+    ): OpenedCardWallet =
+        GiftCardWallets.Default.open(
+            context = context,
+            network = zcashNetwork,
+            alias = alias,
+            birthday = birthday,
+            isBirthdayExact = isBirthdayExact,
+            lightWalletEndpoint = lightWalletEndpoint,
+            isTorEnabled = isTorEnabled,
+            setup = setup,
+            onCriticalError = onCriticalError
+        )
+
+    override suspend fun eraseHelperWallet(
+        appContext: Context,
+        network: ZcashNetwork,
+        alias: String
+    ): Boolean = Synchronizer.eraseAlias(appContext, network, alias)
 }

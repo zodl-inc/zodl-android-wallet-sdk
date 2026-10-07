@@ -32,6 +32,10 @@ android {
     sourceSets.getByName("main") {
         java.srcDir(if (isSlipstreamEnabled) "src/engineSlipstream/java" else "src/engineDefault/java")
     }
+    // The unit tests of the selected engine's sources follow the same switch.
+    sourceSets.getByName("test") {
+        java.srcDir(if (isSlipstreamEnabled) "src/testEngineSlipstream/java" else "src/testEngineDefault/java")
+    }
 
     defaultConfig {
         consumerProguardFiles("proguard-consumer.txt")
@@ -56,6 +60,18 @@ android {
             matchingFallbacks += listOf("release")
         }
     }
+}
+
+/**
+ * The gift card redeemer's engine seam ([cash.z.ecc.android.sdk.GiftCardRedeemers]) implements
+ * sdk-lib's `internal` card wallet interface, the way slipstream-lib uses sdk-lib's `internal`
+ * declarations. Registering sdk-lib as a Kotlin friend module gives that access at compile time
+ * without widening sdk-lib's public API; the build directory prefix covers every variant and
+ * compilation (main and unit test).
+ */
+val sdkLibBuildDir = project(":sdk-lib").layout.buildDirectory
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    friendPaths.from(sdkLibBuildDir)
 }
 
 tasks.dokkaHtml.configure {
@@ -95,6 +111,8 @@ dependencies {
     testImplementation(libs.kotlin.reflect)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.bundles.junit)
+    testImplementation(libs.mockito.junit)
+    testImplementation(projects.backendLib)
 
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.junit)
