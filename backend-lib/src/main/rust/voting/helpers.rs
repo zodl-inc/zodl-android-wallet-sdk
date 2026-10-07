@@ -720,13 +720,15 @@ fn hotkey_unified_address(
         Some(orchard_address),
         None,
         None,
+        None,
+        None,
     )
     .ok_or_else(|| anyhow!("failed to build unified address from hotkey Orchard receiver"))?;
     let encode_network = match network {
         voting::types::Network::Mainnet => Network::MainNetwork,
         voting::types::Network::Testnet | voting::types::Network::Regtest => Network::TestNetwork,
     };
-    Ok(unified_address.encode(&encode_network))
+    Ok(unified_address.encode_receiver_preserving(&encode_network))
 }
 
 /// Builds the Kotlin bundle setup JNI model with width-checked Java primitives.

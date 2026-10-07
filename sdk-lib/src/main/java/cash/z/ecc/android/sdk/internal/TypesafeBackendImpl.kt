@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.exception.RustLayerException
+import cash.z.ecc.android.sdk.internal.ext.clearContents
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.JniSubtreeRoot
 import cash.z.ecc.android.sdk.internal.model.RewindResult
@@ -48,8 +49,8 @@ internal class TypesafeBackendImpl(
         seed: FirstClassByteArray,
         treeState: TreeState,
         recoverUntil: BlockHeight?
-    ): AccountUsk =
-        AccountUsk.new(
+    ): AccountUsk {
+        val jniAccountUsk =
             backend.createAccount(
                 accountName = accountName,
                 keySource = keySource,
@@ -57,7 +58,12 @@ internal class TypesafeBackendImpl(
                 treeState = treeState.encoded,
                 recoverUntil = recoverUntil?.value
             )
-        )
+        return try {
+            AccountUsk.new(jniAccountUsk)
+        } finally {
+            jniAccountUsk.bytes.clearContents()
+        }
+    }
 
     override suspend fun importAccountUfvk(
         recoverUntil: BlockHeight?,
@@ -167,13 +173,19 @@ internal class TypesafeBackendImpl(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
         ovkPolicy: OvkPolicy
-    ): List<FirstClassByteArray> =
-        backend
-            .createProposedTransactions(
-                proposal.toUnsafe(),
-                usk.copyBytes(),
-                discardOvk = ovkPolicy == OvkPolicy.Discard
-            ).map { FirstClassByteArray(it) }
+    ): List<FirstClassByteArray> {
+        val uskBytes = usk.copyBytes()
+        return try {
+            backend
+                .createProposedTransactions(
+                    proposal.toUnsafe(),
+                    uskBytes,
+                    discardOvk = ovkPolicy == OvkPolicy.Discard
+                ).map { FirstClassByteArray(it) }
+        } finally {
+            uskBytes.clearContents()
+        }
+    }
 
     override suspend fun proposalRequiresSaplingProofs(proposal: Proposal): Boolean =
         backend.proposalRequiresSaplingProofs(proposal.toUnsafe())

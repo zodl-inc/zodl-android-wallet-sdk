@@ -5,6 +5,7 @@ package com.zodl.slipstream.internal.spend
 import cash.z.ecc.android.sdk.exception.PcztException
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.internal.Backend
+import cash.z.ecc.android.sdk.internal.ext.clearContents
 import cash.z.ecc.android.sdk.internal.ext.requireSingleStepForPczt
 import cash.z.ecc.android.sdk.internal.ext.toProposalException
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
@@ -127,12 +128,17 @@ internal class SlipstreamSpendService(
     ): Flow<TransactionSubmitResult> =
         flow {
             ensureSaplingParams()
+            val uskBytes = usk.copyBytes()
             val txIds =
-                backend.createProposedTransactions(
-                    proposal.toUnsafe(),
-                    usk.copyBytes(),
-                    discardOvk = ovkPolicy == OvkPolicy.Discard
-                )
+                try {
+                    backend.createProposedTransactions(
+                        proposal.toUnsafe(),
+                        uskBytes,
+                        discardOvk = ovkPolicy == OvkPolicy.Discard
+                    )
+                } finally {
+                    uskBytes.clearContents()
+                }
             engine.notifyTxChange()
             for (txId in txIds) {
                 val txIdBytes = FirstClassByteArray(txId)

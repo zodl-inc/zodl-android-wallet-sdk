@@ -71,7 +71,7 @@ impl SpendProver for NoSaplingProver {
         panic!("{}", NO_SAPLING_PROVER)
     }
 
-    fn create_proof<R: rand::RngCore>(&self, _circuit: Spend, _rng: &mut R) -> Self::Proof {
+    fn create_proof<R: rand::Rng>(&self, _circuit: Spend, _rng: &mut R) -> Self::Proof {
         panic!("{}", NO_SAPLING_PROVER)
     }
 
@@ -93,7 +93,7 @@ impl OutputProver for NoSaplingProver {
         panic!("{}", NO_SAPLING_PROVER)
     }
 
-    fn create_proof<R: rand::RngCore>(&self, _circuit: Output, _rng: &mut R) -> Self::Proof {
+    fn create_proof<R: rand::Rng>(&self, _circuit: Output, _rng: &mut R) -> Self::Proof {
         panic!("{}", NO_SAPLING_PROVER)
     }
 
@@ -163,8 +163,10 @@ mod tests {
         let sk = orchard::keys::SpendingKey::from_bytes([9; 32]).unwrap();
         let address = orchard::keys::FullViewingKey::from(&sk)
             .address_at(0u32, orchard::keys::Scope::External);
-        Address::from(UnifiedAddress::from_receivers(Some(address), None, None).unwrap())
-            .to_zcash_address(st.network())
+        Address::from(
+            UnifiedAddress::from_receivers(Some(address), None, None, None, None).unwrap(),
+        )
+        .to_zcash_address(st.network())
     }
 
     /// The same call `send_max::propose_send_max` makes, against the test wallet.
@@ -209,6 +211,7 @@ mod tests {
 
         let usk = st.test_account().unwrap().usk().clone();
         let network = *st.network();
+        let clock = st.clock().clone();
         let txids = create_proposed_transactions::<
             _,
             _,
@@ -219,6 +222,8 @@ mod tests {
         >(
             st.wallet_mut(),
             &network,
+            &clock,
+            &mut crate::system_rng(),
             &NoSaplingProver,
             &NoSaplingProver,
             &SpendingKeys::from_unified_spending_key(usk),
