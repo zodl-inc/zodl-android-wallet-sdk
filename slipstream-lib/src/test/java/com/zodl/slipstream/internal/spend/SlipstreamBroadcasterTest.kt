@@ -4,6 +4,7 @@ import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.model.ProposalUnsafe
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
@@ -13,8 +14,12 @@ import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.never
+import org.mockito.Mockito.verify
+import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
 import java.io.File
+import java.io.IOException
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -77,11 +82,81 @@ class SlipstreamBroadcasterTest {
             )
         }
 
+    @Test
+    fun anOrchardOnlyProposalNeverFetchesTheSaplingParameters() =
+        runBlocking<Unit> {
+            val fixture = Fixture()
+            fixture.createsTheTransactionDiscardingTheOvk()
+
+            fixture.broadcaster.createProposedTransactions(fixture.proposal, fixture.usk, OvkPolicy.Discard)
+
+            assertEquals(0, fixture.saplingParamFetches)
+        }
+
+    @Test
+    fun aSaplingProposalFetchesTheSaplingParametersOnceBeforeCreating() =
+        runBlocking<Unit> {
+            val fixture = Fixture(requiresSapling = true)
+            `when`(fixture.backend.createProposedTransactions(fixture.proposalUnsafe, fixture.uskBytes))
+                .thenAnswer {
+                    assertEquals(1, fixture.saplingParamFetches, "the parameters must be in place before creating")
+                    listOf(TX_ID)
+                }
+            `when`(fixture.transactionReader.readCreatedTransaction(FirstClassByteArray(TX_ID)))
+                .thenReturn(fixture.created)
+
+            fixture.broadcaster.createProposedTransactions(fixture.proposal, fixture.usk)
+
+            assertEquals(1, fixture.saplingParamFetches)
+        }
+
+    @Test
+    fun aFailedSaplingParameterFetchFailsTheCreationBeforeTheBackendCreatesAnything() =
+        runBlocking<Unit> {
+            val failure = IOException("download.z.cash unreachable")
+            val fixture = Fixture(requiresSapling = true, saplingParamFailure = failure)
+
+            val thrown =
+                assertFailsWith<IOException> {
+                    fixture.broadcaster.createProposedTransactions(fixture.proposal, fixture.usk)
+                }
+
+            assertSame(failure, thrown)
+            verify(fixture.backend, never()).createProposedTransactions(fixture.proposalUnsafe, fixture.uskBytes)
+            verifyNoInteractions(fixture.planStore)
+        }
+
+    @Test
+    fun aDiscardedOutgoingViewingKeyReachesTheBackend() =
+        runBlocking<Unit> {
+            val fixture = Fixture()
+            fixture.createsTheTransactionDiscardingTheOvk()
+
+            val results =
+                fixture.broadcaster.createProposedTransactions(fixture.proposal, fixture.usk, OvkPolicy.Discard)
+
+            assertEquals(listOf(fixture.created), results)
+            verify(fixture.backend).createProposedTransactions(fixture.proposalUnsafe, fixture.uskBytes, true)
+            verify(fixture.backend, never()).createProposedTransactions(fixture.proposalUnsafe, fixture.uskBytes, false)
+        }
+
     /**
-     * Shared mocks/fixtures for both tests above, wired the same way
+     * Shared mocks/fixtures for the tests above, wired the same way
      * [SlipstreamSpendServiceOrderingTest] wires its own.
      */
-    private class Fixture {
+    private class Fixture(
+        requiresSapling: Boolean = false,
+        private val saplingParamFailure: Exception? = null
+    ) {
+        var saplingParamFetches = 0
+
+        val created =
+            CreatedTransaction(
+                txId = FirstClassByteArray(TX_ID),
+                raw = FirstClassByteArray(RAW),
+                expiryHeight = null
+            )
+
         val backend: Backend = mock(Backend::class.java)
         val engine: SlipstreamEngine = mock(SlipstreamEngine::class.java)
         val planStore: SubmitPlanStore = mock(SubmitPlanStore::class.java)
@@ -92,6 +167,12 @@ class SlipstreamBroadcasterTest {
                 `when`(it.totalFeeRequired()).thenReturn(FEE)
             }
         val proposal: Proposal = Proposal.fromUnsafe(proposalUnsafe)
+
+        init {
+            runBlocking {
+                `when`(backend.proposalRequiresSaplingProofs(proposalUnsafe)).thenReturn(requiresSapling)
+            }
+        }
 
         val uskBytes: ByteArray = byteArrayOf(5, 6, 7, 8)
         val usk: UnifiedSpendingKey =
@@ -108,8 +189,18 @@ class SlipstreamBroadcasterTest {
                 planStore = planStore,
                 saplingParamsDir = File("unused"),
                 transactionReader = transactionReader,
-                ensureSaplingParams = { }
+                ensureSaplingParams = {
+                    saplingParamFetches++
+                    saplingParamFailure?.let { throw it }
+                }
             )
+
+        /** The backend creates [created] for [proposal] with the outgoing viewing key discarded. */
+        fun createsTheTransactionDiscardingTheOvk() =
+            runBlocking<Unit> {
+                `when`(backend.createProposedTransactions(proposalUnsafe, uskBytes, true)).thenReturn(listOf(TX_ID))
+                `when`(transactionReader.readCreatedTransaction(FirstClassByteArray(TX_ID))).thenReturn(created)
+            }
     }
 
     private companion object {

@@ -4,6 +4,7 @@ package com.zodl.slipstream.internal
 
 import cash.z.ecc.android.sdk.Synchronizer.Status
 import cash.z.ecc.android.sdk.internal.Twig
+import cash.z.ecc.android.sdk.internal.model.ConfirmationsPolicy
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -200,9 +201,9 @@ internal class SlipstreamEngine(
         val summary =
             SlipstreamNative.walletSummary(
                 handle = handle,
-                trustedConfirmations = TRUSTED,
-                untrustedConfirmations = UNTRUSTED,
-                allowZeroConfShielding = ALLOW_ZERO_CONF
+                trustedConfirmations = ConfirmationsPolicy.TRUSTED_CONFIRMATIONS,
+                untrustedConfirmations = ConfirmationsPolicy.UNTRUSTED_CONFIRMATIONS,
+                allowZeroConfShielding = ConfirmationsPolicy.ALLOW_ZERO_CONF_SHIELDING
             )
         summary?.let {
             walletBalances.value =
@@ -266,10 +267,5 @@ internal class SlipstreamEngine(
         /** `HOSTING.md` section 9: a steady 1-2 s tick. */
         const val POLL_INTERVAL_MS = 2_000L
         const val STALL_LOG_SECONDS = 120L
-
-        /** ZIP-315 `ConfirmationsPolicy` default `{3, 10, true}` (`FFI_JNI_CONTRACT.md` section 3.9). */
-        const val TRUSTED = 3
-        const val UNTRUSTED = 10
-        const val ALLOW_ZERO_CONF = true
     }
 }

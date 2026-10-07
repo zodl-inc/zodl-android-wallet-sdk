@@ -13,8 +13,11 @@ import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.MemoContent
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import kotlin.coroutines.cancellation.CancellationException
@@ -146,13 +149,44 @@ internal class TransactionEncoderImpl(
         }
 
     @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalFromParametersException::class
+    )
+    override suspend fun proposeSendMax(
+        account: Account,
+        recipient: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal {
+        Twig.debug { "creating proposal to send the maximum spendable amount" }
+
+        return runCatching {
+            backend.proposeSendMaxTransfer(account, recipient, memo)
+        }.onSuccess {
+            Twig.info {
+                "Result of proposeSendMax: ${it.transactionCount()} transaction(s), " +
+                    "total fee ${it.totalFeeRequired().value} zatoshi"
+            }
+        }.onFailure {
+            Twig.error { "Caught exception while creating the send-max proposal." }
+        }.getOrElse {
+            if (it is CancellationException) throw it
+            throw it.toProposalException(TransactionEncoderException::ProposalFromParametersException)
+        }
+    }
+
+    /**
+     * The Sapling parameters (about 50 MB) are fetched only when [proposal] needs Sapling proofs: a
+     * proposal without Sapling spends or outputs builds without them.
+     */
+    @Throws(
         TransactionEncoderException.AnchorNotFoundException::class,
         TransactionEncoderException.TransactionNotCreatedException::class,
         TransactionEncoderException.TransactionNotFoundException::class,
     )
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
     ): List<EncodedTransaction> {
         Twig.debug {
             "creating transactions for proposal"
@@ -160,9 +194,11 @@ internal class TransactionEncoderImpl(
 
         val transactionIds =
             runCatching {
-                saplingParamFetcher.forceDownload()
-                Twig.debug { "params exist! attempting to send..." }
-                backend.createProposedTransactions(proposal, usk)
+                if (backend.proposalRequiresSaplingProofs(proposal)) {
+                    saplingParamFetcher.forceDownload()
+                    Twig.debug { "params exist! attempting to send..." }
+                }
+                backend.createProposedTransactions(proposal, usk, ovkPolicy)
             }.onFailure {
                 Twig.error(it) { "Caught exception while creating transaction." }
             }.onSuccess { result ->

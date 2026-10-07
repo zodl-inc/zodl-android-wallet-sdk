@@ -108,12 +108,21 @@ use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
 };
 
+// `liberated_payment` is shared verbatim with the other wallet backends and the payment-minting
+// tooling, so it is neither edited nor reformatted here; the minting helpers it carries are
+// unused by this crate, which only reads links.
+#[allow(dead_code)]
+#[rustfmt::skip]
+mod liberated_payment;
+mod gift_card;
 mod migration;
 mod migration_engine;
 mod migration_keystone;
 mod migration_plan_cache;
 mod migration_send_max;
 mod payment_uri;
+mod proving;
+mod send_max;
 mod tor;
 #[cfg(test)]
 mod unified_r0;
@@ -2241,6 +2250,85 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransa
     unwrap_exc_or(&mut env, res, ())
 }
 
+/// Marks a transaction the wallet knows about as trusted or untrusted (ZIP 315).
+///
+/// The outputs of a trusted transaction become spendable after the policy's `trusted` number of
+/// confirmations (3 by default) instead of its `untrusted` one (10 by default), even when the
+/// transaction was not created by this wallet. This only updates an existing `transactions` row:
+/// store the transaction first, e.g. with `decryptAndStoreTransaction`, which stores nothing for a
+/// transaction that does not involve this wallet. A transaction not found among the wallet's
+/// stored transactions throws rather than succeeding with nothing recorded, so a normal return
+/// always means the status was set; see `set_trust_of_stored_transaction` for what "found" covers.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setTransactionTrust<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    txid_bytes: JByteArray<'local>,
+    trusted: jboolean,
+    network_id: jint,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.setTransactionTrust").entered();
+        let network = parse_network(network_id)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
+        let txid = parse_txid(env, txid_bytes)?;
+
+        set_trust_of_stored_transaction(&mut db_data, txid, trusted != JNI_FALSE)
+    });
+
+    unwrap_exc_or(&mut env, res, ())
+}
+
+/// Sets the trust status of a transaction this wallet has stored, failing when it has not.
+///
+/// `WalletWrite::set_tx_trust` is an update that succeeds without touching a row when the
+/// transaction is unknown, and `decrypt_and_store_transaction` stores nothing for a transaction
+/// that does not involve the wallet. Checking first is what lets a caller tell "trusted" apart from
+/// "there was nothing to trust".
+///
+/// The check is `WalletRead::get_transaction`, which `WalletRead` offers as the only lookup of a
+/// `transactions` row by txid that also covers unmined transactions (`get_tx_height` answers `None`
+/// for those as well as for unknown ones). It reads more than whether the row exists, so it is
+/// narrower than "the row exists" in two cases, both of which fail here although `set_tx_trust`
+/// would have updated the row:
+///
+/// - a row whose raw transaction bytes were never stored, such as a mined transaction found by
+///   block scanning and not yet enhanced, is reported as not found;
+/// - an unmined row whose expiry height is 0 cannot be parsed, because no consensus branch can be
+///   chosen for it, and the lookup errors.
+///
+/// Neither arises after `decrypt_and_store_transaction`, which writes the raw bytes and the
+/// transaction's own expiry height, for a transaction this SDK builds, whose expiry height is
+/// never 0; that store-then-trust sequence is how `recordTrustedTransaction` calls this.
+fn set_trust_of_stored_transaction<W>(
+    db_data: &mut W,
+    txid: TxId,
+    trusted: bool,
+) -> anyhow::Result<()>
+where
+    W: WalletRead + WalletWrite,
+    <W as WalletRead>::Error: std::fmt::Display,
+{
+    let stored = db_data
+        .get_transaction(txid)
+        .map_err(|e| anyhow!("Error looking up txid {}: {}", txid, e))?
+        .is_some();
+    if !stored {
+        return Err(anyhow!(
+            "Transaction {} was not found in this wallet's stored transactions; its trust status \
+             was not set",
+            txid
+        ));
+    }
+
+    db_data
+        .set_tx_trust(txid, trusted)
+        .map_err(|e| anyhow!("Error setting the trust status of txid {}: {}", txid, e))
+}
+
 fn zip317_helper<DbT>(
     change_memo: Option<MemoBytes>,
 ) -> (
@@ -2552,6 +2640,72 @@ where
     anyhow!("{}: {}", context, e)
 }
 
+/// Returns the [`OvkPolicy`] selected over JNI: the account's OVK, or none at all.
+fn ovk_policy_from_jni(discard_ovk: jboolean) -> OvkPolicy {
+    if discard_ovk == JNI_FALSE {
+        OvkPolicy::Sender
+    } else {
+        OvkPolicy::Discard
+    }
+}
+
+/// Builds the transactions of `proposal`, loading the Sapling parameters only when the
+/// proposal has a Sapling component (see [`proving::proposal_requires_sapling_proofs`]).
+#[allow(clippy::too_many_arguments)]
+fn create_transactions_for_proposal(
+    env: &mut JNIEnv,
+    db_data: &mut WalletDb<rusqlite::Connection, Network, SystemClock, SystemRng>,
+    network: &Network,
+    proposal: &zcash_client_backend::proposal::Proposal<
+        StandardFeeRule,
+        zcash_client_sqlite::ReceivedNoteId,
+    >,
+    usk: UnifiedSpendingKey,
+    ovk_policy: OvkPolicy,
+    spend_params: JString,
+    output_params: JString,
+) -> anyhow::Result<NonEmpty<TxId>> {
+    let spending_keys = wallet::SpendingKeys::from_unified_spending_key(usk);
+    let txids = if proving::proposal_requires_sapling_proofs(proposal) {
+        let spend_params = path_from_jni(env, spend_params)?;
+        let output_params = path_from_jni(env, output_params)?;
+        let prover = LocalTxProver::new(&spend_params, &output_params);
+        create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
+            db_data,
+            network,
+            &SystemClock,
+            &mut system_rng(),
+            &prover,
+            &prover,
+            &spending_keys,
+            ovk_policy,
+            proposal,
+            None,
+        )
+    } else {
+        let prover = proving::NoSaplingProver;
+        create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
+            db_data,
+            network,
+            &SystemClock,
+            &mut system_rng(),
+            &prover,
+            &prover,
+            &spending_keys,
+            ovk_policy,
+            proposal,
+            None,
+        )
+    };
+    txids.map_err(|e| map_proposal_error(env, "Error while creating transactions", e))
+}
+
+/// Creates the transactions of the given proposal and stores them in the wallet.
+///
+/// `discard_ovk` selects [`OvkPolicy::Discard`] instead of [`OvkPolicy::Sender`]: the outputs
+/// are then not recoverable with the account's outgoing viewing key, so nobody holding the
+/// spending key can later learn their recipients. The Sapling parameter paths are read only
+/// when the proposal spends or creates a Sapling note.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createProposedTransactions<
     'local,
@@ -2563,6 +2717,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
     usk: JByteArray<'local>,
     spend_params: JString<'local>,
     output_params: JString<'local>,
+    discard_ovk: jboolean,
     network_id: jint,
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
@@ -2570,28 +2725,21 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
         let network = parse_network(network_id)?;
         let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let usk = decode_usk(env, usk)?;
-        let spend_params = path_from_jni(env, spend_params)?;
-        let output_params = path_from_jni(env, output_params)?;
-
-        let prover = LocalTxProver::new(&spend_params, &output_params);
 
         let proposal = Proposal::decode(utils::java_bytes_to_rust(env, &proposal)?.as_slice())
             .map_err(|e| anyhow!("Invalid proposal: {}", e))?
             .try_into_standard_proposal(&network, &db_data)?;
 
-        let txids = create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
+        let txids = create_transactions_for_proposal(
+            env,
             &mut db_data,
             &network,
-            &SystemClock,
-            &mut system_rng(),
-            &prover,
-            &prover,
-            &wallet::SpendingKeys::from_unified_spending_key(usk),
-            OvkPolicy::Sender,
             &proposal,
-            None,
-        )
-        .map_err(|e| map_proposal_error(env, "Error while creating transactions", e))?;
+            usk,
+            ovk_policy_from_jni(discard_ovk),
+            spend_params,
+            output_params,
+        )?;
 
         Ok(
             utils::rust_vec_to_java(env, txids.into(), "[B", |env, txid| {
@@ -2599,6 +2747,98 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
             })?
             .into_raw(),
         )
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Returns `true` if creating the transactions of the given proposal needs the Sapling
+/// parameter files, which is the case only when it spends or creates a Sapling note.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposalRequiresSaplingProofs<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    proposal: JByteArray<'local>,
+    network_id: jint,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.proposalRequiresSaplingProofs").entered();
+        let network = parse_network(network_id)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
+
+        let proposal = Proposal::decode(utils::java_bytes_to_rust(env, &proposal)?.as_slice())
+            .map_err(|e| anyhow!("Invalid proposal: {}", e))?
+            .try_into_standard_proposal(&network, &db_data)?;
+
+        Ok(if proving::proposal_requires_sapling_proofs(&proposal) {
+            JNI_TRUE
+        } else {
+            JNI_FALSE
+        })
+    });
+    unwrap_exc_or(&mut env, res, JNI_TRUE)
+}
+
+/// The JVM class thrown when a proposal fails because the account cannot cover it. The
+/// `(String)` constructor signature is part of the JNI contract with the Kotlin class.
+const INSUFFICIENT_FUNDS_EXCEPTION_CLASS: &str =
+    "cash/z/ecc/android/sdk/internal/jni/ProposalInsufficientFundsException";
+
+/// Proposes sending the account's entire currently spendable shielded balance to `to`, with
+/// the ZIP 317 fee deducted from it (see [`send_max::propose_send_max`]). When the spendable
+/// value does not exceed the fee, throws `ProposalInsufficientFundsException`, so callers can
+/// tell that case apart without matching message text.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSendMaxTransfer<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    account_uuid: JByteArray<'local>,
+    to: JString<'local>,
+    memo: JByteArray<'local>,
+    network_id: jint,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.proposeSendMaxTransfer").entered();
+        let network = parse_network(network_id)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
+        let account_uuid = account_id_from_jni(env, account_uuid)?;
+        let to = utils::java_string_to_rust(env, &to)?;
+        let to = to
+            .parse::<ZcashAddress>()
+            .map_err(|e| anyhow!("Can't parse recipient address: {}", e))?;
+
+        let memo = utils::java_nullable_bytes_to_rust(env, &memo)?
+            .as_deref()
+            .map(MemoBytes::from_bytes)
+            .transpose()
+            .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
+
+        let proposal = send_max::propose_send_max(&mut db_data, &network, account_uuid, to, memo)
+            .inspect_err(|e| {
+            if e.downcast_ref::<send_max::InsufficientFunds>().is_some() {
+                utils::exception::throw_object(env, INSUFFICIENT_FUNDS_EXCEPTION_CLASS, |env| {
+                    let message = env.new_string(e.to_string())?;
+                    env.new_object(
+                        INSUFFICIENT_FUNDS_EXCEPTION_CLASS,
+                        "(Ljava/lang/String;)V",
+                        &[JValue::Object(&message)],
+                    )
+                });
+            }
+        })?;
+
+        Ok(utils::rust_bytes_to_java(
+            env,
+            Proposal::from_standard_proposal(&proposal)
+                .encode_to_vec()
+                .as_ref(),
+        )?
+        .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -4152,6 +4392,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOr
 
 #[cfg(test)]
 mod tests {
+    use zcash_client_backend::data_api::{
+        Account as _, MaxSpendMode,
+        testing::{AddressType, TestBuilder, TestState},
+        wallet::{
+            ConfirmationsPolicy, SpendingKeys, create_proposed_transactions,
+            input_selection::LockedInputPolicy, propose_send_max_transfer,
+        },
+    };
+    use zcash_client_backend::{fees::StandardFeeRule, wallet::OvkPolicy};
+    use zcash_client_sqlite::testing::{
+        BlockCache,
+        db::{TestDb, TestDbFactory},
+    };
+    use zcash_keys::address::{Address, UnifiedAddress};
+    use zcash_primitives::block::BlockHash;
+    use zcash_protocol::value::Zatoshis;
+
     use super::*;
 
     #[test]
@@ -4196,5 +4453,165 @@ mod tests {
             "did not expect the marker prefix, got {mapped_msg:?}"
         );
         assert!(mapped_msg.starts_with("Error while initializing accounts: "));
+    }
+
+    /// A transaction the wallet never stored, such as one `decrypt_and_store_transaction` skipped
+    /// because it does not involve the wallet, must not report its trust as set: the update
+    /// underneath would succeed on zero rows.
+    ///
+    /// The wallet lives in memory, so a failing assertion leaves no database file behind.
+    #[test]
+    fn trusting_a_transaction_the_wallet_did_not_store_fails() {
+        let conn = rusqlite::Connection::open_in_memory().expect("opens an in-memory database");
+        rusqlite::vtab::array::load_module(&conn).expect("loads the SQLite array module");
+        let mut db = WalletDb::from_connection(conn, TestNetwork, SystemClock, system_rng());
+        init_wallet_db(&mut db, None).expect("initializes the wallet schema");
+
+        let txid = TxId::from_bytes([0x5a; 32]);
+        let error = set_trust_of_stored_transaction(&mut db, txid, true)
+            .expect_err("an unknown transaction cannot be trusted")
+            .to_string();
+
+        assert!(
+            error.contains("was not found in this wallet's stored transactions"),
+            "unexpected error: {error}"
+        );
+        assert!(db.get_transaction(txid).unwrap().is_none());
+    }
+
+    /// Trust on a stored, unmined transaction that involves the wallet, the way
+    /// `recordTrustedTransaction` sets it: `decrypt_and_store_transaction` with no mined height,
+    /// then `set_trust_of_stored_transaction`.
+    ///
+    /// Two synthetic in-memory wallets share the test seed under different ZIP 32 accounts. The
+    /// sender, standing in for a gift card's wallet, holds a scanned Orchard note and sends all of
+    /// it to the receiver's Orchard address. The receiver, standing in for the redemption's
+    /// destination, has scanned only an empty block of its own, which gives it the chain tip that
+    /// storing an unmined transaction needs, so it learns about the transaction only from its raw
+    /// bytes.
+    #[test]
+    fn trusting_a_stored_unmined_transaction_that_involves_the_wallet_sets_its_trust() {
+        let mut receiver = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_block_cache(BlockCache::new())
+            .with_account_from_sapling_activation(BlockHash([0; 32]))
+            .set_account_index(zip32::AccountId::const_from_u32(1))
+            .build();
+        let receiver_address = {
+            let fvk = orchard::keys::FullViewingKey::from(
+                receiver.test_account().unwrap().usk().orchard(),
+            );
+            Address::from(
+                UnifiedAddress::from_receivers(
+                    Some(fvk.address_at(0u32, orchard::keys::Scope::External)),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            )
+            .to_zcash_address(receiver.network())
+        };
+        let (receiver_tip, _) = receiver.generate_empty_block();
+        receiver.scan_cached_blocks(receiver_tip, 1);
+
+        let mut sender = TestBuilder::new()
+            .with_data_store_factory(TestDbFactory::default())
+            .with_block_cache(BlockCache::new())
+            .with_account_from_sapling_activation(BlockHash([0; 32]))
+            .build();
+        let sender_fvk =
+            orchard::keys::FullViewingKey::from(sender.test_account().unwrap().usk().orchard());
+        let (funded_at, _, _) = sender.generate_next_block(
+            &sender_fvk,
+            AddressType::DefaultExternal,
+            Zatoshis::const_from_u64(100_000),
+        );
+        for _ in 0..10 {
+            sender.generate_empty_block();
+        }
+        sender.scan_cached_blocks(funded_at, 11);
+
+        let network = *sender.network();
+        let account = sender.test_account().unwrap().id();
+        let proposal = propose_send_max_transfer::<_, _, _, std::convert::Infallible>(
+            sender.wallet_mut(),
+            &network,
+            account,
+            &crate::send_max::SEND_MAX_POOLS,
+            &StandardFeeRule::Zip317,
+            receiver_address,
+            None,
+            MaxSpendMode::MaxSpendable,
+            ConfirmationsPolicy::default(),
+            &LockedInputPolicy::Exclude,
+            None,
+        )
+        .expect("proposes sending the sender's Orchard note");
+        let usk = sender.test_account().unwrap().usk().clone();
+        let clock = sender.clock().clone();
+        let txids = create_proposed_transactions::<
+            _,
+            _,
+            std::convert::Infallible,
+            _,
+            std::convert::Infallible,
+            _,
+        >(
+            sender.wallet_mut(),
+            &network,
+            &clock,
+            &mut system_rng(),
+            &proving::NoSaplingProver,
+            &proving::NoSaplingProver,
+            &SpendingKeys::from_unified_spending_key(usk),
+            OvkPolicy::Sender,
+            &proposal,
+            None,
+        )
+        .expect("builds the Orchard-only transaction");
+        assert_eq!(txids.len(), 1);
+        let txid = *txids.first();
+
+        let mut raw = vec![];
+        sender
+            .wallet()
+            .get_transaction(txid)
+            .unwrap()
+            .expect("the sender stored the transaction it created")
+            .write(&mut raw)
+            .unwrap();
+        let tx = Transaction::read(&raw[..], BranchId::Sapling).expect("parses as the JNI does");
+
+        assert!(receiver.wallet().get_transaction(txid).unwrap().is_none());
+        decrypt_and_store_transaction(&network, receiver.wallet_mut().db_mut(), &tx, None)
+            .expect("stores the transaction it can decrypt");
+
+        let row = |receiver: &TestState<_, TestDb, _>| -> (Option<u32>, Option<i64>) {
+            receiver
+                .wallet()
+                .conn()
+                .query_row(
+                    "SELECT mined_height, trust_status FROM transactions WHERE txid = ?",
+                    [txid.as_ref()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("the receiver stored the transaction")
+        };
+        assert_eq!(
+            row(&receiver),
+            (None, None),
+            "stored unmined, with no trust status"
+        );
+
+        set_trust_of_stored_transaction(receiver.wallet_mut().db_mut(), txid, true)
+            .expect("trusts the stored transaction");
+
+        assert_eq!(
+            row(&receiver),
+            (None, Some(1)),
+            "trusted, and still unmined"
+        );
     }
 }

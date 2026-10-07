@@ -3,6 +3,8 @@
 package com.zodl.slipstream.internal.spend
 
 import androidx.annotation.VisibleForTesting
+import cash.z.ecc.android.sdk.internal.Backend
+import cash.z.ecc.android.sdk.model.Proposal
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -17,6 +19,23 @@ internal data class SaplingParamPaths(
     val spendFile: File,
     val outputFile: File
 )
+
+/**
+ * Runs [ensureSaplingParams] only when [proposal] has a Sapling spend or output, as the backend's
+ * own `proposal_requires_sapling_proofs` decides: transactions without a Sapling component build
+ * without the parameters (the backend then proves with no Sapling prover at all), so a proposal
+ * that spends and pays only Orchard or Ironwood never triggers the ~50 MB download. The same rule
+ * the upstream `TransactionEncoderImpl.createProposedTransactions` applies.
+ */
+internal suspend fun ensureSaplingParamsFor(
+    backend: Backend,
+    proposal: Proposal,
+    ensureSaplingParams: suspend () -> Unit
+) {
+    if (backend.proposalRequiresSaplingProofs(proposal.toUnsafe())) {
+        ensureSaplingParams()
+    }
+}
 
 /** Downloads sapling-spend/output.params (SHA-1s below) into the caller's dir; needed by the create/addProofsToPczt paths. */
 internal object SaplingParams {

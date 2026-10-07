@@ -3,8 +3,11 @@ package cash.z.ecc.android.sdk.internal.transaction
 import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.MemoContent
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
@@ -81,17 +84,29 @@ internal interface OutboundTransactionManager {
     ): Proposal?
 
     /**
+     * Creates a proposal sending the account's entire currently spendable shielded balance to
+     * [recipient], with the ZIP 317 fee deducted from it.
+     */
+    suspend fun proposeSendMax(
+        account: Account,
+        recipient: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal
+
+    /**
      * Creates the transactions in the given proposal.
      *
      * @param proposal the proposal for which to create transactions.
      * @param usk the unified spending key associated with the account for which the
      *            proposal was created.
+     * @param ovkPolicy the outgoing viewing key to encrypt the outputs to.
      *
      * @return the successfully encoded transactions or an exception
      */
     suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender
     ): List<EncodedTransaction>
 
     /**

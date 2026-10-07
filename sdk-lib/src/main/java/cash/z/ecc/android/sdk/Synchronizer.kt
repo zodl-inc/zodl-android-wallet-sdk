@@ -37,10 +37,14 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FastestServersResult
+import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.ObserveFiatCurrencyResult
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RawTransaction
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
 import cash.z.ecc.android.sdk.model.TransactionId
@@ -412,6 +416,40 @@ interface Synchronizer {
     suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal
 
     /**
+     * Creates a proposal sending the account's entire currently spendable shielded balance
+     * (Sapling, Orchard and Ironwood) to [recipient], with the ZIP 317 fee computed internally
+     * and deducted from it, so that nothing is left behind as change.
+     *
+     * Only funds that are spendable now are swept: notes that do not yet have enough
+     * confirmations under the default confirmations policy are left where they are and stay
+     * in the account. Transparent funds are not swept; shield them first with
+     * [proposeShielding].
+     *
+     * The default implementation throws [UnsupportedOperationException]; SDK-backed
+     * synchronizers override it.
+     *
+     * @param account the account from which to send.
+     * @param recipient the recipient's address, on this synchronizer's [network].
+     * @param memo the optional memo for the recipient. Must be `null` for a transparent
+     *        recipient.
+     *
+     * @return the proposal or an exception
+     *
+     * @throws TransactionEncoderException.InsufficientFundsException if nothing is spendable, or
+     * the spendable balance does not cover the fee
+     * @throws TransactionEncoderException.ProposalFromParametersException if the proposal cannot
+     * be created for any other reason
+     */
+    suspend fun proposeSendMax(
+        account: Account,
+        recipient: RecipientAddress,
+        memo: MemoContent? = null
+    ): Proposal =
+        throw UnsupportedOperationException(
+            "proposeSendMax is unavailable for this Synchronizer implementation."
+        )
+
+    /**
      * Creates a proposal for fulfilling a payment ZIP-321 URI
      *
      * @param account the account from which to transfer funds.
@@ -463,6 +501,10 @@ interface Synchronizer {
      * @param proposal the proposal for which to create transactions.
      * @param usk the unified spending key associated with the account for which the
      *            proposal was created.
+     * @param ovkPolicy the outgoing viewing key to encrypt the transactions' outputs to. The
+     *            default, [OvkPolicy.Sender], lets the wallet recover what it sent. Use
+     *            [OvkPolicy.Discard] when nobody holding [usk] may learn the recipients, values
+     *            or memos, e.g. when sweeping a gift card whose issuer can rederive its key.
      *
      * @return a flow of result objects for the transactions that were created as part of
      *         the proposal, indicating whether they were submitted to the network or if
@@ -479,7 +521,8 @@ interface Synchronizer {
      */
     suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender
     ): Flow<TransactionSubmitResult>
 
     /**
@@ -812,6 +855,60 @@ interface Synchronizer {
      */
     fun enhanceTransaction(txId: TransactionId)
 
+    /**
+     * Stores a transaction that was created on this device by another wallet, and marks it as
+     * trusted (ZIP 315).
+     *
+     * ZIP 315 makes a wallet wait for more confirmations before spending the outputs of an
+     * untrusted transaction (one it did not create; 10 blocks under the default confirmations
+     * policy) than those of a trusted one (3 blocks), and lets a wallet treat specific external
+     * transactions as trusted. ZIP 315 calls a transaction output trusted when the wallet trusts
+     * that it "will remain mined in its original transaction". This API exists for the claim of a
+     * gift card ([GiftCardRedeemer]), and that is the case it was reasoned through for:
+     *
+     * - The notes on a card are *not* trusted: whoever issued the card still holds its key and
+     *   could spend them in a competing transaction if the chain rolled back. The temporary card
+     *   wallet therefore applies the default policy to them and spends them only after 10
+     *   confirmations, the same as any external receive.
+     * - Once those inputs are 10 blocks deep, the claim that spends them is authored on this
+     *   device, and its outputs are recorded here as trusted, so they become spendable after
+     *   3 confirmations. The issuer still holds the card's key, though: a reorg deep enough to
+     *   drop the claim transaction (the trusted count, 3 blocks) would let the issuer get a
+     *   competing spend of the card's notes mined in its place, taking back funds this wallet
+     *   may already have spent. Recording the claim as trusted is therefore sound only when the
+     *   card's issuer is trusted, as for cards issued by ZODL.
+     *
+     * Do not use this for a transaction whose inputs an untrusted party can still spend, or for
+     * one received from elsewhere: marking it trusted lets the wallet spend funds that a
+     * rollback can take back.
+     *
+     * Recording also decrypts and stores [rawTransaction] right away, so the incoming funds show
+     * up without waiting for the next sync. This writes to the wallet database directly, so it
+     * works whether the synchronizer is synced, still syncing or stopped. Recording the same
+     * transaction again is harmless.
+     *
+     * The default implementation throws [UnsupportedOperationException]; SDK-backed
+     * synchronizers override it.
+     *
+     * @param rawTransaction the complete serialized transaction, as submitted to the network.
+     * Its [RawTransaction.height] is ignored: the transaction is stored as unmined, and scanning
+     * fills in the height once it is mined.
+     * @param txId the transaction's id, e.g. `TransactionId.new(result.txId)` for the
+     * [TransactionSubmitResult] of its submission.
+     *
+     * @throws IllegalArgumentException if [txId] is not the id of [rawTransaction]; the
+     * transaction is stored anyway, but as untrusted.
+     * @throws RuntimeException if the transaction does not involve this wallet and so was not
+     * stored: there is nothing to trust, so recording fails instead of returning normally.
+     */
+    suspend fun recordTrustedTransaction(
+        rawTransaction: RawTransaction,
+        txId: TransactionId
+    ): Unit =
+        throw UnsupportedOperationException(
+            "recordTrustedTransaction is unavailable for this Synchronizer implementation."
+        )
+
     fun onBackground()
 
     fun onForeground()
@@ -1121,7 +1218,7 @@ interface Synchronizer {
          * If customized initialization is required (e.g. for dependency injection or testing), see
          * [DefaultSynchronizerFactory].
          */
-        @Suppress("LongParameterList", "LongMethod", "TooGenericExceptionCaught")
+        @Suppress("LongParameterList")
         suspend fun new(
             alias: String = ZcashSdk.DEFAULT_ALIAS,
             birthday: BlockHeight?,
@@ -1132,6 +1229,57 @@ interface Synchronizer {
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean
+        ): CloseableSynchronizer =
+            new(
+                alias = alias,
+                birthday = birthday,
+                context = context,
+                lightWalletEndpoint = lightWalletEndpoint,
+                setup = setup,
+                walletInitMode = walletInitMode,
+                zcashNetwork = zcashNetwork,
+                isTorEnabled = isTorEnabled,
+                isExchangeRateEnabled = isExchangeRateEnabled,
+                isBirthdayExact = false
+            )
+
+        /**
+         * [new] with one extra, SDK-internal option.
+         *
+         * @param isBirthdayExact when `true`, [walletInitMode] is [WalletInitMode.RestoreWallet] and [birthday]
+         * is known to be at or below the height of the wallet's first funds, the account is seeded from the tree
+         * state at `birthday - 1` fetched from [lightWalletEndpoint], so the wallet's birthday is exactly
+         * [birthday] and scanning starts there instead of at the nearest bundled checkpoint below it, which
+         * can be thousands of blocks earlier. If the fetch fails, the bundled checkpoint is used as before.
+         * Fetching reveals the exact height to the server; `false` keeps the checkpoint granularity that the
+         * app's main wallet relies on for privacy.
+         * @param onCriticalErrorHandler installed as the synchronizer's [Synchronizer.onCriticalErrorHandler]
+         * before its processor starts, so that no critical error raised while starting can go unnoticed.
+         * @param isSetupDisconnectionTolerated when `true`, failing to reach the server while the processor
+         * verifies its setup only reports the synchronizer [Synchronizer.Status.DISCONNECTED], and the
+         * processor keeps retrying, instead of raising a critical error; see
+         * [CompactBlockProcessor.isSetupDisconnectionTolerated].
+         * @param onBirthdayResolved called once the wallet's starting tree state is known, with `true` when it
+         * is the exact one [isBirthdayExact] asked for and `false` when the bundled checkpoint was used instead.
+         *
+         * If the caller is cancelled after the synchronizer has been created and started but before this
+         * returns it, the synchronizer is closed, as nobody else could close it.
+         */
+        @Suppress("LongParameterList", "LongMethod", "TooGenericExceptionCaught")
+        internal suspend fun new(
+            alias: String,
+            birthday: BlockHeight?,
+            context: Context,
+            lightWalletEndpoint: LightWalletEndpoint,
+            setup: AccountCreateSetup?,
+            walletInitMode: WalletInitMode,
+            zcashNetwork: ZcashNetwork,
+            isTorEnabled: Boolean,
+            isExchangeRateEnabled: Boolean,
+            isBirthdayExact: Boolean,
+            onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null,
+            isSetupDisconnectionTolerated: Boolean = false,
+            onBirthdayResolved: ((isExact: Boolean) -> Unit)? = null
         ): CloseableSynchronizer {
             val applicationContext = context.applicationContext
             // Populates Twig's process/tag columns — without this every SDK log line renders a
@@ -1146,199 +1294,208 @@ interface Synchronizer {
 
             validateAlias(alias)
 
-            return coroutineScope {
-                /**
-                 * Bundled checkpoint load (asset read) — independent of everything else.
-                 */
-                val checkpointDeferred =
-                    async(Dispatchers.Default) {
-                        CheckpointTool.loadNearest(
-                            context = applicationContext,
-                            network = zcashNetwork,
-                            birthdayHeight = birthday ?: zcashNetwork.saplingActivationHeight
-                        )
-                    }
-
-                val coordinator = DatabaseCoordinator.getInstance(context)
-                coordinator.deletePendingTransactionDatabase(zcashNetwork, alias)
-
-                /**
-                 * Native library load (~one-time per process) + Rust backend construction. This is the
-                 * long pole of the DB-read critical path; everything Rust/DB-related awaits it.
-                 */
-                val backendDeferred =
-                    async(Dispatchers.Default) {
-                        val saplingParamTool = SaplingParamTool.new(applicationContext)
-                        val backend =
-                            DefaultSynchronizerFactory.defaultBackend(
-                                zcashNetwork,
-                                alias,
-                                saplingParamTool,
-                                coordinator
-                            )
-                        saplingParamTool to backend
-                    }
-
-                /**
-                 * Tor is only needed for on-demand/background work (sync-path Tor-mode RPCs, exchange rate
-                 * fetch, getTorHttpClient), never on the cold-start critical path, so its creation (the ~1s
-                 * Tor runtime creation cost) is always deferred to first use via [LazyTorClient], regardless of
-                 * whether isTorEnabled and/or isExchangeRateEnabled is set. Because the factory only awaits
-                 * the backend when Tor is actually first used (much later), the walletClient below can be
-                 * built concurrently with the backend rather than waiting for it.
-                 */
-                val lazyTorClient =
-                    if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
-                        LazyTorClient {
-                            val torDir = Files.getTorDir(applicationContext)
-                            TorClient.new(torDir, backendDeferred.await().second.backend)
-                        }
-                    } else {
-                        null
-                    }
-
-                val fetchExchangeChangeUsd =
-                    if (sdkFlags.isExchangeRateEnabled) {
-                        lazyTorClient?.let { holder ->
-                            UsdExchangeRateFetcher(
-                                isolatedTorClient = LazyTorClient { holder.getOrCreate().isolatedTorClient() }
+            return closingOnCancellation { keep ->
+                coroutineScope {
+                    /**
+                     * Bundled checkpoint load (asset read) — independent of everything else.
+                     */
+                    val checkpointDeferred =
+                        async(Dispatchers.Default) {
+                            CheckpointTool.loadNearest(
+                                context = applicationContext,
+                                network = zcashNetwork,
+                                birthdayHeight = birthday ?: zcashNetwork.saplingActivationHeight
                             )
                         }
-                    } else {
-                        null
-                    }
 
-                val walletClientFactory =
-                    WalletClientFactory(
-                        context = applicationContext,
-                        torClient = lazyTorClient?.takeIf { sdkFlags.isTorEnabled }
-                    )
-
-                /**
-                 * gRPC lightwalletd client (does not touch the Rust backend) — built concurrently.
-                 */
-                val walletClientDeferred =
-                    async(Dispatchers.Default) {
-                        walletClientFactory.create(endpoint = lightWalletEndpoint)
-                    }
-
-                /**
-                 * Preference stores (disk I/O) — independent of backend and network.
-                 */
-                val prefsDeferred =
-                    async(Dispatchers.Default) {
-                        val preferenceProvider = StandardPreferenceProvider(context)()
-                        val encryptedPreferenceProvider = EncryptedPreferenceProvider(applicationContext)
-                        val pendingSubmitPlanStore =
-                            PendingSubmitPlanStore(
-                                preferenceProvider = encryptedPreferenceProvider(),
-                                namespace = "${zcashNetwork.id}_$alias"
-                            )
-                        preferenceProvider to pendingSubmitPlanStore
-                    }
-
-                /**
-                 * [walletClient] is hoisted so the `catch` blocks below can dispose it (and
-                 * [lazyTorClient]) on any failure from here on, since ownership only transfers to
-                 * the returned [SdkSynchronizer] once construction succeeds - on any earlier
-                 * failure there would be nobody left to dispose them via `close()`. One narrow
-                 * edge case is accepted as-is: if [walletClientDeferred] completes concurrently
-                 * but a failure elsewhere means this function never reaches its `await()` below,
-                 * that already-built client is never observed here and leaks undisposed.
-                 */
-                var walletClient: CombinedWalletClient? = null
-                try {
-                    val (saplingParamTool, backend) = backendDeferred.await()
-                    val saplingParamFetcher = SaplingParamFetcher(saplingParamTool, backend)
-                    val blockStore =
-                        DefaultSynchronizerFactory
-                            .defaultCompactBlockRepository(coordinator.fsBlockDbRoot(zcashNetwork, alias), backend)
+                    val coordinator = DatabaseCoordinator.getInstance(context)
+                    coordinator.deletePendingTransactionDatabase(zcashNetwork, alias)
 
                     /**
-                     * Downloader wraps the concurrently-built walletClient; built once and reused by both
-                     * the (rarely used) init-state network fetch and the processor.
+                     * Native library load (~one-time per process) + Rust backend construction. This is the
+                     * long pole of the DB-read critical path; everything Rust/DB-related awaits it.
                      */
-                    val downloaderDeferred =
+                    val backendDeferred =
                         async(Dispatchers.Default) {
-                            DefaultSynchronizerFactory.defaultDownloader(walletClientDeferred.await(), blockStore)
+                            val saplingParamTool = SaplingParamTool.new(applicationContext)
+                            val backend =
+                                DefaultSynchronizerFactory.defaultBackend(
+                                    zcashNetwork,
+                                    alias,
+                                    saplingParamTool,
+                                    coordinator
+                                )
+                            saplingParamTool to backend
                         }
 
-                    val initializationState =
-                        resolveWalletInitializationState(
-                            downloaderProvider = { downloaderDeferred.await() },
-                            fallbackTreeState = checkpointDeferred.await().treeState(),
-                            sdkFlags = sdkFlags,
-                            walletInitMode = walletInitMode
-                        )
+                    /**
+                     * Tor is only needed for on-demand/background work (sync-path Tor-mode RPCs, exchange rate
+                     * fetch, getTorHttpClient), never on the cold-start critical path, so its creation (the ~1s
+                     * Tor runtime creation cost) is always deferred to first use via [LazyTorClient], regardless of
+                     * whether isTorEnabled and/or isExchangeRateEnabled is set. Because the factory only awaits
+                     * the backend when Tor is actually first used (much later), the walletClient below can be
+                     * built concurrently with the backend rather than waiting for it.
+                     */
+                    val lazyTorClient =
+                        if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
+                            LazyTorClient {
+                                val torDir = Files.getTorDir(applicationContext)
+                                TorClient.new(torDir, backendDeferred.await().second.backend)
+                            }
+                        } else {
+                            null
+                        }
 
-                    val repository =
-                        DefaultSynchronizerFactory.defaultDerivedDataRepository(
+                    val fetchExchangeChangeUsd =
+                        if (sdkFlags.isExchangeRateEnabled) {
+                            lazyTorClient?.let { holder ->
+                                UsdExchangeRateFetcher(
+                                    isolatedTorClient = LazyTorClient { holder.getOrCreate().isolatedTorClient() }
+                                )
+                            }
+                        } else {
+                            null
+                        }
+
+                    val walletClientFactory =
+                        WalletClientFactory(
                             context = applicationContext,
-                            rustBackend = backend,
-                            databaseFile = coordinator.dataDbFile(zcashNetwork, alias),
-                            treeState = initializationState.treeState,
-                            recoverUntil = initializationState.recoverUntil,
-                            setup = setup,
+                            torClient = lazyTorClient?.takeIf { sdkFlags.isTorEnabled }
                         )
 
-                    val encoder = DefaultSynchronizerFactory.defaultEncoder(backend, saplingParamFetcher, repository)
+                    /**
+                     * gRPC lightwalletd client (does not touch the Rust backend) — built concurrently.
+                     */
+                    val walletClientDeferred =
+                        async(Dispatchers.Default) {
+                            walletClientFactory.create(endpoint = lightWalletEndpoint)
+                        }
 
-                    walletClient = walletClientDeferred.await()
+                    /**
+                     * Preference stores (disk I/O) — independent of backend and network.
+                     */
+                    val prefsDeferred =
+                        async(Dispatchers.Default) {
+                            val preferenceProvider = StandardPreferenceProvider(context)()
+                            val encryptedPreferenceProvider = EncryptedPreferenceProvider(applicationContext)
+                            val pendingSubmitPlanStore =
+                                PendingSubmitPlanStore(
+                                    preferenceProvider = encryptedPreferenceProvider(),
+                                    namespace = PendingSubmitPlanStore.namespaceFor(zcashNetwork.id, alias)
+                                )
+                            preferenceProvider to pendingSubmitPlanStore
+                        }
 
-                    val downloader = downloaderDeferred.await()
-                    val txManager = DefaultSynchronizerFactory.defaultTxManager(encoder, walletClient, sdkFlags)
-                    val (preferenceProvider, pendingSubmitPlanStore) = prefsDeferred.await()
-                    val transactionSubmitter =
-                        EndpointTransactionSubmitter(
-                            walletClientFactory = walletClientFactory,
-                            sdkFlags = sdkFlags
-                        )
-                    val submitPlanExecutor = SubmitPlanExecutor(transactionSubmitter)
-                    val processor =
-                        DefaultSynchronizerFactory.defaultProcessor(
-                            backend = backend,
-                            birthdayHeight = birthday ?: zcashNetwork.saplingActivationHeight,
-                            downloader = downloader,
-                            repository = repository,
-                            txManager = txManager,
-                            sdkFlags = sdkFlags,
-                            saplingParamFetcher = saplingParamFetcher,
-                            pendingSubmitPlanStore = pendingSubmitPlanStore,
-                            submitPlanExecutor = submitPlanExecutor
-                        )
+                    /**
+                     * [walletClient] is hoisted so the `catch` blocks below can dispose it (and
+                     * [lazyTorClient]) on any failure from here on, since ownership only transfers to
+                     * the returned [SdkSynchronizer] once construction succeeds - on any earlier
+                     * failure there would be nobody left to dispose them via `close()`. One narrow
+                     * edge case is accepted as-is: if [walletClientDeferred] completes concurrently
+                     * but a failure elsewhere means this function never reaches its `await()` below,
+                     * that already-built client is never observed here and leaks undisposed.
+                     */
+                    var walletClient: CombinedWalletClient? = null
+                    try {
+                        val (saplingParamTool, backend) = backendDeferred.await()
+                        val saplingParamFetcher = SaplingParamFetcher(saplingParamTool, backend)
+                        val blockStore =
+                            DefaultSynchronizerFactory
+                                .defaultCompactBlockRepository(coordinator.fsBlockDbRoot(zcashNetwork, alias), backend)
 
-                    SdkSynchronizer.new(
-                        context = context.applicationContext,
-                        zcashNetwork = zcashNetwork,
-                        alias = alias,
-                        repository = repository,
-                        txManager = txManager,
-                        processor = processor,
-                        backend = backend,
-                        fastestServerFetcher =
-                            FastestServerFetcher(
-                                backend = backend,
-                                network = processor.network,
+                        /**
+                         * Downloader wraps the concurrently-built walletClient; built once and reused by both
+                         * the (rarely used) init-state network fetch and the processor.
+                         */
+                        val downloaderDeferred =
+                            async(Dispatchers.Default) {
+                                DefaultSynchronizerFactory.defaultDownloader(walletClientDeferred.await(), blockStore)
+                            }
+
+                        val initializationState =
+                            resolveWalletInitializationState(
+                                downloaderProvider = { downloaderDeferred.await() },
+                                fallbackTreeState = checkpointDeferred.await().treeState(),
+                                sdkFlags = sdkFlags,
+                                walletInitMode = walletInitMode,
+                                exactBirthday = birthday?.takeIf { isBirthdayExact }
+                            )
+                        onBirthdayResolved?.invoke(initializationState.isBirthdayExact)
+
+                        val repository =
+                            DefaultSynchronizerFactory.defaultDerivedDataRepository(
+                                context = applicationContext,
+                                rustBackend = backend,
+                                databaseFile = coordinator.dataDbFile(zcashNetwork, alias),
+                                treeState = initializationState.treeState,
+                                recoverUntil = initializationState.recoverUntil,
+                                setup = setup,
+                            )
+
+                        val encoder =
+                            DefaultSynchronizerFactory.defaultEncoder(backend, saplingParamFetcher, repository)
+
+                        walletClient = walletClientDeferred.await()
+
+                        val downloader = downloaderDeferred.await()
+                        val txManager = DefaultSynchronizerFactory.defaultTxManager(encoder, walletClient, sdkFlags)
+                        val (preferenceProvider, pendingSubmitPlanStore) = prefsDeferred.await()
+                        val transactionSubmitter =
+                            EndpointTransactionSubmitter(
                                 walletClientFactory = walletClientFactory,
                                 sdkFlags = sdkFlags
-                            ),
-                        fetchExchangeChangeUsd = fetchExchangeChangeUsd,
-                        preferenceProvider = preferenceProvider,
-                        lazyTorClient = lazyTorClient,
-                        walletClient = walletClient,
-                        walletClientFactory = walletClientFactory,
-                        defaultSubmitEndpoint = lightWalletEndpoint,
-                        pendingSubmitPlanStore = pendingSubmitPlanStore,
-                        sdkFlags = sdkFlags
-                    )
-                } catch (e: CancellationException) {
-                    walletClient?.dispose()
-                    lazyTorClient?.dispose()
-                    throw e
-                } catch (e: Exception) {
-                    walletClient?.dispose()
-                    lazyTorClient?.dispose()
-                    throw e
+                            )
+                        val submitPlanExecutor = SubmitPlanExecutor(transactionSubmitter)
+                        val processor =
+                            DefaultSynchronizerFactory.defaultProcessor(
+                                backend = backend,
+                                birthdayHeight = birthday ?: zcashNetwork.saplingActivationHeight,
+                                downloader = downloader,
+                                repository = repository,
+                                txManager = txManager,
+                                sdkFlags = sdkFlags,
+                                saplingParamFetcher = saplingParamFetcher,
+                                pendingSubmitPlanStore = pendingSubmitPlanStore,
+                                submitPlanExecutor = submitPlanExecutor
+                            )
+                        processor.isSetupDisconnectionTolerated = isSetupDisconnectionTolerated
+
+                        val synchronizer =
+                            SdkSynchronizer.new(
+                                context = context.applicationContext,
+                                zcashNetwork = zcashNetwork,
+                                alias = alias,
+                                repository = repository,
+                                txManager = txManager,
+                                processor = processor,
+                                backend = backend,
+                                fastestServerFetcher =
+                                    FastestServerFetcher(
+                                        backend = backend,
+                                        network = processor.network,
+                                        walletClientFactory = walletClientFactory,
+                                        sdkFlags = sdkFlags
+                                    ),
+                                fetchExchangeChangeUsd = fetchExchangeChangeUsd,
+                                preferenceProvider = preferenceProvider,
+                                lazyTorClient = lazyTorClient,
+                                walletClient = walletClient,
+                                walletClientFactory = walletClientFactory,
+                                defaultSubmitEndpoint = lightWalletEndpoint,
+                                pendingSubmitPlanStore = pendingSubmitPlanStore,
+                                sdkFlags = sdkFlags,
+                                onCriticalErrorHandler = onCriticalErrorHandler
+                            )
+                        keep(synchronizer)
+                    } catch (e: CancellationException) {
+                        walletClient?.dispose()
+                        lazyTorClient?.dispose()
+                        throw e
+                    } catch (e: Exception) {
+                        walletClient?.dispose()
+                        lazyTorClient?.dispose()
+                        throw e
+                    }
                 }
             }
         }
@@ -1395,13 +1552,41 @@ interface Synchronizer {
             network: ZcashNetwork,
             alias: String = ZcashSdk.DEFAULT_ALIAS
         ): Boolean = SdkSynchronizer.erase(appContext, network, alias)
+
+        /**
+         * Deletes the local data of the wallet at [network] and [alias] only: its databases,
+         * compact block cache and the transaction submit plans stored for it.
+         *
+         * Unlike [erase], this does not clear the preferences shared by every wallet in the
+         * process, so wallets under other aliases (in particular the app's main wallet) keep all
+         * of their state. Use it to dispose of an auxiliary wallet, such as the temporary wallet a
+         * [GiftCardRedeemer] creates, while the main wallet keeps running.
+         *
+         * The synchronizer for [network] and [alias] must be closed first; this waits for a
+         * closing one to finish shutting down.
+         *
+         * @return true if any of the wallet's files were found and deleted.
+         *
+         * @throws IllegalArgumentException if [alias] is not a valid alias, or is the default alias
+         * (also spelled with trailing underscores) or the legacy one; use [erase] for the default wallet.
+         * @throws IllegalStateException if a synchronizer for [network] and [alias] is active.
+         */
+        suspend fun eraseAlias(
+            appContext: Context,
+            network: ZcashNetwork,
+            alias: String
+        ): Boolean {
+            validateAlias(alias)
+            return SdkSynchronizer.eraseAlias(appContext, network, alias)
+        }
     }
 }
 
 private object UnavailableBroadcaster : Broadcaster {
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
     ): List<CreatedTransaction> = throw UnsupportedOperationException(
         "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
     )
@@ -1475,10 +1660,31 @@ private fun validateAlias(alias: String) {
     }
 }
 
+/**
+ * @property isBirthdayExact whether [treeState] is the one fetched for an exact birthday, rather than a fallback.
+ */
 internal data class WalletInitializationState(
     val treeState: TreeState,
-    val recoverUntil: BlockHeight?
+    val recoverUntil: BlockHeight?,
+    val isBirthdayExact: Boolean = false
 )
+
+/**
+ * Runs [create], which passes what it creates through `keep` as it hands it back, and closes that if the caller
+ * is cancelled before [create] returns it. A synchronizer is registered as active and started as soon as it is
+ * constructed: a cancellation that lands after that, for example when the `coroutineScope` that built it
+ * completes, would otherwise leave it running with nobody to close it, and its alias unusable until the process
+ * ends.
+ */
+internal suspend fun <T : Closeable> closingOnCancellation(create: suspend (keep: (T) -> T) -> T): T {
+    var kept: T? = null
+    try {
+        return create { created -> created.also { kept = it } }
+    } catch (e: CancellationException) {
+        kept?.close()
+        throw e
+    }
+}
 
 /**
  * Resolves the [TreeState]/recover-until pair to use for wallet initialization, based on [walletInitMode].
@@ -1486,18 +1692,27 @@ internal data class WalletInitializationState(
  * [WalletInitMode.ExistingWallet] is the normal cold-start case and never needs the network client, so it
  * does not invoke [downloaderProvider]. This lets DB init (repository/initDataDb) proceed without waiting
  * for the concurrently-built walletClient/downloader.
+ *
+ * [exactBirthday], used only with [RestoreWallet], asks for the tree state at `exactBirthday - 1` from the
+ * server so that the wallet's birthday is exactly [exactBirthday]; [fallbackTreeState] is used if that
+ * fetch fails, and [WalletInitializationState.isBirthdayExact] tells which of the two was used.
  */
+@Suppress("LongParameterList")
 internal suspend fun resolveWalletInitializationState(
     downloaderProvider: suspend () -> CompactBlockDownloader,
     fallbackTreeState: TreeState,
     sdkFlags: SdkFlags,
     walletInitMode: WalletInitMode,
-    newWalletTreeStateTimeout: Duration = NEW_WALLET_TREE_STATE_FETCH_TIMEOUT
+    newWalletTreeStateTimeout: Duration = NEW_WALLET_TREE_STATE_FETCH_TIMEOUT,
+    exactBirthday: BlockHeight? = null
 ) = when (walletInitMode) {
     is RestoreWallet -> {
+        val downloader = downloaderProvider()
+        val exactTreeState = exactBirthday?.let { downloader.fetchExactBirthdayTreeState(it, sdkFlags) }
         WalletInitializationState(
-            treeState = fallbackTreeState,
-            recoverUntil = downloaderProvider().fetchRecoverUntil(sdkFlags)
+            treeState = exactTreeState ?: fallbackTreeState,
+            recoverUntil = downloader.fetchRecoverUntil(sdkFlags),
+            isBirthdayExact = exactTreeState != null
         )
     }
 
@@ -1536,6 +1751,40 @@ private suspend fun CompactBlockDownloader.fetchRecoverUntil(sdkFlags: SdkFlags)
             null
         }
     }
+
+/**
+ * Fetches the tree state at `birthday - 1`, which seeds an account whose birthday is exactly [birthday]
+ * (the backend sets the birthday to the tree state's height plus one). Returns null, after logging, if
+ * the server could not provide it, so the caller can fall back to a bundled checkpoint, and for a birthday
+ * at the genesis block, below which there is no tree state.
+ */
+private suspend fun CompactBlockDownloader.fetchExactBirthdayTreeState(
+    birthday: BlockHeight,
+    sdkFlags: SdkFlags
+): TreeState? {
+    if (birthday.value < 1) return null
+    val treeStateHeight = BlockHeightUnsafe(birthday.value - 1)
+    return when (
+        val treeStateResponse =
+            getTreeState(
+                height = treeStateHeight,
+                serviceMode = sdkFlags ifTor ServiceMode.UniqueTor
+            )
+    ) {
+        is Response.Success -> {
+            Twig.info { "Restore: using tree state at height ${treeStateHeight.value} for exact birthday" }
+            TreeState.new(treeStateResponse.result)
+        }
+
+        is Response.Failure -> {
+            Twig.warn {
+                "Tree state fetch for exact birthday ${birthday.value} failed with: " +
+                    "${treeStateResponse.toThrowable()}, falling back to bundled checkpoint"
+            }
+            null
+        }
+    }
+}
 
 private suspend fun CompactBlockDownloader.fetchNewWalletTreeState(
     sdkFlags: SdkFlags,

@@ -62,10 +62,41 @@ interface Backend {
         transparentReceiver: String? = null
     ): ProposalUnsafe?
 
+    /**
+     * Proposes sending the account's entire currently spendable shielded balance to [to], with
+     * the ZIP 317 fee deducted from it. Notes that are not yet spendable are left in place.
+     *
+     * @throws RuntimeException if nothing is spendable or the spendable value does not cover
+     * the fee, or as a common indicator of the operation failure
+     */
+    @Throws(RuntimeException::class)
+    suspend fun proposeSendMaxTransfer(
+        accountUuid: ByteArray,
+        to: String,
+        memo: ByteArray? = null
+    ): ProposalUnsafe
+
+    /**
+     * Creates and stores the transactions of [proposal].
+     *
+     * @param discardOvk when `true`, the transactions are created with no outgoing viewing key,
+     * so their outputs cannot be recovered by anyone holding the account's keys. Otherwise the
+     * account's own OVK is used.
+     */
     suspend fun createProposedTransactions(
         proposal: ProposalUnsafe,
-        unifiedSpendingKey: ByteArray
+        unifiedSpendingKey: ByteArray,
+        discardOvk: Boolean = false
     ): List<ByteArray>
+
+    /**
+     * Checks whether creating the transactions of [proposal] needs the Sapling parameters,
+     * which is the case only when it spends or creates a Sapling note.
+     *
+     * @throws RuntimeException as a common indicator of the operation failure
+     */
+    @Throws(RuntimeException::class)
+    suspend fun proposalRequiresSaplingProofs(proposal: ProposalUnsafe): Boolean
 
     /**
      * Creates a partially-created (unsigned without proofs) transaction from the given proposal.
@@ -413,6 +444,23 @@ interface Backend {
     suspend fun setTransactionStatus(
         txId: ByteArray,
         status: Long,
+    )
+
+    /**
+     * Marks the transaction with [txId] as trusted or untrusted (ZIP 315). The outputs of a
+     * trusted transaction become spendable after the trusted number of confirmations (3) instead
+     * of the untrusted one (10), even though the wallet did not create the transaction. The
+     * transaction must already be stored, e.g. by [decryptAndStoreTransaction], which stores
+     * nothing for a transaction that does not involve this wallet.
+     *
+     * @throws RuntimeException as a common indicator of the operation failure, including when the
+     * transaction is not found among this wallet's stored transactions; a stored transaction whose
+     * raw bytes the wallet does not hold also counts as not found
+     */
+    @Throws(RuntimeException::class)
+    suspend fun setTransactionTrust(
+        txId: ByteArray,
+        trusted: Boolean,
     )
 
     //

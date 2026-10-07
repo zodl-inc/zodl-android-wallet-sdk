@@ -4,6 +4,7 @@ package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
 import cash.z.ecc.android.sdk.CloseableSynchronizer
+import cash.z.ecc.android.sdk.OpenedCardWallet
 import cash.z.ecc.android.sdk.WalletInitMode
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -11,7 +12,8 @@ import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 
 /**
- * Creates and erases the sync engine that backs [cash.z.ecc.android.sdk.WalletCoordinator].
+ * Creates and erases the sync engine that backs [cash.z.ecc.android.sdk.WalletCoordinator], and
+ * the helper wallets (such as a gift card's temporary wallet) that run on the same engine beside it.
  *
  * Which engine that is gets decided at SDK build time by the `IS_SLIPSTREAM_ENABLED` Gradle
  * property: it selects one of this module's `engineSlipstream`/`engineDefault` source directories,
@@ -32,5 +34,46 @@ internal interface SynchronizerEngineFactory {
     suspend fun erase(
         appContext: Context,
         network: ZcashNetwork
+    ): Boolean
+
+    /**
+     * Creates and starts the helper wallet under [alias], restored from the seed in [setup] at
+     * [birthday] (exactly at it when [isBirthdayExact] and the engine and server support that,
+     * else at the bundled checkpoint below it; [OpenedCardWallet.startsAtBirthday] tells which),
+     * without exchange rates, beside the main wallet. [onCriticalError] is installed as the
+     * wallet's critical error handler before it starts syncing; failing to reach the server while
+     * it starts is not a critical error. An engine that can plan its memory gives the helper
+     * wallet a smaller share than the main wallet's. [alias] has already been checked not to
+     * address the main wallet's files (see [isMainWalletAlias]).
+     */
+    suspend fun openHelperWallet(
+        context: Context,
+        zcashNetwork: ZcashNetwork,
+        alias: String,
+        birthday: BlockHeight,
+        isBirthdayExact: Boolean,
+        lightWalletEndpoint: LightWalletEndpoint,
+        setup: AccountCreateSetup,
+        isTorEnabled: Boolean,
+        onCriticalError: (Throwable?) -> Boolean,
+    ): OpenedCardWallet
+
+    /**
+     * Deletes the local data of the helper wallet under [alias] only, as this engine and any
+     * engine used before it stored it, by deleting its files: no synchronizer is started, and the
+     * main wallet is never touched.
+     *
+     * @return true when none of the wallet's data that this engine stores remains, including when there
+     * was nothing to delete; false when some of it could not be deleted. Each engine checks this per
+     * wallet: the Slipstream engine from its own files and preferences, the default engine by looking
+     * for what `Synchronizer.eraseAlias` left behind.
+     * @throws IllegalArgumentException if [alias] addresses the main wallet's files (see
+     * [isMainWalletAlias]); nothing is touched then.
+     * @throws IllegalStateException if a synchronizer for [network] and [alias] is active.
+     */
+    suspend fun eraseHelperWallet(
+        appContext: Context,
+        network: ZcashNetwork,
+        alias: String
     ): Boolean
 }

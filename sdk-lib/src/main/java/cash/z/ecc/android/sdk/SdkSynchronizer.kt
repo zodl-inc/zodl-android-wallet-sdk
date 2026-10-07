@@ -40,8 +40,10 @@ import cash.z.ecc.android.sdk.internal.model.TorHttp
 import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.model.ZcashProtocol
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
+import cash.z.ecc.android.sdk.internal.recordTrustedTransaction
 import cash.z.ecc.android.sdk.internal.repository.CompactBlockRepository
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
+import cash.z.ecc.android.sdk.internal.requireNotMainWalletAlias
 import cash.z.ecc.android.sdk.internal.storage.block.FileCompactBlockRepository
 import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProvider
@@ -63,10 +65,14 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FetchFiatCurrencyResult
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.ObserveFiatCurrencyResult
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RawTransaction
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
 import cash.z.ecc.android.sdk.model.TransactionId
@@ -187,6 +193,8 @@ class SdkSynchronizer private constructor(
          *
          * @return Synchronizer instance as CloseableSynchronizer
          *
+         * @param onCriticalErrorHandler installed as [onCriticalErrorHandler] before the synchronizer starts.
+         *
          * @throws IllegalStateException If multiple instances of synchronizer with the same network+alias are
          * active at the same time.  Call `close` to finish one synchronizer before starting another one with the same
          * network+alias.
@@ -208,7 +216,8 @@ class SdkSynchronizer private constructor(
             walletClientFactory: WalletClientFactory,
             defaultSubmitEndpoint: LightWalletEndpoint,
             pendingSubmitPlanStore: PendingSubmitPlanStore,
-            sdkFlags: SdkFlags
+            sdkFlags: SdkFlags,
+            onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null
         ): CloseableSynchronizer {
             val synchronizerKey = SynchronizerKey(zcashNetwork, alias)
             return mutex.withLock {
@@ -231,6 +240,7 @@ class SdkSynchronizer private constructor(
                     pendingSubmitPlanStore = pendingSubmitPlanStore,
                     sdkFlags = sdkFlags
                 ).apply {
+                    this.onCriticalErrorHandler = onCriticalErrorHandler
                     instances[synchronizerKey] = InstanceState.Active
                     start()
                 }
@@ -269,6 +279,37 @@ class SdkSynchronizer private constructor(
                 Twig.info { "Both preferences cleared: ${standardPrefsCleared && encryptedPrefsCleared}" }
 
                 DatabaseCoordinator.getInstance(appContext).deleteDatabases(network, alias)
+            }
+        }
+
+        /**
+         * Deletes the data that belongs to the wallet at [network] and [alias] alone: its data
+         * database (with its journal, WAL and shared-memory files), its compact block cache,
+         * its legacy pending-transactions database, and the submit plans stored under its
+         * namespace. Unlike [erase], it leaves the preferences shared by every wallet in the
+         * process untouched, so other wallets (in particular the default-alias wallet) are not
+         * affected.
+         */
+        internal suspend fun eraseAlias(
+            appContext: Context,
+            network: ZcashNetwork,
+            alias: String
+        ): Boolean {
+            requireNotMainWalletAlias(alias, "Use erase() for the default wallet")
+            val key = SynchronizerKey(network, alias)
+
+            return mutex.withLock {
+                waitForShutdown(key)
+                checkForExistingSynchronizers(key)
+
+                PendingSubmitPlanStore.eraseNamespace(
+                    preferenceProvider = EncryptedPreferenceProvider(appContext)(),
+                    namespace = PendingSubmitPlanStore.namespaceFor(network.id, alias)
+                )
+
+                val coordinator = DatabaseCoordinator.getInstance(appContext)
+                val pendingDeleted = coordinator.deletePendingTransactionDatabase(network, alias)
+                coordinator.deleteDatabases(network, alias) || pendingDeleted
             }
         }
 
@@ -656,6 +697,27 @@ class SdkSynchronizer private constructor(
     override fun enhanceTransaction(txId: TransactionId) {
         coroutineScope.launch {
             processor.enhanceTransaction(txId)
+        }
+    }
+
+    /**
+     * Writes straight to the wallet database: this must work while the synchronizer is not synced
+     * or is stopped, so no sync state is awaited.
+     */
+    override suspend fun recordTrustedTransaction(
+        rawTransaction: RawTransaction,
+        txId: TransactionId
+    ) {
+        backend.recordTrustedTransaction(rawTransaction, txId)
+        storage.invalidate()
+        // The claim is recorded at this point; a failed balance refresh must not report otherwise.
+        @Suppress("TooGenericExceptionCaught")
+        try {
+            refreshAllBalances()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Twig.warn { "Refreshing balances after a trusted claim failed: ${e::class.simpleName}" }
         }
     }
 
@@ -1157,6 +1219,19 @@ class SdkSynchronizer private constructor(
     override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal =
         txManager.proposeOrchardToIronwoodMigration(account)
 
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalFromParametersException::class
+    )
+    override suspend fun proposeSendMax(
+        account: Account,
+        recipient: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal {
+        require(recipient.network == network) { "The recipient is for a different network" }
+        return txManager.proposeSendMax(account, recipient, memo)
+    }
+
     /**
      * @throws TransactionEncoderException.ProposalShieldingException in case the proposal creation failed
      *
@@ -1177,14 +1252,16 @@ class SdkSynchronizer private constructor(
     )
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
     ): Flow<TransactionSubmitResult> {
         // This preserves the legacy API contract by creating locally, then submitting each
         // created transaction to the builder-configured default endpoint.
         return sdkBroadcaster.createAndSubmitProposedTransactions(
             proposal = proposal,
             usk = usk,
-            endpoint = defaultSubmitEndpoint
+            endpoint = defaultSubmitEndpoint,
+            ovkPolicy = ovkPolicy
         )
     }
 
