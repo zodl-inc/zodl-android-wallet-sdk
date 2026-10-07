@@ -139,7 +139,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Slipstream synchronizer downloads the Sapling parameters only for a proposal that spends
   or creates a Sapling note, as the default synchronizer already did; an Orchard-only send, such
   as a gift card redemption, never fetches them.
-- `Synchronizer.createProposedTransactions` and `Broadcaster.createProposedTransactions` take
+- **Breaking (binary and for implementers):** `Synchronizer.createProposedTransactions` and
+  `Broadcaster.createProposedTransactions` take
   an `ovkPolicy: OvkPolicy = OvkPolicy.Sender` parameter. Existing call sites compile
   unchanged and keep the previous behavior. Any implementer or test fake of `Synchronizer` or
   `Broadcaster` must add the parameter to its override. With `OvkPolicy.Discard`, nobody
