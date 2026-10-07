@@ -196,8 +196,8 @@ jobs:
         with:
           rust-cache: true
       - name: Android Lint
-        # 120 minutes: a cold run cross-compiles backend-lib's Rust for every ABI, which alone
-        # takes longer than the old limit; a run with a warm Rust cache finishes well inside it.
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 45 minutes; warm-cache runs finish well inside this limit.
         timeout-minutes: 120
         env:
           # Disable minify, since it makes lint run faster
@@ -351,8 +351,8 @@ jobs:
         with:
           rust-cache: true
       - name: Compile with Slipstream disabled
-        # 120 minutes: even for one ABI, a cold run compiles backend-lib's whole Rust graph,
-        # which took longer than the old limit; a run with a warm Rust cache finishes well inside it.
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 30 minutes; warm-cache runs finish well inside this limit.
         timeout-minutes: 120
         run: |
           ./gradlew :sdk-incubator-lib:compileDebugKotlin :sdk-lib:compileDebugKotlin -PIS_SLIPSTREAM_ENABLED=false
@@ -380,8 +380,8 @@ jobs:
       # voting circuits into the native build, and `make test-unit` builds the crate for all
       # four ABIs, so that lands four times over.
       - name: Build and test
-        # 120 minutes: a cold run cross-compiles backend-lib's Rust for every ABI, which alone
-        # takes longer than the old limit; a run with a warm Rust cache finishes well inside it.
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 60 minutes; warm-cache runs finish well inside this limit.
         timeout-minutes: 120
         run: |
           make test-unit
@@ -540,8 +540,8 @@ jobs:
       # falls back to 'auto', which needs a real GPU and fails to boot the
       # emulator (EmulatorStartFailedException during snapshot creation).
       - name: Build and test
-        # 120 minutes: a cold run cross-compiles backend-lib's Rust for every ABI, which alone
-        # takes longer than the old limit; a run with a warm Rust cache finishes well inside it.
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 45 minutes; warm-cache runs finish well inside this limit.
         timeout-minutes: 120
         run: |
           make test-instrumented
@@ -596,8 +596,8 @@ jobs:
         run: |
           keytool -genkey -v -keystore $SIGNING_KEY_PATH -keypass android -storepass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 100000 -dname "CN=, OU=, O=Test, L=, S=, C=" -noprompt
       - name: Build
-        # 120 minutes: a cold run cross-compiles backend-lib's Rust for every ABI, which alone
-        # takes longer than the old limit; a run with a warm Rust cache finishes well inside it.
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 45 minutes; warm-cache runs finish well inside this limit.
         timeout-minutes: 120
         env:
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEYSTORE_PATH: ${{ format('{0}/release.jks', env.home) }}
