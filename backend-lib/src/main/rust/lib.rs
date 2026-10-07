@@ -120,12 +120,12 @@ mod migration_engine;
 mod migration_keystone;
 mod migration_plan_cache;
 mod migration_send_max;
+mod ohttp;
 mod payment_uri;
 mod proving;
 mod send_max;
 mod tor;
 mod tor_http;
-mod ohttp;
 #[cfg(test)]
 mod unified_r0;
 mod utils;
