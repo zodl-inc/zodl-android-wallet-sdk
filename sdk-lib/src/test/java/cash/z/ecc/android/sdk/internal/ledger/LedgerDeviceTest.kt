@@ -19,11 +19,15 @@ import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zip32AccountIndex
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import java.io.IOException
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -92,6 +96,41 @@ class LedgerDeviceTest {
             assertEquals(1, backend.exportsClosed)
             assertFalse(transport.closed)
             assertFalse(pairing.toString().contains("uviewtest1fake"))
+        }
+
+    @Test
+    fun a_pairing_cancelled_between_export_chunks_closes_the_transport_and_sends_nothing_more() =
+        runBlocking<Unit> {
+            val backend = FakeLedgerBackend(vkContinuations = 1)
+            val inner = ScriptedTransport(listOf(ok(1), ok('a'.code.toByte()), ok(), ok()))
+            // Answers at once, without suspending, and checks no cancellation: a cancellation that
+            // lands while it runs is seen only by the pairing.
+            val transport =
+                object : LedgerApduTransport {
+                    override suspend fun exchange(
+                        apdu: ByteArray,
+                        timeout: Duration?
+                    ): ByteArray {
+                        val reply = inner.exchange(apdu, timeout)
+                        if (apdu.single() == CMD_VK) {
+                            currentCoroutineContext().cancel()
+                        }
+                        return reply
+                    }
+
+                    override suspend fun close() = inner.close()
+                }
+
+            val pairing = async { LedgerDevice(transport, ZcashNetwork.Testnet, backend).pairAccount(account) }
+
+            assertFailsWith<CancellationException> { pairing.await() }
+            assertTrue(inner.closed)
+            assertEquals(
+                listOf(CMD_VERSION, CMD_IDENTITY, CMD_VK),
+                inner.sent.map { it.single() },
+                "no export chunk is sent after the cancellation"
+            )
+            assertEquals(1, backend.exportsClosed)
         }
 
     @Test

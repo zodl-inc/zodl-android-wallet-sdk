@@ -150,7 +150,9 @@ closed any whose exchange failed).
 `pairAccount` reads the device's identity, and asks the user to approve the viewing key export on the
 device. The identity is read once, before the export: the Zcash app leaves a status screen up after
 the export and drops the next command until the user dismisses it. It refuses an app that cannot sign
-PCZTs (`LedgerException.AppTooOld`) before exporting anything.
+PCZTs (`LedgerException.AppTooOld`) before exporting anything. Cancelling the call closes the transport
+and sends nothing more, also between two chunks of the export: open a new connection before you try
+again.
 
 For account 0, `pairAccount` checks that the exported key belongs to the device that answered the
 identity read: it derives the public key at `m/44'/coin'/0'/0/0` from the key's transparent component

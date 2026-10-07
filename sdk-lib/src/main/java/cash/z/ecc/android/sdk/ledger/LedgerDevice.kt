@@ -11,9 +11,12 @@ import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zip32AccountIndex
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -116,6 +119,10 @@ class LedgerDevice internal constructor(
      * belongs to the caller like the one passed to [new]; an exception [reconnect] throws propagates
      * as it is.
      *
+     * If the calling coroutine is cancelled while the pairing runs, the pairing sends nothing more
+     * and closes [transport], also between two chunks of the export. The device can be left in the
+     * middle of the export, so open a new connection before you try again.
+     *
      * Import the returned key with [Account.LEDGER_KEY_SOURCE] as its key source, and persist the
      * binding next to the imported account; see [LedgerAccountPairing].
      *
@@ -141,16 +148,22 @@ class LedgerDevice internal constructor(
         reconnect: (suspend () -> LedgerApduTransport)? = null
     ): LedgerAccountPairing =
         mutex.withLock {
-            val (version, identity) = readBeforeExport(readTimeout, reconnect)
-            val ufvk = exportUfvk(zip32AccountIndex)
-            if (zip32AccountIndex.index == IDENTITY_ACCOUNT_INDEX) {
-                backend.checkUfvkDeviceIdentity(network, ufvk, identity)
+            try {
+                val (version, identity) = readBeforeExport(readTimeout, reconnect)
+                val ufvk = exportUfvk(zip32AccountIndex)
+                if (zip32AccountIndex.index == IDENTITY_ACCOUNT_INDEX) {
+                    backend.checkUfvkDeviceIdentity(network, ufvk, identity)
+                }
+                LedgerAccountPairing(
+                    ufvk = ufvk,
+                    binding = LedgerAccountBinding(identity, zip32AccountIndex),
+                    appVersion = version
+                )
+            } catch (e: CancellationException) {
+                // The device can be in the middle of the export, so the transport is not reused.
+                exchanger.closeQuietly()
+                throw e
             }
-            LedgerAccountPairing(
-                ufvk = ufvk,
-                binding = LedgerAccountBinding(identity, zip32AccountIndex),
-                appVersion = version
-            )
         }
 
     /**
@@ -265,6 +278,9 @@ class LedgerDevice internal constructor(
         val export = backend.newUfvkExport(network, zip32AccountIndex)
         try {
             while (true) {
+                // A transport that does not check for cancellation itself returns at once, so check
+                // here too: a cancelled pairing sends no further chunk.
+                currentCoroutineContext().ensureActive()
                 // The export hands out nothing more only once it has completed, which returns below,
                 // or failed, which has already thrown.
                 val apdu = export.nextApdu() ?: throw LedgerException.Internal(null)
