@@ -119,6 +119,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (including change) no longer downloads the Sapling parameters (about 50 MB) first, so such
   sends work on a device that has never fetched them. Proposals that involve Sapling still
   download them as before.
+- The Rust backend now builds on the NU7 pre-release generation of the underlying Zcash
+  Rust crates and the `zodl-slipstream` 0.4.0-pre.1 engine.
+- Every unified address, unified full viewing key and unified incoming viewing key string
+  the SDK returns is ZIP 316 revision 0, with every receiver or item it carries, as before
+  the crate move. Revision 2 is used only for a value revision 0 cannot represent (one with
+  expiry metadata, a P2SH viewing-key item, or only transparent items). Decoding still
+  accepts both revisions.
+- Coinholder voting is built on `zcash_voting` 5.1.1-rc.3 as it stands at the head of
+  valargroup/zcash_voting#373, the pull request that moves its librustzcash backend to
+  the NU7 pre-release crates. No release carries that change yet, so the Rust backend
+  takes the crate, and the crates under it that the change also needs, from git
+  revisions. crates.io already has releases with the same version numbers built on the
+  Ironwood generation, so these git revisions are replaced only together, once NU7-based
+  releases exist under new version numbers. The voting API is unchanged.
 
 ### Fixed
 - Two synchronizers running in the same process (different aliases) no longer overwrite each
@@ -145,6 +159,26 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   card claim recorded in a wallet it does not pay therefore reports
   `GiftCardRedeemer.Redemption.recordedInDestination` as `false`; the redemption itself is
   unaffected.
+- The JNI entry points `branchIdForHeight`, `putUtxo`, and the pool-migration entry points
+  `recordTransferResultNative`, `hasOverdueTransfersNative`, `nextDueTransferNative`, and
+  `nextStepNative` now reject negative or out-of-range block heights with an exception instead
+  of silently wrapping them to a `u32`, which could select an incorrect consensus branch id,
+  persist a bogus UTXO height, or misjudge migration transfer timing. The migration commit and
+  Keystone QR entry points' plan-handle and fragment-length parameters got the same treatment
+  (MOB-1694).
+
+### Security
+- Hardened key handling across the JNI boundary: on the Rust side, the metadata-key halves passed
+  into `derivePrivateUseMetadataKey` are now held in zeroize-on-drop buffers instead of plain
+  vectors; on the Kotlin side, transient copies of key material created while crossing the JNI
+  boundary are zeroed as soon as they are no longer needed. Not covered: the derived `zip32` key
+  structs on the Rust side are not wiped on drop until a `zip32` release carrying zcash/zip32#34
+  is picked up, and `DerivationTool.deriveArbitraryWalletKey` / `DerivationTool.deriveArbitraryAccountKey`
+  return the derived key itself as a plain `ByteArray`, so there is no SDK-side copy to wipe - that
+  array is caller-owned key material and the caller is responsible for zeroing it once done, as their
+  documentation now states. This is defense-in-depth and best-effort only - the JVM may retain
+  unreachable copies (GC compaction, JIT) that cannot be cleared from application code - and it makes
+  no changes to the public API (MOB-1689).
 
 ## [5.0.0] - 2026-09-25
 

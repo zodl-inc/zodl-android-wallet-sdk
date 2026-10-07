@@ -20,6 +20,21 @@ runs:
       # workflows consume it only to build artifact paths (`format('{0}/artifacts', env.home)`).
       run: | # zizmor: ignore[github-env]
         echo "home=${HOME}" >> "$GITHUB_ENV"
+    - name: Free disk space
+      shell: bash
+      run: |
+        echo "Disk space before cleanup:"
+        df -h /
+        # Toolchains this build never uses; together about 20 GB that the Rust cross-compile
+        # for four ABIs and the emulator image otherwise compete for.
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/.ghcup
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/local/share/boost
+        sudo rm -rf /usr/share/swift
+        echo "Disk space after cleanup:"
+        df -h /
     - name: Set up Java
       uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654
       with:

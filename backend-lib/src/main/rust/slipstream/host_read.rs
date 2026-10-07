@@ -590,7 +590,6 @@ mod list_transactions_execution_tests {
 #[cfg(test)]
 mod list_transactions_real_schema_tests {
     use super::*;
-    use rand::rngs::OsRng;
     use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
     use zcash_protocol::consensus::Network;
 
@@ -604,7 +603,13 @@ mod list_transactions_real_schema_tests {
                 .expect("system time after epoch")
                 .as_nanos()
         ));
-        let mut db = WalletDb::for_path(&path, Network::TestNetwork, SystemClock, OsRng).unwrap();
+        let mut db = WalletDb::for_path(
+            &path,
+            Network::TestNetwork,
+            SystemClock,
+            crate::system_rng(),
+        )
+        .unwrap();
         init_wallet_db(&mut db, None).unwrap();
         path
     }

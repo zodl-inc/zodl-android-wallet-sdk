@@ -8,7 +8,6 @@
 use std::fmt;
 
 use anyhow::anyhow;
-use rand::rngs::OsRng;
 use zcash_address::ZcashAddress;
 use zcash_client_backend::{
     data_api::{
@@ -25,7 +24,7 @@ use zcash_client_sqlite::{AccountUuid, WalletDb, util::SystemClock};
 use zcash_protocol::{ShieldedPool, consensus::Network, memo::MemoBytes};
 
 /// The wallet database as the JNI layer holds it.
-type Db = WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>;
+type Db = WalletDb<rusqlite::Connection, Network, SystemClock, crate::SystemRng>;
 
 type SendMaxProposal = Proposal<StandardFeeRule, <Db as InputSource>::NoteRef>;
 
