@@ -2,20 +2,17 @@ package cash.z.ecc.android.sdk
 
 import android.content.Context
 import cash.z.ecc.android.sdk.exception.GiftCardException
-import cash.z.ecc.android.sdk.ext.ZcashSdk
 import cash.z.ecc.android.sdk.internal.GiftCardLinks
 import cash.z.ecc.android.sdk.internal.SynchronizerEngineFactory
 import cash.z.ecc.android.sdk.internal.model.JniGiftCard
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.BlockHeight
-import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.GiftCard
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.Mockito.mock
-import org.mockito.Mockito.`when`
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
@@ -32,8 +29,7 @@ class GiftCardRedeemersTest {
     fun theCardWalletIsOpenedByTheEngineUnderItsAlias() =
         runBlocking<Unit> {
             val factory = FakeEngineFactory()
-            val setup =
-                AccountCreateSetup(accountName = "Gift card", keySource = null, seed = FirstClassByteArray(SEED))
+            val setup = setup()
             val handler: (Throwable?) -> Boolean = { false }
 
             val opened = openCardWallet(factory, ALIAS, setup, handler)
@@ -156,8 +152,7 @@ class GiftCardRedeemersTest {
     private suspend fun openCardWallet(
         factory: FakeEngineFactory,
         alias: String,
-        setup: AccountCreateSetup =
-            AccountCreateSetup(accountName = "Gift card", keySource = null, seed = FirstClassByteArray(SEED)),
+        setup: AccountCreateSetup = setup(),
         onCriticalError: (Throwable?) -> Boolean = { false }
     ) = EngineGiftCardWallets(factory).open(
         context = context(),
@@ -245,21 +240,6 @@ class GiftCardRedeemersTest {
     }
 
     private companion object {
-        const val ALIAS = "giftcard_test"
-        const val BIRTHDAY = 3_000_000L
-        val SEED = ByteArray(64)
-
-        /** Every spelling of an alias that addresses the main wallet's files. */
-        val MAIN_WALLET_ALIASES =
-            listOf(ZcashSdk.DEFAULT_ALIAS, "${ZcashSdk.DEFAULT_ALIAS}_", "ZcashSdk", "ZCASHSDK_")
-        val ENDPOINT = LightWalletEndpoint("localhost", 9067, false)
-
-        fun context(): Context {
-            val context = mock(Context::class.java)
-            `when`(context.applicationContext).thenReturn(context)
-            return context
-        }
-
         fun card(): GiftCard =
             GiftCard.parse(
                 "link",

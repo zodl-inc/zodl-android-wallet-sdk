@@ -8,7 +8,6 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
@@ -40,7 +39,7 @@ import kotlin.time.Duration.Companion.seconds
 class GiftCardRedeemerEngineTest {
     @Test
     fun aLatchedSetupErrorFailsTheCheckAtOnceWithItsCause() =
-        runBlocking<Unit> {
+        runTest {
             val setupFailure = IllegalStateException("setup")
             val cardWallet = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.DISCONNECTED))
             cardWallet.setupError.value = setupFailure
@@ -52,7 +51,7 @@ class GiftCardRedeemerEngineTest {
     /** Whether the account is already there or still being created, a setup error fails the waiting check. */
     @Test
     fun aSetupErrorLatchedWhileTheCheckWaitsFailsItAtOnce() =
-        runBlocking<Unit> {
+        runTest {
             listOf(listOf(AccountFixture.new()), null).forEach { accounts ->
                 val cardWallet =
                     FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.INITIALIZING))
@@ -74,7 +73,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun aCardWalletIdleBeforeItsFirstPassWithinTheGraceIsNotTreatedAsDisconnected() =
-        runBlocking<Unit> {
+        runTest {
             val status = MutableStateFlow(Synchronizer.Status.DISCONNECTED)
             val cardWallet = FakeCardWallet(emptyList(), status = status)
             val wallets = engineWallets(cardWallet)
@@ -92,7 +91,7 @@ class GiftCardRedeemerEngineTest {
     /** Idle before its first pass, or syncing without advancing: either way the wallet fails after the grace. */
     @Test
     fun aCardWalletWithoutSyncProgressFailsAfterTheGrace() =
-        runBlocking<Unit> {
+        runTest {
             listOf(
                 Synchronizer.Status.DISCONNECTED to PercentDecimal.ZERO_PERCENT,
                 Synchronizer.Status.SYNCING to PercentDecimal(0.4f)
@@ -108,7 +107,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun aCardWalletWhoseProgressKeepsRisingIsNotStalled() =
-        runBlocking<Unit> {
+        runTest {
             val status = MutableStateFlow(Synchronizer.Status.SYNCING)
             val cardWallet = FakeCardWallet(emptyList(), status = status)
             val wallets = engineWallets(cardWallet)
@@ -128,7 +127,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun aLegacyCardWalletSyncingWithoutProgressIsNotFailedByTheGrace() =
-        runBlocking<Unit> {
+        runTest {
             val status = MutableStateFlow(Synchronizer.Status.SYNCING)
             val cardWallet = FakeCardWallet(emptyList(), status = status)
             val wallets = FakeWallets(cardWallet)
@@ -145,7 +144,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun theCheckWaitsForTheCardWalletsAccountToBeCreated() =
-        runBlocking<Unit> {
+        runTest {
             val cardWallet = FakeCardWallet(emptyList())
             cardWallet.accounts.value = null
             val wallets = engineWallets(cardWallet)
@@ -165,7 +164,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun aSecondCheckAfterALatchedSetupErrorOpensANewCardWallet() =
-        runBlocking<Unit> {
+        runTest {
             val broken = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.DISCONNECTED))
             broken.setupError.value = IllegalStateException("setup")
             val healthy = FakeCardWallet(emptyList())
@@ -188,7 +187,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun aFailedSyncPassIsRetriedAtMostTwiceThenFailsTheCheck() =
-        runBlocking<Unit> {
+        runTest {
             val cardWallet = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.DISCONNECTED))
             val wallets = engineWallets(cardWallet)
             val (redeemer, _) = redeemer(cardWallet, wallets = wallets)
@@ -208,7 +207,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun theRetriesOfAFailedSyncPassAreCountedPerCheck() =
-        runBlocking<Unit> {
+        runTest {
             val status = MutableStateFlow(Synchronizer.Status.DISCONNECTED)
             val cardWallet = FakeCardWallet(emptyList(), status = status)
             val wallets = engineWallets(cardWallet)
@@ -231,7 +230,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun aCardWalletThatDisconnectsAfterItsFirstPassFailsAfterTheGrace() =
-        runBlocking<Unit> {
+        runTest {
             val status = MutableStateFlow(Synchronizer.Status.DISCONNECTED)
             val cardWallet = FakeCardWallet(emptyList(), status = status)
             val wallets = engineWallets(cardWallet)
@@ -250,7 +249,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun aFailedFirstPassStartsTheDisconnectedGraceAndIsRetried() =
-        runBlocking<Unit> {
+        runTest {
             val cardWallet = FakeCardWallet(emptyList(), status = MutableStateFlow(Synchronizer.Status.DISCONNECTED))
             val wallets = engineWallets(cardWallet)
             val (redeemer, _) = redeemer(cardWallet, wallets = wallets)
@@ -268,7 +267,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun theProcessorErrorHandlerIsTakenOverOnlyForAWalletIdleBeforeItsFirstPass() =
-        runBlocking<Unit> {
+        runTest {
             val legacy = FakeCardWallet(emptyList())
             assertIs<GiftCardRedeemer.Status.Ready>(redeemer(legacy).first.check())
             assertNull(legacy.onProcessorErrorHandler)
@@ -293,7 +292,7 @@ class GiftCardRedeemerEngineTest {
 
     @Test
     fun aCardWalletOnTheEngineRedeemsWithTheOutgoingViewingKeyDiscarded() =
-        runBlocking<Unit> {
+        runTest {
             val claim = createdTransaction("claim")
             val cardWallet = FakeCardWallet(listOf(claim))
             val (redeemer, _) = redeemer(cardWallet, wallets = engineWallets(cardWallet))
@@ -433,7 +432,7 @@ class GiftCardRedeemerEngineTest {
                 cardAccountBalance(available = 1_000_000) to GiftCardRedeemer.Status.Ready::class
             ).forEach { (late, expected) ->
                 val cardWallet = FakeCardWallet(emptyList(), spendable = 0, history = 0)
-                val wallets = exactEngineWallets(cardWallet)
+                val wallets = engineWallets(cardWallet, exact = true)
                 val (redeemer, _) = redeemer(cardWallet, wallets = wallets)
                 val start = currentTime
 
@@ -463,7 +462,7 @@ class GiftCardRedeemerEngineTest {
                 pending to GiftCardRedeemer.Status.Pending::class
             ).forEach { (found, expected) ->
                 val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
-                val wallets = exactEngineWallets(nothing, found)
+                val wallets = engineWallets(nothing, found, exact = true)
                 val (redeemer, _) = redeemer(nothing, wallets = wallets)
                 val start = currentTime
 
@@ -489,7 +488,7 @@ class GiftCardRedeemerEngineTest {
                 .forEach { (isTorEnabled, settle) ->
                     val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
                     val stillNothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
-                    val wallets = exactEngineWallets(nothing, stillNothing)
+                    val wallets = engineWallets(nothing, stillNothing, exact = true)
                     val (redeemer, _) = redeemer(nothing, wallets = wallets, isTorEnabled = isTorEnabled)
                     val start = currentTime
 
@@ -513,7 +512,7 @@ class GiftCardRedeemerEngineTest {
     fun closingDuringTheExactWalletsSettleFailsTheCheckWithoutARescan() =
         runTest {
             val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
-            val wallets = exactEngineWallets(nothing, FakeCardWallet(emptyList()))
+            val wallets = engineWallets(nothing, FakeCardWallet(emptyList()), exact = true)
             val (redeemer, _) = redeemer(nothing, wallets = wallets)
 
             val check = async { runCatching { redeemer.check() } }
@@ -529,7 +528,7 @@ class GiftCardRedeemerEngineTest {
     fun aCardFundedFromItsExactBirthdayIsNotRescanned() =
         runTest {
             val funded = FakeCardWallet(emptyList())
-            val wallets = exactEngineWallets(funded)
+            val wallets = engineWallets(funded, exact = true)
             val (redeemer, _) = redeemer(funded, wallets = wallets)
 
             assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
@@ -548,7 +547,7 @@ class GiftCardRedeemerEngineTest {
         runTest {
             val aliases = GiftCardAliases()
             val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
-            val wallets = exactEngineWallets(nothing, FakeCardWallet(emptyList()))
+            val wallets = engineWallets(nothing, FakeCardWallet(emptyList()), exact = true)
             val (redeemer, _) = redeemer(nothing, wallets = wallets, aliases = aliases)
 
             assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
@@ -558,7 +557,7 @@ class GiftCardRedeemerEngineTest {
             assertNotSame(wallets.seeds[0], wallets.seeds[1])
             assertContentEquals(wallets.seedsAtOpen[0], wallets.seedsAtOpen[1])
             val other = FakeCardWallet(emptyList())
-            val (contender, _) = redeemer(other, wallets = exactEngineWallets(other), aliases = aliases)
+            val (contender, _) = redeemer(other, wallets = engineWallets(other, exact = true), aliases = aliases)
             assertIs<GiftCardException.InUse>(runCatching { contender.check() }.exceptionOrNull())
             redeemer.close()
         }
@@ -580,27 +579,4 @@ class GiftCardRedeemerEngineTest {
         val failure = assertIs<GiftCardException.SyncFailed>(thrown)
         assertTrue(generateSequence(failure.cause) { it.cause }.any { it.message == message })
     }
-
-    /** The card wallet's balances, with [pending] in Orchard and nothing spendable. */
-    private fun cardBalances(pending: Long) =
-        mapOf(AccountFixture.new().accountUuid to cardAccountBalance(pending = pending))
-
-    /**
-     * Card wallets as the Slipstream engine opens them when the exact birthday's tree state is available: [cardWallets]
-     * in turn, at the birthday when asked to, and idle before the first pass.
-     */
-    private fun exactEngineWallets(vararg cardWallets: FakeCardWallet) =
-        FakeWallets(
-            cardWallets.toList(),
-            isExactBirthdayAvailable = true,
-            isDisconnectedUntilFirstPass = true
-        )
-
-    /** Card wallets as the Slipstream engine opens them: at the checkpoint, and idle before the first pass. */
-    private fun engineWallets(cardWallet: FakeCardWallet) =
-        FakeWallets(
-            listOf(cardWallet),
-            isExactBirthdayAvailable = false,
-            isDisconnectedUntilFirstPass = true
-        )
 }

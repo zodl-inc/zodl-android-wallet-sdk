@@ -24,7 +24,7 @@ internal val engineSynchronizerFactory: SynchronizerEngineFactory = SlipstreamEn
 /**
  * What [SlipstreamEngineFactory] asks [SlipstreamSynchronizer.Companion.new] for, one property per
  * parameter. Deliberately not a data class: [setup] carries a seed, which must never end up in a
- * generated `toString`.
+ * generated `toString`. A non-null [birthdayResolved] asks for the exact birthday.
  */
 internal class SlipstreamWalletRequest(
     val context: Context,
@@ -37,8 +37,7 @@ internal class SlipstreamWalletRequest(
     val isTorEnabled: Boolean,
     val isExchangeRateEnabled: Boolean,
     val engineMemoryFraction: Float,
-    val isBirthdayExact: Boolean = false,
-    val onBirthdayResolved: ((isExact: Boolean) -> Unit)? = null
+    val birthdayResolved: CompletableDeferred<Boolean>? = null
 )
 
 /**
@@ -86,24 +85,13 @@ internal class SlipstreamEngineFactory(
         )
 
     /**
-     * A second [SlipstreamSynchronizer] under [alias], restored with [WalletInitMode.RestoreWallet]
-     * and without exchange rates. With [isBirthdayExact], its preparation fetches the tree state at
-     * `birthday - 1` from [lightWalletEndpoint], over Tor when [isTorEnabled] (through the wallet's own
-     * client, never directly), and creates the account from it, so the engine scans from [birthday]
-     * rather than from the bundled checkpoint below it. This waits until the preparation knows which
-     * of the two the account starts at, and reports it as [OpenedCardWallet.startsAtBirthday]: `false`
-     * when the fetch failed and the checkpoint was used, as always without [isBirthdayExact]. A
-     * caller cancelled during that wait closes the wallet. Its engine reports
-     * `DISCONNECTED` while idle before the first sync pass, hence
-     * [OpenedCardWallet.isDisconnectedUntilFirstPass]. Its engine is told
-     * [HELPER_ENGINE_MEMORY_FRACTION] of the device's memory.
-     *
-     * The engine's Tor state directory is fixed per app, so the helper wallet's engine uses the
-     * main wallet's rather than bootstrapping a directory of its own.
-     *
-     * [onCriticalError] is installed as soon as [SlipstreamSynchronizer.Companion.new] returns: its
-     * preparation (anchor, database, engine open) is still running then, and critical errors only
-     * come from the poll loop, which starts at the end of that preparation.
+     * A second [SlipstreamSynchronizer] under [alias], told [HELPER_ENGINE_MEMORY_FRACTION] of the device's memory,
+     * whose engine shares the main wallet's Tor state directory (fixed per app) and is
+     * [OpenedCardWallet.isDisconnectedUntilFirstPass]. With [isBirthdayExact], its preparation fetches the exact
+     * tree state through the wallet's own client (over Tor when [isTorEnabled]), and this waits until it knows
+     * which start the account got; a caller cancelled during that wait closes the wallet. [onCriticalError] is
+     * installed as soon as [SlipstreamSynchronizer.Companion.new] returns, before the poll loop that reports
+     * critical errors starts at the end of the preparation.
      */
     override suspend fun openHelperWallet(
         context: Context,
@@ -116,7 +104,7 @@ internal class SlipstreamEngineFactory(
         isTorEnabled: Boolean,
         onCriticalError: (Throwable?) -> Boolean,
     ): OpenedCardWallet {
-        val birthdayResolved = CompletableDeferred<Boolean>()
+        val birthdayResolved = if (isBirthdayExact) CompletableDeferred<Boolean>() else null
         val synchronizer =
             newSynchronizer(
                 SlipstreamWalletRequest(
@@ -130,26 +118,16 @@ internal class SlipstreamEngineFactory(
                     isTorEnabled = isTorEnabled,
                     isExchangeRateEnabled = false,
                     engineMemoryFraction = HELPER_ENGINE_MEMORY_FRACTION,
-                    isBirthdayExact = isBirthdayExact,
-                    onBirthdayResolved =
-                        if (isBirthdayExact) {
-                            { isExact -> birthdayResolved.complete(isExact) }
-                        } else {
-                            null
-                        }
+                    birthdayResolved = birthdayResolved
                 )
             )
         synchronizer.onCriticalErrorHandler = onCriticalError
         val startsAtBirthday =
-            if (isBirthdayExact) {
-                try {
-                    birthdayResolved.await()
-                } catch (e: CancellationException) {
-                    synchronizer.close()
-                    throw e
-                }
-            } else {
-                false
+            try {
+                birthdayResolved?.await() ?: false
+            } catch (e: CancellationException) {
+                synchronizer.close()
+                throw e
             }
         return OpenedCardWallet(
             synchronizer = synchronizer,
@@ -190,6 +168,5 @@ private suspend fun newSlipstreamSynchronizer(request: SlipstreamWalletRequest):
         isTorEnabled = request.isTorEnabled,
         isExchangeRateEnabled = request.isExchangeRateEnabled,
         engineMemoryFraction = request.engineMemoryFraction,
-        isBirthdayExact = request.isBirthdayExact,
-        onBirthdayResolved = request.onBirthdayResolved
+        birthdayResolved = request.birthdayResolved
     )

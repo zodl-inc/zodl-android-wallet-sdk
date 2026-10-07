@@ -17,8 +17,8 @@ import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.model.TreeStateUnsafe
 import com.zodl.slipstream.model.SlipstreamRestoreAnchor
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -110,8 +110,9 @@ internal fun interface SlipstreamAnchorSource {
  * exactly at [requestedBirthday]: fetches the tree state at `requestedBirthday - 1` (see
  * [fetchExactBirthdayTreeState]), or answers `null` when it is not available, so that the account
  * is created from the bundled checkpoint instead. `null` keeps the checkpoint start.
- * @param onBirthdayResolved called once, through [reportBirthdayResolved], with whether the
- * account was created from the exact tree state.
+ * @property birthdayResolved completed with whether the account was created from the exact tree state: by
+ * preparation once the account is created, and with `false` by the end of preparation in case it never got that
+ * far. The first completion wins.
  */
 @Suppress("LongParameterList")
 internal class PrepareInputs(
@@ -126,21 +127,10 @@ internal class PrepareInputs(
     val dbWalletSummary: suspend () -> WalletSummary?,
     val totalMemoryBytes: Long,
     val exactBirthdayTreeState: (suspend (BlockHeight) -> TreeState?)? = null,
-    private val onBirthdayResolved: ((isExact: Boolean) -> Unit)? = null
+    val birthdayResolved: CompletableDeferred<Boolean>? = null
 ) {
-    private val isBirthdayReported = AtomicBoolean(false)
-
     /** Whether these inputs were given a [setup], which stays known after [releaseSetup]. */
     val hasSetup: Boolean = setup != null
-
-    /**
-     * Tells the `onBirthdayResolved` callback whether the account starts exactly at
-     * [requestedBirthday]. Only the first call counts: preparation reports once the account is
-     * created, and the end of preparation reports `false` in case it never got that far.
-     */
-    fun reportBirthdayResolved(isExact: Boolean) {
-        if (isBirthdayReported.compareAndSet(false, true)) onBirthdayResolved?.invoke(isExact)
-    }
 
     /** The account setup, with its seed; `null` once [releaseSetup] ran, or when none was given. */
     @Volatile
@@ -190,50 +180,26 @@ internal suspend fun fetchExactBirthdayTreeState(
 ): TreeState? {
     if (birthday.value < 1) return null
     val treeStateHeight = BlockHeightUnsafe(birthday.value - 1)
-    return runCatchingCancellable {
-        withTimeoutOrNull(timeout) {
-            walletClient.getTreeState(treeStateHeight, sdkFlags ifTor ServiceMode.UniqueTor)
-        }
-    }.fold(
-        onSuccess = { response -> exactTreeStateOf(response, treeStateHeight, timeout) },
-        onFailure = {
-            Twig.warn {
-                "Tree state fetch for the exact birthday failed (${it::class.simpleName}); using the checkpoint"
+    val fetched =
+        runCatchingCancellable {
+            withTimeoutOrNull(timeout) {
+                walletClient.getTreeState(treeStateHeight, sdkFlags ifTor ServiceMode.UniqueTor)
             }
-            null
         }
-    )
-}
-
-/** The tree state in [response] to [fetchExactBirthdayTreeState]'s request, or `null`, after logging why not. */
-private fun exactTreeStateOf(
-    response: Response<TreeStateUnsafe>?,
-    treeStateHeight: BlockHeightUnsafe,
-    timeout: Duration
-): TreeState? =
-    when (response) {
-        null -> {
-            Twig.warn { "Tree state fetch for the exact birthday timed out after $timeout; using the checkpoint" }
-            null
-        }
-
-        is Response.Success -> {
-            response.result.encoded
-                .takeIf { it.isNotEmpty() }
-                ?.let { TreeState(it) }
-                .also {
-                    if (it == null) {
-                        Twig.warn { "The server sent an empty tree state for the exact birthday; using the checkpoint" }
-                    } else {
-                        Twig.info { "Restore: using tree state at height ${treeStateHeight.value} for exact birthday" }
-                    }
+    val response = fetched.getOrNull()
+    val encoded = (response as? Response.Success<TreeStateUnsafe>)?.result?.encoded?.takeIf { it.isNotEmpty() }
+    return if (encoded == null) {
+        val reason =
+            fetched.exceptionOrNull()?.let { "failed (${it::class.simpleName})" }
+                ?: when (response) {
+                    null -> "timed out after $timeout"
+                    is Response.Failure -> "failed (${response::class.simpleName})"
+                    else -> "got an empty tree state"
                 }
-        }
-
-        is Response.Failure -> {
-            Twig.warn {
-                "Tree state fetch for the exact birthday failed (${response::class.simpleName}); using the checkpoint"
-            }
-            null
-        }
+        Twig.warn { "Tree state fetch for the exact birthday $reason; using the checkpoint" }
+        null
+    } else {
+        Twig.info { "Restore: using tree state at height ${treeStateHeight.value} for exact birthday" }
+        TreeState(encoded)
     }
+}

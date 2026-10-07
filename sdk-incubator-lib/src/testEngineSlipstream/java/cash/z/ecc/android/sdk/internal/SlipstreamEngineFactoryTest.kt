@@ -1,14 +1,16 @@
 package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
+import cash.z.ecc.android.sdk.ALIAS
+import cash.z.ecc.android.sdk.BIRTHDAY
 import cash.z.ecc.android.sdk.CloseableSynchronizer
+import cash.z.ecc.android.sdk.ENDPOINT
+import cash.z.ecc.android.sdk.MAIN_WALLET_ALIASES
 import cash.z.ecc.android.sdk.WalletInitMode
 import cash.z.ecc.android.sdk.ext.ZcashSdk
-import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.BlockHeight
-import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.ZcashNetwork
-import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import cash.z.ecc.android.sdk.setup
 import com.zodl.slipstream.SlipstreamSynchronizer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancelAndJoin
@@ -26,6 +28,7 @@ import java.nio.file.Files
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -72,7 +75,7 @@ class SlipstreamEngineFactoryTest {
             assertTrue(request.isTorEnabled)
             assertFalse(request.isExchangeRateEnabled)
             assertEquals(SlipstreamEngineFactory.HELPER_ENGINE_MEMORY_FRACTION, request.engineMemoryFraction)
-            assertTrue(request.isBirthdayExact)
+            assertNotNull(request.birthdayResolved)
             assertSame(synchronizer, opened.synchronizer)
         }
 
@@ -104,8 +107,7 @@ class SlipstreamEngineFactoryTest {
                     val request = requests.single()
                     assertEquals(startsAtBirthday, opened.startsAtBirthday)
                     assertTrue(opened.isDisconnectedUntilFirstPass)
-                    assertEquals(isBirthdayExact, request.isBirthdayExact)
-                    assertEquals(isBirthdayExact, request.onBirthdayResolved != null)
+                    assertEquals(isBirthdayExact, request.birthdayResolved != null)
                     assertEquals(isTorEnabled, request.isTorEnabled)
                 }
             }
@@ -164,8 +166,7 @@ class SlipstreamEngineFactoryTest {
 
             val request = requests.single()
             assertEquals(ZcashSdk.DEFAULT_ALIAS, request.alias)
-            assertFalse(request.isBirthdayExact, "the main wallet never reveals an exact height")
-            assertNull(request.onBirthdayResolved)
+            assertNull(request.birthdayResolved, "the main wallet never reveals an exact height")
             assertEquals(SlipstreamSynchronizer.FULL_ENGINE_MEMORY, request.engineMemoryFraction)
             assertEquals(WalletInitMode.ExistingWallet, request.walletInitMode)
             assertTrue(request.isExchangeRateEnabled)
@@ -213,7 +214,7 @@ class SlipstreamEngineFactoryTest {
 
     /**
      * A factory whose `new` records each request in [requests] and returns [synchronizer]. Its preparation, when
-     * [resolveBirthdayAs] is set, reports through the request's callback whether the account starts exactly at the
+     * [resolveBirthdayAs] is set, reports through the request's deferred whether the account starts exactly at the
      * birthday, as the real preparation does once it has created the account.
      */
     private fun recordingFactory(
@@ -223,7 +224,7 @@ class SlipstreamEngineFactoryTest {
     ) = SlipstreamEngineFactory(
         newSynchronizer = { request ->
             requests += request
-            resolveBirthdayAs?.let { request.onBirthdayResolved?.invoke(it) }
+            resolveBirthdayAs?.let { request.birthdayResolved?.complete(it) }
             synchronizer
         }
     )
@@ -247,21 +248,6 @@ class SlipstreamEngineFactoryTest {
     )
 
     private companion object {
-        fun setup() =
-            AccountCreateSetup(
-                accountName = "Gift card",
-                keySource = null,
-                seed = FirstClassByteArray(ByteArray(SEED_BYTES))
-            )
-
-        const val ALIAS = "giftcard_test"
-        const val BIRTHDAY = 3_000_000L
         const val HALF = 0.5f
-        const val SEED_BYTES = 64
-
-        /** Every spelling of an alias that addresses the main wallet's files. */
-        val MAIN_WALLET_ALIASES =
-            listOf(ZcashSdk.DEFAULT_ALIAS, "${ZcashSdk.DEFAULT_ALIAS}_", "ZcashSdk", "ZCASHSDK_")
-        val ENDPOINT = LightWalletEndpoint("localhost", 9067, false)
     }
 }

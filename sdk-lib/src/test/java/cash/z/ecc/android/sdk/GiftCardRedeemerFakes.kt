@@ -201,6 +201,20 @@ internal class FakeWallets(
     ): UnifiedSpendingKey = mock(UnifiedSpendingKey::class.java)
 }
 
+/**
+ * Card wallets as the Slipstream engine opens them: [cardWallets] in turn, idle before the first pass, and at the
+ * birthday when asked to only when [exact], as when the exact birthday's tree state is available, else at the
+ * checkpoint.
+ */
+internal fun engineWallets(
+    vararg cardWallets: FakeCardWallet,
+    exact: Boolean = false
+) = FakeWallets(
+    cardWallets.toList(),
+    isExactBirthdayAvailable = exact,
+    isDisconnectedUntilFirstPass = true
+)
+
 /** The user's wallet, remembering what it was asked to record, or refusing to. */
 internal class FakeDestination(
     private val failure: Exception? = null
@@ -268,6 +282,10 @@ internal fun cardAccountBalance(
     ironwood = WalletBalance(Zatoshi(0), Zatoshi(0), Zatoshi(0)),
     unshielded = Zatoshi(0)
 )
+
+/** A card wallet's balances, with [pending] in Orchard and nothing spendable. */
+internal fun cardBalances(pending: Long) =
+    mapOf(AccountFixture.new().accountUuid to cardAccountBalance(pending = pending))
 
 /** The chain tip a [FakeCardWallet] has seen and scanned up to, unless a test moves it. */
 internal val CARD_WALLET_TIP: BlockHeight = BlockHeight.new(3_000_100)

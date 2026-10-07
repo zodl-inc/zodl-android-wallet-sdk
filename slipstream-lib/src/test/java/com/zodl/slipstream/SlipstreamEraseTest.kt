@@ -201,36 +201,30 @@ class SlipstreamEraseTest {
         )
     }
 
+    /**
+     * The legacy deletion's observations are recorded and asserted after the erase, which logs and swallows any
+     * failure of that deletion.
+     */
     @Test
     fun theLegacyLayoutIsErasedAfterTheEnginesFilesUnderTheGuard() =
         runBlocking<Unit> {
             val card = walletFiles(CARD_ALIAS)
+            DataDbPath.legacyOnlyFiles(noBackupRoot, CARD_ALIAS, NETWORK).first().writeText("x")
             val key = SlipstreamKey(NETWORK, CARD_ALIAS)
-            var legacyErases = 0
+            val enginesFilesLeft = mutableListOf<Boolean>()
+            val acquiredDuringLegacyErase = mutableListOf<Unit?>()
 
             val erased =
-                SlipstreamSynchronizer.eraseGuarded(context, NETWORK, CARD_ALIAS) {
-                    legacyErases++
-                    card.forEach { assertFalse(it.exists(), "the engine's files go first") }
+                SlipstreamSynchronizer.eraseAlias(context, NETWORK, CARD_ALIAS) {
+                    enginesFilesLeft += card.any { it.exists() }
                     val acquired = withTimeoutOrNull(SHORT_TIMEOUT_MS) { InstanceGuard.acquire(key) }
                     if (acquired != null) InstanceGuard.release(key)
-                    assertNull(acquired, "the guard is held while the legacy layout is erased")
+                    acquiredDuringLegacyErase += acquired
                 }
 
             assertTrue(erased)
-            assertEquals(1, legacyErases)
-        }
-
-    @Test
-    fun plainEraseNeverRunsALegacyErase() =
-        runBlocking<Unit> {
-            walletFiles(CARD_ALIAS)
-            var legacyErases = 0
-
-            assertTrue(SlipstreamSynchronizer.eraseGuarded(context, NETWORK, CARD_ALIAS, eraseLegacyLayout = null))
-            SlipstreamSynchronizer.eraseGuarded(context, NETWORK, CARD_ALIAS) { legacyErases++ }
-
-            assertEquals(1, legacyErases)
+            assertEquals(listOf(false), enginesFilesLeft, "the engine's files go first, and the legacy erase runs once")
+            assertNull(acquiredDuringLegacyErase.single(), "the guard is held while the legacy layout is erased")
         }
 
     /** Creates the database, `-wal` and `-shm` files of the wallet at [alias] and [network]. */

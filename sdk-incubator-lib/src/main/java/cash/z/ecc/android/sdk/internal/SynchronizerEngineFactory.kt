@@ -39,10 +39,12 @@ internal interface SynchronizerEngineFactory {
     /**
      * Creates and starts the helper wallet under [alias], restored from the seed in [setup] at
      * [birthday] (exactly at it when [isBirthdayExact] and the engine and server support that,
-     * else at the bundled checkpoint below it), without exchange rates, beside the main wallet.
-     * [onCriticalError] is installed as the wallet's critical error handler. An engine that can
-     * plan its memory gives the helper wallet a smaller share than the main wallet's. [alias] has
-     * already been checked not to address the main wallet's files (see [isMainWalletAlias]).
+     * else at the bundled checkpoint below it; [OpenedCardWallet.startsAtBirthday] tells which),
+     * without exchange rates, beside the main wallet. [onCriticalError] is installed as the
+     * wallet's critical error handler before it starts syncing; failing to reach the server while
+     * it starts is not a critical error. An engine that can plan its memory gives the helper
+     * wallet a smaller share than the main wallet's. [alias] has already been checked not to
+     * address the main wallet's files (see [isMainWalletAlias]).
      */
     suspend fun openHelperWallet(
         context: Context,
