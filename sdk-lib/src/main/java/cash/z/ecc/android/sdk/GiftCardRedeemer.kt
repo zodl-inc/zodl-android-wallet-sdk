@@ -158,10 +158,6 @@ class GiftCardRedeemer private constructor(
     /** How long [awaitLateFunds] waits: longer over Tor, where the engine's mempool stream needs a new circuit. */
     private val emptySettle: Duration = if (isTorEnabled) TOR_EMPTY_SETTLE else EMPTY_SETTLE
 
-    /** Set as soon as [close] is called, before it waits for [mutex]. */
-    @Volatile
-    private var isClosing = false
-
     /**
      * The checks in progress, which [close] cancels. Guarded by itself. Nothing else cancels them:
      * a cancellation from inside a check fails it, and a cancelled caller cancels it with itself.
@@ -172,11 +168,15 @@ class GiftCardRedeemer private constructor(
      * The outcome of the teardown the first [close] started, if any: completed with the error to report to that
      * [close] (the card wallet's failure to close, or the first failure to erase it), or `null`, once the teardown
      * has erased the card wallet and released the alias, as soon as the first erase fails while the retries go on,
-     * or when the teardown is cancelled. Guarded by [teardownLock].
+     * or when the teardown is cancelled. Written under [teardownLock].
      */
+    @Volatile
     private var teardownOutcome: CompletableDeferred<Throwable?>? = null
 
     private val teardownLock = Any()
+
+    /** Whether [close] has been called: set as soon as it starts the teardown, before it waits for anything. */
+    private val isClosing: Boolean get() = teardownOutcome != null
 
     /**
      * Set once a [close] has returned, or was cancelled, before its teardown finished. A [redeem] still preparing
@@ -789,9 +789,8 @@ class GiftCardRedeemer private constructor(
      * same teardown and returns.
      */
     suspend fun close() {
-        isClosing = true
-        synchronized(inFlightChecks) { inFlightChecks.toList() }.forEach { it.cancel() }
         val (outcome, isStarted) = startTeardown()
+        synchronized(inFlightChecks) { inFlightChecks.toList() }.forEach { it.cancel() }
         var isFinished = false
         try {
             isFinished = withTimeoutOrNull(CLOSE_TIMEOUT) { outcome.join() } != null

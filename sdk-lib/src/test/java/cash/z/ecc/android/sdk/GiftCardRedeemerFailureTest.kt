@@ -286,21 +286,14 @@ class GiftCardRedeemerFailureTest {
     @Test
     fun aRedemptionCancelledBeforeItsTransactionIsCreatedCreatesNothing() =
         runTest {
-            val deriving = CompletableDeferred<Unit>()
+            val derivation = HeldDerivation()
             val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
-            val wallets =
-                FakeWallets(
-                    listOf(cardWallet),
-                    onDeriveSpendingKey = {
-                        deriving.complete(Unit)
-                        awaitCancellation()
-                    }
-                )
+            val wallets = FakeWallets(listOf(cardWallet), onDeriveSpendingKey = derivation::hold)
             val (redeemer, _) = redeemer(cardWallet, wallets = wallets, teardownScope = backgroundScope)
             assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
 
             val redemption = async { redeemer.redeem(recipient(), destination = FakeDestination()) }
-            deriving.await()
+            derivation.started.await()
             redemption.cancel()
 
             assertFailsWith<CancellationException> { redemption.await() }
@@ -492,28 +485,20 @@ class GiftCardRedeemerFailureTest {
     fun aRedemptionStillPreparingWhenCloseStopsWaitingCreatesNothing() =
         runTest {
             val aliases = GiftCardAliases()
-            val deriving = CompletableDeferred<Unit>()
-            val derived = CompletableDeferred<Unit>()
+            val derivation = HeldDerivation()
             val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
-            val wallets =
-                FakeWallets(
-                    listOf(cardWallet),
-                    onDeriveSpendingKey = {
-                        deriving.complete(Unit)
-                        derived.await()
-                    }
-                )
+            val wallets = FakeWallets(listOf(cardWallet), onDeriveSpendingKey = derivation::hold)
             val (redeemer, _) =
                 redeemer(cardWallet, wallets = wallets, aliases = aliases, teardownScope = backgroundScope)
             assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
 
             val redemption = async { runCatching { redeemer.redeem(recipient()) } }
-            deriving.await()
+            derivation.started.await()
             val start = currentTime
             redeemer.close()
             assertEquals(GiftCardRedeemer.CLOSE_TIMEOUT.inWholeMilliseconds, currentTime - start)
 
-            derived.complete(Unit)
+            derivation.finish()
 
             assertIs<GiftCardException.Closed>(redemption.await().exceptionOrNull())
             runCurrent()
@@ -531,22 +516,14 @@ class GiftCardRedeemerFailureTest {
     fun aCancelledCloseStopsWaitingWhileTheTeardownGoesOn() =
         runTest {
             val aliases = GiftCardAliases()
-            val deriving = CompletableDeferred<Unit>()
-            val derived = CompletableDeferred<Unit>()
+            val derivation = HeldDerivation()
             val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
-            val wallets =
-                FakeWallets(
-                    listOf(cardWallet),
-                    onDeriveSpendingKey = {
-                        deriving.complete(Unit)
-                        derived.await()
-                    }
-                )
+            val wallets = FakeWallets(listOf(cardWallet), onDeriveSpendingKey = derivation::hold)
             val (redeemer, _) =
                 redeemer(cardWallet, wallets = wallets, aliases = aliases, teardownScope = backgroundScope)
             assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
             val redemption = async { runCatching { redeemer.redeem(recipient()) } }
-            deriving.await()
+            derivation.started.await()
 
             val start = currentTime
             val close = launch { redeemer.close() }
@@ -556,7 +533,7 @@ class GiftCardRedeemerFailureTest {
 
             assertEquals(start, currentTime)
             assertTrue(close.isCancelled)
-            derived.complete(Unit)
+            derivation.finish()
             assertIs<GiftCardException.Closed>(redemption.await().exceptionOrNull())
             runCurrent()
             assertEquals(0, cardWallet.creations)
@@ -594,21 +571,13 @@ class GiftCardRedeemerFailureTest {
     @Test
     fun closeWaitsForARedemptionStillPreparing() =
         runTest {
-            val deriving = CompletableDeferred<Unit>()
-            val derived = CompletableDeferred<Unit>()
+            val derivation = HeldDerivation()
             val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
-            val wallets =
-                FakeWallets(
-                    listOf(cardWallet),
-                    onDeriveSpendingKey = {
-                        deriving.complete(Unit)
-                        derived.await()
-                    }
-                )
+            val wallets = FakeWallets(listOf(cardWallet), onDeriveSpendingKey = derivation::hold)
             val (redeemer, _) = redeemer(cardWallet, wallets = wallets, teardownScope = backgroundScope)
             assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
             val redemption = async { redeemer.redeem(recipient()) }
-            deriving.await()
+            derivation.started.await()
 
             val close = async { redeemer.close() }
             advanceTimeBy(10.seconds)
@@ -616,7 +585,7 @@ class GiftCardRedeemerFailureTest {
             assertFalse(close.isCompleted)
             assertFalse(cardWallet.closed)
 
-            derived.complete(Unit)
+            derivation.finish()
 
             assertTrue(redemption.await().isSubmitted)
             close.await()
@@ -631,30 +600,22 @@ class GiftCardRedeemerFailureTest {
     @Test
     fun aTeardownCancelledWithItsScopeIsNotRethrownByClose() =
         runTest {
-            val deriving = CompletableDeferred<Unit>()
-            val derived = CompletableDeferred<Unit>()
+            val derivation = HeldDerivation()
             val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
-            val wallets =
-                FakeWallets(
-                    listOf(cardWallet),
-                    onDeriveSpendingKey = {
-                        deriving.complete(Unit)
-                        derived.await()
-                    }
-                )
+            val wallets = FakeWallets(listOf(cardWallet), onDeriveSpendingKey = derivation::hold)
             val teardownScope =
                 CoroutineScope(backgroundScope.coroutineContext + Job(backgroundScope.coroutineContext[Job]))
             val (redeemer, _) = redeemer(cardWallet, wallets = wallets, teardownScope = teardownScope)
             assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
             val redemption = async { runCatching { redeemer.redeem(recipient()) } }
-            deriving.await()
+            derivation.started.await()
 
             val close = async { runCatching { redeemer.close() } }
             runCurrent()
             teardownScope.cancel()
 
             assertNull(close.await().exceptionOrNull())
-            derived.complete(Unit)
+            derivation.finish()
             redemption.await()
         }
 
@@ -750,4 +711,19 @@ class GiftCardRedeemerFailureTest {
 
             assertEquals(listOf(first.raw), destination.recorded.map { FirstClassByteArray(it.first) })
         }
+
+    /** A derivation of the card's spending key that reports when it has [started], then waits until [finish]. */
+    private class HeldDerivation {
+        val started = CompletableDeferred<Unit>()
+        private val finished = CompletableDeferred<Unit>()
+
+        suspend fun hold() {
+            started.complete(Unit)
+            finished.await()
+        }
+
+        fun finish() {
+            finished.complete(Unit)
+        }
+    }
 }
