@@ -30,16 +30,22 @@ import kotlin.time.Duration.Companion.seconds
  * exchange that fails on the transport — a timeout, a disconnect — closes the transport, which then
  * has to be reopened; a refusal by the device leaves it open.
  *
+ * A call that is cancelled once it runs closes the transport, whatever step it was at: the device can
+ * be in the middle of a command or of a multi-step exchange, so open a new connection before you try
+ * again. A call that is cancelled while it waits for another call on this device to finish closes
+ * nothing, because it never reached the device.
+ *
  * Nothing this class handles is logged: not the commands, not the replies, not the keys, addresses or
  * identities they carry.
  *
  * # Transport ownership
  *
  * The caller owns every transport: the one passed to [new] and every one a `reconnect` function
- * given to [pairAccount] returns. The SDK closes a transport whose exchange failed (closing is
- * idempotent) but never closes one otherwise, so the caller closes each transport it opened once it
- * is done, whether the call succeeded or failed. [transport] is the one this device currently talks
- * over; after [pairAccount] reconnected, it is the reconnected one, and later calls use it.
+ * given to [pairAccount] returns. The SDK closes a transport whose exchange failed or whose call
+ * was cancelled (closing is idempotent) but never closes one otherwise, so the caller closes each
+ * transport it opened once it is done, whether the call succeeded or failed. [transport] is the one
+ * this device currently talks over; after [pairAccount] reconnected, it is the reconnected one, and
+ * later calls use it.
  *
  * Nothing else changes [transport]. [LedgerZcashApp.ensureZcashAppOpen] may close the transport it
  * is given and return another, so call it before building a device, or build a new device over the
@@ -70,14 +76,14 @@ class LedgerDevice internal constructor(
      * @throws LedgerException.WrongApp if the Zcash app is not open.
      * @throws LedgerException for any other failure.
      */
-    suspend fun appVersion(): LedgerAppVersion = mutex.withLock { readAppVersion() }
+    suspend fun appVersion(): LedgerAppVersion = holdingDevice { readAppVersion() }
 
     /**
      * Reads the device's identity on this network. Silent: nothing is shown on the device.
      *
      * @throws LedgerException for any failure.
      */
-    suspend fun deviceIdentity(): LedgerDeviceIdentity = mutex.withLock { readDeviceIdentity() }
+    suspend fun deviceIdentity(): LedgerDeviceIdentity = holdingDevice { readDeviceIdentity() }
 
     /**
      * Pairs the device's ZIP 32 account [zip32AccountIndex]: exports its unified full viewing key,
@@ -147,23 +153,17 @@ class LedgerDevice internal constructor(
         readTimeout: Duration = backend.policy.normalTimeout,
         reconnect: (suspend () -> LedgerApduTransport)? = null
     ): LedgerAccountPairing =
-        mutex.withLock {
-            try {
-                val (version, identity) = readBeforeExport(readTimeout, reconnect)
-                val ufvk = exportUfvk(zip32AccountIndex)
-                if (zip32AccountIndex.index == IDENTITY_ACCOUNT_INDEX) {
-                    backend.checkUfvkDeviceIdentity(network, ufvk, identity)
-                }
-                LedgerAccountPairing(
-                    ufvk = ufvk,
-                    binding = LedgerAccountBinding(identity, zip32AccountIndex),
-                    appVersion = version
-                )
-            } catch (e: CancellationException) {
-                // The device can be in the middle of the export, so the transport is not reused.
-                exchanger.closeQuietly()
-                throw e
+        holdingDevice {
+            val (version, identity) = readBeforeExport(readTimeout, reconnect)
+            val ufvk = exportUfvk(zip32AccountIndex)
+            if (zip32AccountIndex.index == IDENTITY_ACCOUNT_INDEX) {
+                backend.checkUfvkDeviceIdentity(network, ufvk, identity)
             }
+            LedgerAccountPairing(
+                ufvk = ufvk,
+                binding = LedgerAccountBinding(identity, zip32AccountIndex),
+                appVersion = version
+            )
         }
 
     /**
@@ -199,7 +199,7 @@ class LedgerDevice internal constructor(
         zip32AccountIndex: Zip32AccountIndex,
         transparentAddressIndex: Long = 0
     ): String =
-        mutex.withLock {
+        holdingDevice {
             val expected = backend.expectedUnifiedAddress(ufvk, network)
             val shown =
                 exchanger.query(
@@ -217,6 +217,21 @@ class LedgerDevice internal constructor(
                 throw LedgerException.DeviceMismatch()
             }
             expected
+        }
+
+    /**
+     * Runs [block] once no other call on this device runs. A cancellation while [block] runs closes
+     * the transport, because the device can be in the middle of a command or an exchange; a
+     * cancellation while the call waits for its turn closes nothing.
+     */
+    private suspend fun <T> holdingDevice(block: suspend () -> T): T =
+        mutex.withLock {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                exchanger.closeQuietly()
+                throw e
+            }
         }
 
     /**

@@ -20,8 +20,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Import the account with `Synchronizer.importAccountByUfvk(pairing.accountImportSetup(name, birthday))`,
   which imports a spending account with no ZIP 32 derivation under the new `Account.LEDGER_KEY_SOURCE`,
   and persist the binding next to the account (`LedgerDeviceIdentity.encoding` and
-  `Zip32AccountIndex.index`; restore with `LedgerDeviceIdentity.new`). Cancelling `pairAccount` closes
-  the transport and sends nothing more, also between two chunks of the export. A `LedgerDeviceIdentity` can be
+  `Zip32AccountIndex.index`; restore with `LedgerDeviceIdentity.new`). A `LedgerDevice` call that is
+  cancelled once it runs closes the transport and sends nothing more, also between two chunks of the
+  export; a call cancelled while it waits for another call on the same device closes nothing. A `LedgerDeviceIdentity` can be
   matched to the account's first transparent address once that address has spent on chain: store it as
   you would that address. Its `toString()` does not print it. `proposeTransfer`,
   `proposeFulfillingPaymentUri` and `proposeShielding` build at most one change output for an account

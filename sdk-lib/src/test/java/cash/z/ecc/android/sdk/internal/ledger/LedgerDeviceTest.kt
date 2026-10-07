@@ -18,6 +18,7 @@ import cash.z.ecc.android.sdk.ledger.LedgerDevice
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zip32AccountIndex
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
@@ -131,6 +132,46 @@ class LedgerDeviceTest {
                 "no export chunk is sent after the cancellation"
             )
             assertEquals(1, backend.exportsClosed)
+        }
+
+    @Test
+    fun a_call_cancelled_while_it_waits_for_another_call_closes_nothing() =
+        runBlocking<Unit> {
+            val firstExchangeStarted = CompletableDeferred<Unit>()
+            val releaseFirstExchange = CompletableDeferred<Unit>()
+            val transport =
+                object : LedgerApduTransport {
+                    var exchanges = 0
+                    var closed = false
+
+                    override suspend fun exchange(
+                        apdu: ByteArray,
+                        timeout: Duration?
+                    ): ByteArray {
+                        check(!closed) { "exchange on a closed transport" }
+                        exchanges++
+                        firstExchangeStarted.complete(Unit)
+                        releaseFirstExchange.await()
+                        return ok(1)
+                    }
+
+                    override suspend fun close() {
+                        closed = true
+                    }
+                }
+            val device = LedgerDevice(transport, ZcashNetwork.Testnet, FakeLedgerBackend())
+
+            val running = async { device.appVersion() }
+            firstExchangeStarted.await()
+            val waiting = async { device.appVersion() }
+            waiting.cancel()
+
+            assertFailsWith<CancellationException> { waiting.await() }
+            assertFalse(transport.closed, "a call that never reached the device closes nothing")
+            releaseFirstExchange.complete(Unit)
+            assertTrue(running.await().supportsPczt)
+            assertEquals(1, transport.exchanges)
+            assertFalse(transport.closed)
         }
 
     @Test
