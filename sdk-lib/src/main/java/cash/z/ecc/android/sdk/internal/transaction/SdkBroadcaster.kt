@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal.transaction
 
 import cash.z.ecc.android.sdk.Broadcaster
 import cash.z.ecc.android.sdk.model.CreatedTransaction
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
@@ -22,11 +23,12 @@ internal class SdkBroadcaster(
 ) : Broadcaster {
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
     ): List<CreatedTransaction> =
         pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
             txManager
-                .createProposedTransactions(proposal, usk)
+                .createProposedTransactions(proposal, usk, ovkPolicy)
                 .map { it.toCreatedTransaction() }
         }
 
@@ -52,12 +54,13 @@ internal class SdkBroadcaster(
     internal suspend fun createAndSubmitProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        endpoint: LightWalletEndpoint
+        endpoint: LightWalletEndpoint,
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender
     ): Flow<TransactionSubmitResult> =
         pendingSubmitPlanStore
             .createAndMarkAwaitingSubmitPlan {
                 txManager
-                    .createProposedTransactions(proposal, usk)
+                    .createProposedTransactions(proposal, usk, ovkPolicy)
                     .map { it.toCreatedTransaction() }
             }.createSubmitResultFlow { transaction ->
                 recordingEndpointAfterSubmit(transaction, endpoint)

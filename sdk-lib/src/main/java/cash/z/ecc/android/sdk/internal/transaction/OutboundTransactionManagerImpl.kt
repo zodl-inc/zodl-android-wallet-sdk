@@ -3,8 +3,11 @@ package cash.z.ecc.android.sdk.internal.transaction
 import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.MemoContent
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
@@ -63,10 +66,17 @@ internal class OutboundTransactionManagerImpl(
         return encoder.proposeShielding(account, shieldingThreshold, memoBytes, transparentReceiver)
     }
 
+    override suspend fun proposeSendMax(
+        account: Account,
+        recipient: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal = encoder.proposeSendMax(account, recipient, memo)
+
     override suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
-    ): List<EncodedTransaction> = encoder.createProposedTransactions(proposal, usk)
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy
+    ): List<EncodedTransaction> = encoder.createProposedTransactions(proposal, usk, ovkPolicy)
 
     override suspend fun submit(encodedTransaction: EncodedTransaction): TransactionSubmitResult =
         walletClient.submitTransaction(encodedTransaction.raw, encodedTransaction.txId, sdkFlags)

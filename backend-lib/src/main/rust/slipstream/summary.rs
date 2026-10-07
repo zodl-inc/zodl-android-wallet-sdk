@@ -40,7 +40,7 @@ use jni::JNIEnv;
 use jni::objects::{JObject, JValue};
 use jni::sys::jobject;
 
-use rand::rngs::OsRng;
+use rand::CryptoRng;
 use zcash_client_backend::data_api::WalletRead;
 use zcash_client_backend::data_api::WalletSummary;
 use zcash_client_backend::data_api::wallet::ConfirmationsPolicy;
@@ -118,6 +118,7 @@ pub(crate) fn wallet_summary_object<'local>(
         None => {
             // First call on this handle: walk synchronously and prime the cache.
             let walked = walk_summary(
+                crate::system_rng(),
                 db_path,
                 network,
                 trusted,
@@ -155,6 +156,7 @@ pub(crate) fn wallet_summary_object<'local>(
                 let (ranges_at, state_at) = (snap.ranges_completed, snap.state);
                 std::thread::spawn(move || {
                     if let Ok(Some(s)) = walk_summary(
+                        crate::system_rng(),
                         &thread_db_path,
                         network,
                         trusted,
@@ -302,11 +304,12 @@ fn build_policy(
 }
 
 /// One upstream `get_wallet_summary` walk — the expensive read the E-1 cache rations. Opens a
-/// fresh `WalletDb` (same `WalletDb::for_path(path, params, SystemClock, OsRng)` shape as the
-/// published Android SDK) and returns the summary, or `None` for "no balance data yet". Takes
+/// fresh `WalletDb` over the caller's `rng` (the same `WalletDb::for_path(path, params,
+/// SystemClock, rng)` shape as the published Android SDK) and returns the summary, or `None` for "no balance data yet". Takes
 /// the raw confirmations scalars (all `Copy`) so it is callable both synchronously and from the
 /// background refresh thread.
 fn walk_summary(
+    rng: impl CryptoRng,
     db_path: &Path,
     network: Network,
     trusted: u32,
@@ -314,7 +317,7 @@ fn walk_summary(
     allow_zero_conf_shielding: bool,
 ) -> anyhow::Result<Option<WalletSummary<AccountUuid>>> {
     let policy = build_policy(trusted, untrusted, allow_zero_conf_shielding)?;
-    let db = WalletDb::for_path(db_path, network, SystemClock, OsRng)
+    let db = WalletDb::for_path(db_path, network, SystemClock, rng)
         .map_err(|e| anyhow!("open wallet db: {e}"))?;
     db.get_wallet_summary(policy)
         .map_err(|e| anyhow!("get_wallet_summary: {e}"))

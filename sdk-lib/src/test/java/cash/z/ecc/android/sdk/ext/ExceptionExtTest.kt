@@ -9,6 +9,7 @@ import cash.z.ecc.android.sdk.internal.ext.TREE_SIZE_MISMATCH
 import cash.z.ecc.android.sdk.internal.ext.indicatesInsufficientFunds
 import cash.z.ecc.android.sdk.internal.ext.isScanContinuityError
 import cash.z.ecc.android.sdk.internal.ext.toProposalException
+import cash.z.ecc.android.sdk.internal.jni.ProposalInsufficientFundsException
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -44,6 +45,15 @@ class ExceptionExtTest {
         assertTrue { RuntimeException(INSUFFICIENT_BALANCE.uppercase()).indicatesInsufficientFunds() }
         assertTrue {
             RuntimeException("$ADDITIONAL_CHANGE_OUTPUT_REQUIRED 10000 zatoshis").indicatesInsufficientFunds()
+        }
+    }
+
+    @Test
+    fun indicates_insufficient_funds_by_type_whatever_the_message() {
+        assertTrue { ProposalInsufficientFundsException("").indicatesInsufficientFunds() }
+        assertTrue {
+            RuntimeException("proposal failed", ProposalInsufficientFundsException("reworded"))
+                .indicatesInsufficientFunds()
         }
     }
 

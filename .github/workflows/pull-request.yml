@@ -74,9 +74,6 @@ jobs:
         id: setup
         timeout-minutes: 10
         uses: ./.github/actions/setup
-        with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Check properties
         timeout-minutes: 4
         run: |
@@ -118,9 +115,6 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
-        with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Detekt
         timeout-minutes: 4
         run: |
@@ -160,9 +154,6 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
-        with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Ktlint
         timeout-minutes: 4
         run: |
@@ -203,13 +194,10 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       - name: Android Lint
-        # 120 minutes for cold-cache first run (seeds Rust cache: vendored zodl-slipstream +
-        # arti/hpke deps take ~45+ min to cross-compile for 4 ABIs). Warm-cache runs complete
-        # in <30 min. the Rust cache step in the setup action caches compiled artifacts.
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 45 minutes; warm-cache runs finish well inside this limit.
         timeout-minutes: 120
         env:
           # Disable minify, since it makes lint run faster
@@ -253,8 +241,6 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       - name: Test
         timeout-minutes: 15
@@ -283,8 +269,6 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       - name: Clippy
         timeout-minutes: 15
@@ -313,9 +297,6 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
-        with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Rustfmt
         timeout-minutes: 5
         run: |
@@ -368,12 +349,10 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       - name: Compile with Slipstream disabled
-        # 120 minutes for cold-cache first run (cross-compiles backend-lib Rust for one ABI,
-        # still includes vendored dependencies). Warm-cache runs complete in <20 min.
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 30 minutes; warm-cache runs finish well inside this limit.
         timeout-minutes: 120
         run: |
           ./gradlew :sdk-incubator-lib:compileDebugKotlin :sdk-lib:compileDebugKotlin -PIS_SLIPSTREAM_ENABLED=false
@@ -396,15 +375,13 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
-      # 120 minutes for cold-cache first run: this branch re-enables shielded voting, which
-      # turns on orchard's `unstable-voting-circuits` and pulls the halo2 voting circuits
-      # into the native build. `make test-unit` builds the crate for all four ABIs, so that
-      # lands four times over. Additionally includes vendored zodl-slipstream + arti/hpke deps.
-      # Warm-cache runs (after the setup action Rust cache seeds artifacts) complete in <45 min.
+      # Shielded voting turns on orchard's `unstable-voting-circuits` and pulls the halo2
+      # voting circuits into the native build, and `make test-unit` builds the crate for all
+      # four ABIs, so that lands four times over.
       - name: Build and test
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 60 minutes; warm-cache runs finish well inside this limit.
         timeout-minutes: 120
         run: |
           make test-unit
@@ -539,8 +516,6 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       # The hosted runner's Android SDK does not include the emulator package,
       # which a Gradle Managed Device requires. AGP auto-installs the system
@@ -565,8 +540,8 @@ jobs:
       # falls back to 'auto', which needs a real GPU and fails to boot the
       # emulator (EmulatorStartFailedException during snapshot creation).
       - name: Build and test
-        # 120 minutes for cold-cache first run (cross-compiles vendored zodl-slipstream +
-        # arti/hpke for 4 ABIs, then runs instrumented tests). Warm-cache runs complete in <45 min.
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 45 minutes; warm-cache runs finish well inside this limit.
         timeout-minutes: 120
         run: |
           make test-instrumented
@@ -612,8 +587,6 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       # A fake signing key to satisfy creating a "release" build
       - name: Export Signing Key
@@ -623,14 +596,14 @@ jobs:
         run: |
           keytool -genkey -v -keystore $SIGNING_KEY_PATH -keypass android -storepass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 100000 -dname "CN=, OU=, O=Test, L=, S=, C=" -noprompt
       - name: Build
+        # With a cold Rust cache, cross-compiling the backend alone can take
+        # longer than 45 minutes; warm-cache runs finish well inside this limit.
+        timeout-minutes: 120
         env:
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEYSTORE_PATH: ${{ format('{0}/release.jks', env.home) }}
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEYSTORE_PASSWORD: android
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS: androiddebugkey
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS_PASSWORD: android
-        # 120 minutes for cold-cache first run (cross-compiles vendored zodl-slipstream +
-        # arti/hpke for 4 ABIs, release profile). Warm-cache runs complete in <30 min.
-        timeout-minutes: 120
         run: |
           make build-release
       - name: Collect Artifacts
@@ -674,9 +647,6 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
-        with:
-          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
-          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Authenticate to Google Cloud for Firebase Test Lab
         id: auth_test_lab
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093

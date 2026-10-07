@@ -2,6 +2,11 @@ package cash.z.ecc.android.sdk.model
 
 import cash.z.ecc.android.sdk.ext.toHex
 
+/**
+ * [toString] hex-dumps [byteArray], which is appropriate for non-secret data (transaction
+ * ids, raw transactions, and the like). Types that embed secret material in a
+ * [FirstClassByteArray] must override [toString] themselves to redact it.
+ */
 class FirstClassByteArray(
     val byteArray: ByteArray
 ) {

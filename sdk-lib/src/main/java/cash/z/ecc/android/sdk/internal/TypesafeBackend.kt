@@ -21,8 +21,11 @@ import cash.z.ecc.android.sdk.model.AccountUsk
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.MemoContent
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
@@ -79,10 +82,27 @@ internal interface TypesafeBackend {
         transparentReceiver: String? = null
     ): Proposal?
 
+    /**
+     * Proposes sending the account's entire currently spendable shielded balance to [to], with
+     * the ZIP 317 fee deducted from it.
+     */
+    suspend fun proposeSendMaxTransfer(
+        account: Account,
+        to: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal
+
     suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender
     ): List<FirstClassByteArray>
+
+    /**
+     * Returns `true` if creating the transactions of [proposal] needs the Sapling parameters,
+     * which is the case only when it spends or creates a Sapling note.
+     */
+    suspend fun proposalRequiresSaplingProofs(proposal: Proposal): Boolean
 
     /**
      * Creates a partially-created (unsigned without proofs) transaction from the given proposal.
@@ -295,6 +315,15 @@ internal interface TypesafeBackend {
     suspend fun setTransactionStatus(
         txId: ByteArray,
         status: TransactionStatus,
+    )
+
+    /**
+     * Marks an already stored transaction as trusted or untrusted (ZIP 315); see
+     * [Backend.setTransactionTrust].
+     */
+    suspend fun setTransactionTrust(
+        txId: ByteArray,
+        trusted: Boolean,
     )
 
     fun getSaplingReceiver(ua: String): String?

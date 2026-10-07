@@ -5,8 +5,11 @@ import cash.z.ecc.android.sdk.internal.model.EncodedTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.MemoContent
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 
@@ -100,8 +103,28 @@ internal interface TransactionEncoder {
     )
     suspend fun createProposedTransactions(
         proposal: Proposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender
     ): List<EncodedTransaction>
+
+    /**
+     * Creates a proposal sending the account's entire currently spendable shielded balance to
+     * [recipient], with the ZIP 317 fee deducted from it.
+     *
+     * @throws TransactionEncoderException.InsufficientFundsException if nothing is spendable or
+     * the spendable value does not cover the fee
+     * @throws TransactionEncoderException.ProposalFromParametersException if the proposal cannot
+     * be created for any other reason
+     */
+    @Throws(
+        TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalFromParametersException::class
+    )
+    suspend fun proposeSendMax(
+        account: Account,
+        recipient: RecipientAddress,
+        memo: MemoContent?
+    ): Proposal
 
     suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,

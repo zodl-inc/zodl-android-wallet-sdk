@@ -7,8 +7,11 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.MemoContent
+import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
@@ -46,6 +49,25 @@ class SdkBroadcasterTest {
                 PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan,
                 pendingSubmitPlanStore.getSubmitPlan(encodedTransaction.txId)
             )
+        }
+
+    @Test
+    fun create_proposed_transactions_forwards_the_ovk_policy() =
+        runBlocking {
+            val txManager = FakeOutboundTransactionManager(proposedTransactions = listOf(encodedTransaction(2)))
+            val broadcaster = SdkBroadcaster(txManager, FakeTransactionSubmitter(), PendingSubmitPlanStore())
+
+            broadcaster.createProposedTransactions(fakeProposal(), fakeUsk())
+            broadcaster.createProposedTransactions(fakeProposal(), fakeUsk(), OvkPolicy.Discard)
+            broadcaster
+                .createAndSubmitProposedTransactions(
+                    proposal = fakeProposal(),
+                    usk = fakeUsk(),
+                    endpoint = LightWalletEndpoint("localhost", 9067, false),
+                    ovkPolicy = OvkPolicy.Discard
+                ).toList()
+
+            assertEquals(listOf(OvkPolicy.Sender, OvkPolicy.Discard, OvkPolicy.Discard), txManager.ovkPolicies)
         }
 
     @Test
@@ -434,6 +456,7 @@ class SdkBroadcasterTest {
     ) : OutboundTransactionManager {
         var proposedTransactionCreateCount = 0
         var pcztCreateCount = 0
+        val ovkPolicies = mutableListOf<OvkPolicy>()
 
         override suspend fun proposeTransferFromUri(
             account: Account,
@@ -456,11 +479,19 @@ class SdkBroadcasterTest {
 
         override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal = error("Unused")
 
+        override suspend fun proposeSendMax(
+            account: Account,
+            recipient: RecipientAddress,
+            memo: MemoContent?
+        ): Proposal = error("Unused")
+
         override suspend fun createProposedTransactions(
             proposal: Proposal,
-            usk: UnifiedSpendingKey
+            usk: UnifiedSpendingKey,
+            ovkPolicy: OvkPolicy
         ): List<EncodedTransaction> {
             proposedTransactionCreateCount += 1
+            ovkPolicies += ovkPolicy
             beforeReturningProposedTransactions()
             return proposedTransactions
         }
@@ -524,7 +555,8 @@ class SdkBroadcasterTest {
 
         override suspend fun createProposedTransactions(
             proposal: Proposal,
-            usk: UnifiedSpendingKey
+            usk: UnifiedSpendingKey,
+            ovkPolicy: OvkPolicy
         ): List<CreatedTransaction> {
             proposedTransactionCreateCount += 1
             return createdTransactions

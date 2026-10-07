@@ -52,6 +52,20 @@ class ProposalUnsafe(
     fun totalFeeRequired(): Long = inner.stepsList.fold(0) { acc, step -> acc + step.balance.feeRequired }
 
     /**
+     * Returns the total value this proposal pays out of the wallet: what its steps spend from the wallet's own
+     * notes, minus [totalFeeRequired] and minus the change that comes back to the wallet. Ephemeral outputs are
+     * not counted as change, as a later step spends them; inputs that refer to an earlier step's outputs are not
+     * counted as spent, as their value was already counted where it left the wallet's notes.
+     */
+    fun totalSent(): Long {
+        val inputs = inner.stepsList.flatMap { it.inputsList }
+        val spent = inputs.filter { it.hasReceivedOutput() }.sumOf { it.receivedOutput.value }
+        val changes = inner.stepsList.flatMap { it.balance.proposedChangeList }
+        val change = changes.filter { !it.isEphemeral }.sumOf { it.value }
+        return spent - totalFeeRequired() - change
+    }
+
+    /**
      * Returns whether any step of this proposal directly spends an Orchard note — i.e. an input
      * whose [ProposedInput] carries a [ReceivedOutput] with [ValuePool.Orchard], not a
      * back-reference to a prior step's own output ([PriorStepOutput]/[PriorStepChange]). Used to

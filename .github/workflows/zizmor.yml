@@ -27,3 +27,9 @@ jobs:
 
       - name: Run zizmor 🌈
         uses: zizmorcore/zizmor-action@0dce2577a4760a2749d8cfb7a84b7d5585ebcb7d # v0.5.0
+        with:
+          # Code scanning (SARIF upload) needs GitHub Code Security, which a private repo
+          # may not have. There, report findings as workflow annotations instead; a public
+          # repo keeps uploading to code scanning.
+          advanced-security: ${{ !github.event.repository.private }}
+          annotations: ${{ github.event.repository.private }}

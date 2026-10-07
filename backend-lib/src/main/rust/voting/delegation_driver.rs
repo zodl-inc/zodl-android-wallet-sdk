@@ -25,11 +25,12 @@
 //!    [`voting::DelegationSigner`]) into a [`voting::DelegationStepInputs`]
 //!    for `RoundHostContext::delegation`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ff::PrimeField;
 use pasta_curves::pallas;
 use prost::Message as _;
+use rand::CryptoRng;
 use zcash_client_backend::proto::service::TreeState;
 
 use super::db::{VotingDbHandle, db_from_handle};
@@ -53,17 +54,25 @@ use voting::{
 /// point moved from a direct JNI parameter to a trait method the pipeline
 /// calls internally. The seed never crosses into `zcash_voting` itself --
 /// only the resulting 64-byte signature does.
-pub(super) struct SeedSpendAuthSigner {
+///
+/// The signer is handed its RNG when it is built. `SpendAuthSigner::sign` takes `&self` and
+/// carries no RNG of its own, and the pipeline shares the signer behind an `Arc`, so the RNG
+/// sits behind a mutex for the duration of each signature.
+pub(super) struct SeedSpendAuthSigner<R> {
+    rng: Mutex<R>,
     seed: SecretVec<u8>,
 }
 
-impl SeedSpendAuthSigner {
-    pub(super) fn new(seed: SecretVec<u8>) -> Self {
-        Self { seed }
+impl<R: CryptoRng> SeedSpendAuthSigner<R> {
+    pub(super) fn new(rng: R, seed: SecretVec<u8>) -> Self {
+        Self {
+            rng: Mutex::new(rng),
+            seed,
+        }
     }
 }
 
-impl SpendAuthSigner for SeedSpendAuthSigner {
+impl<R: CryptoRng + Send> SpendAuthSigner for SeedSpendAuthSigner<R> {
     fn sign(&self, request: DelegationSigningRequest) -> Result<[u8; 64], VotingError> {
         let seed = self.seed.expose_secret();
 
@@ -96,8 +105,8 @@ impl SpendAuthSigner for SeedSpendAuthSigner {
                 message: "delegation signing request alpha is not a canonical scalar".to_string(),
             })?;
         let rsk = ask.randomize(&alpha);
-        let sig: [u8; SPEND_AUTH_SIG_BYTES] =
-            (&rsk.sign(rand::rngs::OsRng, &request.sighash)).into();
+        let mut rng = self.rng.lock().unwrap_or_else(|e| e.into_inner());
+        let sig: [u8; SPEND_AUTH_SIG_BYTES] = (&rsk.sign(&mut *rng, &request.sighash)).into();
         Ok(sig)
     }
 }
@@ -388,7 +397,10 @@ fn decode_delegation_inputs(
     })
 }
 
-fn signer_from_decoded(decoded: &DecodedDelegationInputs) -> anyhow::Result<DelegationSigner> {
+fn signer_from_decoded(
+    rng: impl CryptoRng + Send + 'static,
+    decoded: &DecodedDelegationInputs,
+) -> anyhow::Result<DelegationSigner> {
     if decoded.signer_is_keystone {
         match (&decoded.keystone_sig, &decoded.keystone_sighash) {
             (Some(sig), Some(sighash)) => Ok(DelegationSigner::Keystone(
@@ -407,7 +419,7 @@ fn signer_from_decoded(decoded: &DecodedDelegationInputs) -> anyhow::Result<Dele
             anyhow!("softwareSeed is required when delegation_inputs.keystone is false")
         })?;
         Ok(DelegationSigner::Software(Arc::new(
-            SeedSpendAuthSigner::new(SecretVec::new(seed)),
+            SeedSpendAuthSigner::new(rng, SecretVec::new(seed)),
         )))
     }
 }
@@ -473,7 +485,7 @@ pub(super) fn delegation_step_inputs_from_jni(
         ),
         None => None,
     };
-    let signer = signer_from_decoded(&decoded)?;
+    let signer = signer_from_decoded(crate::system_rng(), &decoded)?;
 
     build_delegation_step_inputs_and_pipeline(
         &decoded.db,
@@ -530,7 +542,7 @@ mod tests {
             alpha: alpha.to_repr(),
         };
 
-        let signer = SeedSpendAuthSigner::new(SecretVec::new(seed.to_vec()));
+        let signer = SeedSpendAuthSigner::new(crate::system_rng(), SecretVec::new(seed.to_vec()));
         let sig = signer.sign(request).expect("signing succeeds");
         assert_ne!(sig, [0u8; 64]);
 
@@ -554,7 +566,8 @@ mod tests {
             alpha: [0u8; 32],
         };
 
-        let signer = SeedSpendAuthSigner::new(SecretVec::new(vec![0x5Au8; 32]));
+        let signer =
+            SeedSpendAuthSigner::new(crate::system_rng(), SecretVec::new(vec![0x5Au8; 32]));
         let err = signer.sign(request).unwrap_err();
         assert!(matches!(err, VotingError::InvalidInput { .. }));
     }

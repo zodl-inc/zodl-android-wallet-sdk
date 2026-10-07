@@ -1,5 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
+import cash.z.ecc.android.sdk.internal.ext.clearContents
+import cash.z.ecc.android.sdk.internal.ext.useAndClear
 import cash.z.ecc.android.sdk.internal.model.JniMetadataKey
 import cash.z.ecc.android.sdk.internal.model.JniUnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.AccountMetadataKey
@@ -24,24 +26,28 @@ fun Derivation.deriveUnifiedSpendingKey(
     network: ZcashNetwork,
     accountIndex: Zip32AccountIndex
 ): UnifiedSpendingKey =
-    UnifiedSpendingKey(
-        JniUnifiedSpendingKey(
-            bytes = deriveUnifiedSpendingKey(seed, network.id, accountIndex.index)
-        )
-    )
+    deriveUnifiedSpendingKey(seed, network.id, accountIndex.index).useAndClear {
+        UnifiedSpendingKey(JniUnifiedSpendingKey(bytes = it))
+    }
 
 fun Derivation.deriveUnifiedFullViewingKey(
     usk: UnifiedSpendingKey,
     network: ZcashNetwork
-): UnifiedFullViewingKey =
-    UnifiedFullViewingKey(
-        deriveUnifiedFullViewingKey(
-            JniUnifiedSpendingKey(
-                bytes = usk.copyBytes()
-            ),
-            network.id
+): UnifiedFullViewingKey {
+    val uskBytes = usk.copyBytes()
+    return try {
+        UnifiedFullViewingKey(
+            deriveUnifiedFullViewingKey(
+                JniUnifiedSpendingKey(
+                    bytes = uskBytes
+                ),
+                network.id
+            )
         )
-    )
+    } finally {
+        uskBytes.clearContents()
+    }
+}
 
 fun Derivation.deriveUnifiedFullViewingKeysTypesafe(
     seed: ByteArray,
@@ -65,13 +71,30 @@ fun Derivation.derivePrivateUseMetadataKeyTypesafe(
     ufvk: String?,
     network: ZcashNetwork,
     privateUseSubject: ByteArray
-): Array<ByteArray> = derivePrivateUseMetadataKey(accountMetadataKey.toUnsafe(), ufvk, network.id, privateUseSubject)
+): Array<ByteArray> {
+    val jniMetadataKey = accountMetadataKey.toUnsafe()
+    return try {
+        derivePrivateUseMetadataKey(jniMetadataKey, ufvk, network.id, privateUseSubject)
+    } finally {
+        jniMetadataKey.sk.clearContents()
+        jniMetadataKey.chainCode.clearContents()
+    }
+}
 
+/**
+ * Deliberately not wrapped in [useAndClear]: the array returned by the JNI call is the derived key
+ * itself and is handed to the caller as-is, so there is no transient copy to wipe here. Ownership of
+ * the returned key material, including zeroing it, rests with the caller.
+ */
 fun Derivation.deriveArbitraryWalletKeyTypesafe(
     contextString: ByteArray,
     seed: ByteArray
 ): ByteArray = deriveArbitraryWalletKey(contextString, seed)
 
+/**
+ * Deliberately not wrapped in [useAndClear] for the same reason as [deriveArbitraryWalletKeyTypesafe]:
+ * the returned array is the caller-owned key, not a transient copy.
+ */
 fun Derivation.deriveArbitraryAccountKeyTypesafe(
     contextString: ByteArray,
     seed: ByteArray,

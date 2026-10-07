@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal.ext
 
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.internal.Twig
+import cash.z.ecc.android.sdk.internal.jni.ProposalInsufficientFundsException
 
 @Suppress("SwallowedException", "TooGenericExceptionCaught")
 internal inline fun <R> tryNull(block: () -> R): R? =
@@ -86,7 +87,9 @@ private const val CAUSE_CHAIN_MAX_DEPTH = 10
 
 /**
  * Check whether this error - or any error within the first [CAUSE_CHAIN_MAX_DEPTH] links of its cause
- * chain - is the Rust layer reporting that the account lacks the spendable funds a proposal needs.
+ * chain - is the Rust layer reporting that the account lacks the spendable funds a proposal needs:
+ * a [ProposalInsufficientFundsException], where the backend raises one, or otherwise an error whose
+ * message carries one of the backend's insufficient-funds texts.
  * The walk is bounded and cycle-safe, as a cause chain coming across the FFI is not guaranteed to be
  * either.
  *
@@ -99,7 +102,8 @@ internal fun Throwable.indicatesInsufficientFunds(): Boolean {
     var depth = 0
     while (current != null && depth < CAUSE_CHAIN_MAX_DEPTH && visited.add(current)) {
         val message = current.message
-        if (message != null && markers.any { message.contains(it, ignoreCase = true) }) {
+        val matchesText = message != null && markers.any { message.contains(it, ignoreCase = true) }
+        if (current is ProposalInsufficientFundsException || matchesText) {
             return true
         }
         current = current.cause

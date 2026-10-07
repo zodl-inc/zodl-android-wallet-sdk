@@ -61,6 +61,15 @@ internal object InstanceGuard {
         instances.remove(key)
     }
 
+    /**
+     * Waits for the shutdown in flight for [key], if any, without taking the guard mutex: a slow shutdown of one key
+     * then never keeps [acquire] or [withKeyInactive] of any other key waiting. Read-only; a helper wallet's erase
+     * calls it before [withKeyInactive], whose own wait then finds the shutdown over.
+     */
+    suspend fun awaitShutdown(key: SlipstreamKey) {
+        (instances[key] as? InstanceState.ShuttingDown)?.job?.join()
+    }
+
     /** True while [key] is registered [Active] - the C3 `erase` refusal check. */
     fun isActive(key: SlipstreamKey): Boolean = instances[key] is InstanceState.Active
 

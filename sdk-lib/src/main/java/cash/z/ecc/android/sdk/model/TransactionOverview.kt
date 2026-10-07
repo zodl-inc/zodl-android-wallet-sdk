@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.model
 
 import cash.z.ecc.android.sdk.internal.Twig
+import cash.z.ecc.android.sdk.internal.model.ConfirmationsPolicy
 import cash.z.ecc.android.sdk.internal.model.DbTransactionOverview
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 
@@ -82,7 +83,12 @@ data class TransactionOverview(
                         latestBlockHeight = latestBlockHeight,
                         minedHeight = dbTransactionOverview.minedHeight,
                         expiryHeight = dbTransactionOverview.expiryHeight,
-                        isExpiredUnmined = dbTransactionOverview.isExpiredUnmined
+                        isExpiredUnmined = dbTransactionOverview.isExpiredUnmined,
+                        requiredConfirmations =
+                            ConfirmationsPolicy.requiredConfirmations(
+                                isSentTransaction = dbTransactionOverview.isSentTransaction,
+                                isTrusted = dbTransactionOverview.isTrusted
+                            )
                     ),
                 isShielding = dbTransactionOverview.isShielding,
                 totalSpent = dbTransactionOverview.totalSpent,
@@ -114,20 +120,24 @@ enum class TransactionState {
     Expired;
 
     companion object {
-        private const val MIN_CONFIRMATIONS = 10
-
+        /**
+         * A mined transaction is [Confirmed] once it has [requiredConfirmations] confirmations;
+         * callers take that from [ConfirmationsPolicy.requiredConfirmations]: the trusted count
+         * for a received transaction the wallet trusts, the untrusted count otherwise.
+         */
         internal fun new(
             latestBlockHeight: BlockHeight?,
             minedHeight: BlockHeight?,
             expiryHeight: BlockHeight?,
-            isExpiredUnmined: Boolean?
+            isExpiredUnmined: Boolean?,
+            requiredConfirmations: Int
         ): TransactionState {
             if (isExpiredUnmined != null && isExpiredUnmined) return Expired
 
             return latestBlockHeight?.let { chainTip ->
                 minedHeight?.let { minedHeight ->
                     // A transaction mined in the latest block has 1 confirmation.
-                    if ((chainTip + 1 - minedHeight) >= MIN_CONFIRMATIONS) {
+                    if ((chainTip + 1 - minedHeight) >= requiredConfirmations) {
                         Confirmed
                     } else {
                         Pending

@@ -1,5 +1,7 @@
 package cash.z.ecc.android.sdk.block.processor
 
+import cash.z.ecc.android.sdk.exception.LightWalletException
+import cash.z.ecc.android.sdk.fixture.AccountFixture
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.TypesafeBackend
 import cash.z.ecc.android.sdk.internal.block.CompactBlockDownloader
@@ -19,6 +21,7 @@ import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zip318Kind
+import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -35,6 +38,7 @@ import kotlin.reflect.full.declaredMemberFunctions
 import kotlin.reflect.jvm.isAccessible
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -430,6 +434,54 @@ class CompactBlockProcessorTest {
 
             verify(txManager).submit(resubmittableEncodedTransaction)
         }
+    }
+
+    /**
+     * A card wallet tolerates failing to reach the server while it verifies its setup: it reports itself
+     * disconnected and lets the processor keep retrying, instead of raising a critical error at once.
+     */
+    @Test
+    fun a_tolerated_setup_disconnection_reports_disconnected_instead_of_failing() {
+        runBlocking {
+            val processor = processorThatCannotReachTheServer()
+            processor.isSetupDisconnectionTolerated = true
+
+            processor.verifySetup()
+
+            assertEquals(CompactBlockProcessor.State.Disconnected, processor.state.value)
+        }
+    }
+
+    /** Without the tolerance, the same failure still escapes [CompactBlockProcessor.verifySetup] as before. */
+    @Test
+    fun an_untolerated_setup_disconnection_still_fails_the_setup() {
+        runBlocking {
+            val processor = processorThatCannotReachTheServer()
+
+            assertFails { processor.verifySetup() }
+            assertEquals(CompactBlockProcessor.State.Initializing, processor.state.value)
+        }
+    }
+
+    private suspend fun processorThatCannotReachTheServer(): CompactBlockProcessor {
+        val backend = mock(TypesafeBackend::class.java)
+        `when`(backend.network).thenReturn(ZcashNetwork.Testnet)
+        `when`(backend.getAccounts()).thenReturn(listOf(AccountFixture.new()))
+        val downloader = mock(CompactBlockDownloader::class.java)
+        `when`(downloader.getServerInfo(ServiceMode.Direct)).thenThrow(
+            LightWalletException.GetServerInfoException(code = -1, description = "unavailable", cause = Exception())
+        )
+        return CompactBlockProcessor(
+            backend = backend,
+            downloader = downloader,
+            minimumHeight = ZcashNetwork.Testnet.saplingActivationHeight,
+            repository = mock(DerivedDataRepository::class.java),
+            txManager = mock(OutboundTransactionManager::class.java),
+            sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false),
+            saplingParamFetcher = mock(SaplingParamFetcher::class.java),
+            pendingSubmitPlanStore = PendingSubmitPlanStore(),
+            submitPlanExecutor = SubmitPlanExecutor(FakeTransactionSubmitter())
+        )
     }
 
     private suspend fun CompactBlockProcessor.resubmitUnminedTransactionsForTest(blockHeight: BlockHeight) {

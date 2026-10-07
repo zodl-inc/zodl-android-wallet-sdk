@@ -12,8 +12,6 @@
 //! themselves, because the fee depends on which inputs the selector picks.
 
 use anyhow::anyhow;
-use rand::rngs::OsRng;
-use zcash_address::{ToAddress, ZcashAddress, unified, unified::Encoding as _};
 use zcash_client_backend::{
     data_api::{
         Account as _, InputSource, MaxSpendMode, WalletRead,
@@ -32,7 +30,7 @@ use zcash_protocol::{
 };
 
 /// The wallet database as the JNI layer holds it.
-type Db = WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>;
+type Db = WalletDb<rusqlite::Connection, Network, SystemClock, crate::SystemRng>;
 
 type MigrationProposal = Proposal<StandardFeeRule, <Db as InputSource>::NoteRef>;
 
@@ -97,13 +95,8 @@ pub(crate) fn propose_orchard_to_ironwood(
     // The internal scope is the account's own change address, so the funds
     // stay with the account rather than being exposed as an external payment.
     let receiver = orchard_fvk.address_at(0u32, orchard::keys::Scope::Internal);
-    let recipient = ZcashAddress::from_unified(
-        network.network_type(),
-        unified::Address::try_from_items(vec![unified::Receiver::Orchard(
-            receiver.to_raw_address_bytes(),
-        )])
-        .map_err(|e| anyhow!("Unable to construct the migration recipient: {}", e))?,
-    );
+    let recipient = zcash_client_backend::address::Receiver::Orchard(receiver)
+        .to_zcash_address(network.network_type());
 
     // Orchard only. Sapling and transparent funds are deliberately left where
     // they are: this migrates one pool, it is not a sweep of the wallet.
