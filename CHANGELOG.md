@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-10-07
+
 ### Added
 - `GiftCard`, a gift card read from a gift card link with `GiftCard.parse(link)`: this SDK's
   own links (`https://gift.zodl.com/#v=1&key=...&height=...`) and the legacy JSON payment-link
