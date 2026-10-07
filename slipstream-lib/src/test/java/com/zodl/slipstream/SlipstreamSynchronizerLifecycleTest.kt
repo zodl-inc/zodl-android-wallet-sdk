@@ -78,6 +78,7 @@ import org.mockito.Mockito.timeout
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -1951,6 +1952,319 @@ class SlipstreamSynchronizerLifecycleTest {
     }
 
     /**
+     * The main wallet's restore keeps its order: the data DB first, then the anchor, then the bundled checkpoint,
+     * read before the accounts are, as before any helper wallet existed.
+     */
+    @Test
+    fun a_restore_without_an_exact_birthday_runs_the_data_db_before_the_anchor_and_reads_the_checkpoint_first() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES) { 9 }))
+        val seed = setup.seed.byteArray
+        val events = recordPreparation(backend, seed)
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                prepareInputs = recordingInputs(events, setup = setup)
+            )
+        try {
+            runBlocking { verify(engine, timeout(TIMEOUT_MS)).startPolling() }
+
+            assertEquals(
+                listOf("fallback", "initDataDb", "summary", "anchor", "checkpoint", "getAccounts", "createAccount"),
+                events.toList()
+            )
+        } finally {
+            synchronizer.close()
+        }
+    }
+
+    /** A broken bundled checkpoint still fails the main wallet's restore when its account already exists. */
+    @Test
+    fun a_restore_without_an_exact_birthday_reads_the_checkpoint_even_when_its_account_exists() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val checkpointReads = AtomicInteger(0)
+        runBlocking {
+            `when`(backend.initDataDb(null)).thenReturn(0)
+            `when`(backend.getAccounts()).thenReturn(listOf(jniAccount(AccountUuid.new(ByteArray(16)))))
+        }
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                prepareInputs =
+                    prepareInputs(
+                        treeState = {
+                            checkpointReads.incrementAndGet()
+                            error("broken checkpoint")
+                        }
+                    )
+            )
+        try {
+            val error = runBlocking { withTimeout(TIMEOUT_MS) { synchronizer.setupError.filterNotNull().first() } }
+
+            assertEquals("broken checkpoint", error.message)
+            assertEquals(1, checkpointReads.get())
+            runBlocking { verify(engine, never()).open(TOTAL_MEMORY_BYTES) }
+        } finally {
+            synchronizer.close()
+        }
+    }
+
+    /**
+     * An exact-birthday restore does not wait for the data DB: its anchor and its exact tree state are both in flight
+     * while `initDataDb` is still running, and the account is created from the exact tree state once both are back,
+     * without reading the bundled checkpoint.
+     */
+    @Test
+    fun an_exact_birthday_restore_resolves_its_anchor_and_tree_state_while_the_data_db_initializes() {
+        val anchorStarted = CountDownLatch(1)
+        val fetchStarted = CountDownLatch(1)
+        val initDataDbStarted = CountDownLatch(1)
+        val bothInFlightDuringInit = AtomicBoolean(false)
+        val checkpointReads = AtomicInteger(0)
+        val events = mutableListOf<String>()
+        exactRestore(
+            exactBirthdayTreeState = {
+                fetchStarted.countDown()
+                TreeState(EXACT_TREE_STATE)
+            },
+            anchorSource =
+                SlipstreamAnchorSource { _, _, _ ->
+                    synchronized(events) { events += "anchor" }
+                    anchorStarted.countDown()
+                    SlipstreamRestoreAnchor(ANCHOR_HEIGHT, null)
+                },
+            treeState = {
+                checkpointReads.incrementAndGet()
+                TreeState(TREE_STATE)
+            },
+            stubBackend = { backend, seed ->
+                runBlocking {
+                    `when`(backend.initDataDb(seed)).thenAnswer {
+                        initDataDbStarted.countDown()
+                        bothInFlightDuringInit.set(
+                            anchorStarted.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS) &&
+                                fetchStarted.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                        )
+                        synchronized(events) { events += "initDataDb returned" }
+                        0
+                    }
+                    `when`(backend.getAccounts()).thenReturn(emptyList())
+                }
+            }
+        ) {
+            runBlocking {
+                verify(engine, timeout(TIMEOUT_MS)).startPolling()
+                verify(backend).createAccount(ACCOUNT_NAME, KEY_SOURCE, seed, EXACT_TREE_STATE, ANCHOR_HEIGHT)
+            }
+            assertTrue(initDataDbStarted.count == 0L)
+            assertTrue(bothInFlightDuringInit.get(), "the anchor and the fetch run while initDataDb does")
+            assertEquals(listOf("anchor", "initDataDb returned"), synchronized(events) { events.toList() })
+            assertEquals(0, checkpointReads.get(), "the bundled checkpoint is not read")
+            assertEquals(true, resolution())
+        }
+    }
+
+    /** An exact-birthday restore that falls back to the checkpoint reads it, once, only after the accounts. */
+    @Test
+    fun an_exact_birthday_restore_reads_the_checkpoint_only_when_it_creates_the_account_from_it() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val setup = AccountCreateSetup(ACCOUNT_NAME, KEY_SOURCE, FirstClassByteArray(ByteArray(SEED_BYTES) { 9 }))
+        val events = recordPreparation(backend, setup.seed.byteArray)
+        val birthdayResolved = CompletableDeferred<Boolean>()
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                prepareInputs =
+                    recordingInputs(
+                        events,
+                        setup = setup,
+                        exactBirthdayTreeState = { null },
+                        birthdayResolved = birthdayResolved
+                    )
+            )
+        try {
+            runBlocking { verify(engine, timeout(TIMEOUT_MS)).startPolling() }
+
+            val recorded = events.toList()
+            assertEquals(1, recorded.count { it == "checkpoint" })
+            assertTrue(recorded.indexOf("getAccounts") < recorded.indexOf("checkpoint"))
+            assertTrue(recorded.indexOf("checkpoint") < recorded.indexOf("createAccount"))
+            assertEquals(false, runBlocking { withTimeout(TIMEOUT_MS) { birthdayResolved.await() } })
+        } finally {
+            synchronizer.close()
+        }
+    }
+
+    /**
+     * Closing an exact-birthday restore during its data DB step cancels the anchor and the fetch already in flight,
+     * never opens the engine, and still reports that the account does not start at its birthday.
+     */
+    @Test
+    fun close_during_the_data_db_step_of_an_exact_birthday_restore_cancels_the_anchor_in_flight() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val initEntered = CountDownLatch(1)
+        val initProceed = CountDownLatch(1)
+        val anchorCancelled = CompletableDeferred<Unit>()
+        val fetchCancelled = CompletableDeferred<Unit>()
+        val birthdayResolved = CompletableDeferred<Boolean>()
+        runBlocking {
+            `when`(backend.getAccounts()).thenReturn(emptyList())
+            `when`(backend.initDataDb(null)).thenAnswer {
+                initEntered.countDown()
+                initProceed.await()
+                0
+            }
+        }
+        runBlocking { InstanceGuard.acquire(key) }
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                prepareInputs =
+                    prepareInputs(
+                        anchorSource =
+                            SlipstreamAnchorSource { _, _, _ ->
+                                try {
+                                    awaitCancellation()
+                                } finally {
+                                    anchorCancelled.complete(Unit)
+                                }
+                            },
+                        exactBirthdayTreeState = {
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                fetchCancelled.complete(Unit)
+                            }
+                        },
+                        birthdayResolved = birthdayResolved
+                    )
+            )
+        assertTrue(initEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+
+        synchronizer.close()
+        initProceed.countDown()
+
+        runBlocking {
+            withTimeout(TIMEOUT_MS) {
+                anchorCancelled.await()
+                fetchCancelled.await()
+            }
+            verify(engine, timeout(TIMEOUT_MS)).shutdown()
+            verify(engine, never()).open(TOTAL_MEMORY_BYTES)
+            assertEquals(false, withTimeout(TIMEOUT_MS) { birthdayResolved.await() })
+            withTimeout(TIMEOUT_MS) { InstanceGuard.acquire(key) }
+        }
+        assertEquals(null, synchronizer.setupError.value)
+        InstanceGuard.release(key)
+    }
+
+    /**
+     * An anchor that blocks its thread, as the `restoreAnchor` JNI call does, cannot be cancelled: closing an
+     * exact-birthday restore waits for it to return, so that nothing of the instance keeps running after its shutdown,
+     * and finishes the shutdown as soon as it has returned.
+     */
+    @Test
+    fun close_of_an_exact_birthday_restore_waits_only_for_the_blocking_anchor_in_flight() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val anchorEntered = CountDownLatch(1)
+        val anchorRelease = CountDownLatch(1)
+        val anchorReturned = AtomicBoolean(false)
+        stubPrepareBackend(backend, null)
+        runBlocking { InstanceGuard.acquire(key) }
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                key = key,
+                prepareInputs =
+                    prepareInputs(
+                        anchorSource =
+                            SlipstreamAnchorSource { _, _, _ ->
+                                anchorEntered.countDown()
+                                anchorRelease.await()
+                                anchorReturned.set(true)
+                                SlipstreamRestoreAnchor(ANCHOR_HEIGHT, null)
+                            },
+                        exactBirthdayTreeState = { TreeState(EXACT_TREE_STATE) },
+                        birthdayResolved = CompletableDeferred()
+                    )
+            )
+        assertTrue(anchorEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+
+        synchronizer.close()
+
+        runBlocking {
+            verify(engine, after(SETTLE_MS).never()).shutdown()
+            anchorRelease.countDown()
+            verify(engine, timeout(TIMEOUT_MS)).shutdown()
+            verify(engine, never()).open(TOTAL_MEMORY_BYTES)
+            withTimeout(TIMEOUT_MS) { InstanceGuard.acquire(key) }
+        }
+        assertTrue(anchorReturned.get())
+        assertEquals(null, synchronizer.setupError.value)
+        InstanceGuard.release(key)
+    }
+
+    /**
+     * An anchor that fails while the data DB of an exact-birthday restore is still initializing fails the
+     * preparation: the setup error is latched, the status is disconnected, the engine never opens, and the account is
+     * reported as not starting at its birthday.
+     */
+    @Test
+    fun an_anchor_failing_during_the_data_db_step_of_an_exact_birthday_restore_latches_the_setup_error() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val engineStatus = MutableStateFlow(Synchronizer.Status.INITIALIZING)
+        val anchorFailed = CountDownLatch(1)
+        val birthdayResolved = CompletableDeferred<Boolean>()
+        runBlocking {
+            `when`(backend.getAccounts()).thenReturn(emptyList())
+            `when`(backend.initDataDb(null)).thenAnswer {
+                anchorFailed.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                0
+            }
+        }
+        val synchronizer =
+            buildSynchronizer(
+                engine = engine,
+                backend = backend,
+                engineStatusOverride = engineStatus,
+                prepareInputs =
+                    prepareInputs(
+                        anchorSource =
+                            SlipstreamAnchorSource { _, _, _ ->
+                                anchorFailed.countDown()
+                                error("anchor unreachable")
+                            },
+                        exactBirthdayTreeState = { TreeState(EXACT_TREE_STATE) },
+                        birthdayResolved = birthdayResolved
+                    )
+            )
+        try {
+            val error = runBlocking { withTimeout(TIMEOUT_MS) { synchronizer.setupError.filterNotNull().first() } }
+
+            assertSameFailure(IllegalStateException("anchor unreachable"), error)
+            assertEquals(Synchronizer.Status.DISCONNECTED, engineStatus.value)
+            runBlocking { verify(engine, never()).open(TOTAL_MEMORY_BYTES) }
+            assertEquals(false, runBlocking { withTimeout(TIMEOUT_MS) { birthdayResolved.await() } })
+        } finally {
+            synchronizer.close()
+        }
+    }
+
+    /**
      * S2: a `new` whose caller is cancelled once the instance is built - the instance comes back on a
      * switch back from `Dispatchers.IO`, which a cancelled caller turns into a
      * [CancellationException] - must not leave that instance running, with its preparation in flight
@@ -2042,6 +2356,61 @@ class SlipstreamSynchronizerLifecycleTest {
         assertEquals(expected::class, actual?.let { it::class })
         assertEquals(expected.message, actual?.message)
     }
+
+    /**
+     * Stubs [backend] for a fresh database restored from [seed], recording each preparation step it serves in the
+     * returned list, which [recordingInputs] shares.
+     */
+    private fun recordPreparation(
+        backend: Backend,
+        seed: ByteArray
+    ): MutableList<String> {
+        val events = Collections.synchronizedList(mutableListOf<String>())
+        runBlocking {
+            `when`(backend.initDataDb(seed)).thenAnswer {
+                events += "initDataDb"
+                0
+            }
+            `when`(backend.getAccounts()).thenAnswer {
+                events += "getAccounts"
+                emptyList<JniAccount>()
+            }
+            `when`(backend.createAccount(ACCOUNT_NAME, KEY_SOURCE, seed, TREE_STATE, ANCHOR_HEIGHT)).thenAnswer {
+                events += "createAccount"
+                JniAccountUsk(ByteArray(ACCOUNT_UUID_BYTES), ByteArray(USK_BYTES))
+            }
+        }
+        return events
+    }
+
+    /** [prepareInputs] whose every seam records itself in [events], as [recordPreparation]'s backend does. */
+    private fun recordingInputs(
+        events: MutableList<String>,
+        setup: AccountCreateSetup,
+        exactBirthdayTreeState: (suspend (BlockHeight) -> TreeState?)? = null,
+        birthdayResolved: CompletableDeferred<Boolean>? = null
+    ) = prepareInputs(
+        setup = setup,
+        anchorSource =
+            SlipstreamAnchorSource { _, _, _ ->
+                events += "anchor"
+                SlipstreamRestoreAnchor(ANCHOR_HEIGHT, null)
+            },
+        fallbackCheckpointHeight = {
+            events += "fallback"
+            FALLBACK_CHECKPOINT
+        },
+        treeState = {
+            events += "checkpoint"
+            TreeState(TREE_STATE)
+        },
+        dbWalletSummary = {
+            events += "summary"
+            null
+        },
+        exactBirthdayTreeState = exactBirthdayTreeState,
+        birthdayResolved = birthdayResolved
+    )
 
     private fun gatedAnchor(gate: CompletableDeferred<Unit>) =
         SlipstreamAnchorSource { _, _, _ ->
@@ -2221,13 +2590,15 @@ class SlipstreamSynchronizerLifecycleTest {
 
     /**
      * Runs [test] against a restore with a seed, asked to start exactly at its birthday, whose preparation fetches
-     * that birthday's tree state with [exactBirthdayTreeState] and resolves its anchor with [anchorSource]; closes it
-     * afterwards. [stubBackend] stubs the backend for the seed, by default as a fresh database without accounts.
+     * that birthday's tree state with [exactBirthdayTreeState], resolves its anchor with [anchorSource] and reads the
+     * bundled checkpoint with [treeState]; closes it afterwards. [stubBackend] stubs the backend for the seed, by
+     * default as a fresh database without accounts.
      */
     private fun exactRestore(
         exactBirthdayTreeState: suspend (BlockHeight) -> TreeState?,
         anchorSource: SlipstreamAnchorSource =
             SlipstreamAnchorSource { _, _, _ -> SlipstreamRestoreAnchor(ANCHOR_HEIGHT, null) },
+        treeState: suspend (BlockHeight?) -> TreeState = { TreeState(TREE_STATE) },
         stubBackend: (backend: Backend, seed: ByteArray) -> Unit = ::stubPrepareBackend,
         test: ExactRestore.() -> Unit
     ) {
@@ -2241,6 +2612,7 @@ class SlipstreamSynchronizerLifecycleTest {
             prepareInputs(
                 setup = setup,
                 anchorSource = anchorSource,
+                treeState = treeState,
                 exactBirthdayTreeState = exactBirthdayTreeState,
                 birthdayResolved = birthdayResolved
             )

@@ -420,6 +420,59 @@ class GiftCardRedeemerEngineTest {
         }
 
     /**
+     * A card that holds nothing and has sent a transaction was redeemed already: it is Empty at once, without the
+     * settle, whether its wallet started at the exact birthday or at the checkpoint, and is never rescanned.
+     */
+    @Test
+    fun aRedeemedCardIsEmptyAtOnceWithoutTheSettleOrARescan() =
+        runTest {
+            listOf(true, false).forEach { exact ->
+                val redeemed = FakeCardWallet(emptyList(), spendable = 0, history = 2, sentHistory = 1)
+                val wallets = engineWallets(redeemed, FakeCardWallet(emptyList()), exact = exact)
+                val (redeemer, _) = redeemer(redeemed, wallets = wallets)
+                val start = currentTime
+
+                assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
+
+                assertEquals(0L, currentTime - start, "exact: $exact")
+                assertEquals(listOf(true), wallets.exactBirthdays, "opened once, exact: $exact")
+                assertFalse(redeemed.closed)
+                redeemer.close()
+            }
+        }
+
+    /** A card that holds nothing and has no history at all still settles once before it is Empty. */
+    @Test
+    fun anEmptyCardWithoutHistoryStillSettlesOnce() =
+        runTest {
+            val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
+            val (redeemer, _) = redeemer(nothing, wallets = engineWallets(nothing))
+
+            assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
+
+            assertEquals(GiftCardRedeemer.EMPTY_SETTLE.inWholeMilliseconds, currentTime)
+        }
+
+    /**
+     * A card that holds nothing yet lists a received transaction can be one funded moments ago, whose balance does
+     * not include its funding yet: it still settles, and the funds that arrive are reported.
+     */
+    @Test
+    fun anEmptyCardWithOnlyAReceivedTransactionStillSettles() =
+        runTest {
+            val cardWallet = FakeCardWallet(emptyList(), spendable = 0, history = 1, sentHistory = 0)
+            val (redeemer, _) = redeemer(cardWallet, wallets = engineWallets(cardWallet))
+
+            val check = async { redeemer.check() }
+            advanceTimeBy(3.seconds)
+            assertFalse(check.isCompleted)
+            cardWallet.walletBalances.value = cardBalances(pending = 1_000_000)
+
+            assertIs<GiftCardRedeemer.Status.Pending>(check.await())
+            assertEquals(3.seconds.inWholeMilliseconds, currentTime)
+        }
+
+    /**
      * As observed on a device: the funding transaction is still in the mempool, so the exact scan finds no history,
      * and the engine stores the receive shortly after its first SYNCED. The exact wallet's settle catches it, and the
      * card is not rescanned from the checkpoint.

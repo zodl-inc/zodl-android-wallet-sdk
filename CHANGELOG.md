@@ -153,7 +153,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with it. On the Slipstream engine, `check` counts the card wallet's balance only once the wallet
   has scanned up to the chain tip, and watches a card that still looks empty for 15 more seconds
   (30 over Tor) before it reports `Empty`, so that a freshly funded card is no longer reported
-  `Empty` on its first check and `Pending` only on the next.
+  `Empty` on its first check and `Pending` only on the next. A card that holds nothing and has
+  already sent a transaction (one redeemed or spent before) is reported `Empty` at once, without
+  that wait. The card wallet resolves where to start scanning while its database is created,
+  rather than after it.
 - `SlipstreamSynchronizer.new` works on its own copy of the setup's seed, which it overwrites with
   zeros once its deferred preparation has settled, so a caller may wipe its seed as soon as `new`
   returns; before, a caller that did so (as the gift card redeemer does) left the preparation

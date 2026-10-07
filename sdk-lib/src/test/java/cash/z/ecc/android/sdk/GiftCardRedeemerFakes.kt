@@ -39,7 +39,8 @@ import kotlin.test.assertIs
 
 /**
  * The card wallet: [status], one account holding [spendable] and [pending], [history]
- * transactions, one proposal paying [fee] and sending [sent] (by default [spendable] minus
+ * transactions, of which the last [sentHistory] were sent by the card wallet itself (the rest received), counting
+ * its [transactionReads], one proposal paying [fee] and sending [sent] (by default [spendable] minus
  * [fee]), and whatever [submitResult] says about each transaction. [setupError] is the setup
  * failure it has latched, if any, [accounts] its account list (`null` while not loaded yet, as
  * [Synchronizer.accountsFlow] reports it), [progress] its sync progress, and [networkHeight] and
@@ -53,6 +54,7 @@ internal class FakeCardWallet(
     private val proposalFailure: Exception? = null,
     var fee: Zatoshi = Zatoshi(10_000),
     private val history: Int = 1,
+    private val sentHistory: Int = 0,
     private val sent: Long? = null,
     private val closeFailure: Exception? = null,
     override val status: Flow<Synchronizer.Status> = MutableStateFlow(Synchronizer.Status.SYNCED),
@@ -64,6 +66,7 @@ internal class FakeCardWallet(
     var proposed = false
     val submitted = mutableListOf<CreatedTransaction>()
     var ovkPolicy: OvkPolicy? = null
+    var transactionReads = 0
 
     override val network: ZcashNetwork = ZcashNetwork.Mainnet
     override var onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null
@@ -81,8 +84,16 @@ internal class FakeCardWallet(
 
     override suspend fun getAccounts(): List<Account> = accounts.value.orEmpty()
 
-    override suspend fun getTransactions(accountUuid: AccountUuid): Flow<List<TransactionOverview>> =
-        flowOf(List(history) { mock(TransactionOverview::class.java) })
+    override suspend fun getTransactions(accountUuid: AccountUuid): Flow<List<TransactionOverview>> {
+        transactionReads++
+        return flowOf(
+            List(history) { index ->
+                mock(TransactionOverview::class.java).also {
+                    `when`(it.isSentTransaction).thenReturn(index >= history - sentHistory)
+                }
+            }
+        )
+    }
 
     override suspend fun proposeSendMax(
         account: Account,

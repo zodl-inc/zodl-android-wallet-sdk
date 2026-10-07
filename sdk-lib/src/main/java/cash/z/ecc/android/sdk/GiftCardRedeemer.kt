@@ -283,7 +283,8 @@ class GiftCardRedeemer private constructor(
      * On an engine that reports its balance from a summary refreshed after the sync and watches the mempool only
      * after its first pass (the Slipstream engine), the balance counts only once the wallet has scanned up to the
      * chain tip, and a card that still looks empty then is watched for 15 seconds more (30 seconds over Tor), so that
-     * a funding transaction found just after the sync is not missed.
+     * a funding transaction found just after the sync is not missed. A card that holds nothing and has already sent
+     * a transaction (one redeemed or spent before) is not watched: it is reported [Status.Empty] at once.
      *
      * A card wallet that started exactly at the birthday and found no transaction at all (as opposed to funds
      * received and then spent), nor any funds during that watch, is then scanned once more from the bundled
@@ -362,8 +363,12 @@ class GiftCardRedeemer private constructor(
             var synced = awaitSyncedWallet(synchronizer, timeout, disconnectedTimeout)
             val isUnfundedAtExactBirthday =
                 isBirthdayExact && synced.balance.total.value == 0L && !hasHistory(synchronizer, synced.account)
+            val isRedeemed =
+                isDisconnectedUntilFirstPass &&
+                    synced.balance.total.value == 0L &&
+                    hasSentTransaction(synchronizer, synced.account)
             var balance = synced.balance
-            if (isDisconnectedUntilFirstPass && balance.toStatus() == Status.Empty) {
+            if (isDisconnectedUntilFirstPass && balance.toStatus() == Status.Empty && !isRedeemed) {
                 balance = awaitLateFunds(synchronizer, synced.account) ?: balance
             }
             if (isUnfundedAtExactBirthday && balance.total.value == 0L) {
@@ -431,6 +436,19 @@ class GiftCardRedeemer private constructor(
         synchronizer: Synchronizer,
         account: Account
     ): Boolean = walletCreationStep { synchronizer.getTransactions(account.accountUuid).first().isNotEmpty() }
+
+    /**
+     * Whether the card wallet has sent a transaction: the card was redeemed, or otherwise spent, already. A
+     * transaction it only received does not count, as a card funded moments ago can list its funding transaction
+     * before the balance includes it.
+     */
+    private suspend fun hasSentTransaction(
+        synchronizer: Synchronizer,
+        account: Account
+    ): Boolean =
+        walletCreationStep {
+            synchronizer.getTransactions(account.accountUuid).first().any { it.isSentTransaction }
+        }
 
     /**
      * The card's status for [balance]. A card that is [Status.Ready] by the minimum fee is

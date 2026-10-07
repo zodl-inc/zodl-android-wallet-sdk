@@ -512,6 +512,20 @@ class GiftCardRedeemerTest {
             assertFalse(redeemed.closed)
         }
 
+    /** A legacy card wallet reads its history only to decide the rescan, sent transactions or not. */
+    @Test
+    fun aLegacyRedeemedCardReadsItsHistoryOnlyForTheRescan() =
+        runBlocking {
+            val redeemed = FakeCardWallet(emptyList(), spendable = 0, history = 2, sentHistory = 1)
+            val wallets = FakeWallets(listOf(redeemed))
+            val (redeemer, _) = redeemer(redeemed, wallets = wallets)
+
+            assertEquals(GiftCardRedeemer.Status.Empty, redeemer.check())
+
+            assertEquals(1, redeemed.transactionReads)
+            assertEquals(listOf(true), wallets.exactBirthdays)
+        }
+
     @Test
     fun aCheckpointScanThatFindsNothingIsEmpty() =
         runBlocking {

@@ -109,7 +109,10 @@ internal fun interface SlipstreamAnchorSource {
  * @property exactBirthdayTreeState set only for a [WalletInitMode.RestoreWallet] asked to start
  * exactly at [requestedBirthday]: fetches the tree state at `requestedBirthday - 1` (see
  * [fetchExactBirthdayTreeState]), or answers `null` when it is not available, so that the account
- * is created from the bundled checkpoint instead. `null` keeps the checkpoint start.
+ * is created from the bundled checkpoint instead. Set, it also has the preparation resolve the anchor and
+ * this tree state while the data DB is initialized, and read the bundled checkpoint only if the account is
+ * created from it. `null` keeps the checkpoint start and the preparation's order: data DB first, then the
+ * anchor, then the bundled checkpoint, as the main wallet's.
  * @property birthdayResolved completed with whether the account was created from the exact tree state: by
  * preparation once the account is created, and with `false` by the end of preparation in case it never got that
  * far. The first completion wins.

@@ -167,8 +167,9 @@ import kotlin.time.Duration
  *
  * [exactTreeState] is the tree state at the requested birthday minus one, fetched only for a restore
  * asked to start exactly at its birthday ([PrepareInputs.exactBirthdayTreeState]); the account is
- * created from it rather than from [treeState], the bundled checkpoint, whenever it is present. A
- * restore's [treeState] is read from the bundled checkpoints only when the account is created from it.
+ * created from it rather than from [treeState], the bundled checkpoint, whenever it is present. Such a
+ * restore's [treeState] is read from the bundled checkpoints only when the account is created from it;
+ * every other wallet's is read while the plan is resolved, before the accounts are.
  */
 private data class WalletProvisioningPlan(
     val startBirthday: BlockHeight,
@@ -713,47 +714,23 @@ class SlipstreamSynchronizer internal constructor(
      * The final [SlipstreamEngine.startPolling] is unconditional, including under a migration
      * [pause]: polling only performs local JNI reads, and a pause that suppressed them left the
      * balances and status frozen at whatever the last tick saw.
+     *
+     * A restore asked to start exactly at its birthday ([PrepareInputs.exactBirthdayTreeState], which
+     * only a helper wallet such as a gift card's asks for) does not wait for the database: its anchor
+     * and its exact tree state are resolved while `initDataDb` runs (see
+     * [resolveExactBirthdayProvisioning]). Every other wallet, the main wallet included, keeps the order
+     * above.
      */
     private suspend fun prepare(inputs: PrepareInputs) {
         val fallbackCheckpoint = inputs.fallbackCheckpointHeight()
-
-        /*
-         * Mirrors `DerivedDataDb.new`: unconditional [Backend.initDataDb], then
-         * [Backend.createAccount] gated on `setup != null && accounts.isEmpty()`.
-         */
-        when (backend.initDataDb(inputs.setup?.seed?.byteArray)) {
-            0 -> Unit
-            1 -> throw InitializeException.SeedRequired
-            2 -> throw InitializeException.SeedNotRelevant
-            -1 -> error("Rust backend only uses -1 as an error sentinel")
-            else -> error("Rust backend used a code that needs to be defined here")
-        }
-
-        /*
-         * Losing this compare-and-set means [close] already published [PrepareState.Closed]. Bail
-         * out before the anchor rather than after it: the anchor is a blocking, engine-bounded
-         * network call that close()'s `cancelAndJoin` would otherwise have to wait out for a result
-         * nothing will ever read.
-         */
-        val dbReady =
-            prepareState.updateAndGet { if (it is PrepareState.Preparing) PrepareState.DbReady else it }
-        if (dbReady !is PrepareState.DbReady) return
-
-        /*
-         * Truthful FROM DbReady, not merely from the engine's first tick: the account row and the
-         * balances the database already knows surface in the same phase, so an existing wallet never
-         * renders a hard zero while the anchor is still in flight. Best-effort by design - a
-         * never-scanned database answers null or throws ("Target height not available"), which
-         * simply leaves the balances null and the host on its shimmer, the correct restore
-         * behaviour. The first engine tick overwrites the seed wholesale, including the stale-tip
-         * masking [toAccountBalances] applies and this raw summary does not: totals are identical,
-         * only the spendable/pending split may shift at that tick.
-         */
-        runCatchingCancellable { inputs.dbWalletSummary() }
-            .getOrNull()
-            ?.let { engine.walletBalances.value = it.accountBalances }
-
-        val provisioning = resolveProvisioning(inputs, fallbackCheckpoint)
+        val fetchExactTreeState = inputs.exactBirthdayTreeState
+        val provisioning =
+            if (fetchExactTreeState == null) {
+                if (!provisionDataDb(inputs)) return
+                resolveProvisioning(inputs, fallbackCheckpoint)
+            } else {
+                resolveExactBirthdayProvisioning(inputs, fallbackCheckpoint, fetchExactTreeState) ?: return
+            }
         startBirthday = provisioning.startBirthday
 
         var startsAtBirthday = false
@@ -777,6 +754,52 @@ class SlipstreamSynchronizer internal constructor(
          */
         engine.start(inputs.ufvk, provisioning.startBirthday.value)
         engine.startPolling()
+    }
+
+    /**
+     * [prepare]'s data-DB step: `initDataDb`, then [PrepareState.DbReady] and its balance seed.
+     *
+     * @return false when [close] already published [PrepareState.Closed], in which case nothing after
+     * this step may run.
+     */
+    private suspend fun provisionDataDb(inputs: PrepareInputs): Boolean {
+        /*
+         * Mirrors `DerivedDataDb.new`: unconditional [Backend.initDataDb], then
+         * [Backend.createAccount] gated on `setup != null && accounts.isEmpty()`.
+         */
+        when (backend.initDataDb(inputs.setup?.seed?.byteArray)) {
+            0 -> Unit
+            1 -> throw InitializeException.SeedRequired
+            2 -> throw InitializeException.SeedNotRelevant
+            -1 -> error("Rust backend only uses -1 as an error sentinel")
+            else -> error("Rust backend used a code that needs to be defined here")
+        }
+
+        /*
+         * Losing this compare-and-set means [close] already published [PrepareState.Closed]. Bail
+         * out before the anchor rather than after it: the anchor is a blocking, engine-bounded
+         * network call that close()'s `cancelAndJoin` would otherwise have to wait out for a result
+         * nothing will ever read. An exact-birthday restore, whose anchor is already in flight, cancels
+         * it instead (see [resolveExactBirthdayProvisioning]).
+         */
+        val dbReady =
+            prepareState.updateAndGet { if (it is PrepareState.Preparing) PrepareState.DbReady else it }
+        if (dbReady !is PrepareState.DbReady) return false
+
+        /*
+         * Truthful FROM DbReady, not merely from the engine's first tick: the account row and the
+         * balances the database already knows surface in the same phase, so an existing wallet never
+         * renders a hard zero while the anchor is still in flight. Best-effort by design - a
+         * never-scanned database answers null or throws ("Target height not available"), which
+         * simply leaves the balances null and the host on its shimmer, the correct restore
+         * behaviour. The first engine tick overwrites the seed wholesale, including the stale-tip
+         * masking [toAccountBalances] applies and this raw summary does not: totals are identical,
+         * only the spendable/pending split may shift at that tick.
+         */
+        runCatchingCancellable { inputs.dbWalletSummary() }
+            .getOrNull()
+            ?.let { engine.walletBalances.value = it.accountBalances }
+        return true
     }
 
     /**
@@ -814,34 +837,69 @@ class SlipstreamSynchronizer internal constructor(
     }
 
     /**
-     * The `when(intent)` block of the original `newLocked`, verbatim but behind [PrepareInputs]' lambdas, plus the
-     * exact birthday's tree state of a restore asked for one, fetched while the anchor resolves.
+     * [prepare] for a restore asked to start exactly at its birthday: the anchor and the tree state at
+     * `birthday - 1` ([fetchExactTreeState]) need no database, so both are resolved while [provisionDataDb]
+     * runs, and the account is created from that tree state when there is one. The bundled checkpoint is
+     * read only when the account is created from it.
+     *
+     * Closing stays clean: the anchor runs as a child of this call, so [close]'s cancel-and-join of the
+     * preparation still waits for a `restoreAnchor` in flight and leaves nothing running; it never waits
+     * for more than what remains of that one call, which started together with `initDataDb` rather than
+     * after it. A [close] that lands before [PrepareState.DbReady] cancels the anchor and the fetch and
+     * returns `null`. A failing anchor fails the preparation as it does after the database step.
+     *
+     * @return `null` when [close] already published [PrepareState.Closed].
      */
+    private suspend fun resolveExactBirthdayProvisioning(
+        inputs: PrepareInputs,
+        fallbackCheckpoint: Long,
+        fetchExactTreeState: suspend (BlockHeight) -> TreeState?
+    ): WalletProvisioningPlan? =
+        coroutineScope {
+            val requestedBirthday = requireNotNull(inputs.requestedBirthday)
+            val exactTreeState = async { runCatchingCancellable { fetchExactTreeState(requestedBirthday) }.getOrNull() }
+            val anchor =
+                async {
+                    inputs.anchorSource(
+                        intent = requireNotNull(resolveIntent(inputs.walletInitMode)),
+                        birthdayHeight = requestedBirthday.value,
+                        fallbackCheckpointHeight = fallbackCheckpoint
+                    )
+                }
+            if (!provisionDataDb(inputs)) {
+                exactTreeState.cancel()
+                anchor.cancel()
+                return@coroutineScope null
+            }
+            val anchorHeight = anchor.await().height
+            WalletProvisioningPlan(
+                startBirthday = BlockHeight.new(anchorHeight),
+                treeState = { inputs.treeState(requestedBirthday) },
+                recoverUntil = anchorHeight,
+                exactTreeState = exactTreeState.await()
+            )
+        }
+
+    /** The `when(intent)` block of the original `newLocked`, verbatim but behind [PrepareInputs]' lambdas. */
     private suspend fun resolveProvisioning(
         inputs: PrepareInputs,
         fallbackCheckpoint: Long
     ): WalletProvisioningPlan =
         when (val intent = resolveIntent(inputs.walletInitMode)) {
             1 -> {
-                coroutineScope {
-                    val requestedBirthday = requireNotNull(inputs.requestedBirthday)
-                    val exactTreeState =
-                        inputs.exactBirthdayTreeState?.let { fetch ->
-                            async { runCatchingCancellable { fetch(requestedBirthday) }.getOrNull() }
-                        }
-                    val anchor =
-                        inputs.anchorSource(
-                            intent = intent,
-                            birthdayHeight = requestedBirthday.value,
-                            fallbackCheckpointHeight = fallbackCheckpoint
-                        )
-                    WalletProvisioningPlan(
-                        startBirthday = BlockHeight.new(anchor.height),
-                        treeState = { inputs.treeState(requestedBirthday) },
-                        recoverUntil = anchor.height,
-                        exactTreeState = exactTreeState?.await()
+                val requestedBirthday = requireNotNull(inputs.requestedBirthday)
+                val anchor =
+                    inputs.anchorSource(
+                        intent = intent,
+                        birthdayHeight = requestedBirthday.value,
+                        fallbackCheckpointHeight = fallbackCheckpoint
                     )
-                }
+                val treeState = inputs.treeState(requestedBirthday)
+                WalletProvisioningPlan(
+                    startBirthday = BlockHeight.new(anchor.height),
+                    treeState = { treeState },
+                    recoverUntil = anchor.height
+                )
             }
 
             0 -> {
