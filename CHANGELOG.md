@@ -87,7 +87,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   birthday and found no transaction at all is scanned once more from the bundled checkpoint
   below the birthday before the card is reported `Empty`. A cancellation from inside the
   check, while its caller is not cancelled, fails it with `GiftCardException.SyncFailed`.
-- `GiftCardRedeemer.redeem` reports a submission that throws as a
+- `GiftCardRedeemer.redeem` reports a submission that throws, including one that times out, as a
   `TransactionSubmitResult.Failure` with `GiftCardRedeemer.SUBMIT_THREW_CODE`, so every
   redemption whose transaction was created returns a `Redemption`; close the redeemer and
   start over with a new one to retry.
@@ -99,29 +99,36 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for it before tearing the card wallet down. Before, a cancellation between creating and
   submitting left a created but unsubmitted claim, and one between submitting and recording left
   the claim untrusted in the destination (10 confirmations instead of 3).
-- `GiftCardRedeemer.close()` returns after at most `GiftCardRedeemer.CLOSE_TIMEOUT` (30 seconds),
-  and at once when its caller is cancelled, while the teardown (closing the card wallet, then
-  erasing it) goes on in the background; a card wallet whose engine does not stop no longer keeps
-  `close()` waiting forever. The card's alias stays held until the card wallet has been erased, so
-  no other redeemer can use the card while its files may remain. A failed erase is retried after
-  1, 2, 4, 8, 16 and then every 30 seconds, at most `GiftCardRedeemer.MAX_ERASE_RETRIES` (10)
-  times, after which the alias stays held until a later `close()` erases the card wallet. Only the
-  `close()` that starts a teardown throws its failures: the card wallet's failure to close, once it
-  has been erased, or the first failure to erase it, while the retries go on. Before, a failed
-  erase released the alias anyway. A `redeem` still preparing when `close()` stops waiting fails
-  with `GiftCardException.Closed` rather than create its claim. A redeemer dropped without
-  `close()` keeps its alias and its card wallet's synchronizer for the rest of the process.
+- `GiftCardRedeemer.close()` returns after at most 30 seconds, and at once when its caller is
+  cancelled, while the teardown (closing the card wallet, then erasing it) goes on in the
+  background; a card wallet whose engine does not stop no longer keeps `close()` waiting forever.
+  The card's alias stays held until the card wallet has been erased, so no other redeemer can use
+  the card while its files may remain. A failed erase, including one after which the engine
+  reports that some of the card wallet's files remain, is retried after 1, 2, 4, 8, 16 and then
+  every 30 seconds, without a limit, for as long as the process lives; the alias is released once
+  an erase succeeds. Only the `close()` that starts the teardown throws its failures: the card
+  wallet's failure to close, once it has been erased, or the first failure to erase it, which may
+  be transient while the retries go on; a later or concurrent `close()` waits for the same
+  teardown and returns. Before, a failed erase released the alias anyway. Once `close()` has been
+  called, `check()` and `redeem()` fail with `GiftCardException.Closed` at once, and a `redeem`
+  still preparing when `close()` stops waiting fails with it rather than create its claim. A
+  redeemer dropped without `close()` keeps its alias and its card wallet's synchronizer for the
+  rest of the process.
+- `GiftCardRedeemer.redeem` fails with `GiftCardException.Closed` when the card's key was wiped
+  with `GiftCard.wipe()`, instead of an `IllegalStateException`.
 - `GiftCardException.RedemptionIncomplete`: `GiftCardRedeemer.redeem` throws it when the proposal
-  creates no transaction or no transaction is submitted, instead of returning a `Redemption` with
-  no results (whose `isSubmitted` was vacuously `true`).
+  creates no transaction, instead of returning a `Redemption` with no results (whose
+  `isSubmitted` was vacuously `true`). A transaction that was created but not accepted by the
+  server is still reported in a `Redemption`, as a failed result.
 - `GiftCardRedeemer.redeem` records each transaction the server accepted in the `destination` on
   its own: one that fails to record no longer keeps the others from being recorded, and they are
   recorded also when a later submission is cancelled, before the cancellation is rethrown.
   `Redemption.recordedInDestination` stays `true` only when every accepted transaction was
   recorded, so `false` can now also mean that only some were.
 - `GiftCardRedeemer.storedAliases(context, network)`, the aliases of the card wallets whose
-  data is stored on the device, to erase with `Synchronizer.eraseAlias` those left behind by a
-  redeemer that was never closed (for example when the app was killed).
+  data is stored on the device, to erase with `GiftCardRedeemers.erase` from the SDK incubator,
+  which handles the card wallets of either engine, those left behind by a redeemer that was never
+  closed (for example when the app was killed).
 - `GiftCard.wipe()`, which overwrites the card's key in memory once every redeemer for the card
   has been closed.
 - `RecipientAddress`, a unified, Sapling, transparent or TEX address validated for a network
@@ -142,12 +149,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when `isTorEnabled`, and at the bundled checkpoint below it only when that fetch fails. `storedAliases`
   lists the card wallets left on the device, and `erase(context, network, alias)` deletes one,
   including any files an earlier engine left under the same alias, without starting a
-  synchronizer. It refuses, before touching any file, an alias that addresses the main wallet's
+  synchronizer; it returns `true` when none of the card wallet's data remains, also when there was
+  nothing to delete. It refuses, before touching any file, an alias that addresses the main wallet's
   files: the default alias, also with trailing underscores, or the legacy `ZcashSdk`.
 - `SlipstreamSynchronizer.eraseAlias(appContext, network, alias)`, which deletes a helper
   wallet's Slipstream database and submit plans together with whatever an `SdkSynchronizer` left
   under the same alias, by deleting files only, while no Slipstream synchronizer can open the
-  alias. The `SdkSynchronizer` leftovers are looked for only when that synchronizer's own files
+  alias. A shutdown of that wallet still in flight is waited for before the synchronizers' shared
+  guard is taken, so a slow helper wallet teardown never keeps the main wallet from opening. The `SdkSynchronizer` leftovers are looked for only when that synchronizer's own files
   (its block cache or pending transactions database) are present, and their deletion is
   best-effort: its failure is logged and never fails the erase. It refuses, before touching any
   file, an alias that addresses the main wallet's files: the default alias, also with trailing

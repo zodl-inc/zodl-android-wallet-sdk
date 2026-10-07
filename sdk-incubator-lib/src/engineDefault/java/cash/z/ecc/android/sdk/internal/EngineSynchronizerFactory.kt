@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.GiftCardWallets
 import cash.z.ecc.android.sdk.OpenedCardWallet
 import cash.z.ecc.android.sdk.Synchronizer
 import cash.z.ecc.android.sdk.WalletInitMode
+import cash.z.ecc.android.sdk.eraseSdkCardWallet
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -79,5 +80,5 @@ private object DefaultEngineFactory : SynchronizerEngineFactory {
         appContext: Context,
         network: ZcashNetwork,
         alias: String
-    ): Boolean = Synchronizer.eraseAlias(appContext, network, alias)
+    ): Boolean = eraseSdkCardWallet(appContext, network, alias)
 }

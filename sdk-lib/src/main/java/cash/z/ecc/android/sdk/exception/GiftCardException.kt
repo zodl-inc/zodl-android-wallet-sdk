@@ -54,11 +54,15 @@ sealed class GiftCardException(
 
     /**
      * [cash.z.ecc.android.sdk.GiftCardRedeemer.redeem] ended without anything to report: the
-     * proposal created no transaction, or no transaction was submitted. Nothing was sent when no
-     * transaction was created; close the redeemer and start over with a new one to retry.
+     * proposal created no transaction, so nothing was sent. Close the redeemer and start over with
+     * a new one to retry. A transaction that was created but not accepted by the server is reported
+     * in a [cash.z.ecc.android.sdk.GiftCardRedeemer.Redemption] as a failed result instead.
      */
-    class RedemptionIncomplete : GiftCardException("The gift card redemption created or submitted no transaction")
+    class RedemptionIncomplete : GiftCardException("The gift card redemption created no transaction")
 
-    /** The redeemer was used after [cash.z.ecc.android.sdk.GiftCardRedeemer.close]. */
+    /**
+     * The redeemer was used after [cash.z.ecc.android.sdk.GiftCardRedeemer.close] was called, or
+     * after the card's key was wiped with [cash.z.ecc.android.sdk.model.GiftCard.wipe].
+     */
     class Closed : GiftCardException("The gift card redeemer is closed")
 }

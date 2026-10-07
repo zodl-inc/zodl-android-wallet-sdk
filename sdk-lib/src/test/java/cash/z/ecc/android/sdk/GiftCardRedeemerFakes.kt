@@ -48,7 +48,8 @@ import kotlin.test.assertIs
  * failure it has latched, if any, [accounts] its account list (`null` while not loaded yet, as
  * [Synchronizer.accountsFlow] reports it), [progress] its sync progress, and [networkHeight] and
  * [fullyScannedHeight] its heights, both [CARD_WALLET_TIP] unless a test moves them. [onCreate] runs while its
- * transactions are being created, after [creations] has counted the creation.
+ * transactions are being created, after [creations] has counted the creation. [onClose] runs, blocking, while it is
+ * being closed.
  */
 @Suppress("LongParameterList")
 internal class FakeCardWallet(
@@ -61,6 +62,7 @@ internal class FakeCardWallet(
     private val sentHistory: Int = 0,
     private val sent: Long? = null,
     private val closeFailure: Exception? = null,
+    private val onClose: () -> Unit = {},
     override val status: Flow<Synchronizer.Status> = MutableStateFlow(Synchronizer.Status.SYNCED),
     private val onCreate: suspend () -> Unit = {},
     private val submitResult: (CreatedTransaction) -> TransactionSubmitResult = {
@@ -143,6 +145,7 @@ internal class FakeCardWallet(
 
     override fun close() {
         closed = true
+        onClose()
         closeFailure?.let { throw it }
     }
 }

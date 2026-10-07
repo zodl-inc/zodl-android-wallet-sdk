@@ -91,7 +91,8 @@ object GiftCardRedeemers {
      * still in use.
      *
      * @param context any context; its application context is used.
-     * @return true when the engine reports the card wallet's data gone.
+     * @return true when none of the card wallet's data remains, including when there was nothing to
+     * delete; false when some of it could not be deleted, which a later call can try again.
      * @throws IllegalArgumentException if [alias] is not a valid alias, or addresses the main
      * wallet's files: [ZcashSdk.DEFAULT_ALIAS], also with trailing underscores, or the legacy
      * `ZcashSdk`. Nothing is touched then.
@@ -128,7 +129,7 @@ internal class EngineGiftCardWallets(
         network: ZcashNetwork,
         alias: String
     ) {
-        factory.eraseHelperWallet(context, network, alias)
+        check(factory.eraseHelperWallet(context, network, alias)) { "Some of the card wallet's files remain" }
     }
 
     override suspend fun open(

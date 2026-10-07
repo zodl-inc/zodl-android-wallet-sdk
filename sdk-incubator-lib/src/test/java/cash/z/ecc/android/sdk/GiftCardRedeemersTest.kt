@@ -10,13 +10,18 @@ import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.GiftCard
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import org.mockito.Mockito.mock
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * [GiftCardRedeemers] and [EngineGiftCardWallets] against a fake engine factory: the card wallet is opened and erased
@@ -66,6 +71,53 @@ class GiftCardRedeemersTest {
             EngineGiftCardWallets(factory).erase(context(), ZcashNetwork.Mainnet, ALIAS)
 
             assertEquals(listOf(ZcashNetwork.Mainnet to ALIAS), factory.erased)
+        }
+
+    /** An engine reporting that some of the card wallet's files remain fails the erase, so that it is tried again. */
+    @Test
+    fun anEraseThatLeavesFilesBehindFails() =
+        runBlocking<Unit> {
+            val factory = FakeEngineFactory(eraseResults = listOf(false))
+
+            assertFailsWith<IllegalStateException> {
+                EngineGiftCardWallets(factory).erase(context(), ZcashNetwork.Mainnet, ALIAS)
+            }
+        }
+
+    /**
+     * A redeemer whose card wallet's files remain after an erase keeps the card's alias and erases it again, and
+     * releases the alias only once the engine reports nothing left.
+     */
+    @Test
+    fun aRedeemerKeepsTheAliasUntilTheEngineReportsTheCardWalletGone() =
+        runBlocking<Unit> {
+            val factory =
+                FakeEngineFactory(
+                    openFailure = IllegalStateException("no engine in a unit test"),
+                    eraseResults = listOf(true, false, true)
+                )
+            val aliases = GiftCardAliases()
+            val card = card()
+            val redeemer =
+                GiftCardRedeemer.new(
+                    context = context(),
+                    card = card,
+                    network = ZcashNetwork.Mainnet,
+                    lightWalletEndpoint = ENDPOINT,
+                    isTorEnabled = false,
+                    alias = ALIAS,
+                    wallets = EngineGiftCardWallets(factory),
+                    aliases = aliases
+                )
+            assertFailsWith<GiftCardException.SyncFailed> { redeemer.check() }
+
+            assertFailsWith<IllegalStateException> { redeemer.close() }
+            assertFalse(aliases.acquire(ZcashNetwork.Mainnet, ALIAS))
+
+            withTimeout(RETRY_WAIT) {
+                while (!aliases.acquire(ZcashNetwork.Mainnet, ALIAS)) delay(POLL_INTERVAL)
+            }
+            assertEquals(3, factory.erased.size)
         }
 
     @Test
@@ -179,9 +231,13 @@ class GiftCardRedeemersTest {
         val onCriticalError: (Throwable?) -> Boolean
     )
 
-    /** Records helper wallet requests; opens [openedWallet], or fails with [openFailure]. Never opens a main wallet. */
+    /**
+     * Records helper wallet requests; opens [openedWallet], or fails with [openFailure]. Never opens a main wallet.
+     * Each erase reports the next of [eraseResults], then `true` once they run out.
+     */
     private class FakeEngineFactory(
-        private val openFailure: Exception? = null
+        private val openFailure: Exception? = null,
+        private val eraseResults: List<Boolean> = emptyList()
     ) : SynchronizerEngineFactory {
         val openRequests = mutableListOf<OpenRequest>()
         val erased = mutableListOf<Pair<ZcashNetwork, String>>()
@@ -235,11 +291,14 @@ class GiftCardRedeemersTest {
             alias: String
         ): Boolean {
             erased += network to alias
-            return true
+            return eraseResults.getOrElse(erased.size - 1) { true }
         }
     }
 
     private companion object {
+        val RETRY_WAIT = 10.seconds
+        val POLL_INTERVAL = 50.milliseconds
+
         fun card(): GiftCard =
             GiftCard.parse(
                 "link",

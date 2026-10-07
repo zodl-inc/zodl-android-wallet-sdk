@@ -593,7 +593,21 @@ mod list_transactions_real_schema_tests {
     use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
     use zcash_protocol::consensus::Network;
 
-    fn fresh_wallet_db() -> std::path::PathBuf {
+    /// A freshly initialized wallet database in the temp directory, deleted together with its
+    /// `-journal`, `-wal` and `-shm` files when the guard is dropped, also when the test panics.
+    struct TempWalletDb(std::path::PathBuf);
+
+    impl Drop for TempWalletDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-journal", "-wal", "-shm"] {
+                let mut file = self.0.clone().into_os_string();
+                file.push(suffix);
+                let _ = std::fs::remove_file(file);
+            }
+        }
+    }
+
+    fn fresh_wallet_db() -> TempWalletDb {
         let mut path = std::env::temp_dir();
         path.push(format!(
             "host_read_schema_test_{}_{}.sqlite3",
@@ -603,21 +617,22 @@ mod list_transactions_real_schema_tests {
                 .expect("system time after epoch")
                 .as_nanos()
         ));
+        let guard = TempWalletDb(path);
         let mut db = WalletDb::for_path(
-            &path,
+            &guard.0,
             Network::TestNetwork,
             SystemClock,
             crate::system_rng(),
         )
         .unwrap();
         init_wallet_db(&mut db, None).unwrap();
-        path
+        guard
     }
 
     #[test]
     fn every_variant_prepares_against_the_pinned_wallet_schema() {
-        let path = fresh_wallet_db();
-        let conn = read_query::open_read_only(path.to_str().unwrap()).unwrap();
+        let db = fresh_wallet_db();
+        let conn = read_query::open_read_only(db.0.to_str().unwrap()).unwrap();
         assert!(has_pending_migrations_view(&conn));
         assert!(has_zip318_kind_column(
             &conn,
@@ -630,8 +645,6 @@ mod list_transactions_real_schema_tests {
                     .unwrap_or_else(|e| panic!("prepare failed for {sql}: {e}"));
             }
         }
-        drop(conn);
-        let _ = std::fs::remove_file(&path);
     }
 }
 

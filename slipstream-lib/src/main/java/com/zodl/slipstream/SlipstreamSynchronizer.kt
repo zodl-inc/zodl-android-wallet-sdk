@@ -840,7 +840,8 @@ class SlipstreamSynchronizer internal constructor(
      * [prepare] for a restore asked to start exactly at its birthday: the anchor and the tree state at
      * `birthday - 1` ([fetchExactTreeState]) need no database, so both are resolved while [provisionDataDb]
      * runs, and the account is created from that tree state when there is one. The bundled checkpoint is
-     * read only when the account is created from it.
+     * read only when the account is created from it. The anchor is a blocking native call, so it runs on
+     * [Dispatchers.IO] rather than on the preparation's own dispatcher.
      *
      * Closing stays clean: the anchor runs as a child of this call, so [close]'s cancel-and-join of the
      * preparation still waits for a `restoreAnchor` in flight and leaves nothing running; it never waits
@@ -859,7 +860,7 @@ class SlipstreamSynchronizer internal constructor(
             val requestedBirthday = requireNotNull(inputs.requestedBirthday)
             val exactTreeState = async { runCatchingCancellable { fetchExactTreeState(requestedBirthday) }.getOrNull() }
             val anchor =
-                async {
+                async(Dispatchers.IO) {
                     inputs.anchorSource(
                         intent = requireNotNull(resolveIntent(inputs.walletInitMode)),
                         birthdayHeight = requestedBirthday.value,
@@ -2350,8 +2351,12 @@ class SlipstreamSynchronizer internal constructor(
          * only this engine ever ran never reaches the SDK's encrypted preferences. It is best-effort:
          * a failure is logged by its type only and never fails this erase.
          *
-         * @return true when none of this engine's files or preferences for the wallet remain; what
-         * the legacy deletion found is not part of the result.
+         * A shutdown of the wallet still in flight (a helper wallet closed just before) is waited for
+         * before the [InstanceGuard] mutex is taken, so that a slow engine teardown of the helper wallet
+         * never keeps the main wallet, or any other wallet, from being opened meanwhile.
+         *
+         * @return true when none of this engine's files or preferences for the wallet remain, including
+         * when there was nothing to delete; what the legacy deletion found is not part of the result.
          * @throws IllegalArgumentException if [alias] is not a valid alias, or addresses the main
          * wallet's files: [ZcashSdk.DEFAULT_ALIAS], also with trailing underscores, or the legacy
          * `ZcashSdk`. Nothing is touched then.
@@ -2375,6 +2380,7 @@ class SlipstreamSynchronizer internal constructor(
         ): Boolean {
             validateAlias(alias)
             requireNotMainWalletAlias(alias, "eraseAlias never erases the main wallet")
+            InstanceGuard.awaitShutdown(SlipstreamKey(network, alias))
             return eraseGuarded(appContext, network, alias) {
                 runCatchingCancellable {
                     if (hasLegacyLayout(appContext.applicationContext, network, alias)) eraseLegacyLayout()

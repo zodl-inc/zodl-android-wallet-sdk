@@ -7,6 +7,9 @@ import com.zodl.slipstream.internal.DataDbPath
 import com.zodl.slipstream.internal.InstanceGuard
 import com.zodl.slipstream.internal.SlipstreamKey
 import com.zodl.slipstream.internal.spend.submitPlanPreferencesName
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
@@ -22,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -225,6 +229,38 @@ class SlipstreamEraseTest {
             assertTrue(erased)
             assertEquals(listOf(false), enginesFilesLeft, "the engine's files go first, and the legacy erase runs once")
             assertNull(acquiredDuringLegacyErase.single(), "the guard is held while the legacy layout is erased")
+        }
+
+    /**
+     * A helper wallet whose shutdown is slow is waited for outside the [InstanceGuard] mutex: while its erase waits,
+     * the main wallet can still be opened, and the erase completes once the shutdown has.
+     */
+    @Test
+    fun aSlowHelperWalletShutdownNeverKeepsTheMainWalletFromOpening() =
+        runBlocking<Unit> {
+            walletFiles(CARD_ALIAS)
+            val cardKey = SlipstreamKey(NETWORK, CARD_ALIAS)
+            val mainKey = SlipstreamKey(NETWORK, ZcashSdk.DEFAULT_ALIAS)
+            val shutdown = Job()
+            InstanceGuard.markShuttingDown(cardKey, shutdown)
+            try {
+                val erase = async { SlipstreamSynchronizer.eraseAlias(context, NETWORK, CARD_ALIAS) {} }
+                delay(SHORT_TIMEOUT_MS)
+                assertFalse(erase.isCompleted, "the erase waits for the helper wallet's shutdown")
+
+                assertNotNull(
+                    withTimeoutOrNull(SHORT_TIMEOUT_MS) { InstanceGuard.acquire(mainKey) },
+                    "the main wallet opens while the helper wallet shuts down"
+                )
+                InstanceGuard.release(mainKey)
+                shutdown.complete()
+
+                assertTrue(erase.await())
+            } finally {
+                shutdown.cancel()
+                InstanceGuard.release(cardKey)
+                InstanceGuard.release(mainKey)
+            }
         }
 
     /** Creates the database, `-wal` and `-shm` files of the wallet at [alias] and [network]. */

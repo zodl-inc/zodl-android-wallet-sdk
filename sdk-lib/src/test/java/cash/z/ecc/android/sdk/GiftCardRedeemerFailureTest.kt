@@ -33,19 +33,27 @@ import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import org.mockito.Mockito.mock
@@ -53,6 +61,8 @@ import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -69,8 +79,10 @@ import kotlin.time.Duration.Companion.seconds
  * [GiftCardRedeemer]'s failure paths against a fake card wallet: cancellations from inside and from the caller, a
  * submission that throws, a check that failed at its fee probe, an exact birthday the server could not provide, the
  * disconnected grace, and what a redemption reports it sent; and how a redemption and a close end when they are cut
- * short: a redemption cancelled before or after its transaction starts being created, a close whose teardown hangs or
- * whose erase fails, a claim that creates nothing, and a claim only partly recorded in the destination.
+ * short: a redemption cancelled before or after its transaction starts being created, or still preparing when a close
+ * stops waiting, a close whose teardown hangs, whose erase keeps failing, whose caller is cancelled or that runs
+ * concurrently with another, a redeemer used after a close, a submission that times out, a wiped card, a claim that
+ * creates nothing, and a claim only partly recorded in the destination.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class GiftCardRedeemerFailureTest {
@@ -403,36 +415,282 @@ class GiftCardRedeemerFailureTest {
         }
 
     /**
-     * An erase that keeps failing is given up after [GiftCardRedeemer.MAX_ERASE_RETRIES] retries with the alias
-     * still held; a later [GiftCardRedeemer.close] tries again and releases it once the erase succeeds.
+     * An erase that keeps failing is retried after 1, 2, 4, 8 and 16 seconds and then every 30 seconds, with no limit
+     * on the number of retries, and the alias is held until one succeeds.
      */
     @Test
-    fun anEraseGivenUpOnIsTriedAgainByTheNextClose() =
+    fun anEraseThatKeepsFailingIsRetriedEvery30SecondsUntilItSucceeds() =
         runTest {
             val aliases = GiftCardAliases()
-            var isEraseFailing = true
+            val failures = 19
+            val attempts = mutableListOf<Long>()
             val cardWallet = FakeCardWallet(emptyList())
             val wallets =
                 FakeWallets(
                     listOf(cardWallet),
-                    onErase = { if (it > 1 && isEraseFailing) error("locked") }
+                    onErase = {
+                        if (it > 1) attempts += testScheduler.currentTime
+                        if (it in 2..failures + 1) error("locked")
+                    }
                 )
             val (redeemer, _) =
                 redeemer(cardWallet, wallets = wallets, aliases = aliases, teardownScope = backgroundScope)
             assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
 
             assertFailsWith<IllegalStateException> { redeemer.close() }
-            advanceTimeBy(GiftCardRedeemer.ERASE_RETRY_DELAYS.last() * GiftCardRedeemer.MAX_ERASE_RETRIES)
+            val expectedDelays = listOf(1L, 2L, 4L, 8L, 16L) + List(failures - 5) { 30L }
+            advanceTimeBy(expectedDelays.sum().seconds - 1.milliseconds)
+            runCurrent()
+            assertFalse(aliases.acquire(ZcashNetwork.Mainnet, redeemer.alias))
+            advanceTimeBy(1.milliseconds)
             runCurrent()
 
-            assertEquals(1 + 1 + GiftCardRedeemer.MAX_ERASE_RETRIES, wallets.eraseAttempts)
-            assertFalse(aliases.acquire(ZcashNetwork.Mainnet, redeemer.alias))
-
-            isEraseFailing = false
-            redeemer.close()
-
+            assertEquals(expectedDelays.map { it * 1_000 }, attempts.zipWithNext { first, next -> next - first })
             assertEquals(listOf(redeemer.alias, redeemer.alias), wallets.erased)
             assertTrue(aliases.acquire(ZcashNetwork.Mainnet, redeemer.alias))
+        }
+
+    /**
+     * A redeemer whose [GiftCardRedeemer.close] stopped waiting for a card wallet that does not close refuses a
+     * redemption and a check at once, rather than queue them behind the teardown that holds the redeemer.
+     */
+    @Test
+    fun aRedeemerRefusesAtOnceAfterACloseThatStoppedWaiting() =
+        runTest {
+            val closeStarted = CountDownLatch(1)
+            val closing = CountDownLatch(1)
+            val cardWallet =
+                FakeCardWallet(
+                    listOf(createdTransaction("claim")),
+                    onClose = {
+                        closeStarted.countDown()
+                        closing.await(5, TimeUnit.SECONDS)
+                    }
+                )
+            val teardownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val (redeemer, _) = redeemer(cardWallet, teardownScope = teardownScope)
+            try {
+                assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+                redeemer.close()
+                assertTrue(withContext(Dispatchers.IO) { closeStarted.await(5, TimeUnit.SECONDS) })
+
+                assertFailsWith<GiftCardException.Closed> { withTimeout(1.seconds) { redeemer.redeem(recipient()) } }
+                assertFailsWith<GiftCardException.Closed> { withTimeout(1.seconds) { redeemer.check() } }
+                assertEquals(0, cardWallet.creations)
+            } finally {
+                closing.countDown()
+                teardownScope.cancel()
+            }
+        }
+
+    /**
+     * A redemption still preparing (here, deriving the card's spending key) when [GiftCardRedeemer.close] stops
+     * waiting for it fails with [GiftCardException.Closed] instead of creating its transaction; the teardown then goes
+     * on and releases the card.
+     */
+    @Test
+    fun aRedemptionStillPreparingWhenCloseStopsWaitingCreatesNothing() =
+        runTest {
+            val aliases = GiftCardAliases()
+            val deriving = CompletableDeferred<Unit>()
+            val derived = CompletableDeferred<Unit>()
+            val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
+            val wallets =
+                FakeWallets(
+                    listOf(cardWallet),
+                    onDeriveSpendingKey = {
+                        deriving.complete(Unit)
+                        derived.await()
+                    }
+                )
+            val (redeemer, _) =
+                redeemer(cardWallet, wallets = wallets, aliases = aliases, teardownScope = backgroundScope)
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+
+            val redemption = async { runCatching { redeemer.redeem(recipient()) } }
+            deriving.await()
+            val start = currentTime
+            redeemer.close()
+            assertEquals(GiftCardRedeemer.CLOSE_TIMEOUT.inWholeMilliseconds, currentTime - start)
+
+            derived.complete(Unit)
+
+            assertIs<GiftCardException.Closed>(redemption.await().exceptionOrNull())
+            runCurrent()
+            assertEquals(0, cardWallet.creations)
+            assertTrue(cardWallet.closed)
+            assertEquals(listOf(redeemer.alias, redeemer.alias), wallets.erased)
+            assertTrue(aliases.acquire(ZcashNetwork.Mainnet, redeemer.alias))
+        }
+
+    /**
+     * A [GiftCardRedeemer.close] whose caller is cancelled stops waiting at once; the teardown goes on, and a
+     * redemption still preparing then creates nothing.
+     */
+    @Test
+    fun aCancelledCloseStopsWaitingWhileTheTeardownGoesOn() =
+        runTest {
+            val aliases = GiftCardAliases()
+            val deriving = CompletableDeferred<Unit>()
+            val derived = CompletableDeferred<Unit>()
+            val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
+            val wallets =
+                FakeWallets(
+                    listOf(cardWallet),
+                    onDeriveSpendingKey = {
+                        deriving.complete(Unit)
+                        derived.await()
+                    }
+                )
+            val (redeemer, _) =
+                redeemer(cardWallet, wallets = wallets, aliases = aliases, teardownScope = backgroundScope)
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+            val redemption = async { runCatching { redeemer.redeem(recipient()) } }
+            deriving.await()
+
+            val start = currentTime
+            val close = launch { redeemer.close() }
+            runCurrent()
+            close.cancel()
+            close.join()
+
+            assertEquals(start, currentTime)
+            assertTrue(close.isCancelled)
+            derived.complete(Unit)
+            assertIs<GiftCardException.Closed>(redemption.await().exceptionOrNull())
+            runCurrent()
+            assertEquals(0, cardWallet.creations)
+            assertTrue(cardWallet.closed)
+            assertEquals(listOf(redeemer.alias, redeemer.alias), wallets.erased)
+            assertTrue(aliases.acquire(ZcashNetwork.Mainnet, redeemer.alias))
+        }
+
+    /**
+     * Concurrent and later calls to [GiftCardRedeemer.close] share one teardown: only the call that started it reports
+     * its failure, the others return without rethrowing it.
+     */
+    @Test
+    fun concurrentClosesShareOneTeardownAndOnlyTheFirstReportsItsFailure() =
+        runTest {
+            val cardWallet = FakeCardWallet(emptyList())
+            val wallets = FakeWallets(listOf(cardWallet), onErase = { if (it == 2) error("locked") })
+            val (redeemer, _) = redeemer(cardWallet, wallets = wallets, teardownScope = backgroundScope)
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+
+            val first = async { runCatching { redeemer.close() } }
+            val second = async { runCatching { redeemer.close() } }
+
+            assertIs<IllegalStateException>(first.await().exceptionOrNull())
+            assertNull(second.await().exceptionOrNull())
+            advanceTimeBy(1.seconds)
+            runCurrent()
+            redeemer.close()
+
+            assertEquals(3, wallets.eraseAttempts, "one erase before opening, then one failed and one retried")
+            assertEquals(listOf(redeemer.alias, redeemer.alias), wallets.erased)
+        }
+
+    /** [GiftCardRedeemer.close] waits for a redemption still preparing that finishes in time, which then succeeds. */
+    @Test
+    fun closeWaitsForARedemptionStillPreparing() =
+        runTest {
+            val deriving = CompletableDeferred<Unit>()
+            val derived = CompletableDeferred<Unit>()
+            val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
+            val wallets =
+                FakeWallets(
+                    listOf(cardWallet),
+                    onDeriveSpendingKey = {
+                        deriving.complete(Unit)
+                        derived.await()
+                    }
+                )
+            val (redeemer, _) = redeemer(cardWallet, wallets = wallets, teardownScope = backgroundScope)
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+            val redemption = async { redeemer.redeem(recipient()) }
+            deriving.await()
+
+            val close = async { redeemer.close() }
+            advanceTimeBy(10.seconds)
+            runCurrent()
+            assertFalse(close.isCompleted)
+            assertFalse(cardWallet.closed)
+
+            derived.complete(Unit)
+
+            assertTrue(redemption.await().isSubmitted)
+            close.await()
+            assertEquals(1, cardWallet.creations)
+            assertTrue(cardWallet.closed)
+        }
+
+    /**
+     * A teardown cancelled with its scope ends the [GiftCardRedeemer.close] waiting for it normally: the cancellation
+     * of the teardown's scope is never rethrown to a caller that was not cancelled.
+     */
+    @Test
+    fun aTeardownCancelledWithItsScopeIsNotRethrownByClose() =
+        runTest {
+            val deriving = CompletableDeferred<Unit>()
+            val derived = CompletableDeferred<Unit>()
+            val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
+            val wallets =
+                FakeWallets(
+                    listOf(cardWallet),
+                    onDeriveSpendingKey = {
+                        deriving.complete(Unit)
+                        derived.await()
+                    }
+                )
+            val teardownScope =
+                CoroutineScope(backgroundScope.coroutineContext + Job(backgroundScope.coroutineContext[Job]))
+            val (redeemer, _) = redeemer(cardWallet, wallets = wallets, teardownScope = teardownScope)
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+            val redemption = async { runCatching { redeemer.redeem(recipient()) } }
+            deriving.await()
+
+            val close = async { runCatching { redeemer.close() } }
+            runCurrent()
+            teardownScope.cancel()
+
+            assertNull(close.await().exceptionOrNull())
+            derived.complete(Unit)
+            redemption.await()
+        }
+
+    /**
+     * A submission that times out by itself is a failed result, like any other submission that throws, not a
+     * cancellation of the redemption.
+     */
+    @Test
+    fun aSubmissionThatTimesOutIsAFailedResult() =
+        runBlocking {
+            val timeout =
+                assertIs<TimeoutCancellationException>(
+                    runCatching { withTimeout(1.milliseconds) { awaitCancellation() } }.exceptionOrNull()
+                )
+            val claim = createdTransaction("claim")
+            val cardWallet = FakeCardWallet(listOf(claim)) { throw timeout }
+            val (redeemer, _) = redeemer(cardWallet)
+
+            val failure = assertIs<TransactionSubmitResult.Failure>(redeemer.checkAndRedeem().results.single())
+
+            assertEquals(claim.txId, failure.txId)
+            assertEquals(GiftCardRedeemer.SUBMIT_THREW_CODE, failure.code)
+        }
+
+    /** A card whose key was wiped is reported as [GiftCardException.Closed] by a redemption, which creates nothing. */
+    @Test
+    fun aRedemptionOfAWipedCardFailsAsClosed() =
+        runBlocking<Unit> {
+            val cardWallet = FakeCardWallet(listOf(createdTransaction("claim")))
+            val (redeemer, _) = redeemer(cardWallet)
+            assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
+
+            redeemer.card.wipe()
+
+            assertFailsWith<GiftCardException.Closed> { redeemer.redeem(recipient()) }
+            assertEquals(0, cardWallet.creations)
         }
 
     /**

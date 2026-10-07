@@ -256,6 +256,22 @@ internal class DatabaseCoordinator private constructor(
     }
 
     /**
+     * Whether the wallet at [network] and [alias] still has a data database, a compact block cache or a pending
+     * transactions database, or any of their journal, WAL or shared-memory files, in the preferred (no backup)
+     * location, as [storedAliases] would find it. Only reads the directory listing: nothing is moved or deleted.
+     *
+     * @param network the network of the wallet
+     * @param alias the wallet's alias
+     */
+    internal suspend fun hasStoredData(
+        network: ZcashNetwork,
+        alias: String
+    ): Boolean {
+        val names = Files.getZcashNoBackupSubdirectory(applicationContext).listFilesSuspend()?.map { it.name }
+        return alias.removeSuffix("_") in aliasesAmong(names.orEmpty(), network, aliasPrefix = "")
+    }
+
+    /**
      * This checks and potentially deletes all the legacy Cache database files, which correspond to the given alias and
      * network attributes, as we recently switched to the store blocks on disk mechanism instead of putting them into
      * the Cache database.

@@ -63,7 +63,10 @@ internal interface SynchronizerEngineFactory {
      * engine used before it stored it, by deleting its files: no synchronizer is started, and the
      * main wallet is never touched.
      *
-     * @return true when the engine reports the wallet's data gone.
+     * @return true when none of the wallet's data that this engine stores remains, including when there
+     * was nothing to delete; false when some of it could not be deleted. Each engine checks this per
+     * wallet: the Slipstream engine from its own files and preferences, the default engine by looking
+     * for what `Synchronizer.eraseAlias` left behind.
      * @throws IllegalArgumentException if [alias] addresses the main wallet's files (see
      * [isMainWalletAlias]); nothing is touched then.
      * @throws IllegalStateException if a synchronizer for [network] and [alias] is active.

@@ -35,6 +35,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
@@ -142,7 +143,9 @@ class GiftCardRedeemer private constructor(
     /**
      * Whether this redeemer holds [alias] in [aliases]. Only the redeemer that holds it erases the card wallet, so
      * that closing a redeemer refused as [GiftCardException.InUse] cannot delete the wallet another one is using.
+     * Written under [mutex] when acquired, and by the teardown, which nothing races, when released.
      */
+    @Volatile
     private var holdsAlias = false
 
     /**
@@ -165,17 +168,15 @@ class GiftCardRedeemer private constructor(
      */
     private val inFlightChecks = mutableSetOf<Job>()
 
-    /** The teardown [close] started last, if any. Guarded by [teardownLock]. */
-    private var teardown: Teardown? = null
+    /**
+     * The outcome of the teardown the first [close] started, if any: completed with the error to report to that
+     * [close] (the card wallet's failure to close, or the first failure to erase it), or `null`, once the teardown
+     * has erased the card wallet and released the alias, as soon as the first erase fails while the retries go on,
+     * or when the teardown is cancelled. Guarded by [teardownLock].
+     */
+    private var teardownOutcome: CompletableDeferred<Throwable?>? = null
 
     private val teardownLock = Any()
-
-    /**
-     * Set once a teardown has given up erasing the card wallet after [MAX_ERASE_RETRIES] retries, so that the alias
-     * stays held; the next [close] tries again. Cleared when a teardown starts.
-     */
-    @Volatile
-    private var isEraseAbandoned = false
 
     /**
      * Set once a [close] has returned, or was cancelled, before its teardown finished. A [redeem] still preparing
@@ -183,18 +184,6 @@ class GiftCardRedeemer private constructor(
      */
     @Volatile
     private var isCloseDetached = false
-
-    /**
-     * One teardown of the card wallet.
-     *
-     * @property outcome completed with the error to report to the [close] that started it (the card wallet's
-     * failure to close, or the first failure to erase it), or `null`, once it has erased the card wallet and
-     * released the alias, or as soon as the first erase fails, while the retries go on.
-     */
-    private class Teardown(
-        val job: Job,
-        val outcome: CompletableDeferred<Throwable?>
-    )
 
     /**
      * Whether the card wallet starts exactly at the card's birthday: asked for until a wallet has been opened, then
@@ -291,8 +280,8 @@ class GiftCardRedeemer private constructor(
      *
      * @property fee the fee paid, deducted from the card's balance.
      * @property results one result per created transaction (a redemption is normally a single
-     * transaction), in order. Each carries the transaction id. Never empty: a redemption that
-     * created or submitted nothing fails with [GiftCardException.RedemptionIncomplete] instead.
+     * transaction), in order. Each carries the transaction id. Never empty: a redemption whose
+     * proposal created no transaction fails with [GiftCardException.RedemptionIncomplete] instead.
      * @property recordedInDestination `true` when a `destination` was passed to [redeem] and
      * every submitted transaction was recorded in it as trusted (ZIP 315). `false` when no
      * destination was passed, nothing was submitted, or the destination failed to record the
@@ -374,6 +363,7 @@ class GiftCardRedeemer private constructor(
         timeout: Duration = DEFAULT_SYNC_TIMEOUT,
         disconnectedTimeout: Duration = defaultDisconnectedTimeout
     ): Status {
+        if (isClosing) throw GiftCardException.Closed()
         val outcome =
             coroutineScope {
                 val check =
@@ -576,18 +566,21 @@ class GiftCardRedeemer private constructor(
      * proposed, or from the backend's typed refusal of the proposal.
      * @throws GiftCardException.NetworkMismatch if [toAddress] or [destination] is for another
      * network.
-     * @throws GiftCardException.RedemptionIncomplete if the proposal created no transaction, or
-     * no transaction was submitted, so that a [Redemption] would report nothing.
+     * @throws GiftCardException.RedemptionIncomplete if the proposal created no transaction, so
+     * that a [Redemption] would report nothing. Nothing was sent then.
      * @throws GiftCardException.Closed if [close] was called, including when a [close] stopped
-     * waiting for this redemption before it started creating its transaction.
+     * waiting for this redemption before it started creating its transaction, or if the card's key
+     * was wiped with [GiftCard.wipe].
      * @throws TransactionEncoderException if the transaction could not be created.
      */
+    @Suppress("ThrowsCount")
     suspend fun redeem(
         toAddress: RecipientAddress,
         memo: MemoContent? = null,
         destination: Synchronizer? = null
-    ): Redemption =
-        mutex.withLock {
+    ): Redemption {
+        if (isClosing) throw GiftCardException.Closed()
+        return mutex.withLock {
             if (toAddress.network != network) throw GiftCardException.NetworkMismatch()
             if (destination != null && destination.network != network) throw GiftCardException.NetworkMismatch()
             if (isClosed) throw GiftCardException.Closed()
@@ -611,7 +604,7 @@ class GiftCardRedeemer private constructor(
                 }
 
             if (isCloseDetached) throw GiftCardException.Closed()
-            val seed = card.seed.copyBytes()
+            val seed = cardSeed()
             val usk =
                 try {
                     wallets.deriveSpendingKey(seed, network)
@@ -623,6 +616,19 @@ class GiftCardRedeemer private constructor(
             withContext(NonCancellable) { completeClaim(cardWallet.broadcaster, proposal, usk, destination) }
                 .also { currentCoroutineContext().ensureActive() }
         }
+    }
+
+    /**
+     * A copy of the card's seed, for the caller to wipe after use.
+     *
+     * @throws GiftCardException.Closed if the card's key was wiped with [GiftCard.wipe].
+     */
+    private fun cardSeed(): ByteArray =
+        try {
+            card.seed.copyBytes()
+        } catch (_: IllegalStateException) {
+            throw GiftCardException.Closed()
+        }
 
     /**
      * Creates the transactions of [proposal], submits them and records the accepted ones in
@@ -630,9 +636,8 @@ class GiftCardRedeemer private constructor(
      * runs uncancellably. A cancellation thrown while submitting is rethrown once the transactions
      * the server accepted before it have been recorded.
      *
-     * @throws GiftCardException.RedemptionIncomplete if nothing was created or submitted.
+     * @throws GiftCardException.RedemptionIncomplete if nothing was created.
      */
-    @Suppress("ThrowsCount")
     private suspend fun completeClaim(
         broadcaster: Broadcaster,
         proposal: Proposal,
@@ -651,7 +656,6 @@ class GiftCardRedeemer private constructor(
             }
         val recorded = destination != null && recordInDestination(destination, created, results)
         interruption?.let { throw it }
-        if (results.isEmpty()) throw GiftCardException.RedemptionIncomplete()
         return Redemption(
             fee = proposal.totalFeeRequired(),
             results = results,
@@ -666,8 +670,10 @@ class GiftCardRedeemer private constructor(
      * earlier ones. This mirrors what [Synchronizer.createProposedTransactions] does after creating
      * the transactions; [redeem] creates and submits in two steps so that the raw transactions are
      * at hand for its destination. A submission that throws is a [TransactionSubmitResult.Failure]
-     * with [SUBMIT_THREW_CODE]; a cancellation is rethrown, leaving in [results] what was submitted
-     * before it.
+     * with [SUBMIT_THREW_CODE], including one that times out with a [TimeoutCancellationException]:
+     * that one comes from the submission itself, as [redeem] runs this uncancellably, so no timeout
+     * of its caller can reach it. Any other cancellation is rethrown, leaving in [results] what was
+     * submitted before it.
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun submitInOrder(
@@ -683,21 +689,31 @@ class GiftCardRedeemer private constructor(
                 val result =
                     try {
                         broadcaster.submit(transaction, lightWalletEndpoint)
+                    } catch (e: TimeoutCancellationException) {
+                        submitThrew(transaction, e)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        Twig.warn(e) { "Submitting the gift card claim failed" }
-                        TransactionSubmitResult.Failure(
-                            txId = transaction.txId,
-                            grpcError = true,
-                            code = SUBMIT_THREW_CODE,
-                            description = e::class.simpleName
-                        )
+                        submitThrew(transaction, e)
                     }
                 results += result
                 failed = result !is TransactionSubmitResult.Success
             }
         }
+    }
+
+    /** The [TransactionSubmitResult.Failure] of a submission of [transaction] that threw [failure]. */
+    private fun submitThrew(
+        transaction: CreatedTransaction,
+        failure: Exception
+    ): TransactionSubmitResult.Failure {
+        Twig.warn(failure) { "Submitting the gift card claim failed" }
+        return TransactionSubmitResult.Failure(
+            txId = transaction.txId,
+            grpcError = true,
+            code = SUBMIT_THREW_CODE,
+            description = failure::class.simpleName
+        )
     }
 
     /**
@@ -741,7 +757,8 @@ class GiftCardRedeemer private constructor(
 
     /**
      * Closes the temporary wallet and deletes all of its local data. Nothing that belongs to
-     * any other wallet is touched. Idempotent; the redeemer cannot be used afterwards.
+     * any other wallet is touched. Idempotent; the redeemer cannot be used afterwards: a [check] or
+     * [redeem] called once this has been called fails with [GiftCardException.Closed] at once.
      *
      * Always call this when done, including after a failure: it also lets another redeemer
      * for the same card be used. If the app is killed before it runs, the data is removed the
@@ -752,113 +769,104 @@ class GiftCardRedeemer private constructor(
      * A [check] in progress is cancelled; a [redeem] in progress is waited for, and a redemption
      * that has started creating its transaction always finishes before the card wallet is torn
      * down. The teardown (closing the card wallet, then erasing it) runs on its own, independently
-     * of the caller: this returns after at most [CLOSE_TIMEOUT] even if the teardown has not
+     * of the caller: this returns after at most 30 seconds ([CLOSE_TIMEOUT]) even if the teardown has not
      * finished, for example because the card wallet's engine does not stop, and a cancelled caller
      * stops waiting at once; the teardown goes on either way. A redemption still preparing when this
      * stops waiting then fails with [GiftCardException.Closed] rather than create its transaction.
      *
      * The alias stays held, so that no other redeemer can use the card, until the card wallet has
      * been erased. An erase that fails (for example while the card wallet's engine is still
-     * running) is retried after 1, 2, 4, 8, 16 and then every 30 seconds, at most
-     * [MAX_ERASE_RETRIES] times; after the last, the alias stays held for the rest of the process,
-     * or until a later call to this function erases the card wallet, which then tries again.
-     * `GiftCardRedeemers.erase` can still delete such leftovers.
+     * running, or when the engine reports that some of the card wallet's files remain) is retried
+     * after 1, 2, 4, 8 and 16 seconds and then every 30 seconds, for as long as the process lives,
+     * until one succeeds; only then is the alias released. A failure that never goes away therefore
+     * keeps the card in use, and one erase attempt running every 30 seconds, until the process ends;
+     * `GiftCardRedeemers.erase` deletes the leftovers in the next process.
      *
      * @throws Exception the card wallet's failure to close, once the card wallet has been erased, or
-     * the first failure to erase it, while the retries go on. Only the call that starts a teardown
-     * reports its failures; a later call waits for the same teardown and returns.
+     * the first failure to erase it, as soon as it happens. That one may well be transient: the
+     * retries go on, and a later one can still erase the card wallet and release the alias. Only the
+     * call that starts the teardown reports its failures; a later or concurrent call waits for the
+     * same teardown and returns.
      */
     suspend fun close() {
         isClosing = true
         synchronized(inFlightChecks) { inFlightChecks.toList() }.forEach { it.cancel() }
-        val (current, isStarted) = startTeardown()
-        var outcome: Result<Throwable?>? = null
+        val (outcome, isStarted) = startTeardown()
+        var isFinished = false
         try {
-            outcome =
-                withContext(teardownScope.coroutineContext.minusKey(Job)) {
-                    withTimeoutOrNull(CLOSE_TIMEOUT) { Result.success(current.outcome.await()) }
-                }
+            isFinished = withTimeoutOrNull(CLOSE_TIMEOUT) { outcome.join() } != null
         } finally {
-            if (outcome == null) isCloseDetached = true
+            if (!isFinished) isCloseDetached = true
         }
-        if (outcome == null) {
+        if (!isFinished) {
             Twig.warn { "Closing a gift card wallet takes longer than $CLOSE_TIMEOUT; it goes on in the background" }
             return
         }
-        if (isStarted) outcome.getOrThrow()?.let { throw it }
+        if (isStarted) outcome.await()?.let { throw it }
     }
 
-    /**
-     * The teardown in progress, or a new one when none has started yet or the last one gave up
-     * erasing the card wallet, with whether it is new.
-     */
-    private fun startTeardown(): Pair<Teardown, Boolean> =
+    /** The outcome of the teardown, started by the first call, with whether this call started it. */
+    private fun startTeardown(): Pair<CompletableDeferred<Throwable?>, Boolean> =
         synchronized(teardownLock) {
-            val running = teardown
-            if (running != null && !(running.job.isCompleted && isEraseAbandoned)) return running to false
-            isEraseAbandoned = false
+            teardownOutcome?.let { return it to false }
             val outcome = CompletableDeferred<Throwable?>()
-            val job = teardownScope.launch { outcome.complete(tearDown(outcome)) }
-            job.invokeOnCompletion { outcome.complete(it) }
-            Teardown(job, outcome).also { teardown = it } to true
+            teardownOutcome = outcome
+            teardownScope.launch { tearDown(outcome) }
+            outcome to true
         }
 
     /**
      * Closes the card wallet, once no [redeem] holds [mutex], then erases it and releases the
-     * alias; see [close]. Completes [outcome] with the first failure to erase. Returns the card
-     * wallet's failure to close, if any. Only the failures' types are logged.
+     * alias; see [close]. Completes [outcome] with the first failure to erase, as soon as it
+     * happens, and in any case with the card wallet's failure to close, if any, when it ends,
+     * also when [teardownScope] cancels it. Only the failures' types are logged.
      */
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun tearDown(outcome: CompletableDeferred<Throwable?>): Throwable? {
+    private suspend fun tearDown(outcome: CompletableDeferred<Throwable?>) {
         var closeFailure: Throwable? = null
-        val isEraseNeeded =
-            mutex.withLock {
-                isClosed = true
-                checkedAccount = null
-                try {
-                    synchronizer?.close()
-                } catch (e: Exception) {
-                    closeFailure = e
-                    Twig.warn { "Closing a gift card wallet failed: ${e::class.simpleName}" }
-                } finally {
-                    synchronizer = null
+        try {
+            val isEraseNeeded =
+                mutex.withLock {
+                    isClosed = true
+                    checkedAccount = null
+                    try {
+                        synchronizer?.close()
+                    } catch (e: Exception) {
+                        closeFailure = e
+                        Twig.warn { "Closing a gift card wallet failed: ${e::class.simpleName}" }
+                    } finally {
+                        synchronizer = null
+                    }
+                    holdsAlias
                 }
-                holdsAlias
-            }
-        if (isEraseNeeded) eraseAndRelease(outcome)
-        return closeFailure
+            if (isEraseNeeded) eraseAndRelease(outcome)
+        } finally {
+            outcome.complete(closeFailure)
+        }
     }
 
     /**
-     * Erases the card wallet and releases the alias, retrying a failed erase as [close] describes.
-     * The alias is released only once an erase has succeeded.
+     * Erases the card wallet and releases the alias, retrying a failed erase as [close] describes,
+     * without a limit. The alias is released only once an erase has succeeded, with no suspension
+     * point in between, so that a cancellation cannot leave the card wallet erased but its alias
+     * held.
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun eraseAndRelease(outcome: CompletableDeferred<Throwable?>) {
-        var retries = 0
+        var retry = 0
         while (true) {
             try {
                 wallets.erase(context, network, alias)
-                mutex.withLock {
-                    aliases.release(network, alias)
-                    holdsAlias = false
-                }
+                aliases.release(network, alias)
+                holdsAlias = false
                 return
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 outcome.complete(e)
-                if (retries == MAX_ERASE_RETRIES) {
-                    isEraseAbandoned = true
-                    Twig.warn {
-                        "Erasing a gift card wallet failed ${retries + 1} times (${e::class.simpleName}); " +
-                            "its alias stays held"
-                    }
-                    return
-                }
                 Twig.warn { "Erasing a gift card wallet failed (${e::class.simpleName}); retrying" }
-                delay(ERASE_RETRY_DELAYS.getOrElse(retries) { ERASE_RETRY_DELAYS.last() })
-                retries++
+                delay(ERASE_RETRY_DELAYS[retry])
+                retry = minOf(retry + 1, ERASE_RETRY_DELAYS.lastIndex)
             }
         }
     }
@@ -1091,18 +1099,17 @@ class GiftCardRedeemer private constructor(
          * How long [close] waits for the card wallet's teardown before it returns; the teardown goes
          * on after that.
          */
-        val CLOSE_TIMEOUT: Duration = 30.seconds
+        internal val CLOSE_TIMEOUT: Duration = 30.seconds
 
-        /** How many times [close] retries a failed erase of the card wallet before it gives up. */
-        const val MAX_ERASE_RETRIES = 10
-
-        /** How long [close] waits before each retry of a failed erase; the last one repeats. */
+        /** How long [close] waits before each retry of a failed erase; the last one repeats without a limit. */
         internal val ERASE_RETRY_DELAYS: List<Duration> =
             listOf(1.seconds, 2.seconds, 4.seconds, 8.seconds, 16.seconds, 30.seconds)
 
         /**
          * Where every redeemer created through the public API tears its card wallet down: a scope
-         * of its own, so that a teardown outlives the [close] that started it.
+         * of its own, so that a teardown outlives the [close] that started it. A teardown whose erase
+         * keeps failing stays in it for the rest of the process, trying once every 30 seconds
+         * ([ERASE_RETRY_DELAYS]); it never retries faster than that, whatever the failure.
          */
         private val PROCESS_TEARDOWN_SCOPE = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -1267,7 +1274,11 @@ class GiftCardRedeemer private constructor(
  * its spending key. [Default] uses [Synchronizer] and [DerivationTool]; unit tests replace it.
  */
 internal interface GiftCardWallets {
-    /** Deletes the local data of the card wallet under [alias]. */
+    /**
+     * Deletes the local data of the card wallet under [alias]. Returns only once none of it remains: an erase that
+     * leaves any of it behind throws, so that [GiftCardRedeemer] keeps the alias and tries again. Finding nothing to
+     * delete is success.
+     */
     suspend fun erase(
         context: Context,
         network: ZcashNetwork,
@@ -1317,7 +1328,7 @@ internal interface GiftCardWallets {
             network: ZcashNetwork,
             alias: String
         ) {
-            Synchronizer.eraseAlias(context, network, alias)
+            check(eraseSdkCardWallet(context, network, alias)) { "Some of the card wallet's files remain" }
         }
 
         /**
@@ -1377,6 +1388,23 @@ internal interface GiftCardWallets {
                 accountIndex = Zip32AccountIndex.new(0)
             )
     }
+}
+
+/**
+ * Deletes the local data of the [SdkSynchronizer] card wallet under [alias] with [Synchronizer.eraseAlias], and
+ * returns whether none of it remains. [Synchronizer.eraseAlias] itself reports `false` both when it found nothing to
+ * delete and when a deletion failed, so what remains is looked up afterwards instead.
+ *
+ * @throws IllegalArgumentException if [alias] is not a valid alias, or addresses the main wallet's files.
+ * @throws IllegalStateException if a synchronizer for [network] and [alias] is active.
+ */
+internal suspend fun eraseSdkCardWallet(
+    context: Context,
+    network: ZcashNetwork,
+    alias: String
+): Boolean {
+    Synchronizer.eraseAlias(context, network, alias)
+    return !DatabaseCoordinator.getInstance(context.applicationContext).hasStoredData(network, alias)
 }
 
 /**
