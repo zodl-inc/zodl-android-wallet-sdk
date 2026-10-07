@@ -34,14 +34,14 @@ runs:
         echo "Disk space before cleanup:"
         df -h /
         # Remove unnecessary toolchains and build artifacts to save ~20 GB for Rust cross-compilation.
-        # Toolchains this build never uses; together about 20 GB that the Rust cross-compile
-        # for four ABIs and the emulator image otherwise compete for.
-        # Toolchains this build never uses; together about 20 GB that the Rust cross-compile
-        # Toolchains this build never uses; together about 20 GB that the Rust cross-compile
-        # Toolchains this build never uses; together about 20 GB that the Rust cross-compile
-        # Toolchains this build never uses; together about 20 GB that the Rust cross-compile
-        # Toolchains this build never uses; together about 20 GB that the Rust cross-compile
+        # Keep the NDK we need (27.0.12077973 is installed in the next step) and the active emulator.
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/.ghcup
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/local/share/boost
         sudo rm -rf /usr/share/swift
+        sudo rm -rf "${AGENT_TOOLSDIRECTORY}" || true
         echo "Disk space after cleanup:"
         df -h /
     - name: Set up Java
