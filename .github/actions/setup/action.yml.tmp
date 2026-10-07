@@ -1,0 +1,165 @@
+name: 'Setup Java, Rust, and Dependency Cache'
+description: "Configures the build environment and caches Gradle, dependencies, and build outputs."
+inputs:
+  # rust-toolchain.toml must be in sync with this default.
+  rust-version:
+    description: "Rust toolchain version to install."
+    required: false
+    default: "1.92.0"
+  rust-cache:
+    description: "Whether to restore and save the Rust build cache for jobs that compile Rust."
+    required: false
+    default: "false"
+runs:
+  using: "composite"
+  steps:
+    - name: Set Env
+      shell: bash
+      # The generic hazard flagged here is a GITHUB_ENV write whose value an attacker can steer.
+      # This one writes $HOME, which the runner sets and no workflow input can influence; the
+      # workflows consume it only to build artifact paths (`format('{0}/artifacts', env.home)`).
+      run: | # zizmor: ignore[github-env]
+        echo "home=${HOME}" >> "$GITHUB_ENV"
+    - name: Free disk space
+      shell: bash
+      run: |
+        echo "Disk space before cleanup:"
+        df -h /
+        # Toolchains this build never uses; together about 20 GB that the Rust cross-compile
+        # for four ABIs and the emulator image otherwise compete for.
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/.ghcup
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/local/share/boost
+        sudo rm -rf /usr/share/swift
+        echo "Disk space after cleanup:"
+        df -h /
+    - name: Set up Java
+      uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654
+      with:
+        distribution: 'temurin'
+        java-version: 17
+    - name: Setup Android NDK
+      shell: bash
+      run: |
+        ANDROID_ROOT=/usr/local/lib/android
+        ANDROID_SDK_ROOT=${ANDROID_ROOT}/sdk
+        SDKMANAGER=${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager
+        echo "y" | $SDKMANAGER "ndk;27.0.12077973"
+    - name: Setup Rust
+      shell: bash
+      # Use the channel pinned in rust-toolchain.toml (the single source of truth) rather than a
+      # hardcoded version. rustup honors the toolchain file in-repo regardless, so a hardcoded
+      # version here installs components onto a toolchain the build never runs: that is why
+      # `cargo clippy` failed with "'cargo-clippy' is not installed for the toolchain 1.92.0"
+      # while clippy had been installed for 1.84.1.
+      run: |
+        # `sed` rather than `grep -oP`: -P is a GNU extension, and this composite action
+        # should keep working if it is ever reused from a macOS/BSD runner.
+        CHANNEL="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
+        rustup toolchain install "${CHANNEL}"
+        rustup default "${CHANNEL}"
+        rustup target add --toolchain "${CHANNEL}" armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
+        rustup component add --toolchain "${CHANNEL}" clippy rustfmt
+    - name: Configure Gradle
+      shell: bash
+      run: |
+        mkdir ~/.gradle
+        echo -n > ~/.gradle/gradle.properties
+    - name: Gradle Binary Cache Restore
+      id: gradle-binary-cache-restore
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
+      with:
+        path: |
+          ~/.gradle/notifications
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-binary-${{ hashFiles(format('{0}{1}', github.workspace, '/gradle/wrapper/gradle-wrapper.properties')) }}
+    - name: Gradle Dependency Cache Restore
+      id: gradle-dependency-cache-restore
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
+      with:
+        path: |
+          ~/.gradle/caches/modules-2
+        key: ${{ runner.os }}-gradle-deps-${{ hashFiles(format('{0}{1}', github.workspace, '/gradle.properties')) }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-deps-
+    - name: Gradle Build Cache Restore
+      id: gradle-build-cache-restore
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
+      with:
+        path: |
+          ~/.gradle/caches/build-cache-1
+          ~/.gradle/caches/transforms-3
+          .gradle/configuration-cache
+        key: ${{ runner.os }}-gradle-build-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-build-
+    - name: Rust Cache
+      if: inputs.rust-cache == 'true'
+      id: rust-cache
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
+      with:
+        # Deliberately enumerated rather than caching `~/.cargo` wholesale, which would also
+        # include `~/.cargo/git`. Everything listed here is public content: `registry/` is
+        # crates.io, and `backend-lib/target` holds compiled output too expensive to rebuild
+        # every run.
+        path: |
+          backend-lib/target
+          ~/.cargo/bin
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/registry/src
+        # v3: v2 entries were saved with the wide `~/.cargo` path above, and `restore-keys`
+        # prefix-matching would otherwise keep unpacking those archives — reinstating
+        # `~/.cargo/git` regardless of what this step now lists.
+        key: ${{ runner.os }}-rust-v3-${{ hashFiles(format('{0}{1}', github.workspace, '/backend-lib/Cargo.lock'), format('{0}{1}', github.workspace, '/backend-lib/Cargo.toml'), format('{0}{1}', github.workspace, '/backend-lib/build.gradle.kts'), format('{0}{1}', github.workspace, '/backend-lib/build.rs'), format('{0}{1}', github.workspace, '/rust-toolchain.toml'), format('{0}{1}', github.workspace, '/gradle.properties'), format('{0}{1}', github.workspace, '/.github/actions/setup/action.yml')) }}
+        restore-keys: |
+          ${{ runner.os }}-rust-v3-
+
+    - name: Gradle Binary Download
+      if: steps.gradle-binary-cache-restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        ./gradlew --version
+    - name: Gradle Dependency Download
+      if: steps.gradle-dependency-cache-restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        ./gradlew dependencies :sdk-lib:dependencies :demo-app:dependencies
+    - name: Gradle Build
+      if: github.event.pull_request.head.sha == '' && (steps.gradle-binary-cache-restore.outputs.cache-hit != 'true' || steps.gradle-dependency-cache-restore.outputs.cache-hit != 'true' || (inputs.rust-cache == 'true' && steps.rust-cache.outputs.cache-hit != 'true') || steps.gradle-build-cache-restore.outputs.cache-hit != 'true')
+      env:
+        ORG_GRADLE_PROJECT_IS_MINIFY_APP_ENABLED: "false"
+      shell: bash
+      run: |
+        ./gradlew assemble
+        ./gradlew assembleAndroidTest
+
+    - name: Gradle Binary Cache Save
+      id: gradle-binary-cache-save
+      if: github.event.pull_request.head.sha == '' && steps.gradle-binary-cache-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
+      with:
+        path: |
+          ~/.gradle/notifications
+          ~/.gradle/wrapper
+        key: steps.gradle-binary-cache-restore.key
+    - name: Gradle Dependency Cache Save
+      id: gradle-dependency-cache-save
+      if: github.event.pull_request.head.sha == '' && steps.gradle-dependency-cache-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      with:
+        path: |
+          ~/.gradle/caches/modules-2
+        key: ${{ steps.gradle-dependency-cache-restore.key }}

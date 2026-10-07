@@ -63,6 +63,7 @@ import cash.z.ecc.android.sdk.type.ConsensusMatchType
 import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
+import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
@@ -1001,6 +1002,26 @@ interface Synchronizer {
     suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit = {}): HttpClient
 
     /**
+     * Creates an OhttpSender that routes relay traffic through Tor, for use with OhttpHttpClient.
+     * Used when Tor is enabled in the app and the target is a gateway-mapped external API (CMC, NEAR).
+     * The relay leg goes over Tor, hiding the app's IP from the relay, and the gateway injects the
+     * secret server-side.
+     *
+     * Defaults to throwing [TorUnavailableException] so an implementer that hasn't (yet) provided
+     * a real OHTTP-over-Tor path fails the same way as Tor itself being off, rather than a compile
+     * error breaking every existing implementer of this interface.
+     *
+     * Each call creates a new isolated native Tor client owned by the returned sender; call
+     * [OhttpSender.dispose] on it (or on the `OhttpHttpClient` wrapping it) to release it.
+     *
+     * @return TorOhttpSender wrapping an isolated TorClient
+     * @throws TorInitializationErrorException if Tor bootstrapping failed
+     * @throws TorUnavailableException if Tor is not enabled
+     */
+    @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
+    suspend fun ohttpSenderOverTor(): OhttpSender = throw TorUnavailableException()
+
+    /**
      * Leases this synchronizer's shared Tor runtime for the voting API -- the `torLease`
      * parameter of `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`,
      * `cash.z.ecc.android.sdk.VotingShareTrackingSession.run` and the `VotingDbSession.precompute*`
@@ -1228,7 +1249,8 @@ interface Synchronizer {
             walletInitMode: WalletInitMode,
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
-            isExchangeRateEnabled: Boolean
+            isExchangeRateEnabled: Boolean,
+            ohttpClientTraceIdPrefix: String? = null
         ): CloseableSynchronizer =
             new(
                 alias = alias,
@@ -1240,6 +1262,7 @@ interface Synchronizer {
                 zcashNetwork = zcashNetwork,
                 isTorEnabled = isTorEnabled,
                 isExchangeRateEnabled = isExchangeRateEnabled,
+                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
                 isBirthdayExact = false
             )
 
@@ -1276,6 +1299,7 @@ interface Synchronizer {
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean,
+            ohttpClientTraceIdPrefix: String? = null,
             isBirthdayExact: Boolean,
             onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null,
             isSetupDisconnectionTolerated: Boolean = false,
@@ -1340,7 +1364,7 @@ interface Synchronizer {
                         if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
                             LazyTorClient {
                                 val torDir = Files.getTorDir(applicationContext)
-                                TorClient.new(torDir, backendDeferred.await().second.backend)
+                                TorClient.new(torDir, backendDeferred.await().second.backend, ohttpClientTraceIdPrefix)
                             }
                         } else {
                             null
@@ -1368,7 +1392,10 @@ interface Synchronizer {
                      */
                     val walletClientDeferred =
                         async(Dispatchers.Default) {
-                            walletClientFactory.create(endpoint = lightWalletEndpoint)
+                            walletClientFactory.create(
+                                endpoint = lightWalletEndpoint,
+                                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+                            )
                         }
 
                     /**
@@ -1398,7 +1425,21 @@ interface Synchronizer {
                     var walletClient: CombinedWalletClient? = null
                     try {
                         val (saplingParamTool, backend) = backendDeferred.await()
-                        val saplingParamFetcher = SaplingParamFetcher(saplingParamTool, backend)
+                        val torHttpClientProvider: (suspend () -> io.ktor.client.HttpClient)? =
+                            if (sdkFlags.isTorEnabled && lazyTorClient != null) {
+                                {
+                                    val isolatedTor = lazyTorClient.getOrCreate().isolatedTorClient()
+                                    io.ktor.client.HttpClient(cash.z.ecc.android.sdk.internal.model.TorHttp) {
+                                        engine {
+                                            tor = isolatedTor
+                                            retryLimit = 1
+                                        }
+                                    }
+                                }
+                            } else {
+                                null
+                            }
+                        val saplingParamFetcher = SaplingParamFetcher(saplingParamTool, backend, torHttpClientProvider)
                         val blockStore =
                             DefaultSynchronizerFactory
                                 .defaultCompactBlockRepository(coordinator.fsBlockDbRoot(zcashNetwork, alias), backend)
