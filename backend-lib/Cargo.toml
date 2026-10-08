@@ -114,8 +114,8 @@ serde_json = "1"
 # features the networked `Client` (reqwest, tokio) is not compiled: the Kotlin transport does
 # the I/O. The JNI surface is `src/main/rust/ohttp.rs`. The repository is private (CI's App
 # token must include `ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
-# it only to a commit that is on the `main` of zodl-inc/ohttp.
-zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "f0d88a5d960578b0e34c01881912baca0198de3a", default-features = false }
+# it only to a commit that is on the `main` of zodl-inc/ohttp. Now at e3ab773d92a49d3ad9c8a2b0627cd915772e5a56 (chunked OHTTP support).
+zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "e3ab773d92a49d3ad9c8a2b0627cd915772e5a56", default-features = false }
 tonic = "0.14"
 
 # Logging
@@ -279,9 +279,8 @@ crate-type = ["staticlib", "cdylib"]
 # to a commit on slipstream-internal feature/ohttp-connector branch that ports the OHTTP
 # connector to 0.4.0-pre.1. This entry can be removed once a published zodl-slipstream
 # version containing the OHTTP transport exists on crates.io.
-# Pins slipstream-internal feature/ohttp-connector (PR #16, on 0.4.0-pre.1); repin to
-# slipstream-internal main after #16 merges.
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "37b9a84531eed0f9e0df28ca4854b969df71c1d7" }
+# Pins slipstream-internal PR #16 head 582560f075a35cbbd5efd3ec7340da263bdfa254 (chunked OHTTP connector).
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "582560f075a35cbbd5efd3ec7340da263bdfa254" }
 #
 # published `zodl-slipstream` line, the dependency above resolves from crates.io like
 # the rest of the released family — the old git pin was not dropped by accident.

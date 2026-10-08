@@ -146,7 +146,7 @@ sealed interface OhttpCompletion {
         val detail: String,
     ) : OhttpCompletion
 
-    /** A success status not labelled `message/ohttp-res`. */
+    /** A success status not labelled `message/ohttp-chunked-res`. */
     class WrongMediaType(
         val contentType: String,
     ) : OhttpCompletion

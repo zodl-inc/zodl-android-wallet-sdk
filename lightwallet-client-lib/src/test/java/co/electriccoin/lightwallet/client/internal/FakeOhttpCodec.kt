@@ -146,8 +146,8 @@ internal class FakeOhttpCodec(
             OhttpProfileInfo(
                 postHeaders =
                     listOf(
-                        "Content-Type" to "message/ohttp-req",
-                        "Accept" to "message/ohttp-res",
+                        "Content-Type" to "message/ohttp-chunked-req",
+                        "Accept" to "message/ohttp-chunked-res",
                         "Accept-Encoding" to "identity",
                     ),
                 keyFetchHeaders = listOf("Accept" to "application/json"),

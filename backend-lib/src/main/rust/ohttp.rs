@@ -30,9 +30,10 @@ use jni::{
     sys::{JNI_FALSE, JNI_TRUE, jint, jlong, jobject, jstring},
 };
 use zodl_ohttp_client::{
-    BhttpRequest, ClientProfile, Completed, Error, Field, KEY_BYTES, KeyConfig, ResponseOpener,
-    complete_exchange_in_place, encapsulate_request, pack_fields, signed_config_url, unpack_fields,
-    verify_signed_config, verify_signed_config_with,
+    BhttpRequest, ChunkedResponseOpener, ClientProfile, Error, Field, KEY_BYTES, KeyConfig,
+    classify_outer_response, collect_response, encapsulate_chunked_request, pack_fields,
+    signed_config_url, unpack_fields, verify_signed_config, verify_signed_config_with,
+    OuterOutcome, OuterResponse, CONTENT_TYPE_CHUNKED_RES,
 };
 
 use crate::utils::{
@@ -124,7 +125,7 @@ fn profile_by_id(id: jint) -> Result<ClientProfile, Failure> {
 }
 
 /// The response opener behind a handle returned by `encapsulate`.
-fn opener_handle(opener: ResponseOpener) -> jlong {
+fn opener_handle(opener: ChunkedResponseOpener) -> jlong {
     Box::into_raw(Box::new(opener)).expose_provenance() as jlong
 }
 
@@ -135,8 +136,8 @@ fn opener_handle(opener: ResponseOpener) -> jlong {
 /// `handle` must be 0 or a handle returned by [`opener_handle`] that has not been passed to this
 /// function before. The Kotlin wrapper guarantees it by swapping its handle field for 0 before
 /// every call (`AtomicLong.getAndSet(0)`).
-unsafe fn take_opener(handle: jlong) -> Option<ResponseOpener> {
-    let ptr = ptr::with_exposed_provenance_mut::<ResponseOpener>(handle as usize);
+unsafe fn take_opener(handle: jlong) -> Option<ChunkedResponseOpener> {
+    let ptr = ptr::with_exposed_provenance_mut::<ChunkedResponseOpener>(handle as usize);
     if ptr.is_null() {
         None
     } else {
@@ -208,8 +209,9 @@ fn encapsulate(
 ) -> Result<(Vec<u8>, jlong), Failure> {
     let key = KeyConfig::from_bytes(key)
         .ok_or_else(|| Failure::argument("a gateway key is 33 bytes long"))?;
-    let sealed = encapsulate_request(&key, request, &profile.encode, &profile.limits)?;
-    Ok((sealed.body, opener_handle(sealed.opener)))
+    let bhttp = zodl_ohttp_client::encode_bhttp_request(request, &profile.encode)?;
+    let (sealed, opener) = encapsulate_chunked_request(&key, &bhttp)?;
+    Ok((sealed, opener_handle(opener)))
 }
 
 /// What `complete` found.
@@ -239,34 +241,58 @@ impl Outcome {
 /// sealed, opened with `opener`, which is spent whatever the outcome.
 fn complete(
     profile: &ClientProfile,
-    opener: Option<ResponseOpener>,
+    opener: Option<ChunkedResponseOpener>,
     status: jint,
     content_type: Option<&str>,
-    body: &mut [u8],
+    body: &[u8],
     attempt: jint,
 ) -> Result<Outcome, Failure> {
     let opener = opener.ok_or_else(|| Failure::argument("the response opener is already spent"))?;
     let status = u16::try_from(status).map_err(|_| Failure::argument("not an HTTP status"))?;
     let attempt =
         u32::try_from(attempt).map_err(|_| Failure::argument("a negative attempt number"))?;
-    let completed =
-        complete_exchange_in_place(profile, opener, status, content_type, body, attempt)?;
-    Ok(match completed {
-        Completed::Response(response) => Outcome {
-            kind: OUTCOME_RESPONSE,
-            status: jint::from(response.status),
-            headers: pack_fields(&response.headers)?,
-            trailers: pack_fields(&response.trailers)?,
-            body: response.body,
-            detail: None,
+
+    // Classify the outer response
+    let outer_outcome = classify_outer_response(
+        &profile.outer,
+        &OuterResponse {
+            status,
+            content_type,
+            body,
         },
-        Completed::RefetchKeyConfig => {
+        attempt,
+    );
+
+    Ok(match outer_outcome {
+        OuterOutcome::Sealed => {
+            // For chunked OHTTP, verify the content type is chunked-res
+            if content_type != Some(CONTENT_TYPE_CHUNKED_RES) {
+                return Ok(Outcome::without_response(
+                    OUTCOME_WRONG_MEDIA_TYPE,
+                    status.into(),
+                    Some(content_type.unwrap_or("(none)").to_string()),
+                ));
+            }
+
+            // Decrypt the chunked response
+            let response = opener.open_response(body)?;
+
+            Outcome {
+                kind: OUTCOME_RESPONSE,
+                status: jint::from(response.status),
+                headers: pack_fields(&response.headers)?,
+                trailers: pack_fields(&response.trailers)?,
+                body: response.body,
+                detail: None,
+            }
+        }
+        OuterOutcome::RefetchKeyConfig => {
             Outcome::without_response(OUTCOME_REFETCH_KEY_CONFIG, status.into(), None)
         }
-        Completed::Refused { status, detail } => {
+        OuterOutcome::Refused { status, detail } => {
             Outcome::without_response(OUTCOME_REFUSED, status.into(), Some(detail))
         }
-        Completed::WrongMediaType { content_type } => {
+        OuterOutcome::WrongMediaType { content_type } => {
             Outcome::without_response(OUTCOME_WRONG_MEDIA_TYPE, status.into(), Some(content_type))
         }
     })
@@ -426,13 +452,13 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_complet
         let opener = unsafe { take_opener(opener) };
         let profile = profile_by_id(profile).map_err(|f| raise(env, f))?;
         let content_type = java_nullable_string_to_rust(env, &content_type)?;
-        let mut body = java_bytes_to_rust(env, &body)?;
+        let body = java_bytes_to_rust(env, &body)?;
         let outcome = complete(
             &profile,
             opener,
             outer_status,
             content_type.as_deref(),
-            &mut body,
+            &body,
             attempt,
         )
         .map_err(|f| raise(env, f))?;
@@ -646,12 +672,12 @@ mod tests {
         .body(vec![0, 0, 0, 0, 0])
     }
 
-    /// What a gateway does with a sealed request: the Binary HTTP message inside it, the
+    /// What a gateway does with a sealed chunked request: the Binary HTTP message inside it, the
     /// secret it exports for the answer and the encapsulated key.
-    fn gateway_opens(sealed: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    fn gateway_opens(sealed: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8]) {
         let (header, rest) = sealed.split_at(7);
-        let (enc, ct) = rest.split_at(32);
-        let mut info = b"message/bhttp request".to_vec();
+        let (enc, mut rest) = rest.split_at(32);
+        let mut info = b"message/bhttp chunked request".to_vec();
         info.push(0);
         info.extend_from_slice(header);
         let enc_key = <X25519HkdfSha256 as Kem>::EncappedKey::from_bytes(enc).unwrap();
@@ -662,36 +688,106 @@ mod tests {
             &info,
         )
         .unwrap();
-        let plain = context.open(ct, b"").unwrap();
+
+        // Read the first chunk (non-final)
+        let (chunk_len, tail) = read_varint_helper(rest);
+        rest = tail;
+        let (sealed_chunk, tail) = rest.split_at(chunk_len);
+        rest = tail;
+        let plain = context.open(sealed_chunk, b"").unwrap();
+
+        // Read the final chunk (should be empty)
+        let (final_len, tail) = read_varint_helper(rest);
+        assert_eq!(final_len, 0);
+        let sealed_final = tail;
+        let final_plain = context.open(sealed_final, b"final").unwrap();
+        assert!(final_plain.is_empty());
+
         let mut secret = [0u8; 16];
         context
-            .export(b"message/bhttp response", &mut secret)
+            .export(b"message/bhttp chunked response", &mut secret)
             .unwrap();
         (plain, secret.to_vec(), enc.to_vec())
     }
 
-    /// What a gateway does to seal an answer (RFC 9458 section 4.4).
+    /// Simple varint reader for tests (no error handling).
+    fn read_varint_helper(data: &[u8]) -> (usize, &[u8]) {
+        let mut value = 0u64;
+        let mut shift = 0;
+        for (i, &byte) in data.iter().enumerate() {
+            value |= ((byte & 0x7f) as u64) << shift;
+            if byte & 0x80 == 0 {
+                return (value as usize, &data[i + 1..]);
+            }
+            shift += 7;
+        }
+        panic!("Invalid varint");
+    }
+
+    /// Write a varint for tests.
+    fn write_varint_helper(value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut v = value;
+        loop {
+            let mut byte = (v & 0x7f) as u8;
+            v >>= 7;
+            if v != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if v == 0 {
+                break;
+            }
+        }
+        out
+    }
+
+    /// What a gateway does to seal a chunked answer (draft-ietf-ohai-chunked-ohttp-08 §6.2).
     fn gateway_seals(bhttp: &[u8], enc: &[u8], secret: &[u8]) -> Vec<u8> {
-        let nonce = [9u8; 16];
+        let response_nonce = [9u8; 16];
         let mut salt = enc.to_vec();
-        salt.extend_from_slice(&nonce);
+        salt.extend_from_slice(&response_nonce);
         let hkdf = Hkdf::<Sha256>::new(Some(&salt), secret);
-        let mut key = [0u8; 16];
-        let mut aead_nonce = [0u8; 12];
-        hkdf.expand(b"key", &mut key).unwrap();
-        hkdf.expand(b"nonce", &mut aead_nonce).unwrap();
-        let ct = Aes128Gcm::new_from_slice(&key)
-            .unwrap()
+        let mut aead_key = [0u8; 16];
+        let mut aead_nonce_base = [0u8; 12];
+        hkdf.expand(b"key", &mut aead_key).unwrap();
+        hkdf.expand(b"nonce", &mut aead_nonce_base).unwrap();
+
+        let cipher = Aes128Gcm::new_from_slice(&aead_key).unwrap();
+
+        // Seal the first chunk (non-final, counter 0)
+        let mut nonce = aead_nonce_base;
+        // XOR counter 0 (no change)
+        let sealed_chunk = cipher
             .encrypt(
-                Nonce::from_slice(&aead_nonce),
+                Nonce::from_slice(&nonce),
                 Payload {
                     msg: bhttp,
                     aad: b"",
                 },
             )
             .unwrap();
-        let mut out = nonce.to_vec();
-        out.extend_from_slice(&ct);
+
+        // Seal the final chunk (empty, with "final" AAD, counter 1)
+        for i in (0..8).rev() {
+            nonce[11 - i] ^= ((1u64 >> (i * 8)) & 0xff) as u8;
+        }
+        let sealed_final = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &[],
+                    aad: b"final",
+                },
+            )
+            .unwrap();
+
+        // Build the response: response_nonce || varint(len) || sealed_chunk || varint(0) || sealed_final
+        let mut out = response_nonce.to_vec();
+        out.extend_from_slice(&write_varint_helper(sealed_chunk.len() as u64));
+        out.extend_from_slice(&sealed_chunk);
+        out.extend_from_slice(&write_varint_helper(0));
+        out.extend_from_slice(&sealed_final);
         out
     }
 
@@ -715,8 +811,8 @@ mod tests {
         assert_eq!(
             unpack_fields(&info.post_headers).unwrap(),
             vec![
-                (b"Content-Type".to_vec(), b"message/ohttp-req".to_vec()),
-                (b"Accept".to_vec(), b"message/ohttp-res".to_vec()),
+                (b"Content-Type".to_vec(), b"message/ohttp-chunked-req".to_vec()),
+                (b"Accept".to_vec(), b"message/ohttp-chunked-res".to_vec()),
                 (b"Accept-Encoding".to_vec(), b"identity".to_vec()),
             ]
         );
@@ -824,13 +920,13 @@ mod tests {
             encode_bhttp_request(&lowercased, &EncodeOptions::PRESERVE).unwrap()
         );
 
-        let mut answer = gateway_seals(&grpc_answer(), &enc, &secret);
+        let answer = gateway_seals(&grpc_answer(), &enc, &secret);
         let outcome = complete(
             &android(),
             unsafe { take_opener(handle) },
             200,
-            None,
-            &mut answer,
+            Some(CONTENT_TYPE_CHUNKED_RES),
+            &answer,
             0,
         )
         .unwrap();
@@ -859,7 +955,7 @@ mod tests {
                 unsafe { take_opener(sealed_handle()) },
                 status,
                 None,
-                &mut [],
+                &[],
                 0,
             )
             .unwrap();
@@ -871,7 +967,7 @@ mod tests {
                 unsafe { take_opener(sealed_handle()) },
                 status,
                 None,
-                &mut b"problem".to_vec(),
+                b"problem",
                 1,
             )
             .unwrap();
@@ -883,13 +979,13 @@ mod tests {
 
     #[test]
     fn other_outer_statuses_are_refused_with_a_bounded_detail() {
-        let mut body = vec![b'x'; 500];
+        let body = vec![b'x'; 500];
         let outcome = complete(
             &android(),
             unsafe { take_opener(sealed_handle()) },
             503,
             None,
-            &mut body,
+            &body,
             0,
         )
         .unwrap();
@@ -910,8 +1006,8 @@ mod tests {
             &android(),
             unsafe { take_opener(handle) },
             200,
-            None,
-            &mut answer,
+            Some(CONTENT_TYPE_CHUNKED_RES),
+            &answer,
             0,
         )
         .err()
@@ -921,7 +1017,7 @@ mod tests {
 
     #[test]
     fn a_spent_or_null_handle_is_an_argument_error_and_freeing_it_is_a_no_op() {
-        let failure = complete(&android(), None, 200, None, &mut [], 0)
+        let failure = complete(&android(), None, 200, None, &[], 0)
             .err()
             .unwrap();
         assert_eq!(failure.kind, KIND_ARGUMENT);

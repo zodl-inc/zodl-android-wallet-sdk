@@ -172,7 +172,7 @@ internal class OhttpTransport(
         clientTrace?.takeIf { wanted }?.let { listOf(TRACE_HEADER to it.next()) } ?: emptyList()
 
     companion object {
-        const val RESPONSE_MEDIA_TYPE = "message/ohttp-res"
+        const val RESPONSE_MEDIA_TYPE = "message/ohttp-chunked-res"
         const val TRACE_HEADER = "X-Client-Trace-Id"
         private const val MILLIS_PER_SECOND = 1000L
         private const val HTTP_OK = 200
