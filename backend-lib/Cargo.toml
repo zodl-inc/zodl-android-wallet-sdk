@@ -244,12 +244,11 @@ tracing-android = { version = "0.2", optional = true }
 # Test-only: the gateway side of an OHTTP exchange and a signed key-configuration envelope, so
 # the JNI glue in `ohttp.rs` is tested against real HPKE and Ed25519 (the versions the core
 # already links, so they add no second copy to the lock).
-aes-gcm = "0.10"
 base64 = "0.22"
 ed25519-dalek = "2"
-hkdf = "0.12"
-hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
 sha2 = "0.10"
+ohttp-gateway = { git = "https://github.com/zodl-inc/ohttp.git", rev = "98a66a093cb10db625e462a2269a0efc21f3b495" }
+tokio = { version = "1", features = ["rt", "macros"] }
 
 # Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
 # which needs a real UnifiedSpendingKey to exercise the in-process-signing path

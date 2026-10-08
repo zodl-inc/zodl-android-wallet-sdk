@@ -588,18 +588,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_profile
 
 #[cfg(test)]
 mod tests {
-    use aes_gcm::{
-        Aes128Gcm, Nonce,
-        aead::{Aead, KeyInit, Payload},
-    };
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use ed25519_dalek::{Signer, SigningKey};
-    use hkdf::Hkdf;
-    use hpke::{
-        Deserializable, Kem, OpModeR, Serializable, aead::AesGcm128, kdf::HkdfSha256,
-        kem::X25519HkdfSha256,
+    use ohttp_gateway::{
+        chunked_stream::ChunkSealer,
+        config::Config,
+        hpke::KeyState,
+        ohttp_chunked::decapsulate_chunked_request,
     };
     use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
     use zodl_ohttp_client::{EncodeOptions, encode_bhttp_request};
 
     use super::*;
@@ -615,27 +613,57 @@ mod tests {
         SigningKey::from_bytes(&[2; 32])
     }
 
-    type GatewayKey = <X25519HkdfSha256 as Kem>::PrivateKey;
-
-    fn gateway_keys() -> (GatewayKey, Vec<u8>) {
-        let (sk, pk) = X25519HkdfSha256::derive_keypair(&[7; 32]);
-        (sk, pk.to_bytes().to_vec())
+    /// The gateway's configuration, as its own tests build it.
+    fn gateway_config() -> Config {
+        let private_key = format!("{:064x}", 0xa7u64);
+        Config {
+            port: 0,
+            lwd_addr: String::new(),
+            mode: "ohttp".to_string(),
+            relay_secrets: vec![],
+            hpke_private_key: None,
+            hpke_key_id: 1,
+            hpke_keys: vec![(1, private_key)],
+            lwd_timeout_secs: 80,
+            long_poll_idle_secs: 3,
+            redis_url: String::new(),
+            redis_security_url: String::new(),
+            backends: HashMap::new(),
+            backend_headers: HashMap::new(),
+            backends_policy: HashMap::new(),
+            backends_policy_default_allow: false,
+            max_inflight_lwd: 128,
+            redis_op_timeout_ms: 250,
+            max_cache_get_concurrency: 64,
+            max_large_response_concurrency: 2,
+            large_response_threshold: 8 * 1024 * 1024,
+            max_upstream_response_bytes: 64 * 1024 * 1024,
+            max_inflight_upstream: 256,
+            max_inflight_per_backend: 64,
+            max_block_range: 1000,
+            log_hmac_seed: None,
+            allow_unauthenticated_relay: false,
+            proxy_allow_suffixes: vec![],
+            network: "testnet".to_string(),
+            log_outer_header_names: false,
+            gateway_hosts: vec![],
+            configs_signing_seed: None,
+            chunk_size: 16384,
+            chunk_flush_ms: 50,
+        }
     }
 
-    /// An `application/ohttp-keys` document: a configuration of a KEM this client does not
-    /// speak, then the gateway's X25519 one.
+    fn gateway_key_state() -> KeyState {
+        KeyState::new(&gateway_config()).unwrap()
+    }
+
+    fn gateway_public_key() -> Vec<u8> {
+        gateway_key_state().public_config()
+    }
+
+    /// An `application/ohttp-keys` document: the gateway's public configuration.
     fn key_document() -> Vec<u8> {
-        let mut other = vec![9u8, 0x00, 0x10];
-        other.extend_from_slice(&[0; 20]);
-        let mut ours = vec![1u8, 0x00, 0x20];
-        ours.extend_from_slice(&gateway_keys().1);
-        ours.extend_from_slice(&[0, 4, 0, 1, 0, 1]);
-        let mut document = Vec::new();
-        for entry in [other, ours] {
-            document.extend_from_slice(&(entry.len() as u16).to_be_bytes());
-            document.extend(entry);
-        }
-        document
+        gateway_public_key()
     }
 
     fn envelope(signer: &SigningKey, network: &str, not_before: u64, not_after: u64) -> Vec<u8> {
@@ -679,124 +707,27 @@ mod tests {
         .body(vec![0, 0, 0, 0, 0])
     }
 
-    /// What a gateway does with a sealed chunked request: the Binary HTTP message inside it, the
-    /// secret it exports for the answer and the encapsulated key.
-    fn gateway_opens(sealed: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        let (header, rest) = sealed.split_at(7);
-        let (enc, mut rest) = rest.split_at(32);
-        let mut info = b"message/bhttp chunked request".to_vec();
-        info.push(0);
-        info.extend_from_slice(header);
-        let enc_key = <X25519HkdfSha256 as Kem>::EncappedKey::from_bytes(enc).unwrap();
-        let mut context = hpke::setup_receiver::<AesGcm128, HkdfSha256, X25519HkdfSha256>(
-            &OpModeR::Base,
-            &gateway_keys().0,
-            &enc_key,
-            &info,
-        )
-        .unwrap();
-
-        // Export the secret for sealing responses (before opening anything)
-        let mut secret = [0u8; 16];
-        context
-            .export(b"message/bhttp chunked response", &mut secret)
-            .unwrap();
-
-        // Read and decrypt the first chunk (non-final)
-        let (chunk_len, tail) = read_varint_helper(rest);
-        rest = tail;
-        let (sealed_chunk, tail) = rest.split_at(chunk_len);
-        rest = tail;
-        let mut plain = context.open(sealed_chunk, b"").unwrap();
-
-        // Read and decrypt the final chunk (empty)
-        let (final_len, tail) = read_varint_helper(rest);
-        assert_eq!(final_len, 0);
-        let sealed_final = tail;
-        let final_plain = context.open(sealed_final, b"final").unwrap();
-        plain.extend_from_slice(&final_plain);
-
-        (plain, secret.to_vec(), enc.to_vec())
-    }
-
-    /// Simple varint reader for tests (no error handling).
-    fn read_varint_helper(data: &[u8]) -> (usize, &[u8]) {
-        let mut value = 0u64;
-        let mut shift = 0;
-        for (i, &byte) in data.iter().enumerate() {
-            value |= ((byte & 0x7f) as u64) << shift;
-            if byte & 0x80 == 0 {
-                return (value as usize, &data[i + 1..]);
-            }
-            shift += 7;
-        }
-        panic!("Invalid varint");
-    }
-
-    /// Write a varint for tests.
-    fn write_varint_helper(value: u64) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut v = value;
-        loop {
-            let mut byte = (v & 0x7f) as u8;
-            v >>= 7;
-            if v != 0 {
-                byte |= 0x80;
-            }
-            out.push(byte);
-            if v == 0 {
-                break;
-            }
-        }
-        out
+    /// What a gateway does with a sealed chunked request: the Binary HTTP message inside it and
+    /// the response context for sealing the answer.
+    fn gateway_opens(sealed: &[u8]) -> (Vec<u8>, ohttp_gateway::hpke::ResponseContext) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let key_state = gateway_key_state();
+            decapsulate_chunked_request(sealed, &key_state)
+                .await
+                .unwrap()
+        })
     }
 
     /// What a gateway does to seal a chunked answer (draft-ietf-ohai-chunked-ohttp-08 §6.2).
-    fn gateway_seals(bhttp: &[u8], enc: &[u8], secret: &[u8]) -> Vec<u8> {
+    fn gateway_seals(bhttp: &[u8], response_ctx: &ohttp_gateway::hpke::ResponseContext) -> Vec<u8> {
         let response_nonce = [9u8; 16];
-        let mut salt = enc.to_vec();
-        salt.extend_from_slice(&response_nonce);
-        let hkdf = Hkdf::<Sha256>::new(Some(&salt), secret);
-        let mut aead_key = [0u8; 16];
-        let mut aead_nonce_base = [0u8; 12];
-        hkdf.expand(b"key", &mut aead_key).unwrap();
-        hkdf.expand(b"nonce", &mut aead_nonce_base).unwrap();
-
-        let cipher = Aes128Gcm::new_from_slice(&aead_key).unwrap();
-
-        // Seal the first chunk (non-final, counter 0)
-        let mut nonce = aead_nonce_base;
-        // XOR counter 0 (no change)
-        let sealed_chunk = cipher
-            .encrypt(
-                Nonce::from_slice(&nonce),
-                Payload {
-                    msg: bhttp,
-                    aad: b"",
-                },
-            )
-            .unwrap();
-
-        // Seal the final chunk (empty, with "final" AAD, counter 1)
-        for i in (0..8).rev() {
-            nonce[11 - i] ^= ((1u64 >> (i * 8)) & 0xff) as u8;
-        }
-        let sealed_final = cipher
-            .encrypt(
-                Nonce::from_slice(&nonce),
-                Payload {
-                    msg: &[],
-                    aad: b"final",
-                },
-            )
-            .unwrap();
-
-        // Build the response: response_nonce || varint(len) || sealed_chunk || varint(0) || sealed_final
+        let mut sealer = ChunkSealer::new(response_ctx, &response_nonce).unwrap();
         let mut out = response_nonce.to_vec();
-        out.extend_from_slice(&write_varint_helper(sealed_chunk.len() as u64));
-        out.extend_from_slice(&sealed_chunk);
-        out.extend_from_slice(&write_varint_helper(0));
-        out.extend_from_slice(&sealed_final);
+        // Seal the entire bhttp message as the first (non-final) chunk
+        out.extend_from_slice(&sealer.seal(bhttp, false).unwrap());
+        // Seal an empty final chunk
+        out.extend_from_slice(&sealer.seal(&[], true).unwrap());
         out
     }
 
@@ -921,7 +852,7 @@ mod tests {
         let (sealed, handle) = encapsulate(&android(), &key, &request()).unwrap();
         assert_eq!(&sealed[..7], [1, 0, 0x20, 0, 1, 0, 1]);
 
-        let (plain, secret, enc) = gateway_opens(&sealed);
+        let (plain, response_ctx) = gateway_opens(&sealed);
         let mut lowercased = request();
         lowercased.headers = vec![
             (b"content-type".to_vec(), b"application/grpc".to_vec()),
@@ -932,7 +863,7 @@ mod tests {
             encode_bhttp_request(&lowercased, &EncodeOptions::PRESERVE).unwrap()
         );
 
-        let answer = gateway_seals(&grpc_answer(), &enc, &secret);
+        let answer = gateway_seals(&grpc_answer(), &response_ctx);
         let outcome = complete(
             &android(),
             unsafe { take_opener(handle) },
@@ -1010,8 +941,8 @@ mod tests {
     fn a_tampered_answer_does_not_open_and_still_spends_the_opener() {
         let key = verified_key().key;
         let (sealed, handle) = encapsulate(&android(), &key, &request()).unwrap();
-        let (_, secret, enc) = gateway_opens(&sealed);
-        let mut answer = gateway_seals(&grpc_answer(), &enc, &secret);
+        let (_, response_ctx) = gateway_opens(&sealed);
+        let mut answer = gateway_seals(&grpc_answer(), &response_ctx);
         let last = answer.len() - 1;
         answer[last] ^= 1;
         let failure = complete(
