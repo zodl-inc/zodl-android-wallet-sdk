@@ -657,24 +657,26 @@ mod tests {
         KeyState::new(&gateway_config()).unwrap()
     }
 
-    fn gateway_public_key() -> Vec<u8> {
+    /// The gateway's `application/ohttp-keys` document: one configuration,
+    /// `length(2) || key_id(1) || kem_id(2) || public_key(32) || suites_len(2) || suites`.
+    fn gateway_public_config() -> Vec<u8> {
         gateway_key_state().public_config()
     }
 
-    /// Extract the public key bytes from the key configuration.
-    /// The key.key field format: key_id(1) || kem_id(2) || pk_len(2) || pk(32) || ...
-    /// So key.key[1..] contains kem_id through the end.
-    fn gateway_public_key_bytes() -> Vec<u8> {
-        let config = gateway_public_key();
-        // Format: length(2) || key_id(1) || kem_id(2) || pk_len(2) || pk(32) || cipher_suites
-        // Extract from kem_id to end of pk: positions 3 to 41 (2+1+2+2+32)
-        // This matches key.key[1..39] (kem_id through pk and cipher suites start)
-        config[3..41].to_vec()
+    /// The gateway's X25519 public key, as `KeyConfig::to_bytes` keeps it after the key id.
+    fn gateway_public_key() -> [u8; 32] {
+        gateway_public_config()[5..37].try_into().unwrap()
     }
 
-    /// An `application/ohttp-keys` document: the gateway's public configuration.
+    /// An `application/ohttp-keys` document: a configuration of a KEM this client does not
+    /// speak (which `KeySelection::ANDROID` skips unread), then the gateway's X25519 one.
     fn key_document() -> Vec<u8> {
-        gateway_public_key()
+        let mut other = vec![9u8, 0x00, 0x10];
+        other.extend_from_slice(&[0; 20]);
+        let mut document = (other.len() as u16).to_be_bytes().to_vec();
+        document.extend(other);
+        document.extend(gateway_public_config());
+        document
     }
 
     fn envelope(signer: &SigningKey, network: &str, not_before: u64, not_after: u64) -> Vec<u8> {
@@ -742,23 +744,20 @@ mod tests {
         out
     }
 
-    /// An indeterminate-length Binary HTTP response: 200, `grpc-status: 0` in the header section,
-    /// the content 1, 2, 3 and no trailers (framing indicator 3 for chunked responses).
-    /// Format: framing(1) || status_code_with_informational_flag || headers || content_chunks || trailers
+    /// An indeterminate-length Binary HTTP response (RFC 9292 §3.2, what the gateway's
+    /// `encode_response_stream` writes): framing indicator 3, status 200, `grpc-status: 0` in
+    /// the header section, the content 1, 2, 3 and no trailers. Field sections and the content
+    /// are not length-prefixed but terminated by a zero varint.
     fn grpc_answer() -> Vec<u8> {
-        let mut fields = Vec::new();
+        let mut response = vec![3u8, 0x40, 200];
         for part in [&b"grpc-status"[..], b"0"] {
-            fields.push(part.len() as u8);
-            fields.extend_from_slice(part);
+            response.push(part.len() as u8);
+            response.extend_from_slice(part);
         }
-        let mut response = vec![3u8, 0x40, 200, fields.len() as u8];
-        response.extend(fields);
-        // Content chunk: varint(3) || [1, 2, 3] || varint(0) for terminator
-        response.push(3);  // varint(3)
-        response.extend_from_slice(&[1, 2, 3]);
-        response.push(0);  // content terminator
-        // Trailer section: varint(0) for empty
-        response.push(0);
+        response.push(0); // end of the header section
+        response.extend_from_slice(&[3, 1, 2, 3]); // one content chunk
+        response.push(0); // end of the content
+        response.push(0); // an empty trailer section
         response
     }
 
@@ -796,11 +795,7 @@ mod tests {
         assert_eq!(key.network, "testnet");
         assert_eq!(key.not_after, NOW + 3600);
         assert_eq!(key.key[0], 1);
-        // The key includes key_id(1) + kem_id(2) + more. It's at least 33 bytes.
-        assert!(key.key.len() >= 33, "key too short: {}", key.key.len());
-        // Check kem_id is 0x0020 (X25519)
-        assert_eq!(key.key[1], 0);
-        assert_eq!(key.key[2], 0x20);
+        assert_eq!(key.key[1..], gateway_public_key()[..]);
     }
 
     #[test]
