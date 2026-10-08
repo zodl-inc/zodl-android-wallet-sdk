@@ -674,7 +674,7 @@ mod tests {
 
     /// What a gateway does with a sealed chunked request: the Binary HTTP message inside it, the
     /// secret it exports for the answer and the encapsulated key.
-    fn gateway_opens(sealed: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8]) {
+    fn gateway_opens(sealed: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let (header, rest) = sealed.split_at(7);
         let (enc, mut rest) = rest.split_at(32);
         let mut info = b"message/bhttp chunked request".to_vec();
