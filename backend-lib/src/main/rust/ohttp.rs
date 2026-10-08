@@ -30,10 +30,9 @@ use jni::{
     sys::{JNI_FALSE, JNI_TRUE, jint, jlong, jobject, jstring},
 };
 use zodl_ohttp_client::{
-    BhttpRequest, CONTENT_TYPE_CHUNKED_RES, ChunkedResponseOpener, ClientProfile, Error, Field,
-    KEY_BYTES, KeyConfig, OuterOutcome, OuterResponse, classify_outer_response,
-    encapsulate_chunked_request, pack_fields, signed_config_url, unpack_fields,
-    verify_signed_config, verify_signed_config_with,
+    BhttpRequest, ChunkedResponseOpener, ClientProfile, Error, Field, KEY_BYTES, KeyConfig,
+    OuterOutcome, OuterResponse, check_size, classify_outer_response, encapsulate_chunked_request,
+    pack_fields, signed_config_url, unpack_fields, verify_signed_config, verify_signed_config_with,
 };
 
 use crate::utils::{
@@ -210,7 +209,11 @@ fn encapsulate(
     let key = KeyConfig::from_bytes(key)
         .ok_or_else(|| Failure::argument("a gateway key is 33 bytes long"))?;
     let bhttp = zodl_ohttp_client::encode_bhttp_request(request, &profile.encode)?;
+    // The gateway and the relay answer 413 above the cap: refuse here, before the HPKE work
+    // on the plaintext (the sealed body is longer still) and exactly on the sealed body.
+    check_size(bhttp.len(), profile.limits.max_sealed_request_bytes)?;
     let (sealed, opener) = encapsulate_chunked_request(&key, &bhttp)?;
+    check_size(sealed.len(), profile.limits.max_sealed_request_bytes)?;
     Ok((sealed, opener_handle(opener)))
 }
 
@@ -265,16 +268,10 @@ fn complete(
 
     Ok(match outer_outcome {
         OuterOutcome::Sealed => {
-            // For chunked OHTTP, verify the content type is chunked-res
-            if content_type != Some(CONTENT_TYPE_CHUNKED_RES) {
-                return Ok(Outcome::without_response(
-                    OUTCOME_WRONG_MEDIA_TYPE,
-                    status.into(),
-                    Some(content_type.unwrap_or("(none)").to_string()),
-                ));
-            }
-
-            // Decrypt the chunked response
+            // Whether a 200 without the chunked media type is still opened is the outer
+            // policy's call (`OuterPolicy::ANDROID` does not require it), made above; here the
+            // sealed body is opened, and one that does not open is an error.
+            check_size(body.len(), profile.limits.max_sealed_response_bytes)?;
             let response = opener.open_response(body)?;
 
             // Convert headers from Vec<(String, String)> to Vec<(Vec<u8>, Vec<u8>)>
@@ -596,7 +593,7 @@ mod tests {
     };
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;
-    use zodl_ohttp_client::{EncodeOptions, encode_bhttp_request};
+    use zodl_ohttp_client::{CONTENT_TYPE_CHUNKED_RES, EncodeOptions, encode_bhttp_request};
 
     use super::*;
 
@@ -860,6 +857,40 @@ mod tests {
     fn a_wrong_sized_key_is_an_argument_error() {
         let failure = encapsulate(&android(), &[1; 32], &request()).err().unwrap();
         assert_eq!(failure.kind, KIND_ARGUMENT);
+    }
+
+    /// The gateway and the relay answer 413 above 10 MiB (`Limits::WALLET`): the request is
+    /// refused here instead, which `RustOhttpToolTest` relies on.
+    #[test]
+    fn a_request_over_the_cap_is_too_large_before_it_is_sealed() {
+        let key = verified_key().key;
+        let too_large = request().body(vec![0; 10 * 1024 * 1024]);
+        let failure = encapsulate(&android(), &key, &too_large).err().unwrap();
+        assert_eq!(failure.kind, KIND_TOO_LARGE);
+        assert_eq!(
+            android().limits.max_sealed_request_bytes,
+            Some(10 * 1024 * 1024)
+        );
+    }
+
+    /// `OuterPolicy::ANDROID` does not require the response media type: a 200 is opened
+    /// whatever its `Content-Type` says, and one that does not open is an error (not a
+    /// `WrongMediaType` outcome). `RustOhttpToolTest` relies on this too.
+    #[test]
+    fn a_200_is_opened_whatever_its_media_type_and_garbage_does_not_open() {
+        for content_type in [None, Some("text/plain"), Some(CONTENT_TYPE_CHUNKED_RES)] {
+            let failure = complete(
+                &android(),
+                unsafe { take_opener(sealed_handle()) },
+                200,
+                content_type,
+                &[0; 64],
+                0,
+            )
+            .err()
+            .unwrap();
+            assert_eq!(failure.kind, KIND_OPEN, "{content_type:?}");
+        }
     }
 
     #[test]
