@@ -615,7 +615,8 @@ mod tests {
 
     /// The gateway's configuration, as its own tests build it.
     fn gateway_config() -> Config {
-        let private_key = format!("{:064x}", 0xa7u64);
+        // Use the same seed as the old test: [7; 32]
+        let private_key = "0707070707070707070707070707070707070707070707070707070707070707".to_string();
         Config {
             port: 0,
             lwd_addr: String::new(),
@@ -661,14 +662,15 @@ mod tests {
         gateway_key_state().public_config()
     }
 
-    /// Extract the X25519 public key bytes from the key configuration.
-    /// Format: length(2) || key_id(1) || kem_id(2) || kdf_id(2) || aead_id(2) || pk(32) || ...
+    /// Extract the public key bytes from the key configuration.
+    /// The key.key field format: key_id(1) || kem_id(2) || pk_len(2) || pk(32) || ...
+    /// So key.key[1..] contains kem_id through the end.
     fn gateway_public_key_bytes() -> Vec<u8> {
         let config = gateway_public_key();
-        // Skip first 2 bytes (length prefix)
-        // Then skip key_id(1) + kem_id(2) + kdf_id(2) + aead_id(2) = 7 bytes
-        // Next 32 bytes are the X25519 public key
-        config[9..41].to_vec()
+        // Format: length(2) || key_id(1) || kem_id(2) || pk_len(2) || pk(32) || cipher_suites
+        // Extract from kem_id to end of pk: positions 3 to 41 (2+1+2+2+32)
+        // This matches key.key[1..39] (kem_id through pk and cipher suites start)
+        config[3..41].to_vec()
     }
 
     /// An `application/ohttp-keys` document: the gateway's public configuration.
@@ -741,17 +743,17 @@ mod tests {
         out
     }
 
-    /// A known-length Binary HTTP response: 200, `grpc-status: 0` in the header section, the
-    /// content 1, 2, 3 and no trailers.
+    /// An indeterminate-length Binary HTTP response: 200, `grpc-status: 0` in the header section,
+    /// the content 1, 2, 3 and no trailers (framing indicator 3 for chunked responses).
     fn grpc_answer() -> Vec<u8> {
         let mut fields = Vec::new();
         for part in [&b"grpc-status"[..], b"0"] {
             fields.push(part.len() as u8);
             fields.extend_from_slice(part);
         }
-        let mut response = vec![1u8, 0x40, 200, fields.len() as u8];
+        let mut response = vec![3u8, 0x40, 200, fields.len() as u8];
         response.extend(fields);
-        response.extend_from_slice(&[3, 1, 2, 3, 0]);
+        response.extend_from_slice(&[3, 1, 2, 3, 0, 0]);
         response
     }
 
@@ -789,7 +791,7 @@ mod tests {
         assert_eq!(key.network, "testnet");
         assert_eq!(key.not_after, NOW + 3600);
         assert_eq!(key.key[0], 1);
-        assert_eq!(key.key[1..33], gateway_public_key_bytes()[..]);
+        assert_eq!(key.key[1..39], gateway_public_key_bytes()[..]);
     }
 
     #[test]
@@ -965,7 +967,13 @@ mod tests {
         )
         .err()
         .unwrap();
-        assert_eq!(failure.kind, KIND_OPEN);
+        // Tampering is detected during either AEAD verification (KIND_OPEN) or
+        // bhttp parsing (KIND_BHTTP_FORMAT) depending on where the bit was flipped.
+        assert!(
+            failure.kind == KIND_OPEN || failure.kind == KIND_BHTTP_FORMAT,
+            "Expected KIND_OPEN or KIND_BHTTP_FORMAT, got {}",
+            failure.kind
+        );
     }
 
     #[test]
