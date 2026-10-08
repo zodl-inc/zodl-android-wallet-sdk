@@ -31,7 +31,7 @@ use jni::{
 };
 use zodl_ohttp_client::{
     BhttpRequest, CONTENT_TYPE_CHUNKED_RES, ChunkedResponseOpener, ClientProfile, Error, Field,
-    KEY_BYTES, KeyConfig, OuterOutcome, OuterResponse, classify_outer_response, collect_response,
+    KEY_BYTES, KeyConfig, OuterOutcome, OuterResponse, classify_outer_response,
     encapsulate_chunked_request, pack_fields, signed_config_url, unpack_fields,
     verify_signed_config, verify_signed_config_with,
 };
