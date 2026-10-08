@@ -278,8 +278,8 @@ crate-type = ["staticlib", "cdylib"]
 # to a commit on slipstream-internal feature/ohttp-connector branch that ports the OHTTP
 # connector to 0.4.0-pre.1. This entry can be removed once a published zodl-slipstream
 # version containing the OHTTP transport exists on crates.io.
-# Pins slipstream-internal PR #16 merged, 5ed54b25df8b35dd932718ee699434b501343fe4 (chunked OHTTP connector).
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "5ed54b25df8b35dd932718ee699434b501343fe4" }
+# Pins slipstream-internal PR #16 head, eb94471930797c1970c8bf6da3bc08ca7843dad2 (chunked OHTTP connector + grpc-status header fix).
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "eb94471930797c1970c8bf6da3bc08ca7843dad2" }
 #
 # published `zodl-slipstream` line, the dependency above resolves from crates.io like
 # the rest of the released family — the old git pin was not dropped by accident.
