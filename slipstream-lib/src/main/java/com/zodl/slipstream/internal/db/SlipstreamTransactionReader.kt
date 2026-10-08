@@ -7,12 +7,12 @@ import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.TransactionOutput
-import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionPool
 import cash.z.ecc.android.sdk.model.TransactionRecipient
 import com.zodl.slipstream.SlipstreamNative
 import com.zodl.slipstream.db.SlipstreamWalletDb
 import com.zodl.slipstream.internal.spend.ResubmissionCandidate
+import com.zodl.slipstream.model.SlipstreamTransactionRow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -23,6 +23,18 @@ internal data class OutputProperty(
     /** The upstream `ZcashProtocol` pool code: 0 = transparent, 2 = sapling, 3 = orchard, 4 = ironwood. */
     val poolCode: Int
 )
+
+/**
+ * The visible-transactions row read [TransactionsController] depends on - an interface (rather
+ * than [SlipstreamTransactionReader] itself) only so the controller's flow wiring is
+ * JVM-unit-testable without the native library.
+ */
+internal fun interface VisibleTransactionRows {
+    suspend fun queryVisibleRows(
+        isRecovering: Boolean,
+        accountUuid: AccountUuid?
+    ): List<SlipstreamTransactionRow>
+}
 
 private fun poolFromCode(poolCode: Int): TransactionPool =
     when (poolCode) {
@@ -41,17 +53,19 @@ private fun poolFromCode(poolCode: Int): TransactionPool =
  */
 internal class SlipstreamTransactionReader(
     private val dbFile: File
-) {
-    /** R18 (`filterByAccount = false`) and the account-scoped half of R23. */
-    suspend fun queryVisible(
+) : VisibleTransactionRows {
+    /**
+     * R18 (`accountUuid == null`) and the account-scoped half of R23. Returns the raw rows rather
+     * than [cash.z.ecc.android.sdk.model.TransactionOverview]s: the overview's transaction state
+     * depends on the chain tip, which [TransactionsController] folds in separately so a tip
+     * advance re-maps the rows without re-reading them.
+     */
+    override suspend fun queryVisibleRows(
         isRecovering: Boolean,
-        latestHeight: BlockHeight?,
-        accountUuid: AccountUuid? = null
-    ): List<TransactionOverview> =
+        accountUuid: AccountUuid?
+    ): List<SlipstreamTransactionRow> =
         withContext(Dispatchers.IO) {
-            SlipstreamNative.listTransactions(dbFile.absolutePath, isRecovering, accountUuid?.value).map { row ->
-                TransactionOverviewCursor.fromRow(row, latestHeight)
-            }
+            SlipstreamNative.listTransactions(dbFile.absolutePath, isRecovering, accountUuid?.value).toList()
         }
 
     /**

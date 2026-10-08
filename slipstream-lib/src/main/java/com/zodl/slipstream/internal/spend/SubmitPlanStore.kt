@@ -18,6 +18,16 @@ private fun decodeEndpoint(entry: String): LightWalletEndpoint? {
     return LightWalletEndpoint(host = parts[0], port = port, isSecure = parts[2].toBoolean())
 }
 
+/**
+ * The name of the `SharedPreferences` file a [SubmitPlanStore] persists to for the wallet at
+ * [networkId] and [alias]: written by the synchronizer that owns the wallet, deleted with the wallet
+ * by `SlipstreamSynchronizer.erase`.
+ */
+internal fun submitPlanPreferencesName(
+    networkId: Int,
+    alias: String
+): String = "com.zodl.slipstream.submit_plan_${networkId}_$alias"
+
 private const val ENDPOINT_ENTRY_FIELD_COUNT = 3
 private const val ENDPOINT_DELIMITER = ";"
 

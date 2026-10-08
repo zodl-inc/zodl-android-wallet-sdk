@@ -10,6 +10,7 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+@Suppress("TooManyFunctions")
 internal class PendingSubmitPlanStore(
     private val preferenceProvider: PreferenceProvider? = null,
     private val namespace: String = DEFAULT_NAMESPACE
@@ -125,12 +126,34 @@ internal class PendingSubmitPlanStore(
         loadedFromPreferences = true
     }
 
+    /**
+     * Writes this store's plans back to the shared preference.
+     *
+     * Every synchronizer in the process (one per network and alias) keeps its plans in the same
+     * preference, each under its own [namespace]. Writing the whole in-memory map would replace
+     * the other namespaces with whatever this store happened to load, losing any plan another
+     * synchronizer stored since, so only this store's own namespace is replaced and the rest is
+     * re-read and kept as it currently is. A store with a blank namespace owns every entry.
+     */
     private suspend fun saveToPreferences() {
-        preferenceProvider?.putString(
-            EncryptedPreferenceKeys.PENDING_SUBMIT_PLANS.key,
-            PendingSubmitPlanCodec.encode(plansByTransactionId)
-        )
+        val provider = preferenceProvider ?: return
+        sharedPreferenceMutex.withLock {
+            val stored =
+                provider
+                    .getString(EncryptedPreferenceKeys.PENDING_SUBMIT_PLANS.key)
+                    .orEmpty()
+                    .takeIf { it.isNotBlank() }
+                    ?.let(PendingSubmitPlanCodec::decode)
+                    .orEmpty()
+            val merged = stored.filterKeys { !ownsKey(it) } + plansByTransactionId.filterKeys { ownsKey(it) }
+            provider.putString(
+                EncryptedPreferenceKeys.PENDING_SUBMIT_PLANS.key,
+                PendingSubmitPlanCodec.encode(merged)
+            )
+        }
     }
+
+    private fun ownsKey(transactionId: String) = namespacePrefix.isBlank() || transactionId.startsWith(namespacePrefix)
 
     private suspend fun retainLoadedPlansFor(
         txIds: List<FirstClassByteArray>,
@@ -172,5 +195,42 @@ internal class PendingSubmitPlanStore(
 
     companion object {
         private const val DEFAULT_NAMESPACE = ""
+
+        /** Serializes read-merge-write cycles on the shared preference across all stores. */
+        private val sharedPreferenceMutex = Mutex()
+
+        /** The namespace a synchronizer for [networkId] and [alias] keeps its plans under. */
+        internal fun namespaceFor(
+            networkId: Int,
+            alias: String
+        ) = "${networkId}_$alias"
+
+        /**
+         * Removes every plan stored under [namespace], leaving all other namespaces untouched.
+         * The synchronizer that owns [namespace] must be closed.
+         */
+        internal suspend fun eraseNamespace(
+            preferenceProvider: PreferenceProvider,
+            namespace: String
+        ) {
+            require(namespace.isNotBlank()) { "Refusing to erase every namespace" }
+            val prefix = "$namespace:"
+            sharedPreferenceMutex.withLock {
+                val stored =
+                    preferenceProvider
+                        .getString(EncryptedPreferenceKeys.PENDING_SUBMIT_PLANS.key)
+                        .orEmpty()
+                        .takeIf { it.isNotBlank() }
+                        ?.let(PendingSubmitPlanCodec::decode)
+                        ?: return
+                val kept = stored.filterKeys { !it.startsWith(prefix) }
+                if (kept.size != stored.size) {
+                    preferenceProvider.putString(
+                        EncryptedPreferenceKeys.PENDING_SUBMIT_PLANS.key,
+                        PendingSubmitPlanCodec.encode(kept)
+                    )
+                }
+            }
+        }
     }
 }

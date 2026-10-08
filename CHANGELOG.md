@@ -6,7 +6,255 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-10-07
+
+### Added
+- `GiftCard`, a gift card read from a gift card link with `GiftCard.parse(link)`: this SDK's
+  own links (`https://gift.zodl.com/#v=1&key=...&height=...`) and the legacy JSON payment-link
+  encoding at `/payment-links/open#vN=` (`v1=` / `v2=` / `v3=` payloads). Exposes `origin`
+  (`GiftCardOrigin`: `Zodl`, or `LegacyV1` / `LegacyV2` / `LegacyV3` for the legacy
+  encoding), `network`, `birthdayHeight`, `statedAmount` (informational only), the
+  issuer's free-form `description`, and `id`, a stable non-secret identifier of the card. The
+  card's key is never exposed and is redacted from `toString()`. A rejected link throws
+  `GiftCardException.InvalidLink`, whose `reason` (`GiftCardLinkError`) categorizes the
+  failure; neither it nor the message contains any part of the link. The key is read in
+  either case. A birthday height below the network's NU5 activation is rejected
+  (`GiftCardLinkError.InvalidField`), as cards hold Orchard funds only. `description` is
+  sanitized before it is exposed (line breaks become spaces; control characters and invisible
+  bidi and format characters are removed) and is at most 512 bytes; a malformed, over-long or
+  blank description, or a malformed stated amount, reads as `null` instead of rejecting the
+  card. Still display `description` as untrusted text.
+- `GiftCardRedeemer`, which redeems a `GiftCard` into the user's wallet through a temporary,
+  isolated wallet (its own `Synchronizer` under its own alias, without exchange rates) that
+  can run alongside the main wallet. `GiftCardRedeemer.new(context, card, network,
+  lightWalletEndpoint, isTorEnabled, alias = GiftCardRedeemer.defaultAlias(card))`, then
+  `check()` syncs the card wallet and returns `Status.Ready` / `Status.Pending` /
+  `Status.Empty` with the card's balance, `redeem(toAddress, memo)` sweeps the spendable
+  balance minus the ZIP 317 fee to `toAddress` and submits it, and `close()` closes and
+  deletes the temporary wallet. Pass the main wallet's Tor setting as `isTorEnabled`: the card
+  wallet syncs, fetches the card's birthday tree state and submits the claim over Tor when it
+  is `true`, and with `false` the server sees the user's IP address together with the card's
+  birthday and the claim. Redemption is created with `OvkPolicy.Discard`, so the card's issuer
+  (who can rederive the card's key) cannot learn the recipient address. Funds received by the
+  card less than 10 blocks ago are reported as pending and are not swept, and a card holding
+  no more than the 10,000 zatoshi minimum fee reports `Status.Empty`. `redeem` must follow a
+  completed `check()` on the same redeemer. Failures are reported as `GiftCardException`
+  subtypes: `NetworkMismatch`, `NothingToRedeem` (nothing spendable above the fee),
+  `SyncFailed` (the card wallet could not be created, for example for a birthday no bundled
+  checkpoint covers, or did not sync), `NotChecked` (`redeem` before `check`), `InUse`
+  (another redeemer in the process is using the same card's wallet; `close()` it first) and
+  `Closed`. Each `check()` on a fresh redeemer scans from the card's birthday, which needs
+  network access: the card wallet starts exactly at `GiftCard.birthdayHeight`, using the tree
+  state it fetches from `lightWalletEndpoint` for that height, so no blocks below the link's
+  height are scanned. If the server cannot provide it, the scan starts at the nearest bundled
+  checkpoint below the birthday instead and takes correspondingly longer.
+- `GiftCardRedeemer.redeem(toAddress, memo, destination)` takes the user's own `Synchronizer`
+  as an optional `destination`. After the sweep is submitted, the claim transaction is recorded
+  in that wallet as trusted (ZIP 315), so the wallet shows the incoming funds at once instead
+  of after its next sync, and can spend them after 3 confirmations instead of the 10 it applies
+  to an untrusted external receive. A failure to record never fails the redemption; it is
+  reported as `Redemption.recordedInDestination == false`.
+- `Synchronizer.recordTrustedTransaction(rawTransaction: RawTransaction, txId: TransactionId)`,
+  which stores a transaction that was created on this device by another wallet and marks it as
+  trusted (ZIP 315). It writes to the wallet database directly and works while the
+  synchronizer is not synced or is stopped. Use it only for a transaction whose inputs no
+  untrusted party can still spend, such as the claim of a gift card from a trusted issuer: the
+  issuer of a card still holds its key, so a reorg deep enough to drop the claim (the trusted
+  count, 3 blocks) would let the issuer get a competing spend mined, and trusting anything else
+  lets the wallet spend funds a rollback can take back. The
+  default implementation throws `UnsupportedOperationException`; the SDK's default
+  synchronizer and the Slipstream synchronizer implement it.
+- `Synchronizer.proposeSendMax(account, recipient, memo = null)`, which proposes sending the
+  account's entire currently spendable shielded balance (Sapling, Orchard and Ironwood) to one
+  recipient, with the ZIP 317 fee computed internally and deducted from it, leaving no change.
+  Notes that are not yet spendable are left in the account; transparent funds are not swept.
+  Throws `TransactionEncoderException.InsufficientFundsException` when nothing is spendable or
+  the spendable balance does not exceed the fee; the backend reports that case as a typed
+  error, so it does not depend on the wording of its message. The default implementation throws
+  `UnsupportedOperationException`; the SDK's default synchronizer and the Slipstream
+  synchronizer implement it.
+- `GiftCardRedeemer.Status.Ready` carries `fee`, the ZIP 317 fee a redemption pays for the
+  card's actual notes, and `redeemable`, the spendable balance minus that fee. `check()`
+  proposes the redemption to find that fee, so a card whose notes need more than the
+  10,000 zatoshi minimum fee is reported `Pending` or `Empty` rather than `Ready`, and a
+  `Ready` card can always be redeemed. `GiftCardRedeemer.Redemption.amount` is what the
+  redemption sent to the recipient, after the fee, as the proposal computed it.
+- `GiftCardRedeemer.check(timeout, disconnectedTimeout)`: the check fails with
+  `GiftCardException.SyncFailed` once the card wallet has stayed unable to reach the server
+  for `disconnectedTimeout` (default `GiftCardRedeemer.DEFAULT_DISCONNECTED_TIMEOUT`, 60
+  seconds, or `GiftCardRedeemer.DEFAULT_TOR_DISCONNECTED_TIMEOUT`, 2 minutes, over Tor), and
+  as soon as the card wallet reports a critical error, instead of waiting for the whole
+  `timeout`. Failing to reach the server while the card wallet starts counts as being
+  disconnected, not as a critical error. A card wallet that started exactly at the card's
+  birthday and found no transaction at all is scanned once more from the bundled checkpoint
+  below the birthday before the card is reported `Empty`. A cancellation from inside the
+  check, while its caller is not cancelled, fails it with `GiftCardException.SyncFailed`.
+- `GiftCardRedeemer.redeem` reports a submission that throws, including one that times out, as a
+  `TransactionSubmitResult.Failure` with `GiftCardRedeemer.SUBMIT_THREW_CODE`, so every
+  redemption whose transaction was created returns a `Redemption`; close the redeemer and
+  start over with a new one to retry.
+- `GiftCardRedeemer.close()` cancels a `check()` in progress (which then fails with
+  `GiftCardException.Closed`), so it returns promptly instead of waiting for the sync.
+- `GiftCardRedeemer.redeem` can be cancelled until the claim transaction starts being created.
+  From then on it creates, submits and records the claim in the `destination` to the end even if
+  its caller is cancelled (the caller then gets the `CancellationException`), and `close()` waits
+  for it before tearing the card wallet down. Before, a cancellation between creating and
+  submitting left a created but unsubmitted claim, and one between submitting and recording left
+  the claim untrusted in the destination (10 confirmations instead of 3).
+- `GiftCardRedeemer.close()` returns after at most 30 seconds, and at once when its caller is
+  cancelled, while the teardown (closing the card wallet, then erasing it) goes on in the
+  background; a card wallet whose engine does not stop no longer keeps `close()` waiting forever.
+  The card's alias stays held until the card wallet has been erased, so no other redeemer can use
+  the card while its files may remain. A failed erase, including one after which the engine
+  reports that some of the card wallet's files remain, is retried after 1, 2, 4, 8, 16 and then
+  every 30 seconds, without a limit, for as long as the process lives; the alias is released once
+  an erase succeeds. Only the `close()` that starts the teardown throws its failures: the card
+  wallet's failure to close, once it has been erased, or the first failure to erase it, which may
+  be transient while the retries go on; a later or concurrent `close()` waits for the same
+  teardown and returns. Before, a failed erase released the alias anyway. Once `close()` has been
+  called, `check()` and `redeem()` fail with `GiftCardException.Closed` at once, and a `redeem`
+  still preparing when `close()` stops waiting fails with it rather than create its claim. A
+  redeemer dropped without `close()` keeps its alias and its card wallet's synchronizer for the
+  rest of the process.
+- `GiftCardRedeemer.redeem` fails with `GiftCardException.Closed` when the card's key was wiped
+  with `GiftCard.wipe()`, instead of an `IllegalStateException`.
+- `GiftCardException.RedemptionIncomplete`: `GiftCardRedeemer.redeem` throws it when the proposal
+  creates no transaction, instead of returning a `Redemption` with no results (whose
+  `isSubmitted` was vacuously `true`). A transaction that was created but not accepted by the
+  server is still reported in a `Redemption`, as a failed result.
+- `GiftCardRedeemer.redeem` records each transaction the server accepted in the `destination` on
+  its own: one that fails to record no longer keeps the others from being recorded, and they are
+  recorded also when a later submission is cancelled, before the cancellation is rethrown.
+  `Redemption.recordedInDestination` stays `true` only when every accepted transaction was
+  recorded, so `false` can now also mean that only some were.
+- `GiftCardRedeemer.storedAliases(context, network)`, the aliases of the card wallets whose
+  data is stored on the device, to erase with `GiftCardRedeemers.erase` from the SDK incubator,
+  which handles the card wallets of either engine, those left behind by a redeemer that was never
+  closed (for example when the app was killed).
+- `GiftCard.wipe()`, which overwrites the card's key in memory once every redeemer for the card
+  has been closed.
+- `RecipientAddress`, a unified, Sapling, transparent or TEX address validated for a network
+  by the Rust backend (`RecipientAddress.new(encoding, network)`), taken by `proposeSendMax`
+  and `GiftCardRedeemer.redeem`.
+- `OvkPolicy` (`Sender`, `Discard`), selecting which outgoing viewing key created
+  transactions' outputs are encrypted to.
+- `Synchronizer.eraseAlias(appContext, network, alias)`, which deletes the local data of the
+  wallet under one alias (databases, block cache and its stored submit plans) without clearing
+  the preferences shared by every wallet in the process, unlike `Synchronizer.erase`. The
+  synchronizer for that alias must be closed first.
+- `GiftCardRedeemers` in the incubator: `new(context, card, network, lightWalletEndpoint,
+  isTorEnabled, alias = GiftCardRedeemer.defaultAlias(card))` creates a `GiftCardRedeemer`
+  whose temporary card wallet runs on the same sync engine as `WalletCoordinator`'s main
+  wallet. On the Slipstream engine the card wallet is a second `SlipstreamSynchronizer` under
+  the card's alias, beside the main one, with its own database and engine; like the default
+  engine's, it starts scanning exactly at the card's birthday, from the tree state fetched over Tor
+  when `isTorEnabled`, and at the bundled checkpoint below it only when that fetch fails. `storedAliases`
+  lists the card wallets left on the device, and `erase(context, network, alias)` deletes one,
+  including any files an earlier engine left under the same alias, without starting a
+  synchronizer; it returns `true` when none of the card wallet's data remains, also when there was
+  nothing to delete. It refuses, before touching any file, an alias that addresses the main wallet's
+  files: the default alias, also with trailing underscores, or the legacy `ZcashSdk`.
+- `SlipstreamSynchronizer.eraseAlias(appContext, network, alias)`, which deletes a helper
+  wallet's Slipstream database and submit plans together with whatever an `SdkSynchronizer` left
+  under the same alias, by deleting files only, while no Slipstream synchronizer can open the
+  alias. A shutdown of that wallet still in flight is waited for before the synchronizers' shared
+  guard is taken, so a slow helper wallet teardown never keeps the main wallet from opening. The `SdkSynchronizer` leftovers are looked for only when that synchronizer's own files
+  (its block cache or pending transactions database) are present, and their deletion is
+  best-effort: its failure is logged and never fails the erase. It refuses, before touching any
+  file, an alias that addresses the main wallet's files: the default alias, also with trailing
+  underscores, or the legacy `ZcashSdk`.
+- **Breaking (binary):** `SlipstreamSynchronizer.new` takes a trailing `engineMemoryFraction`
+  (default `FULL_ENGINE_MEMORY`); Kotlin call sites compile unchanged, compiled callers must be
+  rebuilt. It is the share of the device's memory the engine is told the device has. The engine
+  uses that figure for one decision only: below its small-device threshold (3 GiB) it switches
+  from its default fetch and split budgets to fixed, smaller ones. A gift card wallet's engine is
+  told half, so it takes the smaller budgets on devices below 6 GiB, where the main wallet's
+  engine may still take the defaults, and the same default budgets as the main wallet's on larger
+  devices; never larger ones. `newBlocking` does not take it.
+
+### Changed
+- `GiftCardRedeemer.new` is deprecated: it always runs the card wallet on `SdkSynchronizer`,
+  whatever engine the app syncs with. Use `GiftCardRedeemers.new` from the incubator.
+- `GiftCardRedeemer.check` fails at once with `GiftCardException.SyncFailed`, carrying the
+  failure, when the card wallet latches a setup error (`Synchronizer.setupError`), as the
+  Slipstream engine does instead of throwing out of its creation; such a card wallet is closed
+  and erased, so the next `check()` starts over with a new one. `check` waits, within its
+  `timeout`, for the card wallet's account to be created, which on the Slipstream engine happens
+  only after the wallet has resolved where to start scanning. A card wallet on the Slipstream
+  engine reports `DISCONNECTED` while idle before its first sync pass, and reports trouble
+  reaching the server as being idle or as syncing that does not advance; for such a wallet,
+  `disconnectedTimeout` bounds how long it may go without any sync progress before it is synced,
+  idle before its first pass included, and the check then fails with `SyncFailed`. A failed sync
+  pass the engine reports (an engine error, not a network outage) is retried at most
+  `GiftCardRedeemer.MAX_PROCESSOR_ERROR_RETRIES` (2) times per check, after which the check fails
+  with it. On the Slipstream engine, `check` counts the card wallet's balance only once the wallet
+  has scanned up to the chain tip, and watches a card that still looks empty for 15 more seconds
+  (30 over Tor) before it reports `Empty`, so that a freshly funded card is no longer reported
+  `Empty` on its first check and `Pending` only on the next. A card that holds nothing and has
+  already sent a transaction (one redeemed or spent before) is reported `Empty` at once, without
+  that wait. The card wallet resolves where to start scanning while its database is created,
+  rather than after it.
+- `SlipstreamSynchronizer.new` works on its own copy of the setup's seed, which it overwrites with
+  zeros once its deferred preparation has settled, so a caller may wipe its seed as soon as `new`
+  returns; before, a caller that did so (as the gift card redeemer does) left the preparation
+  creating the account from a zeroed seed. A `new` call cancelled after the instance was built
+  closes that instance and waits for its shutdown before rethrowing.
+- `SlipstreamSynchronizer.erase` also deletes the wallet's submit-plan preferences, so an erased
+  wallet leaves no record of its transactions behind.
+- The Slipstream synchronizer downloads the Sapling parameters only for a proposal that spends
+  or creates a Sapling note, as the default synchronizer already did; an Orchard-only send, such
+  as a gift card redemption, never fetches them.
+- **Breaking (binary and for implementers):** `Synchronizer.createProposedTransactions` and
+  `Broadcaster.createProposedTransactions` take
+  an `ovkPolicy: OvkPolicy = OvkPolicy.Sender` parameter. Existing call sites compile
+  unchanged and keep the previous behavior. Any implementer or test fake of `Synchronizer` or
+  `Broadcaster` must add the parameter to its override. With `OvkPolicy.Discard`, nobody
+  holding the account's keys can recover the recipients, values or memos of the created
+  outputs, including the sending wallet itself if its local data is lost.
+- Creating transactions from a proposal that neither spends nor creates a Sapling note
+  (including change) no longer downloads the Sapling parameters (about 50 MB) first, so such
+  sends work on a device that has never fetched them. Proposals that involve Sapling still
+  download them as before.
+- The Rust backend now builds on the NU7 pre-release generation of the underlying Zcash
+  Rust crates and the `zodl-slipstream` 0.4.0-pre.1 engine.
+- Every unified address, unified full viewing key and unified incoming viewing key string
+  the SDK returns is ZIP 316 revision 0, with every receiver or item it carries, as before
+  the crate move. Revision 2 is used only for a value revision 0 cannot represent (one with
+  expiry metadata, a P2SH viewing-key item, or only transparent items). Decoding still
+  accepts both revisions.
+- Coinholder voting is built on `zcash_voting` 5.1.1-rc.3 as it stands at the head of
+  valargroup/zcash_voting#373, the pull request that moves its librustzcash backend to
+  the NU7 pre-release crates. No release carries that change yet, so the Rust backend
+  takes the crate, and the crates under it that the change also needs, from git
+  revisions. crates.io already has releases with the same version numbers built on the
+  Ironwood generation, so these git revisions are replaced only together, once NU7-based
+  releases exist under new version numbers. The voting API is unchanged.
+
 ### Fixed
+- Two synchronizers running in the same process (different aliases) no longer overwrite each
+  other's stored transaction submit plans; previously the later writer could drop a plan the
+  other had stored, so a created transaction was not resubmitted to the endpoints it was
+  submitted to.
+- `Synchronizer.erase` now also deletes a database's SQLite shared-memory (`-shm`) file.
+- With the Slipstream synchronizer, a received transaction no longer stays `Pending` after it
+  reaches 10 confirmations: `allTransactions` and `getTransactions(accountUuid)` now recompute
+  `transactionState` whenever the chain tip moves, not only when the set of transactions
+  changes.
+- With the Slipstream synchronizer, `TransactionOverview.isTrusted` now reports the wallet's
+  stored trust status (for example a gift-card claim recorded as trusted) instead of always
+  `false`; `spentNoteCount` and `poolCrossingValue` are now populated as well.
+- `TransactionOverview.transactionState` of a received transaction with `isTrusted == true`
+  (for example a gift-card claim) is now `Confirmed` at 3 confirmations, the ZIP 315 trusted
+  count at which its funds become spendable, instead of 10. Untrusted received transactions and
+  sent transactions are still `Confirmed` at 10. This applies to both synchronizers; no call-site
+  change is needed.
+- `Synchronizer.recordTrustedTransaction` now throws when the transaction does not involve this
+  wallet and so was not stored, instead of returning normally with no trust status recorded, and
+  `RustBackend.setTransactionTrust` throws for a transaction it does not find among the wallet's
+  stored transactions, including a stored one whose raw bytes the wallet does not hold. A gift
+  card claim recorded in a wallet it does not pay therefore reports
+  `GiftCardRedeemer.Redemption.recordedInDestination` as `false`; the redemption itself is
+  unaffected.
 - The JNI entry points `branchIdForHeight`, `putUtxo`, and the pool-migration entry points
   `recordTransferResultNative`, `hasOverdueTransfersNative`, `nextDueTransferNative`, and
   `nextStepNative` now reject negative or out-of-range block heights with an exception instead

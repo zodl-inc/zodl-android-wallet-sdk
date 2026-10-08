@@ -1,5 +1,6 @@
 package com.zodl.slipstream.internal.db
 
+import cash.z.ecc.android.sdk.internal.model.ConfirmationsPolicy
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.TransactionId
@@ -28,6 +29,11 @@ internal object TransactionOverviewCursor {
      * [nowEpochSeconds] is a parameter rather than an internal `System.currentTimeMillis()` read
      * specifically to preserve that purity/determinism for tests.
      *
+     * The note counts, pool-crossing value and trust status are projected from `v_transactions`
+     * by `host_read.rs`'s `listTransactions`, the same columns the SDK's own `AllTransactionView`
+     * reads. Only an explicit `trust_status = 1` is trusted (that view's rule); NULL (never set,
+     * or a migration-pending row) and 0 read as untrusted.
+     *
      * @param latestHeight the engine snapshot's `chainTip` at query time (the adapter's twin of
      *   the upstream SDK folding `processor.networkHeight` into the flow,
      *   `SdkSynchronizer.kt:360-374`); 0 or unknown -> pass `null`.
@@ -40,13 +46,15 @@ internal object TransactionOverviewCursor {
         val minedBlockHeight = row.minedHeight?.let(BlockHeight::new)
         val expiryBlockHeight = row.expiryHeight?.takeIf { it != 0L }?.let(BlockHeight::new)
         val isSent = row.accountBalanceDelta < 0
+        val isTrusted = row.trustStatus == 1L
 
         val transactionState =
             computeTransactionState(
                 latestHeight = latestHeight,
                 minedHeight = minedBlockHeight,
                 expiryHeight = expiryBlockHeight,
-                isExpiredUnmined = row.isExpiredUnmined?.let { it != 0L }
+                isExpiredUnmined = row.isExpiredUnmined?.let { it != 0L },
+                requiredConfirmations = ConfirmationsPolicy.requiredConfirmations(isSent, isTrusted)
             )
 
         // MOB-1665: the legacy SdkSynchronizer path backfilled a real historical timestamp for
@@ -88,18 +96,9 @@ internal object TransactionOverviewCursor {
             blockTimeEpochSeconds = estimatedBlockTime,
             transactionState = transactionState,
             isShielding = row.isShielding,
-            // NOT PROJECTED by this read path. `host_read.rs`'s `listTransactions` SQL selects a
-            // fixed column list that does not include `spent_note_count`, `pool_crossing_value` or
-            // `trust_status`, and `SlipstreamTransactionRow` has no slot for them, so there is
-            // nothing to carry here. These values reproduce the shape this path had before the
-            // columns existed, so nothing regresses; a transaction read through slipstream simply
-            // does not gain them. `isTrusted = false` is the conservative reading (the longer,
-            // untrusted confirmation count). Widening the projection means extending the SQL, the
-            // row type, and the `SlipstreamTransactionRow` JNI constructor signature in lockstep —
-            // a follow-up, not merge work. The SDK's own `AllTransactionView` does project them.
-            spentNoteCount = 0,
-            poolCrossingValue = null,
-            isTrusted = false,
+            spentNoteCount = row.spentNoteCount,
+            poolCrossingValue = row.poolCrossingValue?.let(::Zatoshi),
+            isTrusted = isTrusted,
             // `zip318_kind` is selected from `v_transactions` by our own `host_read.rs`
             // (backend-lib, not the external slipstream-core crate) — see that file's 2026-08-03
             // doc update.

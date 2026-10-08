@@ -59,6 +59,12 @@ class Proposal(
     fun totalFeeRequired(): Zatoshi = Zatoshi(inner.totalFeeRequired())
 
     /**
+     * Returns the total value this proposal sends to its recipients, after fees and change. See
+     * [ProposalUnsafe.totalSent].
+     */
+    internal fun totalSent(): Zatoshi = Zatoshi(inner.totalSent().coerceAtLeast(0))
+
+    /**
      * Returns whether this proposal directly spends any Orchard note. See
      * [ProposalUnsafe.usesOrchardInputs] for exactly what's (and isn't) detected.
      */

@@ -1,5 +1,6 @@
 package com.zodl.slipstream.internal.db
 
+import cash.z.ecc.android.sdk.internal.model.ConfirmationsPolicy
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.TransactionState
 import com.zodl.slipstream.model.SlipstreamTransactionRow
@@ -10,7 +11,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TransactionOverviewCursorTest {
-    /** `chainTip + 1 - minedHeight == 10 == MIN_CONFIRMATIONS -> Confirmed`. */
+    /** `chainTip + 1 - minedHeight == 10`, the untrusted confirmation count -> Confirmed. */
     @Test
     fun received_transaction_has_positive_net_value_and_is_not_sent() {
         val overview =
@@ -33,7 +34,10 @@ class TransactionOverviewCursorTest {
                         blockTime = 1_700_000_000,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(1_009)
             )
@@ -65,7 +69,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(1_000)
             )
@@ -99,7 +106,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(1_000_000)
             )
@@ -131,7 +141,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = true,
                         isExpiredUnmined = null,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = null
             )
@@ -171,7 +184,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 3 // Zip318Kind.TRANSFER
+                        zip318Kind = 3,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(2_000_000)
             )
@@ -212,7 +228,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(200),
                 nowEpochSeconds = 1_800_000_000L
@@ -246,7 +265,10 @@ class TransactionOverviewCursorTest {
                         blockTime = 1_650_000_000L,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(200),
                 nowEpochSeconds = 1_800_000_000L
@@ -279,7 +301,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 0
+                        zip318Kind = 0,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(200),
                 nowEpochSeconds = 1_800_000_000L
@@ -312,7 +337,10 @@ class TransactionOverviewCursorTest {
                         blockTime = null,
                         isShielding = false,
                         isExpiredUnmined = 0L,
-                        zip318Kind = 2 // Zip318Kind.PREPARATION
+                        zip318Kind = 2,
+                        spentNoteCount = 0,
+                        poolCrossingValue = null,
+                        trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(2_000_000)
             )
@@ -320,5 +348,104 @@ class TransactionOverviewCursorTest {
         assertTrue(overview.isSentTransaction)
         assertEquals(TransactionState.Pending, overview.transactionState)
         assertEquals(cash.z.ecc.android.sdk.model.Zip318Kind.PREPARATION, overview.zip318Kind)
+    }
+
+    /**
+     * `trust_status` follows the SDK's own `AllTransactionView` rule: only an explicit `1` is
+     * trusted (e.g. a gift-card claim recorded as trusted per ZIP 315); `0` and SQL NULL - a
+     * transaction the wallet never marked, or a migration-pending row - read as untrusted.
+     */
+    @Test
+    fun trust_status_one_maps_to_trusted() {
+        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = 1L), BlockHeight.new(1_001))
+
+        assertTrue(overview.isTrusted)
+    }
+
+    @Test
+    fun trust_status_zero_maps_to_untrusted() {
+        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = 0L), BlockHeight.new(1_001))
+
+        assertFalse(overview.isTrusted)
+    }
+
+    @Test
+    fun null_trust_status_maps_to_untrusted() {
+        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = null), BlockHeight.new(1_001))
+
+        assertFalse(overview.isTrusted)
+    }
+
+    /** A received row mined at 1_000 has `latestHeight + 1 - 1_000` confirmations. */
+    @Test
+    fun trusted_receive_is_confirmed_at_the_trusted_count() {
+        val trusted = receivedRow(trustStatus = 1L)
+        val atHeight = { confirmations: Int -> BlockHeight.new(1_000L + confirmations - 1) }
+
+        assertEquals(
+            TransactionState.Pending,
+            TransactionOverviewCursor.fromRow(trusted, atHeight(TRUSTED - 1)).transactionState
+        )
+        assertEquals(
+            TransactionState.Confirmed,
+            TransactionOverviewCursor.fromRow(trusted, atHeight(TRUSTED)).transactionState
+        )
+    }
+
+    @Test
+    fun untrusted_receive_is_confirmed_at_the_untrusted_count() {
+        val untrusted = receivedRow(trustStatus = null)
+        val atHeight = { confirmations: Int -> BlockHeight.new(1_000L + confirmations - 1) }
+
+        assertEquals(
+            TransactionState.Pending,
+            TransactionOverviewCursor.fromRow(untrusted, atHeight(UNTRUSTED - 1)).transactionState
+        )
+        assertEquals(
+            TransactionState.Confirmed,
+            TransactionOverviewCursor.fromRow(untrusted, atHeight(UNTRUSTED)).transactionState
+        )
+    }
+
+    @Test
+    fun spent_note_count_and_pool_crossing_value_are_carried_through() {
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                receivedRow(trustStatus = null).copy(spentNoteCount = 2, poolCrossingValue = 4_000L),
+                BlockHeight.new(1_001)
+            )
+
+        assertEquals(2, overview.spentNoteCount)
+        assertEquals(4_000L, overview.poolCrossingValue?.value)
+        assertNull(TransactionOverviewCursor.fromRow(receivedRow(trustStatus = null), null).poolCrossingValue)
+    }
+
+    private fun receivedRow(trustStatus: Long?) =
+        SlipstreamTransactionRow(
+            txId = ByteArray(32) { 7 },
+            minedHeight = 1_000,
+            expiryHeight = null,
+            txIndex = 0,
+            raw = null,
+            accountBalanceDelta = 5_000,
+            totalSpent = 0,
+            totalReceived = 5_000,
+            feePaid = null,
+            hasChange = false,
+            sentNoteCount = 0,
+            receivedNoteCount = 1,
+            memoCount = 0,
+            blockTime = 1_700_000_000,
+            isShielding = false,
+            isExpiredUnmined = 0L,
+            zip318Kind = 0,
+            spentNoteCount = 0,
+            poolCrossingValue = null,
+            trustStatus = trustStatus
+        )
+
+    companion object {
+        private const val TRUSTED = ConfirmationsPolicy.TRUSTED_CONFIRMATIONS
+        private const val UNTRUSTED = ConfirmationsPolicy.UNTRUSTED_CONFIRMATIONS
     }
 }

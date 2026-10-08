@@ -21,7 +21,7 @@ class TypesafeBackendImplTest {
 
             var capturedUskBytes: ByteArray? = null
             val backend = mock(Backend::class.java)
-            `when`(backend.createProposedTransactions(eq(proposal.toUnsafe()), any()))
+            `when`(backend.createProposedTransactions(eq(proposal.toUnsafe()), any(), eq(false)))
                 .thenAnswer { invocation ->
                     val passedBytes = invocation.getArgument<ByteArray>(1)
                     capturedUskBytes = passedBytes

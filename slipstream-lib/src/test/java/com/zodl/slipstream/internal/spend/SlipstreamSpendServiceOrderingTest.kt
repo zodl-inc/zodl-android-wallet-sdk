@@ -47,6 +47,7 @@ class SlipstreamSpendServiceOrderingTest {
 
             val txId = byteArrayOf(1, 2, 3)
             `when`(backend.createProposedTransactions(proposalUnsafe, uskBytes)).thenReturn(listOf(txId))
+            `when`(backend.proposalRequiresSaplingProofs(proposalUnsafe)).thenReturn(true)
 
             val rawBytes = byteArrayOf(9, 9, 9)
             val rawTransaction = FirstClassByteArray(rawBytes)

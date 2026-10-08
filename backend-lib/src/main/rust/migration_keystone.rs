@@ -373,7 +373,6 @@ mod tests {
     use orchard::value::NoteValue;
     use pczt::roles::creator::Creator;
     use pczt::roles::io_finalizer::IoFinalizer;
-    use rand::rngs::OsRng;
     use shardtree::ShardTree;
     use shardtree::store::memory::MemoryShardStore;
     use ur_registry::zcash::zcash_sign_batch::ZcashSignBatch;
@@ -392,7 +391,7 @@ mod tests {
     /// "dummy spends will have been signed" note) — producing exactly the kind of
     /// pre-existing `spend_auth_sig` whose batch-redaction handling is under test here.
     fn build_single_pool_orchard_pczt() -> Vec<u8> {
-        let mut rng = OsRng;
+        let mut rng = crate::system_rng();
         let sk = SpendingKey::from_zip32_seed(&[11u8; 32], 1, zip32::AccountId::ZERO)
             .expect("valid Orchard ZIP 32 spending key");
         let fvk = FullViewingKey::from(&sk);
@@ -475,11 +474,13 @@ mod tests {
             .expect("add output");
 
         let PcztResult { pczt_parts, .. } = builder
-            .build_for_pczt(OsRng, &zip317::FeeRule::standard())
+            .build_for_pczt(crate::system_rng(), &zip317::FeeRule::standard())
             .expect("build_for_pczt");
 
         let base = Creator::build_from_parts(pczt_parts).expect("creator");
-        let base = IoFinalizer::new(base).finalize_io().expect("io finalize");
+        let base = IoFinalizer::new(base)
+            .finalize_io(crate::system_rng())
+            .expect("io finalize");
         base.serialize().expect("serialize")
     }
 
