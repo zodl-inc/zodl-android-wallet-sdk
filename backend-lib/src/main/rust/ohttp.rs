@@ -30,10 +30,10 @@ use jni::{
     sys::{JNI_FALSE, JNI_TRUE, jint, jlong, jobject, jstring},
 };
 use zodl_ohttp_client::{
-    BhttpRequest, ChunkedResponseOpener, ClientProfile, Error, Field, KEY_BYTES, KeyConfig,
-    classify_outer_response, collect_response, encapsulate_chunked_request, pack_fields,
-    signed_config_url, unpack_fields, verify_signed_config, verify_signed_config_with,
-    OuterOutcome, OuterResponse, CONTENT_TYPE_CHUNKED_RES,
+    BhttpRequest, CONTENT_TYPE_CHUNKED_RES, ChunkedResponseOpener, ClientProfile, Error, Field,
+    KEY_BYTES, KeyConfig, OuterOutcome, OuterResponse, classify_outer_response, collect_response,
+    encapsulate_chunked_request, pack_fields, signed_config_url, unpack_fields,
+    verify_signed_config, verify_signed_config_with,
 };
 
 use crate::utils::{
@@ -277,11 +277,18 @@ fn complete(
             // Decrypt the chunked response
             let response = opener.open_response(body)?;
 
+            // Convert headers from Vec<(String, String)> to Vec<(Vec<u8>, Vec<u8>)>
+            let headers_bytes: Vec<(Vec<u8>, Vec<u8>)> = response
+                .headers
+                .into_iter()
+                .map(|(name, value)| (name.into_bytes(), value.into_bytes()))
+                .collect();
+
             Outcome {
                 kind: OUTCOME_RESPONSE,
                 status: jint::from(response.status),
-                headers: pack_fields(&response.headers)?,
-                trailers: pack_fields(&response.trailers)?,
+                headers: pack_fields(&headers_bytes)?,
+                trailers: pack_fields(&[])?, // Trailers are already appended to headers
                 body: response.body,
                 detail: None,
             }
@@ -811,7 +818,10 @@ mod tests {
         assert_eq!(
             unpack_fields(&info.post_headers).unwrap(),
             vec![
-                (b"Content-Type".to_vec(), b"message/ohttp-chunked-req".to_vec()),
+                (
+                    b"Content-Type".to_vec(),
+                    b"message/ohttp-chunked-req".to_vec()
+                ),
                 (b"Accept".to_vec(), b"message/ohttp-chunked-res".to_vec()),
                 (b"Accept-Encoding".to_vec(), b"identity".to_vec()),
             ]
@@ -1017,9 +1027,7 @@ mod tests {
 
     #[test]
     fn a_spent_or_null_handle_is_an_argument_error_and_freeing_it_is_a_no_op() {
-        let failure = complete(&android(), None, 200, None, &[], 0)
-            .err()
-            .unwrap();
+        let failure = complete(&android(), None, 200, None, &[], 0).err().unwrap();
         assert_eq!(failure.kind, KIND_ARGUMENT);
         assert!(unsafe { take_opener(0) }.is_none());
         drop(unsafe { take_opener(0) });
