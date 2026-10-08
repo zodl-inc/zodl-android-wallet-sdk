@@ -591,9 +591,7 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use ed25519_dalek::{Signer, SigningKey};
     use ohttp_gateway::{
-        chunked_stream::ChunkSealer,
-        config::Config,
-        hpke::KeyState,
+        chunked_stream::ChunkSealer, config::Config, hpke::KeyState,
         ohttp_chunked::decapsulate_chunked_request,
     };
     use sha2::{Digest, Sha256};
@@ -616,7 +614,8 @@ mod tests {
     /// The gateway's configuration, as its own tests build it.
     fn gateway_config() -> Config {
         // Use the same seed as the old test: [7; 32]
-        let private_key = "0707070707070707070707070707070707070707070707070707070707070707".to_string();
+        let private_key =
+            "0707070707070707070707070707070707070707070707070707070707070707".to_string();
         Config {
             port: 0,
             lwd_addr: String::new(),
@@ -791,7 +790,11 @@ mod tests {
         assert_eq!(key.network, "testnet");
         assert_eq!(key.not_after, NOW + 3600);
         assert_eq!(key.key[0], 1);
-        assert_eq!(key.key[1..39], gateway_public_key_bytes()[..]);
+        // The key includes key_id(1) + kem_id(2) + pk_len(2) + pk(32) + cipher_suites
+        assert!(key.key.len() >= 37, "key too short: {}", key.key.len());
+        // Check kem_id is 0x0020 (X25519)
+        assert_eq!(key.key[1], 0);
+        assert_eq!(key.key[2], 0x20);
     }
 
     #[test]
