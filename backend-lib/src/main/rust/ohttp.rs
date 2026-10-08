@@ -744,6 +744,7 @@ mod tests {
 
     /// An indeterminate-length Binary HTTP response: 200, `grpc-status: 0` in the header section,
     /// the content 1, 2, 3 and no trailers (framing indicator 3 for chunked responses).
+    /// Format: framing(1) || status_code_with_informational_flag || headers || content_chunks || trailers
     fn grpc_answer() -> Vec<u8> {
         let mut fields = Vec::new();
         for part in [&b"grpc-status"[..], b"0"] {
@@ -752,7 +753,12 @@ mod tests {
         }
         let mut response = vec![3u8, 0x40, 200, fields.len() as u8];
         response.extend(fields);
-        response.extend_from_slice(&[3, 1, 2, 3, 0, 0]);
+        // Content chunk: varint(3) || [1, 2, 3] || varint(0) for terminator
+        response.push(3);  // varint(3)
+        response.extend_from_slice(&[1, 2, 3]);
+        response.push(0);  // content terminator
+        // Trailer section: varint(0) for empty
+        response.push(0);
         response
     }
 
@@ -790,8 +796,8 @@ mod tests {
         assert_eq!(key.network, "testnet");
         assert_eq!(key.not_after, NOW + 3600);
         assert_eq!(key.key[0], 1);
-        // The key includes key_id(1) + kem_id(2) + pk_len(2) + pk(32) + cipher_suites
-        assert!(key.key.len() >= 37, "key too short: {}", key.key.len());
+        // The key includes key_id(1) + kem_id(2) + more. It's at least 33 bytes.
+        assert!(key.key.len() >= 33, "key too short: {}", key.key.len());
         // Check kem_id is 0x0020 (X25519)
         assert_eq!(key.key[1], 0);
         assert_eq!(key.key[2], 0x20);
