@@ -586,13 +586,17 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_profile
 #[cfg(test)]
 mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use bytes::Bytes;
     use ed25519_dalek::{Signer, SigningKey};
+    use futures_util::StreamExt;
     use ohttp_gateway::{
-        chunked_stream::ChunkSealer, config::Config, hpke::KeyState,
+        chunked_stream::{ChunkSealer, UpFrame, encode_response_stream},
+        config::Config,
+        hpke::{KeyState, ResponseContext},
         ohttp_chunked::decapsulate_chunked_request,
     };
     use sha2::{Digest, Sha256};
-    use std::collections::HashMap;
+    use std::{collections::HashMap, time::Duration};
     use zodl_ohttp_client::{CONTENT_TYPE_CHUNKED_RES, EncodeOptions, encode_bhttp_request};
 
     use super::*;
@@ -739,6 +743,43 @@ mod tests {
         // Seal an empty final chunk
         out.extend_from_slice(&sealer.seal(&[], true).unwrap());
         out
+    }
+
+    /// What the gateway really sends for a plain HTTP backend (cmc, near, voting): its own
+    /// `encode_response_stream` over the backend's `status`, `headers` and `body` (one upstream
+    /// frame, no trailers), in `chunk_size` chunks, the last one zero-padded to `chunk_size`.
+    fn gateway_streams(
+        response_ctx: ResponseContext,
+        status: u16,
+        headers: &[(&str, &str)],
+        body: &[u8],
+        chunk_size: usize,
+    ) -> Vec<u8> {
+        let headers = headers
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        let upstream = futures_util::stream::iter([Ok::<UpFrame, anyhow::Error>(UpFrame::Data(
+            Bytes::copy_from_slice(body),
+        ))]);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let frames: Vec<Bytes> = rt.block_on(
+            encode_response_stream(
+                response_ctx,
+                status,
+                headers,
+                upstream,
+                chunk_size,
+                Duration::from_millis(50),
+                "testnet".to_string(),
+            )
+            .map(|frame| frame.unwrap())
+            .collect(),
+        );
+        frames
+            .iter()
+            .flat_map(|frame| frame.iter().copied())
+            .collect()
     }
 
     /// An indeterminate-length Binary HTTP response (RFC 9292 §3.2, what the gateway's
@@ -929,6 +970,57 @@ mod tests {
         assert!(unpack_fields(&outcome.trailers).unwrap().is_empty());
         assert_eq!(outcome.body, [1, 2, 3]);
         assert_eq!(outcome.detail, None);
+    }
+
+    /// The third-party path of the app (cmc, near, voting), as the Kotlin transport drives it:
+    /// `OhttpTransport.exchange` passes a 200 with **no content type**
+    /// (`opener.open(HTTP_OK, null, answer, attempt)`), and the gateway's answer is its real
+    /// streaming encoder's output for a plain HTTP response (JSON, no trailers), spanning
+    /// several chunks with a padded final one. A 404 with a text body is an answer too.
+    #[test]
+    fn a_plain_http_answer_of_the_gateway_completes_as_the_kotlin_transport_calls_it() {
+        let key = verified_key().key;
+        let json = br#"{"data":[{"id":2781,"symbol":"USD","name":"United States Dollar"}]}"#;
+        let cases: [(u16, &[(&str, &str)], &[u8], usize); 3] = [
+            (
+                200,
+                &[
+                    ("content-type", "application/json"),
+                    ("cache-control", "max-age=60"),
+                ],
+                json,
+                16,
+            ),
+            (200, &[("content-type", "application/json")], json, 16384),
+            (404, &[("content-type", "text/plain")], b"not found", 16384),
+        ];
+        for (status, headers, body, chunk_size) in cases {
+            let request = BhttpRequest::new("GET", "cmc.zodl.com", "/v1/fiat/map")
+                .header("Accept", "application/json");
+            let (sealed, handle) = encapsulate(&android(), &key, &request).unwrap();
+            let (_, response_ctx) = gateway_opens(&sealed);
+            let answer = gateway_streams(response_ctx, status, headers, body, chunk_size);
+
+            let outcome = complete(
+                &android(),
+                unsafe { take_opener(handle) },
+                200,
+                None,
+                &answer,
+                0,
+            )
+            .unwrap();
+            assert_eq!(outcome.kind, OUTCOME_RESPONSE, "{status} / {chunk_size}");
+            assert_eq!(outcome.status, jint::from(status));
+            let expected: Vec<Field> = headers
+                .iter()
+                .map(|(name, value)| (name.as_bytes().to_vec(), value.as_bytes().to_vec()))
+                .collect();
+            assert_eq!(unpack_fields(&outcome.headers).unwrap(), expected);
+            assert!(unpack_fields(&outcome.trailers).unwrap().is_empty());
+            assert_eq!(outcome.body, body);
+            assert_eq!(outcome.detail, None);
+        }
     }
 
     fn sealed_handle() -> jlong {

@@ -249,6 +249,11 @@ ed25519-dalek = "2"
 sha2 = "0.10"
 ohttp-gateway = { git = "https://github.com/zodl-inc/ohttp.git", rev = "98a66a093cb10db625e462a2269a0efc21f3b495" }
 tokio = { version = "1", features = ["rt", "macros"] }
+# Driving the gateway's streaming response encoder (`chunked_stream::encode_response_stream`,
+# whose upstream items are `anyhow::Result<UpFrame>` over `Bytes`) in the `ohttp.rs` tests,
+# so the JNI `complete` path is checked against what the gateway really sends.
+futures-util = "0.3"
+bytes = "1"
 
 # Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
 # which needs a real UnifiedSpendingKey to exercise the in-process-signing path
