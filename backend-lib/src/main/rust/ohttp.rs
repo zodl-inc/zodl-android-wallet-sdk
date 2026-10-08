@@ -696,24 +696,26 @@ mod tests {
         )
         .unwrap();
 
-        // Read the first chunk (non-final)
-        let (chunk_len, tail) = read_varint_helper(rest);
-        rest = tail;
-        let (sealed_chunk, tail) = rest.split_at(chunk_len);
-        rest = tail;
-        let plain = context.open(sealed_chunk, b"").unwrap();
-
-        // Read the final chunk (should be empty)
-        let (final_len, tail) = read_varint_helper(rest);
-        assert_eq!(final_len, 0);
-        let sealed_final = tail;
-        let final_plain = context.open(sealed_final, b"final").unwrap();
-        assert!(final_plain.is_empty());
-
+        // Export the secret for sealing responses (before opening anything)
         let mut secret = [0u8; 16];
         context
             .export(b"message/bhttp chunked response", &mut secret)
             .unwrap();
+
+        // Read and decrypt the first chunk (non-final)
+        let (chunk_len, tail) = read_varint_helper(rest);
+        rest = tail;
+        let (sealed_chunk, tail) = rest.split_at(chunk_len as usize);
+        rest = tail;
+        let mut plain = context.open(sealed_chunk, b"").unwrap();
+
+        // Read and decrypt the final chunk (empty)
+        let (final_len, tail) = read_varint_helper(rest);
+        assert_eq!(final_len, 0);
+        let sealed_final = tail;
+        let final_plain = context.open(sealed_final, b"final").unwrap();
+        plain.extend_from_slice(&final_plain);
+
         (plain, secret.to_vec(), enc.to_vec())
     }
 
