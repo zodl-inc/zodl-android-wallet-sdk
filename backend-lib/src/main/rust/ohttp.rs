@@ -661,6 +661,16 @@ mod tests {
         gateway_key_state().public_config()
     }
 
+    /// Extract the X25519 public key bytes from the key configuration.
+    /// Format: length(2) || key_id(1) || kem_id(2) || kdf_id(2) || aead_id(2) || pk(32) || ...
+    fn gateway_public_key_bytes() -> Vec<u8> {
+        let config = gateway_public_key();
+        // Skip first 2 bytes (length prefix)
+        // Then skip key_id(1) + kem_id(2) + kdf_id(2) + aead_id(2) = 7 bytes
+        // Next 32 bytes are the X25519 public key
+        config[9..41].to_vec()
+    }
+
     /// An `application/ohttp-keys` document: the gateway's public configuration.
     fn key_document() -> Vec<u8> {
         gateway_public_key()
@@ -779,7 +789,7 @@ mod tests {
         assert_eq!(key.network, "testnet");
         assert_eq!(key.not_after, NOW + 3600);
         assert_eq!(key.key[0], 1);
-        assert_eq!(key.key[1..], gateway_keys().1[..]);
+        assert_eq!(key.key[1..33], gateway_public_key_bytes()[..]);
     }
 
     #[test]
