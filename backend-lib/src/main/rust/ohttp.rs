@@ -705,7 +705,7 @@ mod tests {
         // Read and decrypt the first chunk (non-final)
         let (chunk_len, tail) = read_varint_helper(rest);
         rest = tail;
-        let (sealed_chunk, tail) = rest.split_at(chunk_len as usize);
+        let (sealed_chunk, tail) = rest.split_at(chunk_len);
         rest = tail;
         let mut plain = context.open(sealed_chunk, b"").unwrap();
 
