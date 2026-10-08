@@ -979,9 +979,11 @@ mod tests {
     /// several chunks with a padded final one. A 404 with a text body is an answer too.
     #[test]
     fn a_plain_http_answer_of_the_gateway_completes_as_the_kotlin_transport_calls_it() {
+        /// A backend answer and the gateway's chunk size: status, headers, body, chunk size.
+        type Answer<'a> = (u16, &'a [(&'a str, &'a str)], &'a [u8], usize);
         let key = verified_key().key;
         let json = br#"{"data":[{"id":2781,"symbol":"USD","name":"United States Dollar"}]}"#;
-        let cases: [(u16, &[(&str, &str)], &[u8], usize); 3] = [
+        let cases: [Answer; 3] = [
             (
                 200,
                 &[
