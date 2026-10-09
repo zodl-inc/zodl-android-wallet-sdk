@@ -9,6 +9,117 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [5.1.0] - 2026-10-07
 
 ### Added
+- The `zcash-android-backend` artifact gains `LedgerBackend` and its JNI implementation
+  `LedgerRustBackend`, the native boundary to the Ledger hardware-wallet engine (`pczt_ledger`). They
+  exist for the SDK's own Ledger support and are not intended to be called directly; no existing call
+  site changes.
+- Ledger hardware wallets, in the new `cash.z.ecc.android.sdk.ledger` package. `LedgerDevice.new(transport, network)`
+  wraps a `LedgerApduTransport` (an app-provided channel to the device) and offers `appVersion()`,
+  `deviceIdentity()`, `pairAccount(zip32AccountIndex)` and `displayUnifiedAddress(ufvk,
+  zip32AccountIndex, transparentAddressIndex)`. `pairAccount` exports the account's `UnifiedFullViewingKey` (the user
+  approves it on the device) and returns it in a `LedgerAccountPairing` with a `LedgerAccountBinding`
+  (the device's `LedgerDeviceIdentity` and the ZIP 32 account index) and the device's `LedgerAppVersion`.
+  Import the account with `Synchronizer.importAccountByUfvk(pairing.accountImportSetup(name, birthday))`,
+  which imports a spending account with no ZIP 32 derivation under the new `Account.LEDGER_KEY_SOURCE`,
+  and persist the binding next to the account (`LedgerDeviceIdentity.encoding` and
+  `Zip32AccountIndex.index`; restore with `LedgerDeviceIdentity.new`). A `LedgerDevice` call that is
+  cancelled once it runs closes the transport and sends nothing more, also between two chunks of the
+  export; a call cancelled while it waits for another call on the same device closes nothing. One
+  ceremony per transport at a time: every pairing, `LedgerDevice` command, signing ceremony and app
+  query or switch holds its transport for all of its commands, so a second `LedgerDevice`, the signer
+  or `LedgerZcashApp` over the same transport waits instead of putting a command inside a running
+  ceremony; a caller cancelled while it waits for its turn closes nothing, since it never reached the
+  device. A pairing or app switch that reconnects partway through holds the replacement transport the
+  same way for the rest of the call. `LedgerExchangeNotStartedException`, a `CancellationException`
+  a `LedgerApduTransport` throws to report that it refused an exchange before sending anything (a
+  caller cancelled while queued behind another exchange on the same transport, as the Bluetooth
+  transport does), leaves the transport open: the device never received the command, so the
+  connection of whoever is using it is not closed out from under them. A `LedgerDeviceIdentity` can be
+  matched to the account's first transparent address once that address has spent on chain: store it as
+  you would that address. Its `toString()` does not print it. `proposeTransfer`,
+  `proposeFulfillingPaymentUri` and `proposeShielding` build at most one change output for an account
+  whose key source is `Account.LEDGER_KEY_SOURCE` (compared case-insensitively), because the Ledger
+  Zcash app signs only one; every other account keeps splitting change into notes.
+- `LedgerDevice.pairAccount` for ZIP 32 account 0 checks that the exported key belongs to the device
+  that answered the identity read: the hash of the key at `m/44'/coin'/0'/0/0`, derived from the
+  key's transparent component, has to equal the identity. Otherwise it discards the key and fails with
+  `LedgerException.DeviceMismatch`, or with `LedgerException.MalformedReply` for a key without a
+  transparent component. No such check is possible for other accounts. The check is against the
+  identity reply, which a compromised link can also replace; the user's comparison of the address on
+  the device's screen is the protection against that.
+- `LedgerDevice.expectedUnifiedAddress(ufvk, network)` derives the unified address the device shows
+  for an account: its Orchard receiver at diversifier index 0, alone, encoded as the Zcash app encodes
+  it. It is not the account's full unified address. `displayUnifiedAddress` shows that address on the
+  device, whatever the transparent address index, and fails with `LedgerException.DeviceMismatch` when
+  the device replies with another one. Show the user the derived address to compare with the device's
+  screen, not the device's reply, which a compromised link can replace; for accounts other than 0 this
+  comparison is the only check that the device holds the paired key.
+- `Synchronizer.signPcztWithLedger(pczt, accountUuid, binding, transport, onProgress)` signs the PCZT
+  `createPcztFromProposal` returned, over the transport, and returns the PCZT carrying the device's
+  signatures, which `createTransactionFromPczt` takes as `pcztWithSignatures` next to the result of
+  `addProofsToPczt` on the same PCZT. The device receives the whole transaction - recipients, amounts,
+  memos and the randomness of every shielded action - and the user reviews its outputs on the device.
+  Nothing is sent to a device whose identity is not the binding's. `onProgress` receives
+  `LedgerSigningProgress` values (`IdentifyingDevice`, `Streaming(sent, total)`, `AwaitingReviewOnDevice`,
+  `Signing`, `Complete`). A failed exchange or a cancellation closes the transport; a cancellation
+  between two exchanges stops the ceremony before the next command, also over an app's own transport
+  that does not check cancellation. `Synchronizer` gains
+  the member as abstract, so any implementer or test fake must now provide it.
+- `signPcztWithLedger` fails with `LedgerException.InvalidInput` before any device I/O for an account
+  whose key source is not `Account.LEDGER_KEY_SOURCE` (compared case-insensitively), the same check that
+  gives its proposals a single change output.
+- `LedgerException`, a sealed `SdkException` every Ledger operation fails with: `UserRejected`,
+  `WrongApp`, `AppTooOld`, `DeviceMismatch`, `CapsMismatch`, `DerivationBudgetExhausted`,
+  `DeviceRefused` (with `statusWord` and `isTransient`), `TransactionNotSignable`, `MalformedReply`,
+  `InvalidInput` and `Internal`, each with `isRestartable` and, where the engine gives one, a loggable
+  `reason`. Messages are fixed text and carry no key, address, identity, transaction or signature data.
+  The Bluetooth transport adds `BluetoothUnavailable`, `BluetoothUnauthorized` (with
+  `missingPermissions`), `BluetoothDisabled`, `DeviceNotFound`, `ConnectionFailed`, `Disconnected`,
+  `PairingRefused` and `Timeout`.
+- `LedgerBluetoothScanner(context).devices()`, a `Flow` of the `LedgerBluetoothDevice`s (model, name,
+  identifier, RSSI) found so far - Nano X, Stax, Flex and Nano Gen5 - and `LedgerBluetoothScanner.connect(device,
+  connectTimeout)` / `LedgerBluetoothTransport.connect(context, device, connectTimeout)`, which return a
+  `LedgerApduTransport` over Bluetooth LE. The first connection bonds with the device
+  through the OS pairing prompt. The SDK's manifest declares no Bluetooth permission: an app that uses
+  these must declare and request `BLUETOOTH_SCAN` (with `neverForLocation`) and `BLUETOOTH_CONNECT` on
+  API 31 and later, and `BLUETOOTH`, `BLUETOOTH_ADMIN` and `ACCESS_FINE_LOCATION` on API 30 and earlier
+  (see `docs/Ledger.md`). An exchange that fails or is cancelled closes the transport.
+- `LedgerZcashApp`, which drives the device's dashboard commands. `currentApp(transport)` returns the
+  `LedgerRunningApp` (`name`, `version`, `isDashboard`, `isZcash`) the device is running.
+  `ensureZcashAppOpen(transport, reconnect)` opens the Zcash app when the device is elsewhere - on its
+  dashboard, as it is after a first Bluetooth pairing, or in another app, which it closes first - once
+  the user confirms on the device, and returns the transport to keep using: the Bluetooth link may drop
+  while the device switches apps, and a dropped link is replaced through `reconnect`. It waits up to
+  10 seconds for the Zcash app after the user's confirmation, each poll waiting up to 3 seconds for its
+  answer; a poll that loses the link or gets no answer is always followed by a reconnect before those
+  10 seconds can end the wait, and the time a reconnect that succeeds takes does not count towards
+  them. While it waits, each call to `reconnect`
+  has 10 seconds and is cancelled past them, and a reconnect that fails starts the 10 seconds over and
+  is tried again after 500 milliseconds, then after twice the previous wait, at most 2 seconds. It keeps
+  trying for 10 seconds from the first of the reconnects that failed in a row, and the first one that
+  fails once they have passed propagates its failure (`ConnectionFailed` for one that ran out of time);
+  a reconnect that succeeds ends the row, so a later failure starts again from 500 milliseconds. A link
+  that keeps dropping and coming back no longer keeps it waiting: each wait for the device to switch
+  apps ends 60 seconds after it started, with the last reconnect's failure if it failed and with
+  `WrongApp` otherwise. The first app query
+  waits up to 10 seconds; if it stalls or the link fails, it is asked once more on a fresh connection,
+  which `reconnect` has 10 seconds to open, before anything else is sent, and the open command is never
+  sent twice.
+- `LedgerException.AppNotInstalled`, when the device has no Zcash app to open, and
+  `LedgerException.AppOpenRejected` (restartable), when the user declines opening it on the device.
+  A device that does not reach the Zcash app in time fails with `WrongApp`.
+- `LedgerDevice.pairAccount` takes an optional `readTimeout` for the app version and device identity
+  reads before the export, and an optional `reconnect` function. `readTimeout` defaults to the engine's
+  normal timeout, as those reads had before; `LedgerDevice.DEFAULT_PAIRING_READ_TIMEOUT` (10 seconds)
+  is the value to pass to detect a stalled device early. When one of those reads fails on the
+  connection (`Timeout`, `Disconnected`, `ConnectionFailed`, `DeviceNotFound`), the failed transport is
+  closed and both reads are asked once more over a transport from `reconnect`; nothing is retried once
+  the export command has been sent. The app owns every transport, the reconnected ones included, and
+  closes each one it opened; the new `LedgerDevice.transport` is the one the device currently talks over.
+- `docs/Ledger.md` gains an error table: for each `LedgerException`, when it happens, whether it is
+  restartable and what the app should do, and the failures that are not `LedgerException`s; and an
+  "Opening the Zcash app" section: call `LedgerZcashApp.ensureZcashAppOpen` before `LedgerDevice.new`
+  and build on the transport it returns.
 - `GiftCard`, a gift card read from a gift card link with `GiftCard.parse(link)`: this SDK's
   own links (`https://gift.zodl.com/#v=1&key=...&height=...`) and the legacy JSON payment-link
   encoding at `/payment-links/open#vN=` (`v1=` / `v2=` / `v3=` payloads). Exposes `origin`
@@ -173,6 +284,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   devices; never larger ones. `newBlocking` does not take it.
 
 ### Changed
+- `AccountPurpose.Spending.seedFingerprint` and `AccountPurpose.Spending.zip32AccountIndex` are now
+  nullable and default to `null`, so a spending account whose signer cannot name its seed (a Ledger
+  device) can be imported with no ZIP 32 derivation. Pass both or neither; passing exactly one throws
+  `IllegalArgumentException`. Existing constructor calls compile and behave as before; code that reads
+  either property must now handle `null`.
+- A Ledger device on its dashboard (status word `0x6E01`) or running another app (`0x6511`) now fails
+  with `LedgerException.WrongApp` instead of a non-restartable `DeviceRefused`.
+- `LedgerException.WrongApp` and `LedgerException.DerivationBudgetExhausted` are restartable: once the
+  user opens or reopens the Zcash app, starting the operation again can succeed.
 - `GiftCardRedeemer.new` is deprecated: it always runs the card wallet on `SdkSynchronizer`,
   whatever engine the app syncs with. Use `GiftCardRedeemers.new` from the incubator.
 - `GiftCardRedeemer.check` fails at once with `GiftCardException.SyncFailed`, carrying the
@@ -231,6 +351,24 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   releases exist under new version numbers. The voting API is unchanged.
 
 ### Fixed
+- `LedgerBluetoothTransport.connect` no longer lets raw exceptions escape: a GATT write that times out
+  on the Ledger MTU handshake is `LedgerException.ConnectionFailed`, a `SecurityException` from the
+  Bluetooth stack while connecting is `LedgerException.BluetoothUnauthorized`, and a connect timeout
+  that runs out while Android's pairing flow is still in progress is `LedgerException.PairingRefused`
+  instead of `ConnectionFailed`. A GATT operation of the setup that runs out of its own timeout
+  (service discovery, the subscription) is `ConnectionFailed`, whatever the bond state, and never taken
+  for the connect timeout. Cancelling the caller still propagates as a cancellation, also while the ATT
+  MTU request is pending, and a `SecurityException` from that request is `BluetoothUnauthorized` too.
+- A timeout of the caller's own around a Bluetooth exchange, or around connecting while Android's
+  pairing flow runs, propagates as a cancellation instead of becoming `LedgerException.Timeout` or
+  `LedgerException.PairingRefused`. Waiting for the bond no longer has a 60-second limit of its own:
+  the connect timeout bounds the whole setup, pairing included.
+- A link that drops under the Ledger MTU handshake's write while connecting stays
+  `LedgerException.Disconnected`; only a write the device refuses for authentication is
+  `PairingRefused`.
+- A `LedgerException.BluetoothUnauthorized` raised for a `SecurityException` from the Bluetooth stack,
+  while scanning or connecting, names the permissions not granted in `missingPermissions`, or every
+  required one when all of them read as granted, instead of an empty list the app could not act on.
 - Two synchronizers running in the same process (different aliases) no longer overwrite each
   other's stored transaction submit plans; previously the later writer could drop a plan the
   other had stored, so a created transaction was not resubmitted to the endpoints it was

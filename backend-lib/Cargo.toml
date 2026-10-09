@@ -221,6 +221,22 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
 ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package = "ur-registry", default-features = false, features = ["std"] }
 
+# Ledger hardware-wallet signing over Bluetooth LE (src/main/rust/ledger/).
+#
+# `pczt_ledger` is the sans-I/O APDU engine for the Ledger Zcash app: pairing (firmware probe,
+# device identity, UFVK export, address display), BLE framing, and the PCZT signing session. The
+# Kotlin layer moves its bytes over BLE; nothing here touches a device.
+#
+# Published on crates.io from the public zodl-inc/pczt-ledger repository; 0.1.0-pre.0 is built
+# against the NU7 pre-release crates, the same generation as the rest of this graph.
+#
+# Default features only (`std`, which adds nothing this crate uses beyond the error `source`s):
+# neither `transport-hid` nor `transport-speculos`, since Android has no USB path to the device and
+# the SDK drives its own transport. It resolves against this crate's `pczt`/`orchard`/
+# `zcash_transparent`/`zcash_protocol`/`zip32`/`secp256k1` family without a second copy of any of
+# them — verify with `cargo tree -d -e normal` after a version change.
+pczt_ledger = "=0.1.0-pre.0"
+
 # Android-only logcat backend for the `slipstream` module's tracing setup (used only under
 # `#[cfg(target_os = "android")]`). Optional and activated by the `slipstream` feature; never
 # compiled on the host `cargo check`.
@@ -228,6 +244,12 @@ ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package
 tracing-android = { version = "0.2", optional = true }
 
 [dev-dependencies]
+# Test-only: the software Ledger in `ledger::tests` answers the device-identity probe with a
+# secp256k1 key and signs transparent inputs with one. `pczt_ledger` and `zcash_transparent`
+# are on secp256k1 0.33; this 0.29 copy exists only in test builds, and the tests carry key
+# bytes across the two rather than key values.
+secp256k1 = "0.29"
+
 # Test-only: pulls in `zcash_client_sqlite::testing` (`TestDb`/`TestDbFactory`/`BlockCache`) and,
 # through it, `zcash_client_backend::data_api::testing::TestBuilder` — a synthetic, self-contained
 # wallet DB with real chain/checkpoint history, no fixture file required. Used by
@@ -302,3 +324,20 @@ zakura-wallet-lib = { git = "https://github.com/zodl-inc/zakura-wallet-libraries
 #zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 #zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 #zip321 = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+
+# The Ledger tests build the Orchard proving key once, to extract and verify a proof-bearing
+# transaction a device signed. Key generation synthesizes the Orchard circuit, which takes minutes
+# in unoptimized halo2 and curve arithmetic and seconds optimized, so the test profile optimizes
+# those crates; nothing else, and no other profile, changes.
+[profile.test.package.halo2_proofs]
+opt-level = 3
+[profile.test.package.halo2_gadgets]
+opt-level = 3
+[profile.test.package.orchard]
+opt-level = 3
+[profile.test.package.pasta_curves]
+opt-level = 3
+[profile.test.package.ff]
+opt-level = 3
+[profile.test.package.group]
+opt-level = 3

@@ -51,6 +51,19 @@ data class Account internal constructor(
     }
 
     companion object {
+        /**
+         * The [keySource] to import an account paired with a Ledger device under
+         * ([cash.z.ecc.android.sdk.ledger.LedgerDevice.pairAccount]). It marks the account as one
+         * whose spend authority is on a Ledger, to be signed with `Synchronizer.signPcztWithLedger`.
+         *
+         * The tag is compared ignoring ASCII case. Because the Ledger Zcash app signs only one change
+         * output per transaction, the proposals built for a Ledger-tagged account carry at most one
+         * change output instead of splitting change into several notes. Migration run sizing is not
+         * affected. `Synchronizer.signPcztWithLedger` refuses an account without this tag, under the
+         * same comparison, with a [cash.z.ecc.android.sdk.exception.LedgerException.InvalidInput].
+         */
+        const val LEDGER_KEY_SOURCE = "ledger"
+
         fun new(jniAccount: JniAccount): Account =
             Account(
                 accountUuid = AccountUuid.new(jniAccount.accountUuid),
