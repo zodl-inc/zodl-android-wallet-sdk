@@ -1289,11 +1289,9 @@ fn the_software_device_holds_the_imported_accounts_keys() {
 /// it, combined with the Ledger-signed PCZT, and extracted and stored by the very function
 /// `createTransactionFromPczt` calls — which verifies the proof and every signature.
 ///
-/// Ignored by default: building the Orchard proving key and a proof in the unoptimized test
-/// profile takes minutes. Run it with
-/// `cargo test --release --all-features ledger::tests::proven -- --ignored`.
+/// Building the Orchard proving key is the slow part; `Cargo.toml`'s test profile optimizes the
+/// circuit crates so this runs in seconds with the rest of the suite instead of minutes.
 #[test]
-#[ignore = "proves an Orchard bundle; slow outside --release"]
 fn proven_and_ledger_signed_pczts_extract_to_a_stored_transaction() {
     use pczt::roles::prover::Prover;
     use zcash_client_backend::data_api::wallet::extract_and_store_transaction_from_pczt;
