@@ -4,13 +4,13 @@ import cash.z.ecc.android.sdk.exception.LedgerException
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.ledger.LedgerBleDeframer
 import cash.z.ecc.android.sdk.internal.ledger.TypesafeLedgerBackend
+import cash.z.ecc.android.sdk.ledger.LedgerExchangeNotStartedException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.getOrElse
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
@@ -43,7 +43,9 @@ internal interface LedgerBleLink {
  * reassembles the device's notifications into its reply, and enforces the transport rules the Ledger
  * engine requires.
  *
- * - One exchange at a time.
+ * - One exchange at a time. A caller cancelled while it waits for its turn has sent nothing, and is
+ *   refused with [LedgerExchangeNotStartedException] rather than a plain cancellation, so its caller
+ *   knows not to close a channel another exchange is using.
  * - **One reply per command.** An exchange that fails for any reason — a timeout, a disconnect, a
  *   frame that does not reassemble, cancellation — leaves the device's reply uncollected, so the
  *   channel is poisoned: the link is closed and every later exchange fails with
@@ -67,8 +69,13 @@ internal class LedgerBleChannel(
     suspend fun exchange(
         apdu: ByteArray,
         timeout: Duration?
-    ): ByteArray =
-        mutex.withLock {
+    ): ByteArray {
+        try {
+            mutex.lock()
+        } catch (e: CancellationException) {
+            throw LedgerExchangeNotStartedException(e)
+        }
+        try {
             if (dead) {
                 throw LedgerException.Disconnected()
             }
@@ -87,7 +94,7 @@ internal class LedgerBleChannel(
                         withTimeout(timeout) { send(frames) }
                     }
                 deframer.reset()
-                reply
+                return reply
             } catch (e: TimeoutCancellationException) {
                 poison()
                 currentCoroutineContext().ensureActive()
@@ -103,7 +110,10 @@ internal class LedgerBleChannel(
             } finally {
                 frames.forEach { it.fill(0) }
             }
+        } finally {
+            mutex.unlock()
         }
+    }
 
     /** Closes the channel and its link. Idempotent. */
     fun close() {

@@ -4,6 +4,7 @@ import cash.z.ecc.android.sdk.exception.LedgerException
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.ledger.LedgerAccountBinding
 import cash.z.ecc.android.sdk.ledger.LedgerApduTransport
+import cash.z.ecc.android.sdk.ledger.LedgerExchangeNotStartedException
 import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.Pczt
@@ -24,7 +25,8 @@ import kotlin.coroutines.cancellation.CancellationException
  * - Each command waits the engine's normal timeout, except from the review packet to the end of the
  *   session, where no timeout applies: the device answers once the user has decided.
  * - A `0x6901` refusal is answered by resending the same command after the engine's backoff.
- * - A failed exchange closes the transport (see [LedgerExchanger]); cancellation closes it too. A
+ * - A failed exchange closes the transport (see [LedgerExchanger]); cancellation closes it too, unless
+ *   the transport reports that it never sent the command ([LedgerExchangeNotStartedException]). A
  *   refusal by the device leaves it open: the channel is still in step, and a restartable failure can
  *   be retried with a fresh ceremony over the same transport.
  * - Cancellation is checked before each command and before the signatures are applied, so a
@@ -93,6 +95,11 @@ internal class LedgerPcztSigner(
                 progress.report(LedgerSigningProgress.Complete)
                 signed
             }
+        } catch (e: LedgerExchangeNotStartedException) {
+            // The transport refused the exchange before sending anything: the device never saw it,
+            // so there is nothing on it to abandon, and the transport stays open, as for a
+            // cancellation before the first command.
+            throw e
         } catch (e: CancellationException) {
             exchanger.closeQuietly()
             throw e

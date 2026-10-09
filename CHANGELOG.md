@@ -28,7 +28,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or `LedgerZcashApp` over the same transport waits instead of putting a command inside a running
   ceremony; a caller cancelled while it waits for its turn closes nothing, since it never reached the
   device. A pairing or app switch that reconnects partway through holds the replacement transport the
-  same way for the rest of the call. A `LedgerDeviceIdentity` can be
+  same way for the rest of the call. `LedgerExchangeNotStartedException`, a `CancellationException`
+  a `LedgerApduTransport` throws to report that it refused an exchange before sending anything (a
+  caller cancelled while queued behind another exchange on the same transport, as the Bluetooth
+  transport does), leaves the transport open: the device never received the command, so the
+  connection of whoever is using it is not closed out from under them. A `LedgerDeviceIdentity` can be
   matched to the account's first transparent address once that address has spent on chain: store it as
   you would that address. Its `toString()` does not print it. `proposeTransfer`,
   `proposeFulfillingPaymentUri` and `proposeShielding` build at most one change output for an account

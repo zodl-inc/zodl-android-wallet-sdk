@@ -35,7 +35,9 @@ import kotlin.time.Duration.Companion.seconds
  * A call that is cancelled once it runs closes the transport, whatever step it was at: the device can
  * be in the middle of a command or of a multi-step exchange, so open a new connection before you try
  * again. A call that is cancelled while it waits for another call on this device, or for another
- * ceremony on its transport, to finish closes nothing, because it never reached the device.
+ * ceremony on its transport, to finish closes nothing, because it never reached the device; neither
+ * does one whose transport refused the exchange before sending anything
+ * ([LedgerExchangeNotStartedException]).
  *
  * The call holding the device also holds its transport for all of its commands, and so does every
  * other ceremony the SDK runs over a transport (another `LedgerDevice` over the same transport, a
@@ -264,6 +266,11 @@ class LedgerDevice internal constructor(
             LedgerCeremony.run(transport) {
                 try {
                     block()
+                } catch (e: LedgerExchangeNotStartedException) {
+                    // The transport refused the exchange before sending anything: the device never
+                    // saw it, so there is nothing on it to abandon, and the transport stays open for
+                    // whoever is using it.
+                    throw e
                 } catch (e: CancellationException) {
                     exchanger.closeQuietly()
                     throw e

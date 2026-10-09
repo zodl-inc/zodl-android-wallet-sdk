@@ -3,6 +3,7 @@ package cash.z.ecc.android.sdk.internal.ledger
 import cash.z.ecc.android.sdk.exception.LedgerException
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.ledger.LedgerApduTransport
+import cash.z.ecc.android.sdk.ledger.LedgerExchangeNotStartedException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -16,7 +17,10 @@ private const val CMD_NOT_ACCEPTED = 0x6901
  *
  * - an exchange that fails for any reason — cancellation included — leaves the device's reply
  *   uncollected, so the transport is closed before the failure propagates, and no later reply on it
- *   can be taken for the answer to another command;
+ *   can be taken for the answer to another command. The one exception is
+ *   [LedgerExchangeNotStartedException], the transport's own report that it refused the exchange
+ *   before sending anything: the device never saw the command, so the transport stays open for
+ *   whoever is using it, and the exception propagates as it is;
  * - a one-shot command the device refuses with `0x6901` is resent, identically, after the engine's
  *   backoff, up to the engine's retry budget.
  *
@@ -27,7 +31,8 @@ internal class LedgerExchanger(
     private val policy: LedgerPolicy
 ) {
     /**
-     * Exchanges [apdu], closing the transport if the exchange fails.
+     * Exchanges [apdu], closing the transport if the exchange fails — unless the transport reports
+     * that it never started the exchange.
      */
     @Suppress("TooGenericExceptionCaught")
     suspend fun exchange(
@@ -36,6 +41,8 @@ internal class LedgerExchanger(
     ): ByteArray =
         try {
             transport.exchange(apdu, timeout)
+        } catch (e: LedgerExchangeNotStartedException) {
+            throw e
         } catch (e: Throwable) {
             Twig.warn { "Ledger exchange failed (${e.javaClass.simpleName}); closing the transport" }
             closeQuietly()

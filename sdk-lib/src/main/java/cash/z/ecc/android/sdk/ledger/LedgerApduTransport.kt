@@ -14,7 +14,11 @@ import kotlin.time.Duration
  * - [exchange] sends one command APDU and returns the device's whole reply: response data followed
  *   by the two-byte status word. A transport never inspects the status word; a device that answers
  *   "denied" is a successful exchange.
- * - One exchange at a time.
+ * - One exchange at a time. A transport that queues a second caller and the caller is cancelled
+ *   before its exchange begins should throw [LedgerExchangeNotStartedException] rather than a plain
+ *   cancellation: nothing was sent, and the SDK then leaves the transport open for the exchange that
+ *   is actually running. The SDK's own ceremonies hold a transport for all of their commands (see
+ *   `LedgerDevice`), so they never queue here themselves.
  * - **One reply per command.** An exchange that fails after its command was written (a timeout, a
  *   disconnect, a frame that does not reassemble) leaves the device's reply uncollected, and a later
  *   reply must never be taken for the answer to a later command. A transport in that state must

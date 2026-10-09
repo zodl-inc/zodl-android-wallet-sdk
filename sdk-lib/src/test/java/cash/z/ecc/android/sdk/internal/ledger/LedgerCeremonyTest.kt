@@ -14,6 +14,7 @@ import cash.z.ecc.android.sdk.ledger.LedgerApduTransport
 import cash.z.ecc.android.sdk.ledger.LedgerAppLauncher
 import cash.z.ecc.android.sdk.ledger.LedgerDevice
 import cash.z.ecc.android.sdk.ledger.LedgerDeviceIdentity
+import cash.z.ecc.android.sdk.ledger.LedgerExchangeNotStartedException
 import cash.z.ecc.android.sdk.ledger.LedgerZcashApp
 import cash.z.ecc.android.sdk.ledger.SwitchReconnectPolicy
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -98,6 +99,34 @@ private class SignaledDeviceTransport : LedgerApduTransport {
 
     fun releaseExport() {
         exportReleased.complete(Unit)
+    }
+}
+
+/** A transport that throws [LedgerExchangeNotStartedException] for every exchange after the first [answered]. */
+private class RefusingTransport(
+    private val answered: Int
+) : LedgerApduTransport {
+    val sent = mutableListOf<ByteArray>()
+    var closes = 0
+        private set
+
+    override suspend fun exchange(
+        apdu: ByteArray,
+        timeout: Duration?
+    ): ByteArray {
+        if (sent.size >= answered) {
+            throw LedgerExchangeNotStartedException()
+        }
+        sent.add(apdu.copyOf())
+        return when (apdu[0]) {
+            CMD_VERSION -> ok(1)
+            CMD_IDENTITY -> ok('a'.code.toByte())
+            else -> ok()
+        }
+    }
+
+    override suspend fun close() {
+        closes++
     }
 }
 
@@ -245,6 +274,34 @@ class LedgerCeremonyTest {
             pairing.await()
             assertEquals(0, transport.closes, "a call cancelled while only queued for its turn closes nothing")
             assertEquals(pairingCommands, transport.commands)
+        }
+
+    @Test
+    fun a_device_call_the_transport_refused_before_sending_closes_nothing() =
+        runBlocking<Unit> {
+            val transport = RefusingTransport(answered = 0)
+
+            assertFailsWith<CancellationException> { device(transport).appVersion() }
+
+            assertEquals(0, transport.sent.size)
+            assertEquals(0, transport.closes, "an exchange the transport never sent must not close it")
+        }
+
+    @Test
+    fun a_signing_ceremony_the_transport_refused_before_sending_closes_nothing() =
+        runBlocking<Unit> {
+            // The version probe is answered, so the ceremony holds the device before the first signing
+            // command, the one refused.
+            val transport = RefusingTransport(answered = 1)
+
+            assertFailsWith<CancellationException> { sign(transport) }
+
+            assertEquals(1, transport.sent.size)
+            assertEquals(
+                0,
+                transport.closes,
+                "an exchange the transport never sent must not close it, even once the ceremony holds the device"
+            )
         }
 
     @Test

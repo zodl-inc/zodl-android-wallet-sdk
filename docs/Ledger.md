@@ -70,7 +70,12 @@ its transport for all of its commands, whichever SDK object started it: a second
 over the same transport, `Synchronizer.signPcztWithLedger` and `LedgerZcashApp` all wait for a ceremony
 in progress to end rather than put a command inside it, since the device's state depends on the order
 of a ceremony's commands. A caller cancelled while it waits for its turn closes nothing: it never
-reached the device.
+reached the device. A caller cancelled while it waits for its turn at the transport's own exchange
+gate — only possible for the app's own code calling `exchange` directly — gets
+`LedgerExchangeNotStartedException`, a `CancellationException` the Bluetooth transport throws instead
+of a plain cancellation when it refused the exchange before sending anything; the SDK leaves the
+transport open for it, and a transport of the app's own that admits one exchange at a time should
+throw it in the same case.
 
 ## Opening the Zcash app
 
