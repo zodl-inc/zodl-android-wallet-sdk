@@ -3,6 +3,8 @@ package cash.z.ecc.android.sdk.ledger
 import cash.z.ecc.android.sdk.exception.LedgerException
 import cash.z.ecc.android.sdk.exception.isLinkFailure
 import cash.z.ecc.android.sdk.internal.Twig
+import cash.z.ecc.android.sdk.internal.ledger.LedgerCeremony
+import cash.z.ecc.android.sdk.internal.ledger.LedgerCeremonyHold
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -62,7 +64,9 @@ object LedgerZcashApp {
      * @throws LedgerException for a transport failure.
      */
     suspend fun currentApp(transport: LedgerApduTransport): LedgerRunningApp =
-        launcher().currentApp(transport)
+        // Holds `transport` for the query, so it never lands inside another ceremony's run of
+        // commands; see `LedgerCeremony`.
+        LedgerCeremony.run(transport) { launcher().currentApp(transport) }
 
     /**
      * Makes sure the device is running the Zcash app, opening it if needed, and returns the transport
@@ -118,7 +122,12 @@ object LedgerZcashApp {
         transport: LedgerApduTransport,
         reconnect: suspend () -> LedgerApduTransport
     ): LedgerApduTransport =
-        launcher().ensureZcashAppOpen(transport, reconnect)
+        // Holds `transport` for the whole switch, so no other ceremony the SDK runs over it can put a
+        // command between the query and the open; see `LedgerCeremony`. A transport `reconnect`
+        // returns is new and is not under this hold while `reconnect` runs; the switch takes that
+        // transport's own ceremony before its first command on it and keeps it until it is replaced
+        // in turn or the switch is over, exactly as `LedgerDevice.pairAccount` does.
+        LedgerCeremony.run(transport) { launcher().ensureZcashAppOpen(transport, reconnect) }
 }
 
 /**
@@ -173,23 +182,27 @@ internal class LedgerAppLauncher(
         val switch = AppSwitch(transport, reconnect)
         try {
             val running = switch.queryOnFreshConnectionOnce()
-            if (running.isZcash) {
-                return switch.current
+            if (!running.isZcash) {
+                if (!running.isDashboard) {
+                    Twig.debug { "Ledger is running another app; closing it" }
+                    switch.closeRunningApp()
+                    switch.awaitApp { it.isDashboard }
+                }
+                Twig.debug { "Asking the Ledger to open the Zcash app" }
+                switch.openZcashApp()
+                switch.awaitApp { it.isZcash }
+                Twig.debug { "The Ledger is running the Zcash app" }
             }
-            if (!running.isDashboard) {
-                Twig.debug { "Ledger is running another app; closing it" }
-                switch.closeRunningApp()
-                switch.awaitApp { it.isDashboard }
-            }
-            Twig.debug { "Asking the Ledger to open the Zcash app" }
-            switch.openZcashApp()
-            switch.awaitApp { it.isZcash }
-            Twig.debug { "The Ledger is running the Zcash app" }
-            return switch.current
         } catch (e: Throwable) {
             switch.closeReplacement()
+            switch.releaseReplacementHold()
             throw e
         }
+        // The caller gets the transport to run its own ceremony on, so the switch's hold on a
+        // replacement ends here; the caller's original stays held by `LedgerZcashApp` until this
+        // returns.
+        switch.releaseReplacementHold()
+        return switch.current
     }
 
     private fun deadline() = timeSource.markNow() + transitionTimeout
@@ -277,7 +290,13 @@ internal class LedgerAppLauncher(
     /**
      * The transport through an app switch: [current] is the caller's until a dropped link is
      * replaced, and [usable] is false once it has failed.
+     *
+     * The caller's transport is held for the switch by `LedgerZcashApp.ensureZcashAppOpen`. Every
+     * replacement is held here instead, from before the switch's first command on it until the next
+     * replacement takes over or the switch ends ([releaseReplacementHold]), so no other ceremony over
+     * a replacement can put a command between two of the switch's; see [LedgerCeremony.adopt].
      */
+    @Suppress("TooManyFunctions")
     private inner class AppSwitch(
         private val original: LedgerApduTransport,
         private val reconnect: suspend () -> LedgerApduTransport
@@ -285,6 +304,9 @@ internal class LedgerAppLauncher(
         var current: LedgerApduTransport = original
             private set
         private var usable = true
+
+        /** The switch's hold on [current] while it is a replacement; `null` while it is the caller's own. */
+        private var replacementHold: LedgerCeremonyHold? = null
 
         /**
          * The running app before anything else is sent. A query that stalls past its deadline or loses
@@ -294,8 +316,7 @@ internal class LedgerAppLauncher(
         suspend fun queryOnFreshConnectionOnce(): LedgerRunningApp {
             queryAllowingDisconnect(queryTimeout)?.let { return it }
             Twig.debug { "Ledger app query failed; asking once more on a fresh connection" }
-            current = reconnectInTime()
-            usable = true
+            adopt(reconnectInTime())
             return currentApp(current)
         }
 
@@ -373,8 +394,7 @@ internal class LedgerAppLauncher(
          */
         private suspend fun replace(): LedgerException? =
             try {
-                current = reconnectInTime()
-                usable = true
+                adopt(reconnectInTime())
                 null
             } catch (e: LedgerException) {
                 if (!e.isLinkFailure()) throw e
@@ -415,6 +435,37 @@ internal class LedgerAppLauncher(
         private suspend fun markUnusable() {
             usable = false
             closeQuietly(current)
+        }
+
+        /**
+         * Makes [replacement] the switch's transport, once the switch holds its ceremony. A replacement
+         * nothing else uses is taken at once; one another ceremony holds is waited for, and a
+         * cancellation while queued throws without adopting it, so the switch's cleanup closes nothing
+         * of the holder's — [current] is still the transport that dropped, already closed.
+         *
+         * [reconnect] may hand back a transport the switch already holds: the previous replacement
+         * again, or the caller's own transport, when the transport reconnects internally and `close`
+         * only drops the link. The previous replacement's hold is therefore released before the new one
+         * is taken (the previous replacement is already closed by then, so nothing slips in between),
+         * and the caller's own transport is not taken at all, since `LedgerZcashApp` holds it for the
+         * whole switch; either would otherwise wait on this switch itself.
+         */
+        private suspend fun adopt(replacement: LedgerApduTransport) {
+            releaseReplacementHold()
+            if (replacement !== original) {
+                replacementHold = LedgerCeremony.adopt(replacement)
+            }
+            current = replacement
+            usable = true
+        }
+
+        /**
+         * Ends the switch's hold on its current replacement, if any: when the next replacement takes
+         * over, when the switch hands the replacement to the caller, or when the switch fails.
+         */
+        fun releaseReplacementHold() {
+            replacementHold?.release()
+            replacementHold = null
         }
 
         /**

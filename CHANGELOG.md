@@ -22,7 +22,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and persist the binding next to the account (`LedgerDeviceIdentity.encoding` and
   `Zip32AccountIndex.index`; restore with `LedgerDeviceIdentity.new`). A `LedgerDevice` call that is
   cancelled once it runs closes the transport and sends nothing more, also between two chunks of the
-  export; a call cancelled while it waits for another call on the same device closes nothing. A `LedgerDeviceIdentity` can be
+  export; a call cancelled while it waits for another call on the same device closes nothing. One
+  ceremony per transport at a time: every pairing, `LedgerDevice` command, signing ceremony and app
+  query or switch holds its transport for all of its commands, so a second `LedgerDevice`, the signer
+  or `LedgerZcashApp` over the same transport waits instead of putting a command inside a running
+  ceremony; a caller cancelled while it waits for its turn closes nothing, since it never reached the
+  device. A pairing or app switch that reconnects partway through holds the replacement transport the
+  same way for the rest of the call. A `LedgerDeviceIdentity` can be
   matched to the account's first transparent address once that address has spent on chain: store it as
   you would that address. Its `toString()` does not print it. `proposeTransfer`,
   `proposeFulfillingPaymentUri` and `proposeShielding` build at most one change output for an account

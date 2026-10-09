@@ -30,12 +30,30 @@ import kotlin.coroutines.cancellation.CancellationException
  * - Cancellation is checked before each command and before the signatures are applied, so a
  *   cancellation that lands between two exchanges stops the ceremony before the next command, even
  *   over a transport that does not check cancellation itself.
+ * - The whole ceremony holds the transport ([LedgerCeremony]): a `LedgerDevice` call or an app
+ *   switch over the same transport waits for it to end instead of putting a command inside it, and a
+ *   ceremony cancelled while it waits for its own turn closes nothing, since it never sent anything.
  */
 internal class LedgerPcztSigner(
     private val backend: TypesafeLedgerBackend
 ) {
     @Suppress("LongParameterList")
     suspend fun sign(
+        dataDbFile: File,
+        network: ZcashNetwork,
+        pczt: Pczt,
+        accountUuid: AccountUuid,
+        binding: LedgerAccountBinding,
+        transport: LedgerApduTransport,
+        onProgress: ((LedgerSigningProgress) -> Unit)?
+    ): Pczt =
+        LedgerCeremony.run(transport) {
+            signHoldingTransport(dataDbFile, network, pczt, accountUuid, binding, transport, onProgress)
+        }
+
+    /** The ceremony itself, run while [sign] holds [transport] for it. */
+    @Suppress("LongParameterList", "ThrowsCount")
+    private suspend fun signHoldingTransport(
         dataDbFile: File,
         network: ZcashNetwork,
         pczt: Pczt,

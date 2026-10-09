@@ -3,6 +3,8 @@ package cash.z.ecc.android.sdk.ledger
 import cash.z.ecc.android.sdk.exception.LedgerException
 import cash.z.ecc.android.sdk.exception.isLinkFailure
 import cash.z.ecc.android.sdk.internal.Twig
+import cash.z.ecc.android.sdk.internal.ledger.LedgerCeremony
+import cash.z.ecc.android.sdk.internal.ledger.LedgerCeremonyHold
 import cash.z.ecc.android.sdk.internal.ledger.LedgerExchanger
 import cash.z.ecc.android.sdk.internal.ledger.TypesafeLedgerBackend
 import cash.z.ecc.android.sdk.internal.ledger.TypesafeLedgerBackendImpl
@@ -32,8 +34,15 @@ import kotlin.time.Duration.Companion.seconds
  *
  * A call that is cancelled once it runs closes the transport, whatever step it was at: the device can
  * be in the middle of a command or of a multi-step exchange, so open a new connection before you try
- * again. A call that is cancelled while it waits for another call on this device to finish closes
- * nothing, because it never reached the device.
+ * again. A call that is cancelled while it waits for another call on this device, or for another
+ * ceremony on its transport, to finish closes nothing, because it never reached the device.
+ *
+ * The call holding the device also holds its transport for all of its commands, and so does every
+ * other ceremony the SDK runs over a transport (another `LedgerDevice` over the same transport, a
+ * signing ceremony, an app switch): a call made while any of them is in progress waits for it, so no
+ * two of them interleave their commands on the device. A call that reconnects mid-flight — see
+ * [pairAccount]'s `reconnect` parameter — holds its replacement transport the same way for the rest
+ * of the call. See `LedgerCeremony`.
  *
  * Nothing this class handles is logged: not the commands, not the replies, not the keys, addresses or
  * identities they carry.
@@ -57,8 +66,22 @@ class LedgerDevice internal constructor(
     private val network: ZcashNetwork,
     private val backend: TypesafeLedgerBackend
 ) {
+    /**
+     * Serializes every call on this one device instance, taken before the transport's own ceremony
+     * gate and held for as long as the call runs. The order is always this mutex first, then a
+     * ceremony gate: `LedgerPcztSigner` and `LedgerZcashApp` take only a ceremony gate and never this
+     * one, so the two are never waited on in reverse order, and acquiring them in this one, fixed
+     * order cannot deadlock.
+     */
     private val mutex = Mutex()
     private var exchanger = LedgerExchanger(transport, backend.policy)
+
+    /**
+     * The running call's hold on a transport its `reconnect` returned, released when the call ends;
+     * `null` while the call is on the transport `holdingDevice` took. One call runs at a time, so one
+     * field is enough.
+     */
+    private var replacementHold: LedgerCeremonyHold? = null
 
     /**
      * The transport this device talks over: the one passed to [new], or the last one a
@@ -121,9 +144,12 @@ class LedgerDevice internal constructor(
      * nothing is retried: the export waits on the user with no timeout, its continuation keeps the
      * engine's normal timeout, and nothing is read after it.
      *
-     * A transport [reconnect] returns becomes this device's [transport], whatever the outcome, and
-     * belongs to the caller like the one passed to [new]; an exception [reconnect] throws propagates
-     * as it is.
+     * A transport [reconnect] returns becomes this device's [transport] as soon as this call holds its
+     * ceremony, whatever the outcome from then on, and belongs to the caller like the one passed to
+     * [new]; an exception [reconnect] throws propagates as it is. The one case in which it is not
+     * adopted: another ceremony already holds it (see `LedgerCeremony`) and this call is cancelled
+     * while it waits for its turn on it. [transport] then stays the original, the replacement stays
+     * open with the ceremony holding it, and this call closes nothing of theirs.
      *
      * If the calling coroutine is cancelled while the pairing runs, the pairing sends nothing more
      * and closes [transport], also between two chunks of the export. The device can be left in the
@@ -135,9 +161,16 @@ class LedgerDevice internal constructor(
      * @param readTimeout How long each read before the export may take; the engine's normal timeout
      *        by default. Pass [DEFAULT_PAIRING_READ_TIMEOUT] to detect a stalled device early.
      * @param reconnect Opens a fresh connection to the same device, for one retry of the reads
-     *        before the export; `null` for no retry. It runs while this device holds its lock, which
-     *        is not reentrant: it must not call this device, directly or through anything that waits
-     *        on it, or it suspends forever.
+     *        before the export; `null` for no retry. It runs while this device holds its lock and the
+     *        original transport's ceremony gate, neither of which is reentrant: it must not call this
+     *        device, nor run any other ceremony over this device's [transport], directly or through
+     *        anything that waits on one, or it suspends forever. The transport it returns is normally
+     *        a new one, not under that ceremony gate while [reconnect] itself runs; this call then
+     *        takes that transport's own ceremony gate too, adopts it as [transport] once it holds it,
+     *        and keeps it for everything that follows — the retried reads, the export and the identity
+     *        check — so the replacement is held for the rest of the call exactly as the original
+     *        transport was. A [reconnect] that hands back this device's own [transport] (one that
+     *        reconnects internally) is accepted too; that one is already held.
      * @throws LedgerException.AppTooOld if the Zcash app cannot sign PCZTs, before anything is
      *         exported.
      * @throws LedgerException.UserRejected if the user declines the export.
@@ -220,23 +253,39 @@ class LedgerDevice internal constructor(
         }
 
     /**
-     * Runs [block] once no other call on this device runs. A cancellation while [block] runs closes
-     * the transport, because the device can be in the middle of a command or an exchange; a
-     * cancellation while the call waits for its turn closes nothing.
+     * Runs [block] once no other call on this device, and no other ceremony on its transport, runs. A
+     * cancellation while [block] runs closes the transport the call is on — the reconnected one, once
+     * [readBeforeExport] has moved [transport] on — because the device can be in the middle of a
+     * command or an exchange; a cancellation while the call waits for its turn, on this device or at
+     * the transport's ceremony gate, closes nothing.
      */
     private suspend fun <T> holdingDevice(block: suspend () -> T): T =
         mutex.withLock {
-            try {
-                block()
-            } catch (e: CancellationException) {
-                exchanger.closeQuietly()
-                throw e
+            LedgerCeremony.run(transport) {
+                try {
+                    block()
+                } catch (e: CancellationException) {
+                    exchanger.closeQuietly()
+                    throw e
+                } finally {
+                    replacementHold?.release()
+                    replacementHold = null
+                }
             }
         }
 
     /**
      * The reads before the export, retried once over a transport from [reconnect] when the first
      * attempt fails on the connection.
+     *
+     * A retry takes the reconnected transport's ceremony ([LedgerCeremony.adopt]), nested inside the
+     * ceremony [holdingDevice] already holds on the original one, and only then moves [transport] and
+     * the exchanger to it, so a cancellation while another ceremony still holds the replacement
+     * leaves them on the original, already closed, one, and [holdingDevice]'s cleanup closes nothing
+     * of the holder's. The two are different transport instances, so the nesting cannot deadlock. A
+     * [reconnect] that hands back this very transport — one that reconnects internally, whose `close`
+     * only dropped the link — is already held and is not taken again. The hold lasts until the call
+     * ends; [holdingDevice] releases it.
      */
     private suspend fun readBeforeExport(
         readTimeout: Duration,
@@ -250,10 +299,12 @@ class LedgerDevice internal constructor(
             }
             Twig.info { "Ledger read before the export failed (${e.javaClass.simpleName}); reconnecting once" }
             exchanger.closeQuietly()
-            reconnect().also {
-                transport = it
-                exchanger = LedgerExchanger(it, backend.policy)
+            val replacement = reconnect()
+            if (replacement !== transport) {
+                replacementHold = LedgerCeremony.adopt(replacement)
             }
+            transport = replacement
+            exchanger = LedgerExchanger(replacement, backend.policy)
             readAppVersionAndIdentity(readTimeout)
         }
 

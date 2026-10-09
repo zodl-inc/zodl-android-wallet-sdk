@@ -65,6 +65,13 @@ reassemble, a cancellation — closes the transport, and every later exchange fa
 be taken for the answer to the next one. Connect again to continue. The device's identifier (its
 Bluetooth address) is a stable hardware identifier; do not log it or send it anywhere.
 
+One ceremony runs at a time, too. A pairing, a signing ceremony, an app query or an app switch holds
+its transport for all of its commands, whichever SDK object started it: a second `LedgerDevice` built
+over the same transport, `Synchronizer.signPcztWithLedger` and `LedgerZcashApp` all wait for a ceremony
+in progress to end rather than put a command inside it, since the device's state depends on the order
+of a ceremony's commands. A caller cancelled while it waits for its turn closes nothing: it never
+reached the device.
+
 ## Opening the Zcash app
 
 A device returns to its dashboard after its first Bluetooth pairing with the phone, and every Zcash
@@ -153,7 +160,9 @@ the export and drops the next command until the user dismisses it. It refuses an
 PCZTs (`LedgerException.AppTooOld`) before exporting anything. Like every `LedgerDevice` call, a pairing
 that is cancelled once it runs closes the transport and sends nothing more, also between two chunks of
 the export: open a new connection before you try again. A call cancelled while it waits for another
-call on the same device closes nothing.
+call on the same device, or for another ceremony on the same transport, closes nothing. A pairing that
+reconnects (see below) holds the transport its `reconnect` returned for the rest of the call the same
+way; one cancelled while another ceremony still holds that transport leaves it to them, unadopted.
 
 For account 0, `pairAccount` checks that the exported key belongs to the device that answered the
 identity read: it derives the public key at `m/44'/coin'/0'/0/0` from the key's transparent component
