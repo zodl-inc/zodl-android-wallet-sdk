@@ -6,8 +6,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.1.0] - 2026-10-07
-
 ### Added
 - The `zcash-android-backend` artifact gains `LedgerBackend` and its JNI implementation
   `LedgerRustBackend`, the native boundary to the Ledger hardware-wallet engine (`pczt_ledger`). They
@@ -120,6 +118,41 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restartable and what the app should do, and the failures that are not `LedgerException`s; and an
   "Opening the Zcash app" section: call `LedgerZcashApp.ensureZcashAppOpen` before `LedgerDevice.new`
   and build on the transport it returns.
+
+### Changed
+- `AccountPurpose.Spending.seedFingerprint` and `AccountPurpose.Spending.zip32AccountIndex` are now
+  nullable and default to `null`, so a spending account whose signer cannot name its seed (a Ledger
+  device) can be imported with no ZIP 32 derivation. Pass both or neither; passing exactly one throws
+  `IllegalArgumentException`. Existing constructor calls compile and behave as before; code that reads
+  either property must now handle `null`.
+- A Ledger device on its dashboard (status word `0x6E01`) or running another app (`0x6511`) now fails
+  with `LedgerException.WrongApp` instead of a non-restartable `DeviceRefused`.
+- `LedgerException.WrongApp` and `LedgerException.DerivationBudgetExhausted` are restartable: once the
+  user opens or reopens the Zcash app, starting the operation again can succeed.
+
+### Fixed
+- `LedgerBluetoothTransport.connect` no longer lets raw exceptions escape: a GATT write that times out
+  on the Ledger MTU handshake is `LedgerException.ConnectionFailed`, a `SecurityException` from the
+  Bluetooth stack while connecting is `LedgerException.BluetoothUnauthorized`, and a connect timeout
+  that runs out while Android's pairing flow is still in progress is `LedgerException.PairingRefused`
+  instead of `ConnectionFailed`. A GATT operation of the setup that runs out of its own timeout
+  (service discovery, the subscription) is `ConnectionFailed`, whatever the bond state, and never taken
+  for the connect timeout. Cancelling the caller still propagates as a cancellation, also while the ATT
+  MTU request is pending, and a `SecurityException` from that request is `BluetoothUnauthorized` too.
+- A timeout of the caller's own around a Bluetooth exchange, or around connecting while Android's
+  pairing flow runs, propagates as a cancellation instead of becoming `LedgerException.Timeout` or
+  `LedgerException.PairingRefused`. Waiting for the bond no longer has a 60-second limit of its own:
+  the connect timeout bounds the whole setup, pairing included.
+- A link that drops under the Ledger MTU handshake's write while connecting stays
+  `LedgerException.Disconnected`; only a write the device refuses for authentication is
+  `PairingRefused`.
+- A `LedgerException.BluetoothUnauthorized` raised for a `SecurityException` from the Bluetooth stack,
+  while scanning or connecting, names the permissions not granted in `missingPermissions`, or every
+  required one when all of them read as granted, instead of an empty list the app could not act on.
+
+## [5.1.0] - 2026-10-07
+
+### Added
 - `GiftCard`, a gift card read from a gift card link with `GiftCard.parse(link)`: this SDK's
   own links (`https://gift.zodl.com/#v=1&key=...&height=...`) and the legacy JSON payment-link
   encoding at `/payment-links/open#vN=` (`v1=` / `v2=` / `v3=` payloads). Exposes `origin`
@@ -284,15 +317,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   devices; never larger ones. `newBlocking` does not take it.
 
 ### Changed
-- `AccountPurpose.Spending.seedFingerprint` and `AccountPurpose.Spending.zip32AccountIndex` are now
-  nullable and default to `null`, so a spending account whose signer cannot name its seed (a Ledger
-  device) can be imported with no ZIP 32 derivation. Pass both or neither; passing exactly one throws
-  `IllegalArgumentException`. Existing constructor calls compile and behave as before; code that reads
-  either property must now handle `null`.
-- A Ledger device on its dashboard (status word `0x6E01`) or running another app (`0x6511`) now fails
-  with `LedgerException.WrongApp` instead of a non-restartable `DeviceRefused`.
-- `LedgerException.WrongApp` and `LedgerException.DerivationBudgetExhausted` are restartable: once the
-  user opens or reopens the Zcash app, starting the operation again can succeed.
 - `GiftCardRedeemer.new` is deprecated: it always runs the card wallet on `SdkSynchronizer`,
   whatever engine the app syncs with. Use `GiftCardRedeemers.new` from the incubator.
 - `GiftCardRedeemer.check` fails at once with `GiftCardException.SyncFailed`, carrying the
@@ -351,24 +375,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   releases exist under new version numbers. The voting API is unchanged.
 
 ### Fixed
-- `LedgerBluetoothTransport.connect` no longer lets raw exceptions escape: a GATT write that times out
-  on the Ledger MTU handshake is `LedgerException.ConnectionFailed`, a `SecurityException` from the
-  Bluetooth stack while connecting is `LedgerException.BluetoothUnauthorized`, and a connect timeout
-  that runs out while Android's pairing flow is still in progress is `LedgerException.PairingRefused`
-  instead of `ConnectionFailed`. A GATT operation of the setup that runs out of its own timeout
-  (service discovery, the subscription) is `ConnectionFailed`, whatever the bond state, and never taken
-  for the connect timeout. Cancelling the caller still propagates as a cancellation, also while the ATT
-  MTU request is pending, and a `SecurityException` from that request is `BluetoothUnauthorized` too.
-- A timeout of the caller's own around a Bluetooth exchange, or around connecting while Android's
-  pairing flow runs, propagates as a cancellation instead of becoming `LedgerException.Timeout` or
-  `LedgerException.PairingRefused`. Waiting for the bond no longer has a 60-second limit of its own:
-  the connect timeout bounds the whole setup, pairing included.
-- A link that drops under the Ledger MTU handshake's write while connecting stays
-  `LedgerException.Disconnected`; only a write the device refuses for authentication is
-  `PairingRefused`.
-- A `LedgerException.BluetoothUnauthorized` raised for a `SecurityException` from the Bluetooth stack,
-  while scanning or connecting, names the permissions not granted in `missingPermissions`, or every
-  required one when all of them read as granted, instead of an empty list the app could not act on.
 - Two synchronizers running in the same process (different aliases) no longer overwrite each
   other's stored transaction submit plans; previously the later writer could drop a plan the
   other had stored, so a created transaction was not resubmitted to the endpoints it was
