@@ -134,6 +134,7 @@ dependencies {
     // Tests
     testImplementation(libs.kotlin.reflect)
     testImplementation(libs.kotlin.test)
+    testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.bundles.junit)
     testImplementation(libs.mockito.junit)
     testImplementation(libs.kotlinx.coroutines.test)
