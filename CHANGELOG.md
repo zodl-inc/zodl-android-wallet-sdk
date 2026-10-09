@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0] - 2026-10-09
+
 ### Added
 - The `zcash-android-backend` artifact gains `LedgerBackend` and its JNI implementation
   `LedgerRustBackend`, the native boundary to the Ledger hardware-wallet engine (`pczt_ledger`). They
