@@ -95,12 +95,29 @@ internal class OhttpTransport(
     }
 
     /**
+     * Performs one OHTTP call: [roundTripOnce], and once more (sealed afresh) when the gateway
+     * refused the request as stale, an inner 400 with `ohttp-freshness: rejected` ("Request
+     * freshness" in the ZIP). That response carried the gateway clock, which the codec has
+     * already learned, so the second attempt is stamped right even on a device whose clock is off.
+     * Never more than one such retry.
+     */
+    suspend fun roundTrip(
+        request: OhttpCodecRequest,
+        timeoutMs: Int,
+    ): OhttpCodecResponse {
+        val response = roundTripOnce(request, timeoutMs)
+        if (!response.isFreshnessRefusal()) return response
+        logger("OHTTP gateway refused the request as stale; sending it again")
+        return roundTripOnce(request, timeoutMs)
+    }
+
+    /**
      * Performs one OHTTP round trip. When the relay or gateway rejects the sealed request as
      * unreadable (outer HTTP 400 or 422, which handles gateway key rotation), the key configuration
      * is refetched and the request is **sealed afresh** and sent once more: the gateway answers a
      * repeated nonce with 409, so a ciphertext is never posted twice.
      */
-    suspend fun roundTrip(
+    private suspend fun roundTripOnce(
         request: OhttpCodecRequest,
         timeoutMs: Int,
     ): OhttpCodecResponse {
@@ -182,6 +199,21 @@ internal class OhttpTransport(
         private const val KEY_FETCH_TIMEOUT_MS = 15_000
     }
 }
+
+/**
+ * Whether this inner response is the gateway's freshness refusal: status 400 with
+ * `ohttp-freshness: rejected` in the header section.
+ */
+internal fun OhttpCodecResponse.isFreshnessRefusal(): Boolean =
+    status == HTTP_BAD_REQUEST &&
+        headers.any { (name, value) ->
+            name.equals(FRESHNESS_HEADER, ignoreCase = true) &&
+                value.trim().equals(FRESHNESS_REJECTED, ignoreCase = true)
+        }
+
+private const val HTTP_BAD_REQUEST = 400
+private const val FRESHNESS_HEADER = "ohttp-freshness"
+private const val FRESHNESS_REJECTED = "rejected"
 
 /**
  * Gateway-mapped hosts where the gateway injects secrets server-side. The app must NOT send

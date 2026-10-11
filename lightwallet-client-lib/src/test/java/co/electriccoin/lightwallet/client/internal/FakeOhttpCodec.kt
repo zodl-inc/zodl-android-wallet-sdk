@@ -29,6 +29,8 @@ internal class FakeOhttpCodec(
     },
     var answer: OhttpCodecResponse = OhttpCodecResponse(200, emptyList(), emptyList(), byteArrayOf(1)),
 ) : OhttpCodec {
+    /** Inner responses for successive opened answers; [answer] once these are used up. */
+    val answers = mutableListOf<OhttpCodecResponse>()
     val verified = mutableListOf<Triple<String, ByteArray, Long>>()
     val sealedKeys = mutableListOf<ByteArray>()
     val sealedRequests = mutableListOf<OhttpCodecRequest>()
@@ -124,7 +126,7 @@ internal class FakeOhttpCodec(
             }
 
             else -> {
-                OhttpCompletion.Response(answer)
+                OhttpCompletion.Response(if (answers.isEmpty()) answer else answers.removeAt(0))
             }
         }
     }

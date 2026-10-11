@@ -2,6 +2,7 @@ package co.electriccoin.lightwallet.client.internal
 
 import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
 import co.electriccoin.lightwallet.client.OhttpCodecRequest
+import co.electriccoin.lightwallet.client.OhttpCodecResponse
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpProfileInfo
 import co.electriccoin.lightwallet.client.OhttpSealedRequest
@@ -194,6 +195,56 @@ class OhttpTransportTest {
         assertTrue("the opener must be spent", codec.liveOpeners.isEmpty())
         assertTrue("a spent opener must not be freed", codec.freed.isEmpty())
     }
+
+    @Test
+    fun `a freshness refusal is sealed afresh and sent once more`() {
+        val ok = OhttpCodecResponse(200, emptyList(), emptyList(), byteArrayOf(2))
+        codec.answers += listOf(freshnessRefusal(), ok)
+        repeat(2) { sender.queuePost { "relay answer".toByteArray() } }
+
+        val response = runBlocking { transport(initialKey = ByteArray(33) { 7 }).roundTrip(request, 5_000) }
+
+        assertSame(ok, response)
+        assertEquals(2, sender.postCalls.size)
+        assertEquals(2, codec.sealedBodies.size)
+        assertNotEquals(String(codec.sealedBodies[0]), String(codec.sealedBodies[1]))
+        assertTrue("both openers must be spent", codec.liveOpeners.isEmpty())
+    }
+
+    @Test
+    fun `a second freshness refusal is returned without a further retry`() {
+        codec.answers += listOf(freshnessRefusal(), freshnessRefusal())
+        repeat(2) { sender.queuePost { "relay answer".toByteArray() } }
+
+        val response = runBlocking { transport(initialKey = ByteArray(33) { 7 }).roundTrip(request, 5_000) }
+
+        assertTrue(response.isFreshnessRefusal())
+        assertEquals(2, sender.postCalls.size)
+    }
+
+    @Test
+    fun `an inner 400 without the freshness marker is not retried`() {
+        val plain400 = OhttpCodecResponse(400, listOf("content-type" to "text/plain"), emptyList(), ByteArray(0))
+        codec.answers += plain400
+        sender.queuePost { "relay answer".toByteArray() }
+
+        val response = runBlocking { transport(initialKey = ByteArray(33) { 7 }).roundTrip(request, 5_000) }
+
+        assertSame(plain400, response)
+        assertEquals(1, sender.postCalls.size)
+    }
+
+    private fun freshnessRefusal() =
+        OhttpCodecResponse(
+            400,
+            listOf(
+                "content-type" to "text/plain",
+                "Ohttp-Freshness" to "rejected",
+                "ohttp-server-time" to "1800000000",
+            ),
+            emptyList(),
+            ByteArray(0),
+        )
 
     @Test
     fun `a rejected key refetches the config and seals the request afresh for the retry`() {
