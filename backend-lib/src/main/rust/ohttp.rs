@@ -941,10 +941,27 @@ mod tests {
         assert_eq!(&sealed[..7], [1, 0, 0x20, 0, 1, 0, 1]);
 
         let (plain, response_ctx) = gateway_opens(&sealed);
+        // The ANDROID profile lower-cases the names and appends `ohttp-freshness` (the gateway
+        // refuses requests without it once it enforces freshness): read the stamped value back.
+        let name = b"ohttp-freshness";
+        let at = plain
+            .windows(name.len())
+            .position(|w| w == name)
+            .expect("freshness field written")
+            + name.len();
+        let len = plain[at] as usize;
+        let stamp = plain[at + 1..at + 1 + len].to_vec();
+        let ts: i64 = std::str::from_utf8(&stamp).unwrap().parse().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert!((ts - now).abs() <= 5, "timestamp {ts} vs now {now}");
         let mut lowercased = request();
         lowercased.headers = vec![
             (b"content-type".to_vec(), b"application/grpc".to_vec()),
             (b"te".to_vec(), b"trailers".to_vec()),
+            (name.to_vec(), stamp),
         ];
         assert_eq!(
             plain,
