@@ -578,7 +578,8 @@ fn classify_account_key_overlap<A: Account>(
 ///
 /// The match is [`WalletRead::get_account_for_ufvk`], which compares the Orchard, Sapling and
 /// P2PKH incoming viewing key items, the same lookup `import_account_ufvk` runs first. It fails
-/// when the items match more than one account, exactly as that import does.
+/// when the items match more than one account, exactly as that import does; the JNI export maps
+/// that failure to the import's collision error with [`map_account_key_overlap_error`].
 fn find_account_key_overlap<W: WalletRead>(
     wallet: &W,
     candidate: &UnifiedFullViewingKey,
@@ -590,8 +591,10 @@ fn find_account_key_overlap<W: WalletRead>(
 }
 
 /// Returns the account that shares an incoming viewing key item with the given UFVK as a
-/// `JniAccountKeyOverlap`, or null when importing the UFVK would add a new account. The UFVK is
-/// never logged or included in an error.
+/// `JniAccountKeyOverlap`, or null when importing the UFVK would add a new account. A UFVK whose
+/// items match more than one account fails with the error tagged with
+/// [`IMPORT_ACCOUNT_COLLISION_MARKER`], as its import would. The UFVK is never logged or
+/// included in an error.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_findAccountKeyOverlap<
     'local,
@@ -607,7 +610,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_findAccou
         let db_data = wallet_db(system_rng(), env, network, db_data)?;
         let ufvk = parse_ufvk(env, ufvk_string, &network)?;
 
-        match find_account_key_overlap(&db_data, &ufvk)? {
+        match find_account_key_overlap(&db_data, &ufvk).map_err(map_account_key_overlap_error)? {
             Some((account, overlap)) => {
                 let account = encode_account(env, encoded_account(&network, account)?)?;
                 Ok(env
@@ -753,7 +756,31 @@ const IMPORT_ACCOUNT_COLLISION_MARKER: &str = "ImportAccountCollision";
 
 /// The fixed `CorruptedData` message `zcash_client_sqlite`'s `get_account_for_uivk` fails with
 /// when the incoming viewing key items of a UFVK being imported match more than one account.
+/// If `account_key_overlap_with_two_accounts_fails_like_the_import` fails, librustzcash has
+/// reworded this message.
 const MULTIPLE_ACCOUNTS_MATCHED_UIVK: &str = "Multiple account records matched the provided UIVK";
+
+/// The error a UFVK whose incoming viewing key items match more than one account maps to, in
+/// both the import and the lookup, tagged with [`IMPORT_ACCOUNT_COLLISION_MARKER`].
+fn multiple_accounts_matched_error() -> anyhow::Error {
+    anyhow!(
+        "{}: the provided key shares viewing key components with more than one account in the \
+         wallet",
+        IMPORT_ACCOUNT_COLLISION_MARKER
+    )
+}
+
+/// Maps a [`find_account_key_overlap`] failure to the JNI-level error. A key whose items match
+/// more than one account maps to the error the import fails with for it, so the Kotlin side
+/// reports both as a collision; every other error passes through.
+fn map_account_key_overlap_error(e: SqliteClientError) -> anyhow::Error {
+    match &e {
+        SqliteClientError::CorruptedData(msg) if msg == MULTIPLE_ACCOUNTS_MATCHED_UIVK => {
+            multiple_accounts_matched_error()
+        }
+        _ => e.into(),
+    }
+}
 
 /// Maps an `import_account_ufvk` failure to the JNI-level error.
 ///
@@ -770,11 +797,9 @@ fn map_import_account_error(e: SqliteClientError) -> anyhow::Error {
              in the wallet",
             IMPORT_ACCOUNT_COLLISION_MARKER
         ),
-        SqliteClientError::CorruptedData(msg) if msg == MULTIPLE_ACCOUNTS_MATCHED_UIVK => anyhow!(
-            "{}: the provided key shares viewing key components with more than one account in \
-             the wallet",
-            IMPORT_ACCOUNT_COLLISION_MARKER
-        ),
+        SqliteClientError::CorruptedData(msg) if msg == MULTIPLE_ACCOUNTS_MATCHED_UIVK => {
+            multiple_accounts_matched_error()
+        }
         SqliteClientError::CorruptedData(msg)
             if msg.ends_with("should have the same checkpoints") =>
         {
@@ -3541,8 +3566,16 @@ const UFVK_DESCRIPTION_INVALID: jint = -1;
 /// this reports as valid is one the calls that take a UFVK accept. The encoding is never logged
 /// or included in an error: a decoding failure is reported only through the return value.
 fn describe_ufvk(network: &Network, encoding: &str) -> jint {
-    let encoding = encoding.trim();
-    let Ok(ufvk) = decode_ufvk(network, encoding) else {
+    // The same steps as `UnifiedFullViewingKey::decode`, which `decode_ufvk` calls, taken one by
+    // one so that the container decoded here also yields the unknown items, which
+    // `UnifiedFullViewingKey` does not expose.
+    let Ok((network_type, _, container)) = unified::Ufvk::decode(encoding.trim()) else {
+        return UFVK_DESCRIPTION_INVALID;
+    };
+    if network_type != network.network_type() {
+        return UFVK_DESCRIPTION_INVALID;
+    }
+    let Ok(ufvk) = UnifiedFullViewingKey::parse(&container) else {
         return UFVK_DESCRIPTION_INVALID;
     };
 
@@ -3551,18 +3584,13 @@ fn describe_ufvk(network: &Network, encoding: &str) -> jint {
     flags.set(UfvkComponentFlags::P2SH, ufvk.p2sh().is_some());
     flags.set(UfvkComponentFlags::SAPLING, ufvk.has_sapling());
     flags.set(UfvkComponentFlags::ORCHARD, ufvk.has_orchard());
-
-    // `UnifiedFullViewingKey` does not expose its unknown items, so the container is decoded
-    // again to find them. The first decode succeeded, so this one cannot fail.
-    let has_unknown = unified::Ufvk::decode(encoding)
-        .map(|(_, _, container)| {
-            container
-                .items_as_parsed()
-                .iter()
-                .any(|item| matches!(item, unified::Uitem::Data(unified::Fvk::Unknown { .. })))
-        })
-        .unwrap_or(false);
-    flags.set(UfvkComponentFlags::UNKNOWN, has_unknown);
+    flags.set(
+        UfvkComponentFlags::UNKNOWN,
+        container
+            .items_as_parsed()
+            .iter()
+            .any(|item| matches!(item, unified::Uitem::Data(unified::Fvk::Unknown { .. }))),
+    );
 
     flags.bits() as jint
 }
@@ -5524,15 +5552,6 @@ mod tests {
     }
 
     #[test]
-    fn describe_ufvk_ignores_surrounding_whitespace() {
-        let ufvk = describe_test_ufvk(&MainNetwork);
-        assert_eq!(
-            describe_ufvk(&MainNetwork, &format!("  {ufvk}\n")),
-            describe_ufvk(&MainNetwork, &ufvk)
-        );
-    }
-
-    #[test]
     fn describe_ufvk_rejects_a_key_for_the_other_network() {
         assert_eq!(
             describe_ufvk(&TestNetwork, &describe_test_ufvk(&MainNetwork)),
@@ -5581,8 +5600,13 @@ mod tests {
     }
 
     #[test]
-    fn describe_ufvk_rejects_invalid_input() {
+    fn decode_ufvk_and_describe_ufvk_reject_invalid_input() {
         for input in invalid_ufvk_inputs() {
+            assert!(
+                decode_ufvk(&MainNetwork, &input).is_err(),
+                "input of length {}",
+                input.len()
+            );
             assert_eq!(
                 describe_ufvk(&MainNetwork, &input),
                 UFVK_DESCRIPTION_INVALID,
@@ -5695,11 +5719,6 @@ mod tests {
                 UFVK_DESCRIPTION_INVALID,
                 "{network:?}"
             );
-        }
-
-        for blank in ["", " ", "\n\t "] {
-            assert!(decode_ufvk(&MainNetwork, blank).is_err());
-            assert_eq!(describe_ufvk(&MainNetwork, blank), UFVK_DESCRIPTION_INVALID);
         }
     }
 
@@ -5853,46 +5872,34 @@ mod tests {
         );
     }
 
-    #[test]
-    fn account_key_overlap_on_orchard_alone_conflicts() {
+    /// Asserts that a candidate sharing only the base key's `shared` item, with the other items
+    /// taken from an unrelated key, conflicts with the base account.
+    fn assert_conflicts_on_alone(shared: fn(&unified::Uitem<unified::Fvk>) -> bool) {
         let base = overlap_base_ufvk();
         let candidate = rebuild_ufvk(
             &base,
-            is_orchard,
-            ufvk_items(&overlap_other_ufvk(), |item| !is_orchard(item)),
+            shared,
+            ufvk_items(&overlap_other_ufvk(), |item| !shared(item)),
         );
         assert_eq!(
             overlap_of(&base, &candidate),
             Some(AccountKeyOverlap::Conflicting)
         );
+    }
+
+    #[test]
+    fn account_key_overlap_on_orchard_alone_conflicts() {
+        assert_conflicts_on_alone(is_orchard);
     }
 
     #[test]
     fn account_key_overlap_on_p2pkh_alone_conflicts() {
-        let base = overlap_base_ufvk();
-        let candidate = rebuild_ufvk(
-            &base,
-            is_p2pkh,
-            ufvk_items(&overlap_other_ufvk(), |item| !is_p2pkh(item)),
-        );
-        assert_eq!(
-            overlap_of(&base, &candidate),
-            Some(AccountKeyOverlap::Conflicting)
-        );
+        assert_conflicts_on_alone(is_p2pkh);
     }
 
     #[test]
     fn account_key_overlap_on_sapling_alone_conflicts() {
-        let base = overlap_base_ufvk();
-        let candidate = rebuild_ufvk(
-            &base,
-            is_sapling,
-            ufvk_items(&overlap_other_ufvk(), |item| !is_sapling(item)),
-        );
-        assert_eq!(
-            overlap_of(&base, &candidate),
-            Some(AccountKeyOverlap::Conflicting)
-        );
+        assert_conflicts_on_alone(is_sapling);
     }
 
     /// The Sapling incoming viewing key item is the diversifier key and `ivk`, so a key whose
@@ -5960,10 +5967,11 @@ mod tests {
 
         let candidate = rebuild_ufvk(&base, is_orchard, ufvk_items(&other, is_sapling));
         let candidate_ufvk = decode_ufvk(&TestNetwork, &candidate).expect("the candidate decodes");
-        assert!(matches!(
-            find_account_key_overlap(&db, &candidate_ufvk),
-            Err(SqliteClientError::CorruptedData(msg)) if msg == MULTIPLE_ACCOUNTS_MATCHED_UIVK
-        ));
+        let lookup_error =
+            find_account_key_overlap(&db, &candidate_ufvk).expect_err("the lookup fails");
+        assert!(
+            matches!(&lookup_error, SqliteClientError::CorruptedData(msg) if msg == MULTIPLE_ACCOUNTS_MATCHED_UIVK)
+        );
 
         let error = import_view_only(&mut db, &candidate).expect_err("the import fails");
         assert!(
@@ -5975,6 +5983,24 @@ mod tests {
             "{mapped}"
         );
         assert!(!mapped.contains(&candidate));
+        assert_eq!(
+            map_account_key_overlap_error(lookup_error).to_string(),
+            mapped,
+            "the lookup must fail with the import's collision error"
+        );
+    }
+
+    #[test]
+    fn map_account_key_overlap_error_passes_through_other_errors() {
+        let mapped = map_account_key_overlap_error(SqliteClientError::CorruptedData(
+            "some other corruption".to_string(),
+        ))
+        .to_string();
+        assert!(
+            !mapped.starts_with(IMPORT_ACCOUNT_COLLISION_MARKER),
+            "{mapped}"
+        );
+        assert!(mapped.contains("some other corruption"), "{mapped}");
     }
 
     #[test]

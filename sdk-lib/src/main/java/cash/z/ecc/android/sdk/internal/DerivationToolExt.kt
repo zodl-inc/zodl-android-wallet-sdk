@@ -31,7 +31,7 @@ fun Derivation.deriveUnifiedAddress(
 /**
  * Decodes the JNI component bitmask; [JNI_UFVK_DESCRIPTION_INVALID] yields `null`.
  */
-fun Derivation.describeUnifiedFullViewingKeyTypesafe(
+internal fun Derivation.describeUnifiedFullViewingKeyTypesafe(
     ufvk: UnifiedFullViewingKey,
     network: ZcashNetwork
 ): UnifiedFullViewingKeyComponents? {

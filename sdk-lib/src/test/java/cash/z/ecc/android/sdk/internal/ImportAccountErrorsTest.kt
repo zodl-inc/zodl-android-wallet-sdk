@@ -22,11 +22,7 @@ class ImportAccountErrorsTest {
 
     @Test
     fun the_collision_marker_for_several_accounts_maps_to_the_collision_exception() {
-        val cause =
-            RuntimeException(
-                "ImportAccountCollision: the provided key shares viewing key components with more " +
-                    "than one account in the wallet"
-            )
+        val cause = RuntimeException(SEVERAL_ACCOUNTS_MESSAGE)
 
         assertIs<InitializeException.ImportAccountCollisionException>(
             ImportAccountErrors.toImportAccountException(cause)
@@ -70,6 +66,30 @@ class ImportAccountErrorsTest {
     }
 
     @Test
+    fun a_lookup_failing_on_several_accounts_maps_to_the_collision_exception() {
+        val cause = RuntimeException(SEVERAL_ACCOUNTS_MESSAGE)
+
+        val exception = ImportAccountErrors.toFindAccountSharingKeyComponentsException(cause)
+
+        assertIs<InitializeException.ImportAccountCollisionException>(exception)
+        assertSame(cause, exception.cause)
+    }
+
+    @Test
+    fun other_lookup_failures_map_to_the_lookup_exception() {
+        for (cause in listOf(
+            RuntimeException("Value did not decode as a valid UFVK: invalid checksum"),
+            RuntimeException("ImportAccountCheckpointsNotReady: transient"),
+            RuntimeException()
+        )) {
+            val exception = ImportAccountErrors.toFindAccountSharingKeyComponentsException(cause)
+
+            assertIs<InitializeException.FindAccountSharingKeyComponentsException>(exception)
+            assertSame(cause, exception.cause)
+        }
+    }
+
+    @Test
     fun the_lookup_exception_message_is_fixed_and_carries_no_key() {
         val exception =
             InitializeException.FindAccountSharingKeyComponentsException(RuntimeException(FAKE_UFVK))
@@ -81,6 +101,9 @@ class ImportAccountErrorsTest {
         private const val COLLISION_MESSAGE =
             "ImportAccountCollision: an account sharing a viewing key component with the provided key " +
                 "already exists in the wallet"
+        private const val SEVERAL_ACCOUNTS_MESSAGE =
+            "ImportAccountCollision: the provided key shares viewing key components with more than one " +
+                "account in the wallet"
         private const val FAKE_UFVK = "uviewtest1notarealkeybutmustneverbeprinted"
     }
 }

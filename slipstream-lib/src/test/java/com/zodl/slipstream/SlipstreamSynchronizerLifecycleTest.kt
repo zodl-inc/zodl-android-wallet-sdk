@@ -472,6 +472,24 @@ class SlipstreamSynchronizerLifecycleTest {
         assertFalse(thrown.message.orEmpty().contains(UFVK))
     }
 
+    @Test
+    fun find_account_sharing_key_components_maps_a_key_matching_several_accounts_to_the_import_collision() {
+        val backend = mock(Backend::class.java)
+        val failure =
+            RuntimeException(
+                "ImportAccountCollision: the provided key shares viewing key components with more than " +
+                    "one account in the wallet"
+            )
+        runBlocking { `when`(backend.findAccountKeyOverlap(UFVK)).thenThrow(failure) }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        val thrown =
+            assertFailsWith<InitializeException.ImportAccountCollisionException> {
+                runBlocking { synchronizer.findAccountSharingKeyComponents(UnifiedFullViewingKey(UFVK)) }
+            }
+        assertSame(failure, thrown.cause)
+    }
+
     /**
      * MOB-1667: polling is local JNI reads only, so a migration pause must leave it running — the
      * host keeps seeing live balances, heights and status for however long the pause lasts.

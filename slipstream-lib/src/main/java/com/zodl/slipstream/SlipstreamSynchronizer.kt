@@ -1050,13 +1050,15 @@ class SlipstreamSynchronizer internal constructor(
     }
 
     /**
-     * A read-only lookup, so it waits only for the wallet database ([awaitDbReady]), like [getAccounts].
+     * A read-only lookup, so it waits only for the wallet database ([awaitDbReady]), like [getAccounts]:
+     * a database that never becomes ready fails with [SlipstreamNotReadyException], not with
+     * [InitializeException.FindAccountSharingKeyComponentsException].
      */
     override suspend fun findAccountSharingKeyComponents(ufvk: UnifiedFullViewingKey): AccountKeyOverlap? {
         awaitDbReady()
         return runCatchingCancellable { backend.findAccountKeyOverlap(ufvk.encoding)?.let(AccountKeyOverlap::new) }
             .onFailure { Twig.error { "Finding the account sharing key components failed." } }
-            .getOrElse { throw InitializeException.FindAccountSharingKeyComponentsException(it) }
+            .getOrElse { throw ImportAccountErrors.toFindAccountSharingKeyComponentsException(it) }
     }
 
     override suspend fun getFastestServers(servers: List<LightWalletEndpoint>) =

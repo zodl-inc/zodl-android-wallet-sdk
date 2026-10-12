@@ -39,7 +39,8 @@ import kotlin.test.assertSame
 /**
  * [SdkSynchronizer.findAccountSharingKeyComponents] hands the key to the backend unchanged, returns its
  * answer as is, and wraps a backend failure in a key-free
- * [InitializeException.FindAccountSharingKeyComponentsException].
+ * [InitializeException.FindAccountSharingKeyComponentsException], or in
+ * [InitializeException.ImportAccountCollisionException] when the key matches several accounts.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SdkSynchronizerAccountKeyOverlapTest {
@@ -82,6 +83,23 @@ class SdkSynchronizerAccountKeyOverlapTest {
                 }
             assertSame(failure, thrown.cause)
             assertFalse(thrown.message.orEmpty().contains(UFVK.encoding))
+        }
+
+    @Test
+    fun maps_a_key_matching_several_accounts_to_the_import_collision() =
+        withSynchronizer("overlap_several_accounts") { synchronizer, backend ->
+            val failure =
+                RuntimeException(
+                    "ImportAccountCollision: the provided key shares viewing key components with more than " +
+                        "one account in the wallet"
+                )
+            `when`(backend.findAccountSharingKeyComponents(UFVK)).thenThrow(failure)
+
+            val thrown =
+                assertFailsWith<InitializeException.ImportAccountCollisionException> {
+                    synchronizer.findAccountSharingKeyComponents(UFVK)
+                }
+            assertSame(failure, thrown.cause)
         }
 
     @Test

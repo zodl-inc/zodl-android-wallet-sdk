@@ -242,15 +242,24 @@ interface Synchronizer {
      * The key is never logged or put in an error message. Leading and trailing whitespace around its
      * encoding is ignored, as [importAccountByUfvk] ignores it.
      *
+     * The answer is a snapshot: this lookup and [importAccountByUfvk] run in separate database
+     * transactions, and the import checks the wallet again atomically, so its outcome can differ when
+     * the wallet's accounts change in between.
+     *
+     * On the Slipstream synchronizer, this waits for the wallet database to be ready, like
+     * [getAccounts], and throws `SlipstreamNotReadyException` instead of
+     * [InitializeException.FindAccountSharingKeyComponentsException] when it never becomes ready.
+     *
      * @param ufvk the key to look up.
      *
      * @return the overlapping account and what importing [ufvk] would do to it, or `null` when importing
      * [ufvk] would add a new account.
      *
+     * @throws [InitializeException.ImportAccountCollisionException] when [ufvk] shares components with
+     * more than one account; importing it would fail with the same exception, so treat it as a key not
+     * to import
      * @throws [InitializeException.FindAccountSharingKeyComponentsException] when [ufvk] is not a valid
-     * UFVK for this wallet's network, when it shares components with more than one account (importing
-     * it would then fail with [InitializeException.ImportAccountCollisionException]), or when the
-     * wallet database cannot be read
+     * UFVK for this wallet's network, or when the wallet database cannot be read
      */
     suspend fun findAccountSharingKeyComponents(ufvk: UnifiedFullViewingKey): AccountKeyOverlap?
 

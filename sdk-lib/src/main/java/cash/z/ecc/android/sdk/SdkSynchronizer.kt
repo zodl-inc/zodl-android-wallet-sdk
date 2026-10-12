@@ -1119,7 +1119,7 @@ class SdkSynchronizer private constructor(
                     refreshAccountsBus.emit(Unit)
                 }
         }.onFailure {
-            Twig.error(it) { "Import account failed." }
+            Twig.error { "Import account failed." }
         }.getOrElse { cause ->
             if (cause is CancellationException) throw cause
             throw ImportAccountErrors.toImportAccountException(cause)
@@ -1133,7 +1133,7 @@ class SdkSynchronizer private constructor(
             Twig.error { "Finding the account sharing key components failed." }
         }.getOrElse { cause ->
             if (cause is CancellationException) throw cause
-            throw InitializeException.FindAccountSharingKeyComponentsException(cause)
+            throw ImportAccountErrors.toFindAccountSharingKeyComponentsException(cause)
         }
 
     override suspend fun getAccounts(): List<Account> =

@@ -14,6 +14,10 @@ import cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap
  * are equal. This is the comparison account import itself makes, so a Sapling component that
  * differs only in its outgoing viewing key is still shared.
  *
+ * The value is a snapshot: the lookup and the import run in separate database transactions, and the
+ * import checks the wallet again atomically, so its outcome differs from [kind] if the wallet's
+ * accounts change in between.
+ *
  * [toString] does not print any key: [account] redacts its viewing keys.
  *
  * @param account the existing account.
@@ -29,10 +33,18 @@ data class AccountKeyOverlap(
      * succeeds only for [Kind.WOULD_UPGRADE], and then changes [account] instead of adding one.
      */
     val importWouldFail: Boolean
-        get() = kind != Kind.WOULD_UPGRADE
+        get() =
+            when (kind) {
+                Kind.ALREADY_IMPORTED -> true
+                Kind.WOULD_UPGRADE -> false
+                Kind.CONFLICTING -> true
+            }
 
     /**
      * What importing a key would do to the existing account it shares a component with.
+     *
+     * Further kinds may be added in a later release, so an exhaustive `when` over this enum may stop
+     * compiling then; use [importWouldFail] to decide whether to import.
      */
     enum class Kind {
         /**

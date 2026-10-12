@@ -3,7 +3,7 @@ package cash.z.ecc.android.sdk.internal
 import cash.z.ecc.android.sdk.exception.InitializeException
 
 /**
- * Matches an `import_account_ufvk` failure against the markers the Rust backend tags two
+ * Matches an `import_account_ufvk` or `findAccountKeyOverlap` failure against the markers the Rust backend tags two
  * distinguishable failures with: a transient, retryable cross-pool checkpoint-parity failure, and
  * a key that collides with an existing account.
  *
@@ -41,5 +41,17 @@ internal object ImportAccountErrors {
             isCheckpointsNotReady(t) -> InitializeException.ImportAccountCheckpointsNotReadyException(t)
             isAccountCollision(t) -> InitializeException.ImportAccountCollisionException(t)
             else -> InitializeException.ImportAccountException(t)
+        }
+
+    /**
+     * Maps a `findAccountKeyOverlap` backend failure to the [InitializeException] the synchronizers
+     * throw for it: a key sharing components with more than one account fails the lookup with the
+     * collision marker, as its import would, and maps to the same exception the import throws.
+     */
+    fun toFindAccountSharingKeyComponentsException(t: Throwable): InitializeException =
+        if (isAccountCollision(t)) {
+            InitializeException.ImportAccountCollisionException(t)
+        } else {
+            InitializeException.FindAccountSharingKeyComponentsException(t)
         }
 }
