@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.internal.TypesafeDerivationToolImpl
 import cash.z.ecc.android.sdk.internal.jni.RustDerivationTool
 import cash.z.ecc.android.sdk.model.AccountMetadataKey
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKeyComponents
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zip32AccountIndex
@@ -81,6 +82,23 @@ interface DerivationTool {
         viewingKey: String,
         network: ZcashNetwork
     ): String
+
+    /**
+     * Describes which components a Unified Full Viewing Key carries, e.g. to reject a pasted key
+     * that cannot back the kind of account the caller is about to create.
+     *
+     * Leading and trailing whitespace in the encoding is ignored. This method never throws for
+     * invalid input, and never logs the key or includes it in an error message.
+     *
+     * @param ufvk the key to describe.
+     * @param network the network the key must belong to.
+     *
+     * @return the key's components, or `null` when [ufvk] is not a valid UFVK for [network].
+     */
+    suspend fun describeUnifiedFullViewingKey(
+        ufvk: UnifiedFullViewingKey,
+        network: ZcashNetwork
+    ): UnifiedFullViewingKeyComponents?
 
     /**
      * Derives a ZIP 325 Account Metadata Key from the given seed.

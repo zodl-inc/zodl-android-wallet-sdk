@@ -24,6 +24,39 @@ const val JNI_METADATA_KEY_SK_SIZE = 32
 const val JNI_METADATA_KEY_CHAIN_CODE_SIZE = 32
 
 /**
+ * Bit set in the result of [cash.z.ecc.android.sdk.internal.Derivation.describeUnifiedFullViewingKey]
+ * when the UFVK has a transparent P2PKH component. Must match `UfvkComponentFlags` in
+ * backend-lib/src/main/rust/lib.rs.
+ */
+const val JNI_UFVK_COMPONENT_P2PKH = 1 shl 0
+
+/**
+ * Bit set when the UFVK has a transparent P2SH viewing key item.
+ */
+const val JNI_UFVK_COMPONENT_P2SH = 1 shl 1
+
+/**
+ * Bit set when the UFVK has a Sapling component.
+ */
+const val JNI_UFVK_COMPONENT_SAPLING = 1 shl 2
+
+/**
+ * Bit set when the UFVK has an Orchard component.
+ */
+const val JNI_UFVK_COMPONENT_ORCHARD = 1 shl 3
+
+/**
+ * Bit set when the UFVK has at least one data item of an unrecognized typecode.
+ */
+const val JNI_UFVK_COMPONENT_UNKNOWN = 1 shl 4
+
+/**
+ * The result of [cash.z.ecc.android.sdk.internal.Derivation.describeUnifiedFullViewingKey] when the
+ * input is not a valid UFVK for the network.
+ */
+const val JNI_UFVK_DESCRIPTION_INVALID = -1
+
+/**
  * The number of bytes in a voting hotkey's opaque stored secret. It's used e.g. in
  * [cash.z.ecc.android.sdk.internal.model.voting.JniVotingHotkey.storedSecret]
  */

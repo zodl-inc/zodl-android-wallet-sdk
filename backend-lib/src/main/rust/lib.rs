@@ -3377,6 +3377,80 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+bitflags! {
+    /// A set of bitflags describing the components of a unified full viewing key, as returned by
+    /// `RustDerivationTool.describeUnifiedFullViewingKeyFromString`. The bit values are part of
+    /// the JNI contract and must match `JniConstants.kt`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct UfvkComponentFlags: u32 {
+        /// The key has a transparent P2PKH component.
+        const P2PKH = 0b00000001;
+        /// The key has a transparent P2SH viewing key item.
+        const P2SH = 0b00000010;
+        /// The key has a Sapling component.
+        const SAPLING = 0b00000100;
+        /// The key has an Orchard component.
+        const ORCHARD = 0b00001000;
+        /// The key has at least one data item of a typecode this library does not recognize.
+        const UNKNOWN = 0b00010000;
+    }
+}
+
+/// The value `describe_ufvk` returns when its input is not a valid UFVK for the network.
+const UFVK_DESCRIPTION_INVALID: jint = -1;
+
+/// Describes the components of the given UFVK encoding, as a bitmask of [`UfvkComponentFlags`],
+/// or returns [`UFVK_DESCRIPTION_INVALID`] if the encoding is not a valid UFVK for `network`.
+///
+/// The encoding is never logged or included in an error: a decoding failure is reported only
+/// through the return value.
+fn describe_ufvk(network: &Network, encoding: &str) -> jint {
+    let encoding = encoding.trim();
+    let Ok(ufvk) = UnifiedFullViewingKey::decode(network, encoding) else {
+        return UFVK_DESCRIPTION_INVALID;
+    };
+
+    let mut flags = UfvkComponentFlags::empty();
+    flags.set(UfvkComponentFlags::P2PKH, ufvk.p2pkh().is_some());
+    flags.set(UfvkComponentFlags::P2SH, ufvk.p2sh().is_some());
+    flags.set(UfvkComponentFlags::SAPLING, ufvk.has_sapling());
+    flags.set(UfvkComponentFlags::ORCHARD, ufvk.has_orchard());
+
+    // `UnifiedFullViewingKey` does not expose its unknown items, so the container is decoded
+    // again to find them. The first decode succeeded, so this one cannot fail.
+    let has_unknown = unified::Ufvk::decode(encoding)
+        .map(|(_, _, container)| {
+            container
+                .items_as_parsed()
+                .iter()
+                .any(|item| matches!(item, unified::Uitem::Data(unified::Fvk::Unknown { .. })))
+        })
+        .unwrap_or(false);
+    flags.set(UfvkComponentFlags::UNKNOWN, has_unknown);
+
+    flags.bits() as jint
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_describeUnifiedFullViewingKeyFromString<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    ufvk_string: JString<'local>,
+    network_id: jint,
+) -> jint {
+    let res = catch_unwind(&mut env, |env| {
+        let _span =
+            tracing::info_span!("RustDerivationTool.describeUnifiedFullViewingKeyFromString")
+                .entered();
+        let network = parse_network(network_id)?;
+        let ufvk_string = utils::java_string_to_rust(env, &ufvk_string)?;
+        Ok(describe_ufvk(&network, &ufvk_string))
+    });
+    unwrap_exc_or(&mut env, res, UFVK_DESCRIPTION_INVALID)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_deriveUnifiedFullViewingKey<
     'local,
@@ -4397,8 +4471,13 @@ fn parse_ufvk(
     network: &Network,
 ) -> anyhow::Result<UnifiedFullViewingKey> {
     let ufvk_string = utils::java_string_to_rust(env, &ufvk_string)?;
-    UnifiedFullViewingKey::decode(network, &ufvk_string)
-        .map_err(|e| anyhow!("Value \"{ufvk_string}\" did not decode as a valid UFVK: {e}"))
+    decode_ufvk(network, &ufvk_string)
+}
+
+/// Decodes a UFVK for `network`. The error never includes the input, which is key material.
+fn decode_ufvk(network: &Network, ufvk_string: &str) -> anyhow::Result<UnifiedFullViewingKey> {
+    UnifiedFullViewingKey::decode(network, ufvk_string)
+        .map_err(|e| anyhow!("Value did not decode as a valid UFVK: {e}"))
 }
 
 struct UnifiedAddressParser((NetworkType, UnifiedAddress));
@@ -5154,5 +5233,243 @@ mod tests {
             (None, Some(1)),
             "trusted, and still unmined"
         );
+    }
+
+    /// A throwaway seed for the UFVK description tests; it holds no funds.
+    const DESCRIBE_UFVK_SEED: [u8; 32] = [7; 32];
+
+    /// A Revision 2 mainnet UFVK with a P2SH viewing key item and an Orchard component, from
+    /// the public `zcash-test-vectors` `unified_viewing_keys_r2` set (also vendored by
+    /// `zcash_keys`).
+    const P2SH_ORCHARD_UFVK_VECTOR: &str = "uvf1td5cvtvcvlmxqgaxus3m2m745ykzk5gncx4z7x5zrk9l256qjfmfg6n8efrg0htq5sac4kg54aejsepkcl6hgaqyk6dlstk4fpnkmxjcvl72zh97r3fz7wa02wt4mmcayn6ukzck9d96tcqmkk2j5rzdr44f6haa9v7qzqsserruscf6lqum38xr8k84yesq8ecxa25aqg04uh3gweg8d25055v9z5u4c75mtt06g57eu8mq8eldg2gn9su23hkv0jrq7asc6tad5kaxs4r330uyf8qmydxkhe0nmtx26nux84sftau7072hp72qhfdzyhwu3ndhdq4glu8zjxp7srdaep9nn96swfl8td478n3jey0r73x5du50gjqr37ta39dpg25vkqw0q59pvfxp4xhl8392keskzl202njjeh677tphgcuayn09kl9vkxqkcy2pq7tar8vcjgewvem8hptycrd7v659lgzsnr85udpx7kv785m4a4259wr0snunfndya9x44m0zqt3py4x9md4vcdrj628qxmam6t836dp5zwsv744ay";
+
+    fn describe_test_usk(network: &Network) -> UnifiedSpendingKey {
+        UnifiedSpendingKey::from_seed(network, &DESCRIBE_UFVK_SEED, zip32::AccountId::ZERO)
+            .expect("derives a spending key from the test seed")
+    }
+
+    fn describe_test_ufvk(network: &Network) -> String {
+        encode_ufvk(
+            &describe_test_usk(network).to_unified_full_viewing_key(),
+            network,
+        )
+        .expect("encodes the test UFVK")
+    }
+
+    /// Re-encodes `encoding` keeping only the items `keep` accepts, followed by `extra`.
+    fn rebuild_ufvk(
+        encoding: &str,
+        keep: impl Fn(&unified::Uitem<unified::Fvk>) -> bool,
+        extra: Vec<unified::Uitem<unified::Fvk>>,
+    ) -> String {
+        let (network, revision, ufvk) = unified::Ufvk::decode(encoding).expect("decodes the UFVK");
+        let items = ufvk
+            .items_as_parsed()
+            .iter()
+            .filter(|item| keep(item))
+            .cloned()
+            .chain(extra)
+            .collect();
+        unified::Ufvk::try_from_items(revision, items)
+            .expect("builds the UFVK container")
+            .encode(&network)
+    }
+
+    fn is_orchard(item: &unified::Uitem<unified::Fvk>) -> bool {
+        matches!(item, unified::Uitem::Data(unified::Fvk::Orchard(_)))
+    }
+
+    fn is_p2pkh(item: &unified::Uitem<unified::Fvk>) -> bool {
+        matches!(item, unified::Uitem::Data(unified::Fvk::P2pkh(_)))
+    }
+
+    fn is_sapling(item: &unified::Uitem<unified::Fvk>) -> bool {
+        matches!(item, unified::Uitem::Data(unified::Fvk::Sapling(_)))
+    }
+
+    fn flags(flags: UfvkComponentFlags) -> jint {
+        flags.bits() as jint
+    }
+
+    #[test]
+    fn describe_ufvk_reports_every_component_of_a_derived_key() {
+        for network in [MainNetwork, TestNetwork] {
+            let ufvk = describe_test_ufvk(&network);
+            assert_eq!(
+                describe_ufvk(&network, &ufvk),
+                flags(
+                    UfvkComponentFlags::P2PKH
+                        | UfvkComponentFlags::SAPLING
+                        | UfvkComponentFlags::ORCHARD
+                ),
+                "{network:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn describe_ufvk_bit_values_match_the_jni_contract() {
+        assert_eq!(flags(UfvkComponentFlags::P2PKH), 1);
+        assert_eq!(flags(UfvkComponentFlags::P2SH), 2);
+        assert_eq!(flags(UfvkComponentFlags::SAPLING), 4);
+        assert_eq!(flags(UfvkComponentFlags::ORCHARD), 8);
+        assert_eq!(flags(UfvkComponentFlags::UNKNOWN), 16);
+        assert_eq!(UFVK_DESCRIPTION_INVALID, -1);
+    }
+
+    #[test]
+    fn describe_ufvk_reports_a_key_without_orchard() {
+        let ufvk = rebuild_ufvk(
+            &describe_test_ufvk(&MainNetwork),
+            |i| !is_orchard(i),
+            vec![],
+        );
+        assert_eq!(
+            describe_ufvk(&MainNetwork, &ufvk),
+            flags(UfvkComponentFlags::P2PKH | UfvkComponentFlags::SAPLING)
+        );
+    }
+
+    #[test]
+    fn describe_ufvk_reports_a_key_without_transparent() {
+        let ufvk = rebuild_ufvk(&describe_test_ufvk(&MainNetwork), |i| !is_p2pkh(i), vec![]);
+        assert_eq!(
+            describe_ufvk(&MainNetwork, &ufvk),
+            flags(UfvkComponentFlags::SAPLING | UfvkComponentFlags::ORCHARD)
+        );
+    }
+
+    #[test]
+    fn describe_ufvk_reports_an_orchard_only_key() {
+        let ufvk = rebuild_ufvk(&describe_test_ufvk(&MainNetwork), is_orchard, vec![]);
+        assert_eq!(
+            describe_ufvk(&MainNetwork, &ufvk),
+            flags(UfvkComponentFlags::ORCHARD)
+        );
+    }
+
+    #[test]
+    fn describe_ufvk_reports_a_sapling_only_key() {
+        let ufvk = rebuild_ufvk(&describe_test_ufvk(&TestNetwork), is_sapling, vec![]);
+        assert_eq!(
+            describe_ufvk(&TestNetwork, &ufvk),
+            flags(UfvkComponentFlags::SAPLING)
+        );
+    }
+
+    #[test]
+    fn describe_ufvk_reports_a_p2sh_key_apart_from_p2pkh() {
+        assert_eq!(
+            describe_ufvk(&MainNetwork, P2SH_ORCHARD_UFVK_VECTOR),
+            flags(UfvkComponentFlags::P2SH | UfvkComponentFlags::ORCHARD)
+        );
+    }
+
+    #[test]
+    fn describe_ufvk_reports_unknown_items() {
+        let ufvk = rebuild_ufvk(
+            &describe_test_ufvk(&MainNetwork),
+            |_| true,
+            vec![unified::Uitem::Data(unified::Fvk::Unknown {
+                typecode: 0x10,
+                data: vec![0x2a; 32],
+            })],
+        );
+        assert_eq!(
+            describe_ufvk(&MainNetwork, &ufvk),
+            flags(
+                UfvkComponentFlags::P2PKH
+                    | UfvkComponentFlags::SAPLING
+                    | UfvkComponentFlags::ORCHARD
+                    | UfvkComponentFlags::UNKNOWN
+            )
+        );
+    }
+
+    #[test]
+    fn describe_ufvk_ignores_surrounding_whitespace() {
+        let ufvk = describe_test_ufvk(&MainNetwork);
+        assert_eq!(
+            describe_ufvk(&MainNetwork, &format!("  {ufvk}\n")),
+            describe_ufvk(&MainNetwork, &ufvk)
+        );
+    }
+
+    #[test]
+    fn describe_ufvk_rejects_a_key_for_the_other_network() {
+        assert_eq!(
+            describe_ufvk(&TestNetwork, &describe_test_ufvk(&MainNetwork)),
+            UFVK_DESCRIPTION_INVALID
+        );
+        assert_eq!(
+            describe_ufvk(&MainNetwork, &describe_test_ufvk(&TestNetwork)),
+            UFVK_DESCRIPTION_INVALID
+        );
+        assert_eq!(
+            describe_ufvk(&TestNetwork, P2SH_ORCHARD_UFVK_VECTOR),
+            UFVK_DESCRIPTION_INVALID
+        );
+    }
+
+    /// Inputs that are not a valid mainnet UFVK, each built from the test key.
+    fn invalid_ufvk_inputs() -> Vec<String> {
+        let ufvk = describe_test_ufvk(&MainNetwork);
+
+        let mut bad_checksum = ufvk.clone();
+        let last = bad_checksum.pop().expect("the UFVK is not empty");
+        bad_checksum.push(if last == 'q' { 'p' } else { 'q' });
+
+        let (hrp, data) = ufvk.split_at(ufvk.find('1').expect("has a separator") + 1);
+        let mixed_case = format!("{hrp}{}{}", data[..8].to_uppercase(), &data[8..]);
+
+        let truncated = ufvk[..ufvk.len() - 10].to_string();
+
+        let uivk = encode_uivk(
+            &describe_test_usk(&MainNetwork)
+                .to_unified_full_viewing_key()
+                .to_unified_incoming_viewing_key(),
+            &MainNetwork,
+        )
+        .expect("encodes the test UIVK");
+
+        vec![
+            String::new(),
+            "   ".to_string(),
+            "not a viewing key".to_string(),
+            bad_checksum,
+            mixed_case,
+            truncated,
+            uivk,
+        ]
+    }
+
+    #[test]
+    fn describe_ufvk_rejects_invalid_input() {
+        for input in invalid_ufvk_inputs() {
+            assert_eq!(
+                describe_ufvk(&MainNetwork, &input),
+                UFVK_DESCRIPTION_INVALID,
+                "input of length {}",
+                input.len()
+            );
+        }
+    }
+
+    #[test]
+    fn decode_ufvk_errors_never_contain_the_input() {
+        let mut inputs = invalid_ufvk_inputs();
+        inputs.push(describe_test_ufvk(&TestNetwork));
+        for input in inputs.into_iter().filter(|i| !i.trim().is_empty()) {
+            let message = format!(
+                "{:?}",
+                decode_ufvk(&MainNetwork, &input).expect_err("the input is not a mainnet UFVK")
+            );
+            assert!(
+                !message.contains(&input),
+                "the error for an input of length {} echoes the input",
+                input.len()
+            );
+            assert!(message.starts_with("Value did not decode as a valid UFVK: "));
+        }
     }
 }

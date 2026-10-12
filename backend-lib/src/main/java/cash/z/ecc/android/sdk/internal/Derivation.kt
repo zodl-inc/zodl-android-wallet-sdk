@@ -15,6 +15,20 @@ interface Derivation {
         accountIndex: Long
     ): String
 
+    /**
+     * Describes the components of a unified full viewing key without throwing for invalid input
+     * and without logging or echoing the key.
+     *
+     * @return a bitmask of the `JNI_UFVK_COMPONENT_*` flags in
+     * [cash.z.ecc.android.sdk.internal.jni], or
+     * [cash.z.ecc.android.sdk.internal.jni.JNI_UFVK_DESCRIPTION_INVALID] when [viewingKey] is not a
+     * valid UFVK for the network.
+     */
+    fun describeUnifiedFullViewingKey(
+        viewingKey: String,
+        networkId: Int
+    ): Int
+
     fun deriveUnifiedSpendingKey(
         seed: ByteArray,
         networkId: Int,
