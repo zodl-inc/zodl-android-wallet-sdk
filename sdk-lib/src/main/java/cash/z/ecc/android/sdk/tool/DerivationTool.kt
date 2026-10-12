@@ -87,8 +87,10 @@ interface DerivationTool {
      * Describes which components a Unified Full Viewing Key carries, e.g. to reject a pasted key
      * that cannot back the kind of account the caller is about to create.
      *
-     * Leading and trailing whitespace in the encoding is ignored. This method never throws for
-     * invalid input, and never logs the key or includes it in an error message.
+     * Leading and trailing whitespace in the encoding is ignored, as it is by every SDK call that
+     * takes a UFVK, so a key reported as valid here is accepted by account import with the same
+     * encoding. This method never throws for an invalid key, and never logs the key or includes it
+     * in an error message.
      *
      * @param ufvk the key to describe.
      * @param network the network the key must belong to.

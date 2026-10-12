@@ -16,8 +16,8 @@ interface Derivation {
     ): String
 
     /**
-     * Describes the components of a unified full viewing key without throwing for invalid input
-     * and without logging or echoing the key.
+     * Describes the components of a unified full viewing key without throwing for an invalid key
+     * and without logging or echoing the key. Leading and trailing whitespace is ignored.
      *
      * @return a bitmask of the `JNI_UFVK_COMPONENT_*` flags in
      * [cash.z.ecc.android.sdk.internal.jni], or

@@ -12,7 +12,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hasSapling`, `hasOrchard`, `hasUnknownItems`, and `hasTransparent` for either transparent item),
   or `null` when the key is not a valid UFVK for the network. Use it to reject a pasted key that
   cannot back the account about to be imported, e.g. one with no Orchard or no P2PKH component. It
-  never throws for invalid input and never logs the key or puts it in an error message.
+  never throws for an invalid key and never logs the key or puts it in an error message. Leading
+  and trailing whitespace is ignored, as it is by the calls that take a UFVK.
 
 ### Changed
 - `UnifiedFullViewingKey.toString()` no longer prints the key: it returns
@@ -21,6 +22,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The error for a value that does not decode as a UFVK no longer contains the value, so the
   exception messages of the calls that take a UFVK (e.g. `DerivationTool.deriveUnifiedAddress` with a
   viewing key, and account import) no longer carry key material into logs.
+- The calls that take a UFVK (account import, looking up the account for a UFVK, and
+  `DerivationTool.deriveUnifiedAddress` with a viewing key) now ignore leading and trailing
+  whitespace around the encoding, as `DerivationTool.describeUnifiedFullViewingKey` does, instead of
+  rejecting it.
 
 ## [5.1.0] - 2026-10-07
 

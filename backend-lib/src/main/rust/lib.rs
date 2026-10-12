@@ -3402,11 +3402,12 @@ const UFVK_DESCRIPTION_INVALID: jint = -1;
 /// Describes the components of the given UFVK encoding, as a bitmask of [`UfvkComponentFlags`],
 /// or returns [`UFVK_DESCRIPTION_INVALID`] if the encoding is not a valid UFVK for `network`.
 ///
-/// The encoding is never logged or included in an error: a decoding failure is reported only
-/// through the return value.
+/// Leading and trailing whitespace is ignored, exactly as [`decode_ufvk`] ignores it, so a key
+/// this reports as valid is one the calls that take a UFVK accept. The encoding is never logged
+/// or included in an error: a decoding failure is reported only through the return value.
 fn describe_ufvk(network: &Network, encoding: &str) -> jint {
     let encoding = encoding.trim();
-    let Ok(ufvk) = UnifiedFullViewingKey::decode(network, encoding) else {
+    let Ok(ufvk) = decode_ufvk(network, encoding) else {
         return UFVK_DESCRIPTION_INVALID;
     };
 
@@ -4474,9 +4475,10 @@ fn parse_ufvk(
     decode_ufvk(network, &ufvk_string)
 }
 
-/// Decodes a UFVK for `network`. The error never includes the input, which is key material.
+/// Decodes a UFVK for `network`, ignoring leading and trailing whitespace as [`describe_ufvk`]
+/// does. The error never includes the input, which is key material.
 fn decode_ufvk(network: &Network, ufvk_string: &str) -> anyhow::Result<UnifiedFullViewingKey> {
-    UnifiedFullViewingKey::decode(network, ufvk_string)
+    UnifiedFullViewingKey::decode(network, ufvk_string.trim())
         .map_err(|e| anyhow!("Value did not decode as a valid UFVK: {e}"))
 }
 
@@ -5455,11 +5457,55 @@ mod tests {
         }
     }
 
+    /// The length of the payload slices `decode_ufvk_errors_never_contain_the_input` looks for in
+    /// an error message.
+    const ECHO_WINDOW: usize = 16;
+
+    /// Inputs that are not a valid mainnet UFVK and whose data part, after the first `1`
+    /// separator, is long enough to hold at least one [`ECHO_WINDOW`]-character slice.
+    fn invalid_ufvk_inputs_with_payload() -> Vec<String> {
+        let ufvk = describe_test_ufvk(&MainNetwork);
+        let (hrp, data) = ufvk.split_at(ufvk.find('1').expect("has a separator") + 1);
+
+        let flip = |c: char| if c == 'q' { 'p' } else { 'q' };
+        let with_char_at = |index: usize| {
+            let mut chars: Vec<char> = data.chars().collect();
+            chars[index] = flip(chars[index]);
+            format!("{hrp}{}", chars.into_iter().collect::<String>())
+        };
+        let mut swapped: Vec<char> = data.chars().collect();
+        let middle = swapped.len() / 2;
+        let swap_at = (middle..swapped.len() - 1)
+            .find(|&i| swapped[i] != swapped[i + 1])
+            .expect("the data part has two adjacent distinct characters");
+        swapped.swap(swap_at, swap_at + 1);
+
+        let mut inputs = invalid_ufvk_inputs();
+        inputs.extend([
+            format!("{hrp}{}", "thisisnotbech32payloadbio".repeat(4)),
+            format!("{hrp}{}", &data[..data.len() / 2]),
+            with_char_at(0),
+            with_char_at(data.len() / 2),
+            format!("{hrp}{}", swapped.into_iter().collect::<String>()),
+            format!("uviewtest1{data}"),
+            describe_test_ufvk(&TestNetwork),
+            P2SH_ORCHARD_UFVK_VECTOR.replace("uvf1", "uviewtest1"),
+        ]);
+        inputs
+            .into_iter()
+            .filter(|input| {
+                input
+                    .split_once('1')
+                    .is_some_and(|(_, data)| data.len() >= ECHO_WINDOW)
+            })
+            .collect()
+    }
+
     #[test]
     fn decode_ufvk_errors_never_contain_the_input() {
-        let mut inputs = invalid_ufvk_inputs();
-        inputs.push(describe_test_ufvk(&TestNetwork));
-        for input in inputs.into_iter().filter(|i| !i.trim().is_empty()) {
+        let inputs = invalid_ufvk_inputs_with_payload();
+        assert!(inputs.len() >= 10, "only {} inputs to check", inputs.len());
+        for input in inputs {
             let message = format!(
                 "{:?}",
                 decode_ufvk(&MainNetwork, &input).expect_err("the input is not a mainnet UFVK")
@@ -5469,7 +5515,56 @@ mod tests {
                 "the error for an input of length {} echoes the input",
                 input.len()
             );
+            let lowercase_message = message.to_lowercase();
+            let (_, data) = input.split_once('1').expect("has a separator");
+            let data = data.to_lowercase();
+            for start in 0..=data.len() - ECHO_WINDOW {
+                assert!(
+                    !lowercase_message.contains(&data[start..start + ECHO_WINDOW]),
+                    "the error for an input of length {} echoes its payload at offset {start}",
+                    input.len()
+                );
+            }
             assert!(message.starts_with("Value did not decode as a valid UFVK: "));
+        }
+    }
+
+    #[test]
+    fn decode_ufvk_and_describe_ufvk_treat_surrounding_whitespace_alike() {
+        for network in [MainNetwork, TestNetwork] {
+            let ufvk = describe_test_ufvk(&network);
+            let expected = describe_ufvk(&network, &ufvk);
+            for padded in [
+                format!(" {ufvk}"),
+                format!("{ufvk}\n"),
+                format!("\t {ufvk} \r\n"),
+            ] {
+                let decoded = decode_ufvk(&network, &padded)
+                    .expect("a padded valid key decodes like the unpadded one");
+                assert_eq!(
+                    encode_ufvk(&decoded, &network).expect("encodes the decoded UFVK"),
+                    ufvk,
+                    "{network:?}"
+                );
+                assert_eq!(describe_ufvk(&network, &padded), expected, "{network:?}");
+            }
+
+            let other = match network {
+                MainNetwork => TestNetwork,
+                TestNetwork => MainNetwork,
+            };
+            let padded_other = format!("  {}\n", describe_test_ufvk(&other));
+            assert!(decode_ufvk(&network, &padded_other).is_err(), "{network:?}");
+            assert_eq!(
+                describe_ufvk(&network, &padded_other),
+                UFVK_DESCRIPTION_INVALID,
+                "{network:?}"
+            );
+        }
+
+        for blank in ["", " ", "\n\t "] {
+            assert!(decode_ufvk(&MainNetwork, blank).is_err());
+            assert_eq!(describe_ufvk(&MainNetwork, blank), UFVK_DESCRIPTION_INVALID);
         }
     }
 }
