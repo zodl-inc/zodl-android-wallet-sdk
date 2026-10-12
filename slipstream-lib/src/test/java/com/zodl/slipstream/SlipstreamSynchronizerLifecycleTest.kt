@@ -6,7 +6,9 @@ import cash.z.ecc.android.sdk.WalletInitMode
 import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
+import cash.z.ecc.android.sdk.internal.jni.JNI_ACCOUNT_KEY_OVERLAP_CONFLICTING
 import cash.z.ecc.android.sdk.internal.model.JniAccount
+import cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniRewindResult
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
@@ -17,6 +19,7 @@ import cash.z.ecc.android.sdk.internal.model.WalletSummary
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
+import cash.z.ecc.android.sdk.model.AccountKeyOverlap
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
@@ -25,6 +28,7 @@ import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionId
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.WalletBalance
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -88,6 +92,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -425,6 +430,46 @@ class SlipstreamSynchronizerLifecycleTest {
         assertFailsWith<CancellationException> {
             runBlocking { synchronizer.accountsFlow.drop(1).first() }
         }
+    }
+
+    @Test
+    fun find_account_sharing_key_components_passes_the_encoding_and_maps_the_overlap() {
+        val backend = mock(Backend::class.java)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES) { it.toByte() })
+        val jniAccount = jniAccount(accountUuid)
+        runBlocking {
+            `when`(backend.findAccountKeyOverlap(UFVK))
+                .thenReturn(JniAccountKeyOverlap(jniAccount, JNI_ACCOUNT_KEY_OVERLAP_CONFLICTING))
+        }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        val overlap = runBlocking { synchronizer.findAccountSharingKeyComponents(UnifiedFullViewingKey(UFVK)) }
+
+        assertEquals(AccountKeyOverlap(Account.new(jniAccount), AccountKeyOverlap.Kind.CONFLICTING), overlap)
+    }
+
+    @Test
+    fun find_account_sharing_key_components_returns_null_when_no_account_overlaps() {
+        val backend = mock(Backend::class.java)
+        runBlocking { `when`(backend.findAccountKeyOverlap(UFVK)).thenReturn(null) }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        assertNull(runBlocking { synchronizer.findAccountSharingKeyComponents(UnifiedFullViewingKey(UFVK)) })
+    }
+
+    @Test
+    fun find_account_sharing_key_components_wraps_a_failure_without_the_key() {
+        val backend = mock(Backend::class.java)
+        val failure = RuntimeException("Value did not decode as a valid UFVK: $UFVK")
+        runBlocking { `when`(backend.findAccountKeyOverlap(UFVK)).thenThrow(failure) }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        val thrown =
+            assertFailsWith<InitializeException.FindAccountSharingKeyComponentsException> {
+                runBlocking { synchronizer.findAccountSharingKeyComponents(UnifiedFullViewingKey(UFVK)) }
+            }
+        assertSame(failure, thrown.cause)
+        assertFalse(thrown.message.orEmpty().contains(UFVK))
     }
 
     /**

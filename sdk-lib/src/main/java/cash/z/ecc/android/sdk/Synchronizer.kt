@@ -37,6 +37,7 @@ import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
+import cash.z.ecc.android.sdk.model.AccountKeyOverlap
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.CreatedTransaction
@@ -57,6 +58,7 @@ import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionRecipient
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -216,9 +218,41 @@ interface Synchronizer {
      * @return Account containing details about the imported account, including the unique account identifier for the
      * newly-created wallet database entry
      *
-     * @throws [InitializeException.ImportAccountException] in case of the operation failure
+     * @throws [InitializeException.ImportAccountCollisionException] when the key shares a viewing key
+     * component with an existing account without upgrading it; [findAccountSharingKeyComponents]
+     * detects this before importing
+     * @throws [InitializeException.ImportAccountCheckpointsNotReadyException] when the wallet's
+     * checkpoints are transiently out of sync across shielded pools; retry later
+     * @throws [InitializeException.ImportAccountException] in case of any other operation failure
      */
     suspend fun importAccountByUfvk(setup: AccountImportSetup): Account
+
+    /**
+     * Finds the account in this wallet that shares a viewing key component with [ufvk], and tells what
+     * [importAccountByUfvk] would do with [ufvk] because of it.
+     *
+     * Two keys share a component when their Orchard, Sapling or transparent P2PKH incoming viewing
+     * keys are equal; this is the comparison [importAccountByUfvk] makes before adding an account, so
+     * a Sapling component that differs only in its outgoing viewing key is still shared. Use it before
+     * importing to tell the user that a key is already in the wallet
+     * ([AccountKeyOverlap.Kind.ALREADY_IMPORTED]), would widen an existing account instead of adding
+     * one ([AccountKeyOverlap.Kind.WOULD_UPGRADE]), or conflicts with one
+     * ([AccountKeyOverlap.Kind.CONFLICTING]).
+     *
+     * The key is never logged or put in an error message. Leading and trailing whitespace around its
+     * encoding is ignored, as [importAccountByUfvk] ignores it.
+     *
+     * @param ufvk the key to look up.
+     *
+     * @return the overlapping account and what importing [ufvk] would do to it, or `null` when importing
+     * [ufvk] would add a new account.
+     *
+     * @throws [InitializeException.FindAccountSharingKeyComponentsException] when [ufvk] is not a valid
+     * UFVK for this wallet's network, when it shares components with more than one account (importing
+     * it would then fail with [InitializeException.ImportAccountCollisionException]), or when the
+     * wallet database cannot be read
+     */
+    suspend fun findAccountSharingKeyComponents(ufvk: UnifiedFullViewingKey): AccountKeyOverlap?
 
     /*
      * Not ready to be a public API; internal for testing only

@@ -65,6 +65,7 @@ import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
+import cash.z.ecc.android.sdk.model.AccountKeyOverlap
 import cash.z.ecc.android.sdk.model.AccountUsk
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -87,6 +88,7 @@ import cash.z.ecc.android.sdk.model.TransactionPool
 import cash.z.ecc.android.sdk.model.TransactionRecipient
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -1120,13 +1122,19 @@ class SdkSynchronizer private constructor(
             Twig.error(it) { "Import account failed." }
         }.getOrElse { cause ->
             if (cause is CancellationException) throw cause
-            throw if (ImportAccountErrors.isCheckpointsNotReady(cause)) {
-                InitializeException.ImportAccountCheckpointsNotReadyException(cause)
-            } else {
-                InitializeException.ImportAccountException(cause)
-            }
+            throw ImportAccountErrors.toImportAccountException(cause)
         }
     }
+
+    override suspend fun findAccountSharingKeyComponents(ufvk: UnifiedFullViewingKey): AccountKeyOverlap? =
+        runCatching {
+            backend.findAccountSharingKeyComponents(ufvk)
+        }.onFailure {
+            Twig.error { "Finding the account sharing key components failed." }
+        }.getOrElse { cause ->
+            if (cause is CancellationException) throw cause
+            throw InitializeException.FindAccountSharingKeyComponentsException(cause)
+        }
 
     override suspend fun getAccounts(): List<Account> =
         runCatching {

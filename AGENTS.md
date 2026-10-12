@@ -158,7 +158,9 @@ all the way to the Rust backend before failing.
   material. Counterexample: `InitializeException.ImportAccountException`
   (`sdk-lib/.../exception/Exceptions.kt`) builds
   `"... due to: ${cause?.message}"`. Keep the cause as the chained
-  throwable; keep the message fixed and generic.
+  throwable; keep the message fixed and generic, as
+  `ImportAccountCollisionException` and
+  `FindAccountSharingKeyComponentsException` do.
 - Do not pass backend throwables to `Twig` whole (e.g.
   `Twig.error(it) { ... }` on a JNI failure) — log a fixed message instead.
   Users copy logs and error dialogs into support emails without knowing

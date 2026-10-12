@@ -14,8 +14,31 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot back the account about to be imported, e.g. one with no Orchard or no P2PKH component. It
   never throws for an invalid key and never logs the key or puts it in an error message. Leading
   and trailing whitespace is ignored, as it is by the calls that take a UFVK.
+- `Synchronizer.findAccountSharingKeyComponents(ufvk)` returns the account in the wallet that shares
+  a viewing key component with a `UnifiedFullViewingKey` as a new `AccountKeyOverlap`, or `null` when
+  importing the key would add a new account. Components are shared when their Orchard, Sapling or
+  P2PKH incoming viewing keys are equal, the comparison `importAccountByUfvk` itself makes, so a
+  Sapling component differing only in its outgoing viewing key is still shared.
+  `AccountKeyOverlap.kind` tells what the import would do: `ALREADY_IMPORTED` (the account already
+  covers the key) and `CONFLICTING` (the key lacks or changes another of the account's components)
+  make it fail, while `WOULD_UPGRADE` makes it succeed without adding an account, replacing the
+  existing account's viewing key with the imported one and widening what that account sees;
+  `importWouldFail` is `true` for the first two. Call it before importing to warn about either case.
+  It throws the new `InitializeException.FindAccountSharingKeyComponentsException` when the key is
+  not valid for the network, matches more than one account, or the lookup fails. The key never
+  appears in a log or an error message.
+- `InitializeException.ImportAccountCollisionException`, thrown by `importAccountByUfvk` when the key
+  shares a viewing key component with one or more existing accounts and does not upgrade one of them.
+  Its message is fixed and never contains the key.
 
 ### Changed
+- `Synchronizer` declares `findAccountSharingKeyComponents(ufvk)`: any implementer or test fake must
+  now provide it.
+- `importAccountByUfvk` throws `InitializeException.ImportAccountCollisionException` instead of
+  `InitializeException.ImportAccountException` when the key collides with existing accounts. Code
+  that recognized this case by the text of `ImportAccountException`'s message ("An account
+  corresponding to the data provided already exists...") must catch the new type instead; that
+  text no longer reaches the message.
 - `UnifiedFullViewingKey.toString()` no longer prints the key: it returns
   `UnifiedFullViewingKey(encoding=***)`. Read `encoding` where the key itself is needed. Equality
   and hashing are unchanged.

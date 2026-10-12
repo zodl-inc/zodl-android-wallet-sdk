@@ -511,6 +511,119 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getAccoun
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+const JNI_ACCOUNT_KEY_OVERLAP: &str = "cash/z/ecc/android/sdk/internal/model/JniAccountKeyOverlap";
+
+/// What importing a UFVK would do to the existing account that shares at least one incoming
+/// viewing key item (Orchard, Sapling or transparent P2PKH) with it.
+///
+/// The three outcomes are the ones `zcash_client_sqlite`'s `add_account` produces for a full
+/// viewing key that collides with an existing account: it hands the collision to
+/// `upgrade_account_ufvk`, which either replaces the existing account's viewing key in place or
+/// fails with [`SqliteClientError::AccountCollision`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AccountKeyOverlap {
+    /// The existing account's UFVK already covers every item of the candidate, so the candidate
+    /// adds nothing: an identical key, or one with a subset of the account's items. The import
+    /// fails with [`SqliteClientError::AccountCollision`].
+    AlreadyImported,
+    /// The candidate carries every incoming viewing key item of the existing account and
+    /// something the existing UFVK does not cover: an additional item, or an item whose
+    /// outgoing viewing key differs. The import replaces the existing account's viewing key in
+    /// place instead of adding an account.
+    WouldUpgrade,
+    /// The candidate shares at least one item with the existing account but lacks or changes
+    /// another one. The import fails with [`SqliteClientError::AccountCollision`].
+    Conflicting,
+}
+
+impl AccountKeyOverlap {
+    /// The value this outcome crosses the JNI boundary as. Must match the
+    /// `JNI_ACCOUNT_KEY_OVERLAP_*` constants in `JniConstants.kt`.
+    fn jni_code(self) -> jint {
+        match self {
+            AccountKeyOverlap::AlreadyImported => 0,
+            AccountKeyOverlap::WouldUpgrade => 1,
+            AccountKeyOverlap::Conflicting => 2,
+        }
+    }
+}
+
+/// Classifies how `candidate` relates to `existing`, an account the wallet matched to it on at
+/// least one incoming viewing key item, with the predicates `upgrade_account_ufvk` in
+/// `zcash_client_sqlite` applies to the same pair.
+///
+/// `upgrade_account_ufvk` upgrades exactly when `candidate` subsumes the existing account's
+/// incoming viewing key items and the existing UFVK does not subsume `candidate`; every other
+/// pair is an [`SqliteClientError::AccountCollision`]. The collisions are split here into a
+/// candidate the existing UFVK already covers and one it does not.
+fn classify_account_key_overlap<A: Account>(
+    existing: &A,
+    candidate: &UnifiedFullViewingKey,
+) -> AccountKeyOverlap {
+    if existing
+        .ufvk()
+        .is_some_and(|existing_ufvk| existing_ufvk.subsumes_ufvk(candidate))
+    {
+        AccountKeyOverlap::AlreadyImported
+    } else if candidate.subsumes_uivk(&existing.uivk()) {
+        AccountKeyOverlap::WouldUpgrade
+    } else {
+        AccountKeyOverlap::Conflicting
+    }
+}
+
+/// Returns the account that shares at least one incoming viewing key item with `candidate`,
+/// with what importing `candidate` would do to it, or `None` when importing it would add a new
+/// account.
+///
+/// The match is [`WalletRead::get_account_for_ufvk`], which compares the Orchard, Sapling and
+/// P2PKH incoming viewing key items, the same lookup `import_account_ufvk` runs first. It fails
+/// when the items match more than one account, exactly as that import does.
+fn find_account_key_overlap<W: WalletRead>(
+    wallet: &W,
+    candidate: &UnifiedFullViewingKey,
+) -> Result<Option<(W::Account, AccountKeyOverlap)>, W::Error> {
+    Ok(wallet.get_account_for_ufvk(candidate)?.map(|account| {
+        let overlap = classify_account_key_overlap(&account, candidate);
+        (account, overlap)
+    }))
+}
+
+/// Returns the account that shares an incoming viewing key item with the given UFVK as a
+/// `JniAccountKeyOverlap`, or null when importing the UFVK would add a new account. The UFVK is
+/// never logged or included in an error.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_findAccountKeyOverlap<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    ufvk_string: JString<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let network = parse_network(network_id)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
+        let ufvk = parse_ufvk(env, ufvk_string, &network)?;
+
+        match find_account_key_overlap(&db_data, &ufvk)? {
+            Some((account, overlap)) => {
+                let account = encode_account(env, encoded_account(&network, account)?)?;
+                Ok(env
+                    .new_object(
+                        JNI_ACCOUNT_KEY_OVERLAP,
+                        format!("(L{JNI_ACCOUNT};I)V"),
+                        &[(&account).into(), JValue::Int(overlap.jni_code())],
+                    )?
+                    .into_raw())
+            }
+            None => Ok(ptr::null_mut()),
+        }
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
 fn encode_usk<'a>(
     env: &mut JNIEnv<'a>,
     account_uuid: AccountUuid,
@@ -632,14 +745,36 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createAcc
 /// this exact string via `isCheckpointsNotReady`.
 const IMPORT_CHECKPOINTS_NOT_READY_MARKER: &str = "ImportAccountCheckpointsNotReady";
 
+/// Marker prefix for an `import_account_ufvk` failure caused by the UFVK sharing an incoming
+/// viewing key item with an existing account without upgrading it (see [`AccountKeyOverlap`]).
+/// Mirrors `ImportAccountErrors` on the Kotlin side, which matches on this exact string via
+/// `isAccountCollision`.
+const IMPORT_ACCOUNT_COLLISION_MARKER: &str = "ImportAccountCollision";
+
+/// The fixed `CorruptedData` message `zcash_client_sqlite`'s `get_account_for_uivk` fails with
+/// when the incoming viewing key items of a UFVK being imported match more than one account.
+const MULTIPLE_ACCOUNTS_MATCHED_UIVK: &str = "Multiple account records matched the provided UIVK";
+
 /// Maps an `import_account_ufvk` failure to the JNI-level error.
 ///
 /// The cross-pool checkpoint-parity `CorruptedData` errors raised by `rewind_to_chain_state`
 /// are tagged with [`IMPORT_CHECKPOINTS_NOT_READY_MARKER`] so the Kotlin side can distinguish
-/// this transient, retryable condition from other, genuinely fatal, import failures. All other
+/// this transient, retryable condition from other, genuinely fatal, import failures. A key that
+/// collides with existing accounts, whether one ([`SqliteClientError::AccountCollision`]) or
+/// several, is tagged with [`IMPORT_ACCOUNT_COLLISION_MARKER`] under a fixed message. All other
 /// errors keep the legacy `"Error while initializing accounts: {}"` wrapping.
 fn map_import_account_error(e: SqliteClientError) -> anyhow::Error {
     match &e {
+        SqliteClientError::AccountCollision(_) => anyhow!(
+            "{}: an account sharing a viewing key component with the provided key already exists \
+             in the wallet",
+            IMPORT_ACCOUNT_COLLISION_MARKER
+        ),
+        SqliteClientError::CorruptedData(msg) if msg == MULTIPLE_ACCOUNTS_MATCHED_UIVK => anyhow!(
+            "{}: the provided key shares viewing key components with more than one account in \
+             the wallet",
+            IMPORT_ACCOUNT_COLLISION_MARKER
+        ),
         SqliteClientError::CorruptedData(msg)
             if msg.ends_with("should have the same checkpoints") =>
         {
@@ -5566,5 +5701,303 @@ mod tests {
             assert!(decode_ufvk(&MainNetwork, blank).is_err());
             assert_eq!(describe_ufvk(&MainNetwork, blank), UFVK_DESCRIPTION_INVALID);
         }
+    }
+
+    /// A second throwaway seed for the account key overlap tests, unrelated to
+    /// [`DESCRIBE_UFVK_SEED`]; it holds no funds.
+    const OTHER_UFVK_SEED: [u8; 32] = [9; 32];
+
+    /// The UFVK the account key overlap tests import first: P2PKH, Sapling and Orchard, derived
+    /// on testnet from [`DESCRIBE_UFVK_SEED`].
+    fn overlap_base_ufvk() -> String {
+        describe_test_ufvk(&TestNetwork)
+    }
+
+    /// A UFVK with all three items, derived on testnet from [`OTHER_UFVK_SEED`].
+    fn overlap_other_ufvk() -> String {
+        encode_ufvk(
+            &UnifiedSpendingKey::from_seed(&TestNetwork, &OTHER_UFVK_SEED, zip32::AccountId::ZERO)
+                .expect("derives a spending key from the other seed")
+                .to_unified_full_viewing_key(),
+            &TestNetwork,
+        )
+        .expect("encodes the other UFVK")
+    }
+
+    /// The items of `encoding` that `keep` accepts.
+    fn ufvk_items(
+        encoding: &str,
+        keep: impl Fn(&unified::Uitem<unified::Fvk>) -> bool,
+    ) -> Vec<unified::Uitem<unified::Fvk>> {
+        let (_, _, ufvk) = unified::Ufvk::decode(encoding).expect("decodes the UFVK");
+        ufvk.items_as_parsed()
+            .iter()
+            .filter(|item| keep(item))
+            .cloned()
+            .collect()
+    }
+
+    /// An empty in-memory testnet wallet; a failing assertion leaves no database file behind.
+    fn overlap_wallet() -> WalletDb<rusqlite::Connection, Network, SystemClock, SystemRng> {
+        let conn = rusqlite::Connection::open_in_memory().expect("opens an in-memory database");
+        rusqlite::vtab::array::load_module(&conn).expect("loads the SQLite array module");
+        let mut db = WalletDb::from_connection(conn, TestNetwork, SystemClock, system_rng());
+        init_wallet_db(&mut db, None).expect("initializes the wallet schema");
+        db
+    }
+
+    fn overlap_birthday() -> AccountBirthday {
+        let nu5 = TestNetwork
+            .activation_height(zcash_protocol::consensus::NetworkUpgrade::Nu5)
+            .expect("NU5 is active on testnet");
+        AccountBirthday::from_parts(
+            zcash_client_backend::data_api::chain::ChainState::empty(nu5 - 1, BlockHash([0; 32])),
+            None,
+        )
+    }
+
+    fn import_view_only(
+        db: &mut WalletDb<rusqlite::Connection, Network, SystemClock, SystemRng>,
+        encoding: &str,
+    ) -> Result<zcash_client_sqlite::wallet::Account, SqliteClientError> {
+        let ufvk = decode_ufvk(&TestNetwork, encoding).expect("the test UFVK decodes");
+        db.import_account_ufvk(
+            "Overlap",
+            &ufvk,
+            &overlap_birthday(),
+            AccountPurpose::ViewOnly,
+            None,
+        )
+    }
+
+    /// Imports `existing` into a fresh wallet, classifies `candidate` against it, then imports
+    /// `candidate` and asserts the import does what the classification said it would: the
+    /// classification is checked against `zcash_client_sqlite` itself, not only against the
+    /// predicates it mirrors. Returns the classification.
+    fn overlap_of(existing: &str, candidate: &str) -> Option<AccountKeyOverlap> {
+        let mut db = overlap_wallet();
+        let existing_account =
+            import_view_only(&mut db, existing).expect("imports the existing key");
+        let existing_id = existing_account.id();
+
+        let candidate_ufvk = decode_ufvk(&TestNetwork, candidate).expect("the candidate decodes");
+        let found = find_account_key_overlap(&db, &candidate_ufvk).expect("the lookup succeeds");
+        if let Some((account, _)) = &found {
+            assert_eq!(account.id(), existing_id, "matched the wrong account");
+        }
+        let overlap = found.map(|(_, overlap)| overlap);
+
+        let imported = import_view_only(&mut db, candidate);
+        match overlap {
+            None => {
+                let account = imported.expect("a key sharing no item imports as a new account");
+                assert_ne!(account.id(), existing_id);
+            }
+            Some(AccountKeyOverlap::WouldUpgrade) => {
+                let account = imported.expect("an upgrading key imports");
+                assert_eq!(
+                    account.id(),
+                    existing_id,
+                    "the upgrade must reuse the account"
+                );
+                assert_eq!(
+                    encode_ufvk(
+                        account.ufvk().expect("the account has a UFVK"),
+                        &TestNetwork
+                    )
+                    .expect("encodes the upgraded UFVK"),
+                    encode_ufvk(&candidate_ufvk, &TestNetwork).expect("encodes the candidate"),
+                    "the upgrade must replace the account's viewing key with the candidate"
+                );
+                assert_eq!(db.get_account_ids().expect("lists the accounts").len(), 1);
+            }
+            Some(AccountKeyOverlap::AlreadyImported | AccountKeyOverlap::Conflicting) => {
+                assert!(
+                    matches!(
+                        imported,
+                        Err(SqliteClientError::AccountCollision(id)) if id == existing_id
+                    ),
+                    "expected an AccountCollision on the existing account for {overlap:?}"
+                );
+            }
+        }
+        overlap
+    }
+
+    #[test]
+    fn account_key_overlap_of_an_identical_key_is_already_imported() {
+        let base = overlap_base_ufvk();
+        assert_eq!(
+            overlap_of(&base, &base),
+            Some(AccountKeyOverlap::AlreadyImported)
+        );
+    }
+
+    #[test]
+    fn account_key_overlap_of_a_superset_key_would_upgrade() {
+        let base = overlap_base_ufvk();
+        let without_p2pkh = rebuild_ufvk(&base, |item| !is_p2pkh(item), vec![]);
+        assert_eq!(
+            overlap_of(&without_p2pkh, &base),
+            Some(AccountKeyOverlap::WouldUpgrade)
+        );
+    }
+
+    #[test]
+    fn account_key_overlap_of_a_subset_key_is_already_imported() {
+        let base = overlap_base_ufvk();
+        let orchard_only = rebuild_ufvk(&base, is_orchard, vec![]);
+        assert_eq!(
+            overlap_of(&base, &orchard_only),
+            Some(AccountKeyOverlap::AlreadyImported)
+        );
+    }
+
+    #[test]
+    fn account_key_overlap_on_orchard_alone_conflicts() {
+        let base = overlap_base_ufvk();
+        let candidate = rebuild_ufvk(
+            &base,
+            is_orchard,
+            ufvk_items(&overlap_other_ufvk(), |item| !is_orchard(item)),
+        );
+        assert_eq!(
+            overlap_of(&base, &candidate),
+            Some(AccountKeyOverlap::Conflicting)
+        );
+    }
+
+    #[test]
+    fn account_key_overlap_on_p2pkh_alone_conflicts() {
+        let base = overlap_base_ufvk();
+        let candidate = rebuild_ufvk(
+            &base,
+            is_p2pkh,
+            ufvk_items(&overlap_other_ufvk(), |item| !is_p2pkh(item)),
+        );
+        assert_eq!(
+            overlap_of(&base, &candidate),
+            Some(AccountKeyOverlap::Conflicting)
+        );
+    }
+
+    #[test]
+    fn account_key_overlap_on_sapling_alone_conflicts() {
+        let base = overlap_base_ufvk();
+        let candidate = rebuild_ufvk(
+            &base,
+            is_sapling,
+            ufvk_items(&overlap_other_ufvk(), |item| !is_sapling(item)),
+        );
+        assert_eq!(
+            overlap_of(&base, &candidate),
+            Some(AccountKeyOverlap::Conflicting)
+        );
+    }
+
+    /// The Sapling incoming viewing key item is the diversifier key and `ivk`, so a key whose
+    /// Sapling item differs only in its outgoing viewing key matches the same account. The
+    /// existing UFVK does not cover the changed outgoing viewing key, so the import replaces it.
+    #[test]
+    fn account_key_overlap_of_a_key_differing_only_in_the_sapling_ovk_would_upgrade() {
+        let base = overlap_base_ufvk();
+        let changed_sapling = ufvk_items(&base, is_sapling)
+            .into_iter()
+            .map(|item| match item {
+                unified::Uitem::Data(unified::Fvk::Sapling(mut bytes)) => {
+                    for byte in &mut bytes[64..96] {
+                        *byte ^= 0xff;
+                    }
+                    unified::Uitem::Data(unified::Fvk::Sapling(bytes))
+                }
+                other => other,
+            })
+            .collect();
+        let candidate = rebuild_ufvk(&base, |item| !is_sapling(item), changed_sapling);
+        assert_ne!(candidate, base);
+        assert_eq!(
+            overlap_of(&base, &candidate),
+            Some(AccountKeyOverlap::WouldUpgrade)
+        );
+    }
+
+    #[test]
+    fn account_key_overlap_of_an_unrelated_key_is_none() {
+        assert_eq!(
+            overlap_of(&overlap_base_ufvk(), &overlap_other_ufvk()),
+            None
+        );
+    }
+
+    /// A key encoded for another network does not decode, so it never reaches the lookup; the
+    /// same seed derived for another network shares no item with the testnet account.
+    #[test]
+    fn account_key_overlap_ignores_keys_of_another_network() {
+        let mut db = overlap_wallet();
+        import_view_only(&mut db, &overlap_base_ufvk()).expect("imports the existing key");
+
+        let mainnet_encoding = describe_test_ufvk(&MainNetwork);
+        assert!(decode_ufvk(&TestNetwork, &mainnet_encoding).is_err());
+
+        let mainnet_ufvk =
+            decode_ufvk(&MainNetwork, &mainnet_encoding).expect("decodes on mainnet");
+        assert!(
+            find_account_key_overlap(&db, &mainnet_ufvk)
+                .expect("the lookup succeeds")
+                .is_none()
+        );
+    }
+
+    /// A key whose items match two different accounts fails the lookup the same way it fails
+    /// the import, and the import failure maps to the collision marker without the key.
+    #[test]
+    fn account_key_overlap_with_two_accounts_fails_like_the_import() {
+        let base = overlap_base_ufvk();
+        let other = overlap_other_ufvk();
+        let mut db = overlap_wallet();
+        import_view_only(&mut db, &base).expect("imports the first key");
+        import_view_only(&mut db, &other).expect("imports the second key");
+
+        let candidate = rebuild_ufvk(&base, is_orchard, ufvk_items(&other, is_sapling));
+        let candidate_ufvk = decode_ufvk(&TestNetwork, &candidate).expect("the candidate decodes");
+        assert!(matches!(
+            find_account_key_overlap(&db, &candidate_ufvk),
+            Err(SqliteClientError::CorruptedData(msg)) if msg == MULTIPLE_ACCOUNTS_MATCHED_UIVK
+        ));
+
+        let error = import_view_only(&mut db, &candidate).expect_err("the import fails");
+        assert!(
+            matches!(&error, SqliteClientError::CorruptedData(msg) if msg == MULTIPLE_ACCOUNTS_MATCHED_UIVK)
+        );
+        let mapped = map_import_account_error(error).to_string();
+        assert!(
+            mapped.starts_with(IMPORT_ACCOUNT_COLLISION_MARKER),
+            "{mapped}"
+        );
+        assert!(!mapped.contains(&candidate));
+    }
+
+    #[test]
+    fn map_import_account_error_tags_account_collisions_without_the_key() {
+        let base = overlap_base_ufvk();
+        let mut db = overlap_wallet();
+        import_view_only(&mut db, &base).expect("imports the key");
+        let error = import_view_only(&mut db, &base).expect_err("a second import collides");
+        assert!(matches!(error, SqliteClientError::AccountCollision(_)));
+
+        let mapped = map_import_account_error(error).to_string();
+        assert_eq!(
+            mapped,
+            "ImportAccountCollision: an account sharing a viewing key component with the \
+             provided key already exists in the wallet"
+        );
+        assert!(!mapped.contains(&base));
+    }
+
+    #[test]
+    fn account_key_overlap_jni_codes_are_stable() {
+        assert_eq!(AccountKeyOverlap::AlreadyImported.jni_code(), 0);
+        assert_eq!(AccountKeyOverlap::WouldUpgrade.jni_code(), 1);
+        assert_eq!(AccountKeyOverlap::Conflicting.jni_code(), 2);
     }
 }

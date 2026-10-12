@@ -327,6 +327,32 @@ sealed class InitializeException(
             cause
         )
 
+    /**
+     * Thrown by `Synchronizer.importAccountByUfvk` instead of [ImportAccountException] when the key
+     * shares a viewing key component with one or more existing accounts and does not upgrade one of
+     * them, so the wallet already tracks (part of) it. `Synchronizer.findAccountSharingKeyComponents`
+     * finds the account before importing. The message is fixed and never contains the key.
+     */
+    class ImportAccountCollisionException(
+        cause: Throwable?
+    ) : InitializeException(
+            "Failed to import new account based on UFVK because an account sharing a viewing key " +
+                "component with it already exists in the wallet.",
+            cause
+        )
+
+    /**
+     * Thrown by `Synchronizer.findAccountSharingKeyComponents` when the lookup fails: the key is not a
+     * valid UFVK for the wallet's network, it shares components with more than one account, or the
+     * wallet database cannot be read. The message is fixed and never contains the key.
+     */
+    class FindAccountSharingKeyComponentsException(
+        cause: Throwable?
+    ) : InitializeException(
+            "Failed to look up the account sharing a viewing key component with a UFVK.",
+            cause
+        )
+
     class AlreadyInitializedException(
         cause: Throwable,
         dbPath: String

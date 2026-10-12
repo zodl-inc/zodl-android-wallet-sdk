@@ -24,6 +24,25 @@ const val JNI_METADATA_KEY_SK_SIZE = 32
 const val JNI_METADATA_KEY_CHAIN_CODE_SIZE = 32
 
 /**
+ * [cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap.kind] when the existing account's UFVK
+ * already covers every item of the candidate UFVK. Must match `AccountKeyOverlap::jni_code` in
+ * backend-lib/src/main/rust/lib.rs.
+ */
+const val JNI_ACCOUNT_KEY_OVERLAP_ALREADY_IMPORTED = 0
+
+/**
+ * [cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap.kind] when importing the candidate UFVK
+ * would replace the existing account's viewing key in place.
+ */
+const val JNI_ACCOUNT_KEY_OVERLAP_WOULD_UPGRADE = 1
+
+/**
+ * [cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap.kind] when the candidate UFVK shares an
+ * item with the existing account but lacks or changes another one.
+ */
+const val JNI_ACCOUNT_KEY_OVERLAP_CONFLICTING = 2
+
+/**
  * Bit set in the result of [cash.z.ecc.android.sdk.internal.Derivation.describeUnifiedFullViewingKey]
  * when the UFVK has a transparent P2PKH component. Must match `UfvkComponentFlags` in
  * backend-lib/src/main/rust/lib.rs.

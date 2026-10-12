@@ -16,6 +16,7 @@ import cash.z.ecc.android.sdk.internal.model.WalletSummary
 import cash.z.ecc.android.sdk.internal.model.ZcashProtocol
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountImportSetup
+import cash.z.ecc.android.sdk.model.AccountKeyOverlap
 import cash.z.ecc.android.sdk.model.AccountPurpose
 import cash.z.ecc.android.sdk.model.AccountUsk
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -104,6 +105,11 @@ internal class TypesafeBackendImpl(
     override suspend fun getAccountForUfvk(ufvk: UnifiedFullViewingKey): Account? =
         backend.getAccountForUfvk(ufvk = ufvk.encoding)?.let {
             Account.new(it)
+        }
+
+    override suspend fun findAccountSharingKeyComponents(ufvk: UnifiedFullViewingKey): AccountKeyOverlap? =
+        backend.findAccountKeyOverlap(ufvk = ufvk.encoding)?.let {
+            AccountKeyOverlap.new(it)
         }
 
     override suspend fun proposeTransferFromUri(

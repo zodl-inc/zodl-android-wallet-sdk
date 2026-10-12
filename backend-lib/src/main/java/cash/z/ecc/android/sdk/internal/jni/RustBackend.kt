@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.ext.deleteSuspend
 import cash.z.ecc.android.sdk.internal.ext.requireNonNegative
 import cash.z.ecc.android.sdk.internal.ext.requireValidHeight
 import cash.z.ecc.android.sdk.internal.model.JniAccount
+import cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.JniRewindResult
@@ -95,6 +96,15 @@ class RustBackend private constructor(
     override suspend fun getAccountForUfvk(ufvk: String): JniAccount? =
         withContext(SdkDispatchers.DATABASE_IO) {
             getAccountForUfvk(
+                dbDataPath = dataDbFile.absolutePath,
+                networkId = networkId,
+                ufvk = ufvk,
+            )
+        }
+
+    override suspend fun findAccountKeyOverlap(ufvk: String): JniAccountKeyOverlap? =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            findAccountKeyOverlap(
                 dbDataPath = dataDbFile.absolutePath,
                 networkId = networkId,
                 ufvk = ufvk,
@@ -700,6 +710,13 @@ class RustBackend private constructor(
             networkId: Int,
             ufvk: String,
         ): JniAccount?
+
+        @JvmStatic
+        private external fun findAccountKeyOverlap(
+            dbDataPath: String,
+            networkId: Int,
+            ufvk: String,
+        ): JniAccountKeyOverlap?
 
         @JvmStatic
         @Suppress("LongParameterList")

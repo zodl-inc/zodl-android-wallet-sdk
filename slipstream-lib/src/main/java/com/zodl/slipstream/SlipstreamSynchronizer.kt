@@ -50,6 +50,7 @@ import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
+import cash.z.ecc.android.sdk.model.AccountKeyOverlap
 import cash.z.ecc.android.sdk.model.AccountPurpose
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -71,6 +72,7 @@ import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionRecipient
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -1039,16 +1041,22 @@ class SlipstreamSynchronizer internal constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                throw if (ImportAccountErrors.isCheckpointsNotReady(e)) {
-                    InitializeException.ImportAccountCheckpointsNotReadyException(e)
-                } else {
-                    InitializeException.ImportAccountException(e)
-                }
+                throw ImportAccountErrors.toImportAccountException(e)
             } finally {
                 restartEngineAfter("account import")
             }
         accountsVersion.update { it + 1 }
         return Account.new(jniAccount)
+    }
+
+    /**
+     * A read-only lookup, so it waits only for the wallet database ([awaitDbReady]), like [getAccounts].
+     */
+    override suspend fun findAccountSharingKeyComponents(ufvk: UnifiedFullViewingKey): AccountKeyOverlap? {
+        awaitDbReady()
+        return runCatchingCancellable { backend.findAccountKeyOverlap(ufvk.encoding)?.let(AccountKeyOverlap::new) }
+            .onFailure { Twig.error { "Finding the account sharing key components failed." } }
+            .getOrElse { throw InitializeException.FindAccountSharingKeyComponentsException(it) }
     }
 
     override suspend fun getFastestServers(servers: List<LightWalletEndpoint>) =

@@ -3,6 +3,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.JniAccount
+import cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.JniRewindResult
@@ -192,6 +193,14 @@ interface Backend {
      */
     @Throws(RuntimeException::class)
     suspend fun getAccountForUfvk(ufvk: String): JniAccount?
+
+    /**
+     * @return the account sharing an Orchard, Sapling or P2PKH incoming viewing key item with [ufvk],
+     * with what importing [ufvk] would do to it, or `null` when importing it would add a new account.
+     * @throws RuntimeException as a common indicator of the operation failure
+     */
+    @Throws(RuntimeException::class)
+    suspend fun findAccountKeyOverlap(ufvk: String): JniAccountKeyOverlap?
 
     /**
      * @throws RuntimeException as a common indicator of the operation failure
