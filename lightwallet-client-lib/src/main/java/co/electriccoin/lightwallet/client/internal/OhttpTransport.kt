@@ -99,7 +99,8 @@ internal class OhttpTransport(
      * refused the request as stale, an inner 400 with `ohttp-freshness: rejected` ("Request
      * freshness" in the ZIP). That response carried the gateway clock, which the codec has
      * already learned, so the second attempt is stamped right even on a device whose clock is off.
-     * Never more than one such retry.
+     * Never more than one such retry. One call makes at most four relay POSTs (one freshness
+     * retry × one key-refresh retry each), each bounded by [timeoutMs].
      */
     suspend fun roundTrip(
         request: OhttpCodecRequest,
@@ -115,7 +116,8 @@ internal class OhttpTransport(
      * Performs one OHTTP round trip. When the relay or gateway rejects the sealed request as
      * unreadable (outer HTTP 400 or 422, which handles gateway key rotation), the key configuration
      * is refetched and the request is **sealed afresh** and sent once more: the gateway answers a
-     * repeated nonce with 409, so a ciphertext is never posted twice.
+     * repeated nonce with 409, so a ciphertext is never posted twice. One call makes at most two
+     * relay POSTs (one key-refresh retry), each bounded by [timeoutMs].
      */
     private suspend fun roundTripOnce(
         request: OhttpCodecRequest,

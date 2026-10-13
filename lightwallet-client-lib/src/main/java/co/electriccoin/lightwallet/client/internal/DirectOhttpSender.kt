@@ -116,14 +116,27 @@ class DirectOhttpSender : OhttpSender {
         maxBytes: Int,
         contentLength: Int = -1
     ): ByteArray {
-        // Pre-size from Content-Length when available and within the cap to avoid
-        // repeated allocations and copies.
-        val out =
-            if (contentLength in 1..maxBytes) {
-                ByteArrayOutputStream(contentLength)
-            } else {
-                ByteArrayOutputStream()
+        // When Content-Length is known and within the cap, read directly into a pre-sized
+        // ByteArray to avoid the extra copy that ByteArrayOutputStream.toByteArray() makes.
+        if (contentLength in 1..maxBytes) {
+            val result = ByteArray(contentLength)
+            var offset = 0
+            while (offset < contentLength) {
+                val n = read(result, offset, contentLength - offset)
+                if (n < 0) {
+                    throw OhttpException("Stream ended before reading $contentLength bytes (got $offset)")
+                }
+                offset += n
             }
+            // Verify the stream is actually exhausted (no extra bytes beyond Content-Length).
+            if (read() >= 0) {
+                throw OhttpException("Response exceeded Content-Length of $contentLength bytes")
+            }
+            return result
+        }
+
+        // Content-Length unknown or invalid: use ByteArrayOutputStream with size limit.
+        val out = ByteArrayOutputStream()
         val buffer = ByteArray(READ_BUFFER_SIZE)
         var total = 0
         while (true) {

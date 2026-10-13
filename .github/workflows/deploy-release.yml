@@ -63,7 +63,15 @@ jobs:
         timeout-minutes: 50
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
+      # Build the release artifact with Rust dependencies (requires cargo app credentials
+      # for private git dependencies). Warm-cache builds complete in <30 minutes.
+      - name: Build release
+        timeout-minutes: 30
+        run: |
+          ./gradlew :backend-lib:assembleRelease
       # Fail if build-time relay override env vars are set, or if the built .so files
       # do not contain the production relay URL (guards against accidental override).
       - name: Guard against relay URL override in release
@@ -74,8 +82,6 @@ jobs:
             echo "These are for debug/test builds only. Release builds must use the embedded URLs."
             exit 1
           fi
-
-          ./gradlew :backend-lib:assembleRelease
 
           PROD_RELAY_URL="https://ohttp-relay.example/"
           SO_FILES=$(find backend-lib/build/intermediates -name "*.so" -type f)

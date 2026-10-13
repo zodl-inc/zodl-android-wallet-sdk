@@ -44,11 +44,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tor-off voting against predefined servers is unavailable (fails closed).
 
 ### Changed
+- **Breaking: Request freshness.** Every OHTTP inner request now carries an `ohttp-freshness` header with
+  the estimated gateway clock (offset learned from the authenticated `ohttp-server-time` in prior responses).
+  Gateways enforce freshness since 2026-10-11, so older builds cannot use OHTTP. A freshness refusal (inner
+  400 with `ohttp-freshness: rejected`) is retried once with a fresh encapsulation. Dependency pins: see
+  backend-lib/Cargo.toml.
 - **Chunked OHTTP.** OHTTP transport now uses chunked OHTTP (draft-ietf-ohai-chunked-ohttp-08) instead of
   RFC 9458 single-shot encapsulation. Content types changed from `message/ohttp-req` / `message/ohttp-res`
   to `message/ohttp-chunked-req` / `message/ohttp-chunked-res`. The gateway API is not backward compatible;
-  this update is synchronized with the gateway deployment (zodl-inc/ohttp PR #4). Dependencies updated:
-  `zodl-ohttp-client` to e3ab773d, `zodl-slipstream` to 582560f0 (slipstream-internal PR #16).
+  this update is synchronized with the gateway deployment. Dependency pins: see backend-lib/Cargo.toml.
 - **Shared OHTTP core.** The protocol half of the OHTTP client (key selection, the signed key
   configuration envelope, Binary HTTP, HPKE, the classification of the relay's answer and the size caps)
   now runs on the Rust library `zodl-ohttp-client` (zodl-inc/ohttp, `ClientProfile::ANDROID`) that the iOS

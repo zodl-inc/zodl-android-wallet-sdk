@@ -21,10 +21,10 @@ class JniOhttpSealed(
 )
 
 /**
- * What the relay's answer came to. [kind] is 0 for a response (then [headers] and [trailers] are
- * packed field lists, see `OhttpFields`), 1 to refetch the key configuration, 2 for a refusal
- * ([status] and [detail]), 3 for a success not labelled `message/ohttp-chunked-res` ([detail] is the content
- * type).
+ * What the relay's answer came to. [kind] is 0 for a response (then [headers] is a packed field
+ * list containing both headers and any trailers, and [trailers] is always an empty packed field
+ * list; see `OhttpFields`), 1 to refetch the key configuration, 2 for a refusal ([status] and
+ * [detail]), 3 for a success not labelled `message/ohttp-chunked-res` ([detail] is the content type).
  */
 @Keep
 @Suppress("LongParameterList")

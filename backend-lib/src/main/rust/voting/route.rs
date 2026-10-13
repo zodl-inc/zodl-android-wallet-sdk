@@ -1,5 +1,6 @@
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use zcash_client_backend::tor::Error as TorError;
 use zcash_voting::{RouteError, RouteFuture, RouteHttp, RouteRequest, RouteResponse};
@@ -231,6 +232,17 @@ impl RouteHttp for ZodlOhttpRoute {
 
             let gateway_host = self.gateway_host.clone();
 
+            // Track whether the request has been dispatched (on_dispatch was called).
+            // Errors before dispatch (key-config fetch, encapsulation) map to
+            // RouteError::before_dispatch; errors after (relay POST, decapsulation)
+            // map to RouteError::after_dispatch.
+            let dispatched = Arc::new(AtomicBool::new(false));
+            let dispatched_clone = dispatched.clone();
+            let on_dispatch_wrapper = move || {
+                dispatched_clone.store(true, Ordering::SeqCst);
+                on_dispatch();
+            };
+
             // Send via OHTTP using direct dialer (clearnet)
             // The relay sees the device IP, the gateway does not
             let dialer = Dialer::Direct;
@@ -242,7 +254,7 @@ impl RouteHttp for ZodlOhttpRoute {
                 &url,
                 &headers,
                 &body,
-                on_dispatch,
+                &on_dispatch_wrapper,
             )
             .await;
 
@@ -263,10 +275,20 @@ impl RouteHttp for ZodlOhttpRoute {
                         body: response_body,
                     })
                 }
-                Err(e) => Err(RouteError::after_dispatch(format!(
-                    "OHTTP transport: {}",
-                    e
-                ))),
+                Err(e) => {
+                    let is_dispatched = dispatched.load(Ordering::SeqCst);
+                    if is_dispatched {
+                        Err(RouteError::after_dispatch(format!(
+                            "OHTTP transport: {}",
+                            e
+                        )))
+                    } else {
+                        Err(RouteError::before_dispatch(format!(
+                            "OHTTP transport: {}",
+                            e
+                        )))
+                    }
+                }
             }
         })
     }

@@ -1113,13 +1113,9 @@ mod tests {
         )
         .err()
         .unwrap();
-        // Tampering is detected during either AEAD verification (KIND_OPEN) or
-        // bhttp parsing (KIND_BHTTP_FORMAT) depending on where the bit was flipped.
-        assert!(
-            failure.kind == KIND_OPEN || failure.kind == KIND_BHTTP_FORMAT,
-            "Expected KIND_OPEN or KIND_BHTTP_FORMAT, got {}",
-            failure.kind
-        );
+        // Flipping the last byte tampers with the AEAD tag of the final chunk, so
+        // decapsulation fails during AEAD verification (KIND_OPEN).
+        assert_eq!(failure.kind, KIND_OPEN);
     }
 
     #[test]

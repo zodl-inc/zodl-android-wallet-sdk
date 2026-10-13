@@ -209,8 +209,9 @@ ff = { version = "0.14" }
 # instance in the SAME process, or closing one connection drops the other's fcntl locks out
 # from under it (the dual-instance SIGBUS/disk-I/O hazard; see
 # docs/slipstream/android/worklog/ARCHIVE-phases-0-9.md for the full writeup). The engine is
-# the published `zodl-slipstream` crate from crates.io, built against the same librustzcash
-# generation as the rest of this graph — verify with `cargo tree -d` after any bump.
+# the `zodl-slipstream` crate, currently from a git patch (see [patch.crates-io] below), built
+# against the same librustzcash generation as the rest of this graph — verify with `cargo tree -d`
+# after any bump.
 slipstream-core = { package = "zodl-slipstream", version = "=0.4.0-pre.1", optional = true }
 # The module's owned engine runtime (HOSTING.md §3.1) and the logcat logging layer it wires up.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
@@ -299,17 +300,14 @@ crate-type = ["staticlib", "cdylib"]
 [workspace]
 
 [patch.crates-io]
-# `slipstream-core` is deliberately absent here: since the engine's history rewrite to the
-# The slipstream engine's OHTTP transport lives in slipstream-internal until upstreamed to
-# the public repo. This patch applies to the 0.4.0-pre.1 dependency line above and points
-# to a commit on slipstream-internal feature/ohttp-connector branch that ports the OHTTP
-# connector to 0.4.0-pre.1. This entry can be removed once a published zodl-slipstream
-# version containing the OHTTP transport exists on crates.io.
+# The slipstream engine's OHTTP transport lives in the private slipstream-internal repository
+# until a published zodl-slipstream (0.3.1 or later) with the OHTTP transport exists. This
+# patch makes the 0.4.0-pre.1 dependency line above resolve from the private git repository
+# instead of crates.io. Once slipstream-internal PR #16 merges, the rev below must move to
+# the resulting slipstream-internal `main` commit; after that, this entry can be removed once
+# a published zodl-slipstream version containing the OHTTP transport exists on crates.io.
 # Pins slipstream-internal PR #16 head, 3bb40b31bafc66ed2baa1038713ea1f5a14755b9 (chunked OHTTP connector, grpc-status header fix, request freshness, one retry after a freshness refusal).
 zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "3bb40b31bafc66ed2baa1038713ea1f5a14755b9" }
-#
-# published `zodl-slipstream` line, the dependency above resolves from crates.io like
-# the rest of the released family — the old git pin was not dropped by accident.
 #
 # Shielded voting on the NU7 pre-release crates.
 #
