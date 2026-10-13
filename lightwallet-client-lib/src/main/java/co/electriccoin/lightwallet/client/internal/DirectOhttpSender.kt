@@ -2,7 +2,6 @@ package co.electriccoin.lightwallet.client.internal
 
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpSender
-import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
@@ -29,7 +28,7 @@ class DirectOhttpSender : OhttpSender {
             if (status != HttpURLConnection.HTTP_OK) {
                 val detail =
                     connection.errorStream
-                        ?.use { it.readFully(MAX_ERROR_BODY_BYTES) }
+                        ?.use { it.readBounded(MAX_ERROR_BODY_BYTES) }
                         ?.toString(Charsets.UTF_8)
                         ?.take(ERROR_MESSAGE_MAX_LENGTH)
                 throw OhttpException(
@@ -40,7 +39,7 @@ class DirectOhttpSender : OhttpSender {
             return connection.inputStream.use {
                 @Suppress("TooGenericExceptionCaught")
                 try {
-                    it.readFully(OhttpSender.MAX_SEALED_RESPONSE_BYTES, connection.contentLength)
+                    it.readBounded(OhttpSender.MAX_SEALED_RESPONSE_BYTES, connection.contentLength)
                 } catch (e: OutOfMemoryError) {
                     // A hostile or huge response: convert to OhttpException so the transport
                     // handles it as a failed request instead of crashing the app.
@@ -66,7 +65,7 @@ class DirectOhttpSender : OhttpSender {
             if (status != HttpURLConnection.HTTP_OK) {
                 val detail =
                     connection.errorStream
-                        ?.use { it.readFully(MAX_ERROR_BODY_BYTES) }
+                        ?.use { it.readBounded(MAX_ERROR_BODY_BYTES) }
                         ?.toString(Charsets.UTF_8)
                         ?.take(ERROR_MESSAGE_MAX_LENGTH)
                 throw OhttpException(
@@ -77,7 +76,7 @@ class DirectOhttpSender : OhttpSender {
             return connection.inputStream.use {
                 @Suppress("TooGenericExceptionCaught")
                 try {
-                    it.readFully(OhttpSender.MAX_KEY_CONFIG_BYTES, connection.contentLength)
+                    it.readBounded(OhttpSender.MAX_KEY_CONFIG_BYTES, connection.contentLength)
                 } catch (e: OutOfMemoryError) {
                     throw OhttpException("Key config too large: out of memory", cause = e)
                 }
@@ -105,59 +104,88 @@ class DirectOhttpSender : OhttpSender {
         return connection
     }
 
-    /**
-     * Reads the whole stream, refusing past [maxBytes]. The relay/gateway is untrusted (a
-     * malicious or compromised one could return an arbitrarily large body regardless of what was
-     * requested), so this must never buffer without a bound. The hard cap is 256 MiB + 64 KiB
-     * ([OhttpSender.MAX_SEALED_RESPONSE_BYTES]): the gateway legitimately returns >64 MiB
-     * GetBlockRange responses for the 2022 spam blocks, so the cap cannot be lowered.
-     */
-    private fun InputStream.readFully(
-        maxBytes: Int,
-        contentLength: Int = -1
-    ): ByteArray {
-        // When Content-Length is known and within the cap, read directly into a pre-sized
-        // ByteArray to avoid the extra copy that ByteArrayOutputStream.toByteArray() makes.
-        if (contentLength in 1..maxBytes) {
-            val result = ByteArray(contentLength)
-            var offset = 0
-            while (offset < contentLength) {
-                val n = read(result, offset, contentLength - offset)
-                if (n < 0) {
-                    throw OhttpException("Stream ended before reading $contentLength bytes (got $offset)")
-                }
-                offset += n
-            }
-            return result
-        }
-
-        // Content-Length unknown or invalid: use ByteArrayOutputStream with size limit.
-        // Read at most min(buffer_size, remaining+1) bytes per call to avoid buffering
-        // more than limit+1 bytes (where the +1 proves the limit is exceeded).
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(READ_BUFFER_SIZE)
-        var total = 0
-        while (true) {
-            // total <= maxBytes here, so at least one byte is always requested.
-            val maxRead = minOf(buffer.size, maxBytes - total + 1)
-            val n = read(buffer, 0, maxRead)
-            if (n < 0) break
-            total += n
-            if (total > maxBytes) {
-                throw OhttpException("Response exceeded the $maxBytes byte limit")
-            }
-            out.write(buffer, 0, n)
-        }
-        return out.toByteArray()
-    }
-
     companion object {
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val ERROR_MESSAGE_MAX_LENGTH = 200
-        private const val READ_BUFFER_SIZE = 16 * 1024
 
         // Only the first ERROR_MESSAGE_MAX_LENGTH characters of an error body are quoted, but the
         // whole stream is drained up to this bound (unchanged from before the shared OHTTP core).
         private const val MAX_ERROR_BODY_BYTES = 64 * 1024 * 1024
     }
 }
+
+/** Upper bound for the initial buffer, whatever the relay-declared Content-Length claims. */
+internal const val MAX_INITIAL_BUFFER_BYTES = 1024 * 1024
+
+/**
+ * Reads the whole stream, refusing past [maxBytes]. The relay/gateway is untrusted (a
+ * malicious or compromised one could return an arbitrarily large body regardless of what was
+ * requested), so this must never buffer without a bound. The hard cap is 256 MiB + 64 KiB
+ * ([OhttpSender.MAX_SEALED_RESPONSE_BYTES]): the gateway legitimately returns >64 MiB
+ * GetBlockRange responses for the 2022 spam blocks, so the cap cannot be lowered.
+ *
+ * [contentLengthHint] is relay-supplied and therefore only a hint: the initial buffer is at most
+ * [MAX_INITIAL_BUFFER_BYTES] and then grows by doubling as bytes actually arrive (see [growFor]). A body longer
+ * than the hint is read in full (up to [maxBytes]); a body shorter than a valid hint is reported
+ * as truncated.
+ */
+internal fun InputStream.readBounded(
+    maxBytes: Int,
+    contentLengthHint: Int = -1,
+): ByteArray {
+    val expected = if (contentLengthHint in 1..maxBytes) contentLengthHint else -1
+    val initialSize =
+        if (expected > 0) minOf(expected, MAX_INITIAL_BUFFER_BYTES) else DEFAULT_INITIAL_BUFFER_BYTES
+    var buffer = ByteArray(initialSize)
+    var total = 0
+    var done = false
+    while (!done) {
+        if (total == buffer.size) {
+            // Full buffer: probe one byte before growing, so a body that ends exactly here (the
+            // common case with a truthful Content-Length) never pays for a second, larger buffer.
+            val next = read()
+            if (next < 0) {
+                done = true
+            } else {
+                buffer = buffer.growFor(maxBytes, expected, total)
+                buffer[total++] = next.toByte()
+            }
+        } else {
+            val n = read(buffer, total, buffer.size - total)
+            if (n < 0) done = true else total += n
+        }
+        if (total > maxBytes) failResponseTooLarge(maxBytes)
+    }
+    if (expected > 0 && total < expected) {
+        throw OhttpException("Stream ended before reading $expected bytes (got $total)")
+    }
+    return if (total == buffer.size) buffer else buffer.copyOf(total)
+}
+
+private const val DEFAULT_INITIAL_BUFFER_BYTES = 16 * 1024
+
+/**
+ * Grows a full buffer. Doubling is clamped to maxBytes (+1 so that one extra byte past the cap is
+ * still detected); a buffer that already holds maxBytes + 1 bytes' worth of room means the cap is
+ * exceeded. Once the relay has really delivered at least half of a valid Content-Length
+ * ([expected]), jump straight to that length so an honest large body peaks at its own size instead
+ * of at twice it; a hostile huge hint therefore still costs the relay as many real bytes as it
+ * makes us allocate.
+ */
+private fun ByteArray.growFor(
+    maxBytes: Int,
+    expected: Int,
+    total: Int,
+): ByteArray {
+    val grown =
+        if (expected > size && total.toLong() * 2 >= expected) {
+            expected
+        } else {
+            minOf(size.toLong() * 2, maxBytes.toLong() + 1).toInt()
+        }
+    if (grown <= size) failResponseTooLarge(maxBytes)
+    return copyOf(grown)
+}
+
+private fun failResponseTooLarge(maxBytes: Int): Nothing =
+    throw OhttpException("Response exceeded the $maxBytes byte limit")
