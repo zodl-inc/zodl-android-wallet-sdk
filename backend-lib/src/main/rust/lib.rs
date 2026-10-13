@@ -4658,15 +4658,20 @@ mod tests {
         // collect_body_limited stops early (before consuming all frames) once the limit is exceeded.
         let chunk_size = 16 * 1024;
         let total_size = 65 * 1024;
-        let chunks: Vec<Result<http_body_util::Frame<super::Bytes>, std::convert::Infallible>> = (0
-            ..total_size)
-            .step_by(chunk_size)
-            .map(|offset| {
+        // Frames come from `Full::frame()`: `http_body::Frame` is not a direct dependency.
+        let chunks: Vec<_> = rt.block_on(async {
+            let mut chunks = Vec::new();
+            for offset in (0..total_size).step_by(chunk_size) {
                 let end = (offset + chunk_size).min(total_size);
-                let chunk = vec![0u8; end - offset];
-                Ok(http_body_util::Frame::data(super::Bytes::from(chunk)))
-            })
-            .collect();
+                let frame = http_body_util::Full::new(super::Bytes::from(vec![0u8; end - offset]))
+                    .frame()
+                    .await
+                    .expect("one frame")
+                    .expect("infallible");
+                chunks.push(Ok::<_, std::convert::Infallible>(frame));
+            }
+            chunks
+        });
 
         let body = StreamBody::new(stream::iter(chunks));
         let out = rt

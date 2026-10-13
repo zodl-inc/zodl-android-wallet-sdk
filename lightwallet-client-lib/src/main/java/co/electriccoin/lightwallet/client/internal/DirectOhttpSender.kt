@@ -138,10 +138,8 @@ class DirectOhttpSender : OhttpSender {
         val buffer = ByteArray(READ_BUFFER_SIZE)
         var total = 0
         while (true) {
+            // total <= maxBytes here, so at least one byte is always requested.
             val maxRead = minOf(buffer.size, maxBytes - total + 1)
-            if (maxRead <= 0) {
-                throw OhttpException("Response exceeded the $maxBytes byte limit")
-            }
             val n = read(buffer, 0, maxRead)
             if (n < 0) break
             total += n

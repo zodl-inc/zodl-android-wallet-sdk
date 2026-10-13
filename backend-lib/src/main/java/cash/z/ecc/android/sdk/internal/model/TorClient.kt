@@ -163,6 +163,7 @@ class TorClient private constructor(
     /**
      * Makes an HTTP POST request over Tor. See [httpGet] for [maxResponseBytes], [timeoutMs] and the exceptions.
      */
+    @Suppress("LongParameterList")
     suspend fun httpPost(
         url: String,
         headers: List<JniHttpHeader>,
@@ -283,6 +284,7 @@ class TorClient private constructor(
          * @throws RuntimeException as a common indicator of any other operation failure
          */
         @JvmStatic
+        @Suppress("LongParameterList")
         @Throws(RuntimeException::class)
         private external fun httpGet(
             nativeHandle: Long,
