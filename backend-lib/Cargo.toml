@@ -306,8 +306,8 @@ crate-type = ["staticlib", "cdylib"]
 # instead of crates.io. Once slipstream-internal PR #16 merges, the rev below must move to
 # the resulting slipstream-internal `main` commit; after that, this entry can be removed once
 # a published zodl-slipstream version containing the OHTTP transport exists on crates.io.
-# Pins slipstream-internal PR #16 head, 20b438419e332de104c510784c4a4270c339f08e (chunked OHTTP size bound fix).
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "20b438419e332de104c510784c4a4270c339f08e" }
+# Pins slipstream-internal PR #16 head, 6cd3f883be247f0c883c4687ab48570a4754c87f (chunked OHTTP size bound fix).
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "6cd3f883be247f0c883c4687ab48570a4754c87f" }
 #
 # Shielded voting on the NU7 pre-release crates.
 #
