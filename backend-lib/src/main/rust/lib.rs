@@ -3765,9 +3765,7 @@ fn within_response_limit_custom(
     max_bytes: usize,
 ) -> anyhow::Result<http::Response<Bytes>> {
     let (parts, body) = response.into_parts();
-    let body = body.ok_or_else(|| {
-        anyhow!("Tor HTTP response body exceeds {max_bytes} bytes")
-    })?;
+    let body = body.ok_or_else(|| anyhow!("Tor HTTP response body exceeds {max_bytes} bytes"))?;
     Ok(http::Response::from_parts(parts, body))
 }
 
@@ -4649,8 +4647,8 @@ mod tests {
 
     #[test]
     fn tor_http_body_65kib_fails_with_64kib_limit() {
-        use http_body_util::StreamBody;
         use futures_util::stream;
+        use http_body_util::StreamBody;
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -4660,19 +4658,24 @@ mod tests {
         // collect_body_limited stops early (before consuming all frames) once the limit is exceeded.
         let chunk_size = 16 * 1024;
         let total_size = 65 * 1024;
-        let chunks: Vec<Result<http_body_util::Frame<super::Bytes>, std::convert::Infallible>> =
-            (0..total_size)
-                .step_by(chunk_size)
-                .map(|offset| {
-                    let end = (offset + chunk_size).min(total_size);
-                    let chunk = vec![0u8; end - offset];
-                    Ok(http_body_util::Frame::data(super::Bytes::from(chunk)))
-                })
-                .collect();
+        let chunks: Vec<Result<http_body_util::Frame<super::Bytes>, std::convert::Infallible>> = (0
+            ..total_size)
+            .step_by(chunk_size)
+            .map(|offset| {
+                let end = (offset + chunk_size).min(total_size);
+                let chunk = vec![0u8; end - offset];
+                Ok(http_body_util::Frame::data(super::Bytes::from(chunk)))
+            })
+            .collect();
 
         let body = StreamBody::new(stream::iter(chunks));
-        let out = rt.block_on(super::collect_body_limited(body, 64 * 1024)).unwrap();
-        assert!(out.is_none(), "A 65 KiB body should be refused with a 64 KiB limit");
+        let out = rt
+            .block_on(super::collect_body_limited(body, 64 * 1024))
+            .unwrap();
+        assert!(
+            out.is_none(),
+            "A 65 KiB body should be refused with a 64 KiB limit"
+        );
     }
 
     use zcash_client_backend::data_api::{

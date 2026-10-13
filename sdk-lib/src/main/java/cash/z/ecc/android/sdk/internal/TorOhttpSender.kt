@@ -128,13 +128,26 @@ private class TorClientTransport(
         headers: List<JniHttpHeader>,
         body: ByteArray,
         timeoutMs: Long
-    ) = torClient.httpPost(url, headers, body, retryLimit = NO_TOR_RETRIES, maxResponseBytes = OhttpSender.MAX_SEALED_RESPONSE_BYTES, timeoutMs = timeoutMs)
+    ) = torClient.httpPost(
+        url,
+        headers,
+        body,
+        retryLimit = NO_TOR_RETRIES,
+        maxResponseBytes = OhttpSender.MAX_SEALED_RESPONSE_BYTES,
+        timeoutMs = timeoutMs
+    )
 
     override suspend fun get(
         url: String,
         headers: List<JniHttpHeader>,
         timeoutMs: Long
-    ) = torClient.httpGet(url, headers, retryLimit = NO_TOR_RETRIES, maxResponseBytes = OhttpSender.MAX_KEY_CONFIG_BYTES, timeoutMs = timeoutMs)
+    ) = torClient.httpGet(
+        url,
+        headers,
+        retryLimit = NO_TOR_RETRIES,
+        maxResponseBytes = OhttpSender.MAX_KEY_CONFIG_BYTES,
+        timeoutMs = timeoutMs
+    )
 
     override suspend fun dispose() = torClient.dispose()
 }
