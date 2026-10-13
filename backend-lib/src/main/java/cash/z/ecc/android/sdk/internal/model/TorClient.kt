@@ -129,6 +129,9 @@ class TorClient private constructor(
     /**
      * Makes an HTTP GET request over Tor.
      *
+     * @param maxResponseBytes the maximum response body size the caller will accept, enforced while
+     * reading the stream. The call fails with "Tor HTTP response body exceeds <limit> bytes" if
+     * the body is larger than this limit.
      * @param timeoutMs overall deadline for the whole call, retries included, enforced inside the
      * native call (so it really interrupts the request and releases this client's mutex). The
      * default [NO_TIMEOUT_MS] (or any value `<= 0`) keeps the previous behavior: no caller-supplied
@@ -140,6 +143,7 @@ class TorClient private constructor(
         url: String,
         headers: List<JniHttpHeader>,
         retryLimit: Int,
+        maxResponseBytes: Int,
         timeoutMs: Long = NO_TIMEOUT_MS
     ): JniHttpResponseBytes =
         accessMutex.withLock {
@@ -150,19 +154,21 @@ class TorClient private constructor(
                     url,
                     headers.toTypedArray(),
                     retryLimit,
+                    maxResponseBytes,
                     timeoutMs
                 )
             }
         }
 
     /**
-     * Makes an HTTP POST request over Tor. See [httpGet] for [timeoutMs] and the exceptions.
+     * Makes an HTTP POST request over Tor. See [httpGet] for [maxResponseBytes], [timeoutMs] and the exceptions.
      */
     suspend fun httpPost(
         url: String,
         headers: List<JniHttpHeader>,
         body: ByteArray,
         retryLimit: Int,
+        maxResponseBytes: Int,
         timeoutMs: Long = NO_TIMEOUT_MS
     ): JniHttpResponseBytes =
         accessMutex.withLock {
@@ -174,6 +180,7 @@ class TorClient private constructor(
                     headers.toTypedArray(),
                     body,
                     retryLimit,
+                    maxResponseBytes,
                     timeoutMs
                 )
             }
@@ -282,6 +289,7 @@ class TorClient private constructor(
             url: String,
             headers: Array<JniHttpHeader>,
             retryLimit: Int,
+            maxResponseBytes: Int,
             timeoutMs: Long
         ): JniHttpResponseBytes
 
@@ -299,6 +307,7 @@ class TorClient private constructor(
             headers: Array<JniHttpHeader>,
             body: ByteArray,
             retryLimit: Int,
+            maxResponseBytes: Int,
             timeoutMs: Long
         ): JniHttpResponseBytes
 

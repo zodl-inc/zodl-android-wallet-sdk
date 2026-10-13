@@ -281,9 +281,19 @@ internal class SaplingParamTool(
 
             val url = URL("$CLOUD_PARAM_DIR_URL${paramsToFetch.fileName}")
             Twig.debug { "Sapling params fetch URL: $url" }
+
+            // Ensure the destination directory exists before creating the temp file
+            val destinationDir = paramsToFetch.destinationDirectory
+            if (!destinationDir.exists() && !destinationDir.mkdirs()) {
+                throw TransactionEncoderException.FetchParamsException(
+                    paramsToFetch,
+                    "Failed to create directory ${destinationDir.path}"
+                )
+            }
+
             val temporaryFile =
                 File(
-                    paramsToFetch.destinationDirectory,
+                    destinationDir,
                     "$TEMPORARY_FILE_NAME_PREFIX${paramsToFetch.fileName}",
                 )
 

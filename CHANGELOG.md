@@ -97,6 +97,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   custom configs with endpoints not in the gateway's allowlist would fail closed instead of
   routing Direct.
 
+### Fixed
+- Key Configuration responses over Tor are now bounded to 64 KiB while reading the stream, not
+  after the full body has crossed JNI. The native `httpGet`/`httpPost` functions gained a
+  `maxResponseBytes` parameter; OHTTP key config fetches use 64 KiB, sealed relay responses use
+  256 MiB + 64 KiB, and Sapling params downloads use 256 MiB + 64 KiB. `DirectOhttpSender.readFully`
+  now reads at most `limit + 1` bytes instead of overshooting by up to one buffer (16 KiB).
+- Sapling parameter downloads no longer fail with `FileNotFoundException` when the destination
+  directory does not exist; the directory is now created (with a clear error if creation fails)
+  before the temporary file is opened, on both the Tor and direct download paths.
+
 ## [5.1.0] - 2026-10-07
 
 ### Added

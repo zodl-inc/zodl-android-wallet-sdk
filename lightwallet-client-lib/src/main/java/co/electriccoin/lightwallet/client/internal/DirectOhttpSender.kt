@@ -132,11 +132,17 @@ class DirectOhttpSender : OhttpSender {
         }
 
         // Content-Length unknown or invalid: use ByteArrayOutputStream with size limit.
+        // Read at most min(buffer_size, remaining+1) bytes per call to avoid buffering
+        // more than limit+1 bytes (where the +1 proves the limit is exceeded).
         val out = ByteArrayOutputStream()
         val buffer = ByteArray(READ_BUFFER_SIZE)
         var total = 0
         while (true) {
-            val n = read(buffer)
+            val maxRead = minOf(buffer.size, maxBytes - total + 1)
+            if (maxRead <= 0) {
+                throw OhttpException("Response exceeded the $maxBytes byte limit")
+            }
+            val n = read(buffer, 0, maxRead)
             if (n < 0) break
             total += n
             if (total > maxBytes) {

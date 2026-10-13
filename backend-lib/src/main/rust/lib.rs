@@ -3759,6 +3759,18 @@ fn within_response_limit(
     Ok(http::Response::from_parts(parts, body))
 }
 
+/// Fails the call when [`collect_body_limited`] stopped at the caller-supplied size limit.
+fn within_response_limit_custom(
+    response: http::Response<Option<Bytes>>,
+    max_bytes: usize,
+) -> anyhow::Result<http::Response<Bytes>> {
+    let (parts, body) = response.into_parts();
+    let body = body.ok_or_else(|| {
+        anyhow!("Tor HTTP response body exceeds {max_bytes} bytes")
+    })?;
+    Ok(http::Response::from_parts(parts, body))
+}
+
 fn encode_http_header<'a>(
     env: &mut JNIEnv<'a>,
     name: &http::HeaderName,
@@ -3814,6 +3826,10 @@ fn encode_http_response_bytes<'a>(
 /// `retry_limit` is the maximum number of times that a failed request should be retried.
 /// You can disable retries by setting this to 0.
 ///
+/// `max_response_bytes` is the maximum body size the caller will accept, enforced while reading
+/// the stream. The call fails with "Tor HTTP response body exceeds <limit> bytes" if the body
+/// is larger than this limit.
+///
 /// `timeout_ms` is an overall deadline for the whole call, retries included; `<= 0` means no
 /// caller-supplied deadline (the client's own per-phase timeouts still apply). On expiry a
 /// `TorHttpTimeoutException` is thrown; network/transport failures throw
@@ -3826,6 +3842,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
     url: JString<'local>,
     headers: JObjectArray<'local>,
     retry_limit: jint,
+    max_response_bytes: jint,
     timeout_ms: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
@@ -3840,6 +3857,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
         let headers = parse_http_headers(env, headers)?;
         let retry_limit =
             u8::try_from(retry_limit).map_err(|e| anyhow!("retryLimit is too large: {e}"))?;
+        let max_response_bytes = usize::try_from(max_response_bytes)
+            .map_err(|e| anyhow!("maxResponseBytes is negative: {e}"))?;
 
         let runtime = tor_runtime.runtime();
         let response = runtime
@@ -3854,7 +3873,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
                             .fold(builder, |builder, (key, value)| builder.header(key, value))
                     },
                     |body| async {
-                        Ok(collect_body_limited(body, TOR_HTTP_MAX_RESPONSE_BYTES)
+                        Ok(collect_body_limited(body, max_response_bytes)
                             .await
                             .map_err(HttpError::from)?)
                     },
@@ -3866,7 +3885,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
                 ),
             ))
             .map_err(|e| throw_tor_http_error(env, e))?;
-        let response = within_response_limit(response)?;
+        let response = within_response_limit_custom(response, max_response_bytes)?;
 
         Ok(encode_http_response_bytes(env, response)?.into_raw())
     });
@@ -3877,6 +3896,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
 ///
 /// `retry_limit` is the maximum number of times that a failed request should be retried.
 /// You can disable retries by setting this to 0.
+///
+/// `max_response_bytes` is the maximum body size the caller will accept, enforced while reading
+/// the stream. The call fails with "Tor HTTP response body exceeds <limit> bytes" if the body
+/// is larger than this limit.
 ///
 /// `timeout_ms` is an overall deadline for the whole call, retries included; `<= 0` means no
 /// caller-supplied deadline (the client's own per-phase timeouts still apply). On expiry a
@@ -3891,6 +3914,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
     headers: JObjectArray<'local>,
     body: JByteArray<'local>,
     retry_limit: jint,
+    max_response_bytes: jint,
     timeout_ms: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
@@ -3906,6 +3930,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
         let body = utils::java_bytes_to_rust(env, &body)?;
         let retry_limit =
             u8::try_from(retry_limit).map_err(|e| anyhow!("retryLimit is too large: {e}"))?;
+        let max_response_bytes = usize::try_from(max_response_bytes)
+            .map_err(|e| anyhow!("maxResponseBytes is negative: {e}"))?;
 
         let runtime = tor_runtime.runtime();
         let response = runtime
@@ -3921,7 +3947,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
                     },
                     http_body_util::Full::new(io::Cursor::new(body)),
                     |body| async {
-                        Ok(collect_body_limited(body, TOR_HTTP_MAX_RESPONSE_BYTES)
+                        Ok(collect_body_limited(body, max_response_bytes)
                             .await
                             .map_err(HttpError::from)?)
                     },
@@ -3933,7 +3959,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
                 ),
             ))
             .map_err(|e| throw_tor_http_error(env, e))?;
-        let response = within_response_limit(response)?;
+        let response = within_response_limit_custom(response, max_response_bytes)?;
 
         Ok(encode_http_response_bytes(env, response)?.into_raw())
     });
@@ -4619,6 +4645,34 @@ mod tests {
         let body = http_body_util::Full::new(super::Bytes::from_static(b"0123456789"));
         let out = rt.block_on(super::collect_body_limited(body, 9)).unwrap();
         assert!(out.is_none());
+    }
+
+    #[test]
+    fn tor_http_body_65kib_fails_with_64kib_limit() {
+        use http_body_util::StreamBody;
+        use futures_util::stream;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        // Create a 65 KiB body split into multiple 16 KiB frames to verify that
+        // collect_body_limited stops early (before consuming all frames) once the limit is exceeded.
+        let chunk_size = 16 * 1024;
+        let total_size = 65 * 1024;
+        let chunks: Vec<Result<http_body_util::Frame<super::Bytes>, std::convert::Infallible>> =
+            (0..total_size)
+                .step_by(chunk_size)
+                .map(|offset| {
+                    let end = (offset + chunk_size).min(total_size);
+                    let chunk = vec![0u8; end - offset];
+                    Ok(http_body_util::Frame::data(super::Bytes::from(chunk)))
+                })
+                .collect();
+
+        let body = StreamBody::new(stream::iter(chunks));
+        let out = rt.block_on(super::collect_body_limited(body, 64 * 1024)).unwrap();
+        assert!(out.is_none(), "A 65 KiB body should be refused with a 64 KiB limit");
     }
 
     use zcash_client_backend::data_api::{
