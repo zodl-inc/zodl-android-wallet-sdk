@@ -271,7 +271,7 @@ base64 = "0.22"
 ed25519-dalek = "2"
 sha2 = "0.10"
 ohttp-gateway = { git = "https://github.com/zodl-inc/ohttp.git", rev = "607d8507feaffe128b359088e0cf2e10d6d69ae0" }
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # Driving the gateway's streaming response encoder (`chunked_stream::encode_response_stream`,
 # whose upstream items are `anyhow::Result<UpFrame>` over `Bytes`) in the `ohttp.rs` tests,
 # so the JNI `complete` path is checked against what the gateway really sends.
