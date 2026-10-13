@@ -10,7 +10,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, anyhow};
 use bitflags::bitflags;
 use bytes::Bytes;
-use http_body::Body;
 use http_body_util::BodyExt;
 use jni::{
     JNIEnv,
@@ -3728,22 +3727,36 @@ const JNI_HTTP_HEADER: &str = "cash/z/ecc/android/sdk/internal/model/JniHttpHead
 /// hostile relay/gateway cannot exhaust memory by returning an arbitrarily large body.
 const TOR_HTTP_MAX_RESPONSE_BYTES: usize = 268_435_456 + 65_536;
 
-/// Collects an HTTP response body with a size limit, returning the aggregated bytes or an error
-/// if the limit is exceeded. Wraps the body with `http_body_util::Limited` to enforce the cap
-/// while reading, preventing memory exhaustion from arbitrarily large responses.
-async fn collect_http_body_limited<B>(
-    body: B,
-    max_bytes: usize,
-) -> Result<Bytes, Box<dyn std::error::Error + Send + Sync>>
+/// Reads an HTTP response body into memory, counting bytes as frames arrive.
+///
+/// Returns `Ok(None)` as soon as the body exceeds `max_bytes`, without reading the rest, so a
+/// hostile relay or server cannot make the device buffer an unbounded response.
+async fn collect_body_limited<B, E>(mut body: B, max_bytes: usize) -> Result<Option<Bytes>, E>
 where
-    B: Body + Send,
-    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    B: BodyExt<Data = Bytes, Error = E> + Unpin,
 {
-    http_body_util::Limited::new(body, max_bytes)
-        .collect()
-        .await
-        .map(|collected| collected.to_bytes())
-        .map_err(Into::into)
+    let mut out = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame?;
+        if let Some(data) = frame.data_ref() {
+            if data.len() > max_bytes - out.len() {
+                return Ok(None);
+            }
+            out.extend_from_slice(data);
+        }
+    }
+    Ok(Some(Bytes::from(out)))
+}
+
+/// Fails the call when [`collect_body_limited`] stopped at the size limit.
+fn within_response_limit(
+    response: http::Response<Option<Bytes>>,
+) -> anyhow::Result<http::Response<Bytes>> {
+    let (parts, body) = response.into_parts();
+    let body = body.ok_or_else(|| {
+        anyhow!("Tor HTTP response body exceeds {TOR_HTTP_MAX_RESPONSE_BYTES} bytes")
+    })?;
+    Ok(http::Response::from_parts(parts, body))
 }
 
 fn encode_http_header<'a>(
@@ -3841,11 +3854,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
                             .fold(builder, |builder, (key, value)| builder.header(key, value))
                     },
                     |body| async {
-                        collect_http_body_limited(body, TOR_HTTP_MAX_RESPONSE_BYTES)
+                        Ok(collect_body_limited(body, TOR_HTTP_MAX_RESPONSE_BYTES)
                             .await
-                            .map_err(|e| {
-                                HttpError::from(hyper::Error::new(hyper::error::Kind::User, e))
-                            })
+                            .map_err(HttpError::from)?)
                     },
                     retry_limit,
                     |res| {
@@ -3855,6 +3866,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
                 ),
             ))
             .map_err(|e| throw_tor_http_error(env, e))?;
+        let response = within_response_limit(response)?;
 
         Ok(encode_http_response_bytes(env, response)?.into_raw())
     });
@@ -3909,11 +3921,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
                     },
                     http_body_util::Full::new(io::Cursor::new(body)),
                     |body| async {
-                        collect_http_body_limited(body, TOR_HTTP_MAX_RESPONSE_BYTES)
+                        Ok(collect_body_limited(body, TOR_HTTP_MAX_RESPONSE_BYTES)
                             .await
-                            .map_err(|e| {
-                                HttpError::from(hyper::Error::new(hyper::error::Kind::User, e))
-                            })
+                            .map_err(HttpError::from)?)
                     },
                     retry_limit,
                     |res| {
@@ -3923,6 +3933,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
                 ),
             ))
             .map_err(|e| throw_tor_http_error(env, e))?;
+        let response = within_response_limit(response)?;
 
         Ok(encode_http_response_bytes(env, response)?.into_raw())
     });
@@ -4587,6 +4598,29 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOr
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tor_http_body_within_the_limit_is_returned_whole() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let body = http_body_util::Full::new(super::Bytes::from_static(b"0123456789"));
+        let out = rt
+            .block_on(super::collect_body_limited(body, 10))
+            .unwrap()
+            .expect("exactly at the limit");
+        assert_eq!(&out[..], b"0123456789");
+    }
+
+    #[test]
+    fn tor_http_body_over_the_limit_is_refused() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let body = http_body_util::Full::new(super::Bytes::from_static(b"0123456789"));
+        let out = rt.block_on(super::collect_body_limited(body, 9)).unwrap();
+        assert!(out.is_none());
+    }
+
     use zcash_client_backend::data_api::{
         Account as _, MaxSpendMode,
         testing::{AddressType, TestBuilder, TestState},
