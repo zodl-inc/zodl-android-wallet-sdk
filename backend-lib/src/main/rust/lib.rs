@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, anyhow};
 use bitflags::bitflags;
 use bytes::Bytes;
+use http_body::Body;
 use http_body_util::BodyExt;
 use jni::{
     JNIEnv,
@@ -3735,7 +3736,7 @@ async fn collect_http_body_limited<B>(
     max_bytes: usize,
 ) -> Result<Bytes, Box<dyn std::error::Error + Send + Sync>>
 where
-    B: http_body::Body + Send,
+    B: Body + Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     http_body_util::Limited::new(body, max_bytes)
