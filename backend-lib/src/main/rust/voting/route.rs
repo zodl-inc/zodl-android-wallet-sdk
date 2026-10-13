@@ -39,7 +39,7 @@ const OHTTP_VOTE_HOSTS: &[&str] = &[
     "zpir-1.stardust.rest",
 ];
 
-/// 256 MiB response cap (gateway MAX_UPSTREAM_RESPONSE_BYTES is 268435456).
+/// 64 MiB response cap for voting requests (well below the SDK's 256 MiB sealed-response cap).
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 /// [`RouteHttp`] executor that routes every voting chain-submission HTTP
@@ -165,7 +165,7 @@ fn can_handle_ohttp(host: &str) -> bool {
 ///
 /// Uses the same OHTTP stack as the lightwalletd gRPC path: signed HPKE key
 /// configs, relay from `zodl_ohttp_client::relay_for` (Fastly production relays),
-/// 256 MiB response cap, client trace prefix.
+/// 64 MiB response cap ([`MAX_RESPONSE_BYTES`]), client trace prefix.
 pub(super) struct ZodlOhttpRoute {
     gateway_host: String,
 }

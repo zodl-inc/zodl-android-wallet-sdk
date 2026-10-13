@@ -508,7 +508,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
         // - Tor OFF + predefined server: use OHTTP routing (privacy via gateway)
         //
         // When Tor is OFF and server is predefined, check that ALL chain endpoints,
-        // helpers, tree nodes, and PIR hosts are OHTTP-eligible (fail closed at open).
+        // helpers, and tree nodes are OHTTP-eligible (fail closed at open). PIR hosts are not
+        // checked here: they are checked per call in `connect_pir_client` (delegation.rs).
         let is_custom = is_custom_server != 0;
 
         // Check eligibility of all known endpoints when opening with Tor OFF + predefined
