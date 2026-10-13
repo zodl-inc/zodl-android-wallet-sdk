@@ -3718,6 +3718,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_setDorman
 
 const JNI_HTTP_HEADER: &str = "cash/z/ecc/android/sdk/internal/model/JniHttpHeader";
 
+/// Maximum HTTP response body size for Tor HTTP calls (256 MiB + 64 KiB).
+///
+/// Matches `OhttpSender.MAX_SEALED_RESPONSE_BYTES` in Kotlin: the largest response
+/// these generic Tor HTTP functions handle is an OHTTP sealed response (256 MiB backend
+/// body limit + 64 KiB framing overhead). Sapling params (spend: ~48 MB, output: ~4 MB)
+/// are well under this cap. Applied while reading the stream, not after the fact, so a
+/// hostile relay/gateway cannot exhaust memory by returning an arbitrarily large body.
+const TOR_HTTP_MAX_RESPONSE_BYTES: usize = 268_435_456 + 65_536;
+
 fn encode_http_header<'a>(
     env: &mut JNIEnv<'a>,
     name: &http::HeaderName,
@@ -3812,7 +3821,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
                             .iter()
                             .fold(builder, |builder, (key, value)| builder.header(key, value))
                     },
-                    |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
+                    |body| async {
+                        Ok(
+                            http_body_util::Limited::new(body, TOR_HTTP_MAX_RESPONSE_BYTES)
+                                .collect()
+                                .await
+                                .map_err(HttpError::from)?
+                                .to_bytes(),
+                        )
+                    },
                     retry_limit,
                     |res| {
                         res.is_err()
@@ -3874,7 +3891,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
                             .fold(builder, |builder, (key, value)| builder.header(key, value))
                     },
                     http_body_util::Full::new(io::Cursor::new(body)),
-                    |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
+                    |body| async {
+                        Ok(
+                            http_body_util::Limited::new(body, TOR_HTTP_MAX_RESPONSE_BYTES)
+                                .collect()
+                                .await
+                                .map_err(HttpError::from)?
+                                .to_bytes(),
+                        )
+                    },
                     retry_limit,
                     |res| {
                         res.is_err()
