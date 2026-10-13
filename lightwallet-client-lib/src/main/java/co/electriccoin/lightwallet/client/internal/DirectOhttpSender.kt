@@ -128,10 +128,6 @@ class DirectOhttpSender : OhttpSender {
                 }
                 offset += n
             }
-            // Verify the stream is actually exhausted (no extra bytes beyond Content-Length).
-            if (read() >= 0) {
-                throw OhttpException("Response exceeded Content-Length of $contentLength bytes")
-            }
             return result
         }
 
