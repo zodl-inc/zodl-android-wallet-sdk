@@ -3727,6 +3727,24 @@ const JNI_HTTP_HEADER: &str = "cash/z/ecc/android/sdk/internal/model/JniHttpHead
 /// hostile relay/gateway cannot exhaust memory by returning an arbitrarily large body.
 const TOR_HTTP_MAX_RESPONSE_BYTES: usize = 268_435_456 + 65_536;
 
+/// Collects an HTTP response body with a size limit, returning the aggregated bytes or an error
+/// if the limit is exceeded. Wraps the body with `http_body_util::Limited` to enforce the cap
+/// while reading, preventing memory exhaustion from arbitrarily large responses.
+async fn collect_http_body_limited<B>(
+    body: B,
+    max_bytes: usize,
+) -> Result<Bytes, Box<dyn std::error::Error + Send + Sync>>
+where
+    B: http_body::Body + Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    http_body_util::Limited::new(body, max_bytes)
+        .collect()
+        .await
+        .map(|collected| collected.to_bytes())
+        .map_err(Into::into)
+}
+
 fn encode_http_header<'a>(
     env: &mut JNIEnv<'a>,
     name: &http::HeaderName,
@@ -3822,13 +3840,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
                             .fold(builder, |builder, (key, value)| builder.header(key, value))
                     },
                     |body| async {
-                        Ok(
-                            http_body_util::Limited::new(body, TOR_HTTP_MAX_RESPONSE_BYTES)
-                                .collect()
-                                .await
-                                .map_err(HttpError::from)?
-                                .to_bytes(),
-                        )
+                        collect_http_body_limited(body, TOR_HTTP_MAX_RESPONSE_BYTES)
+                            .await
+                            .map_err(|e| {
+                                HttpError::from(hyper::Error::new(hyper::error::Kind::User, e))
+                            })
                     },
                     retry_limit,
                     |res| {
@@ -3892,13 +3908,11 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
                     },
                     http_body_util::Full::new(io::Cursor::new(body)),
                     |body| async {
-                        Ok(
-                            http_body_util::Limited::new(body, TOR_HTTP_MAX_RESPONSE_BYTES)
-                                .collect()
-                                .await
-                                .map_err(HttpError::from)?
-                                .to_bytes(),
-                        )
+                        collect_http_body_limited(body, TOR_HTTP_MAX_RESPONSE_BYTES)
+                            .await
+                            .map_err(|e| {
+                                HttpError::from(hyper::Error::new(hyper::error::Kind::User, e))
+                            })
                     },
                     retry_limit,
                     |res| {
