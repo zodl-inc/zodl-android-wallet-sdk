@@ -560,6 +560,18 @@ jobs:
       # EmulatorStartFailedException comes with an empty message: print the emulator version (which
       # also fails on a missing shared library), KVM acceleration, memory and disk, so a failing run
       # shows its cause.
+      # The managed AVD needs ~7.2 GB for its userdata partition once the Rust and Gradle builds
+      # have filled the disk (2026-10-14: 6.7 GB left, "Not enough space to create userdata
+      # partition"). Drop more of the runner image this job does not use.
+      - name: Free disk space for the emulator
+        timeout-minutes: 5
+        run: |
+          df -h /
+          sudo docker image prune --all --force >/dev/null || true
+          sudo rm -rf /usr/local/share/powershell /usr/share/miniconda /opt/microsoft /opt/google \
+            /usr/local/lib/node_modules /opt/az /usr/share/az_* /usr/local/share/chromium /opt/pipx \
+            /usr/local/julia* || true
+          df -h /
       - name: Emulator diagnostics
         timeout-minutes: 2
         run: |
