@@ -6,6 +6,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `pasta_curves` is built with its `asm` feature, so field arithmetic on 64-bit devices
+  (`arm64-v8a`, `x86_64`) uses the assembly implementation, which carries most of the speedup
+  of `pasta_curves` 0.6.1 for proving, syncing and shielded transactions. The 32-bit ABIs
+  (`armeabi-v7a`, `x86`) keep the portable arithmetic.
+
 ## [5.2.0] - 2026-10-09
 
 ### Added
