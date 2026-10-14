@@ -552,9 +552,14 @@ jobs:
         timeout-minutes: 5
         run: |
           yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "emulator"
-      # EmulatorStartFailedException with an empty message (2026-10-14, all 5 snapshot attempts)
-      # says nothing about the cause: print the emulator version, whether this runner offers KVM
-      # acceleration, and its memory, so a failing run shows which one is missing.
+          # The emulator's qemu links libpulse; the runner image does not ship it, and without it
+          # qemu exits at load time ("libpulse.so.0: cannot open shared object file"), which AGP
+          # reports as EmulatorStartFailedException with an empty message (2026-10-14).
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libpulse0
+      # EmulatorStartFailedException comes with an empty message: print the emulator version (which
+      # also fails on a missing shared library), KVM acceleration and memory, so a failing run
+      # shows its cause.
       - name: Emulator diagnostics
         timeout-minutes: 2
         run: |
