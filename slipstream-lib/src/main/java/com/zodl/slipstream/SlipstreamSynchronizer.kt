@@ -1828,14 +1828,16 @@ class SlipstreamSynchronizer internal constructor(
 
     /**
      * Only the account's name changes, which the engine never reads, so unlike [deleteAccount] the
-     * engine keeps running across the write.
+     * engine keeps running across the write. The readiness gate sits inside the wrapper, so an
+     * instance whose preparation failed surfaces as [InitializeException.RenameAccountException]
+     * (caused by [SlipstreamNotReadyException]), the only failure `Synchronizer.renameAccount` declares.
      */
     override suspend fun renameAccount(
         accountUuid: AccountUuid,
         name: String
     ) {
-        awaitReady()
         runCatchingCancellable {
+            awaitReady()
             check(backend.setAccountName(accountUuid.value, name)) { "The account name was not stored." }
         }.onFailure { Twig.error(it) { "Rename account failed." } }
             .getOrElse { throw InitializeException.RenameAccountException(it) }

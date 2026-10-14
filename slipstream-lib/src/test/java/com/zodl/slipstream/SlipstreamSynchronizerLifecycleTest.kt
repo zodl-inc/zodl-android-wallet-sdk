@@ -491,6 +491,111 @@ class SlipstreamSynchronizerLifecycleTest {
     }
 
     /**
+     * A stored rename bumps `accountsVersion`, so a live [SlipstreamSynchronizer.accountsFlow]
+     * collector re-reads the accounts and sees the new name without any other trigger.
+     */
+    @Test
+    fun rename_account_stores_the_name_and_makes_the_accounts_flow_re_read() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES) { it.toByte() })
+        val storedName = AtomicReference(ACCOUNT_NAME)
+        runBlocking {
+            `when`(backend.getAccounts()).thenAnswer { listOf(jniAccount(accountUuid, storedName.get())) }
+            `when`(backend.setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)).thenAnswer {
+                storedName.set(RENAMED_ACCOUNT_NAME)
+                true
+            }
+        }
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+
+        runBlocking {
+            val emissions = Channel<List<Account>>(Channel.UNLIMITED)
+            val collector =
+                launch(Dispatchers.Default) {
+                    synchronizer.accountsFlow.filterNotNull().collect { emissions.send(it) }
+                }
+            try {
+                assertEquals(ACCOUNT_NAME, withTimeout(TIMEOUT_MS) { emissions.receive() }.single().accountName)
+
+                synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME)
+
+                assertEquals(
+                    RENAMED_ACCOUNT_NAME,
+                    withTimeout(TIMEOUT_MS) { emissions.receive() }.single().accountName
+                )
+            } finally {
+                collector.cancel()
+            }
+        }
+        runBlocking<Unit> { verify(engine, never()).stop() }
+    }
+
+    @Test
+    fun rename_account_wraps_a_backend_failure_and_skips_the_accounts_re_read() {
+        val backend = mock(Backend::class.java)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        val failure = RuntimeException("AccountUnknown")
+        runBlocking { `when`(backend.setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)).thenThrow(failure) }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        val thrown =
+            assertFailsWith<InitializeException.RenameAccountException> {
+                runBlocking { synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME) }
+            }
+
+        assertSame(failure, thrown.cause)
+        runBlocking<Unit> { verify(backend, never()).getAccounts() }
+    }
+
+    @Test
+    fun rename_account_wraps_a_name_the_backend_did_not_store() {
+        val backend = mock(Backend::class.java)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        runBlocking { `when`(backend.setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)).thenReturn(false) }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        val thrown =
+            assertFailsWith<InitializeException.RenameAccountException> {
+                runBlocking { synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME) }
+            }
+
+        assertTrue(thrown.cause is IllegalStateException)
+    }
+
+    /**
+     * `Synchronizer.renameAccount` declares only [InitializeException.RenameAccountException], so a
+     * failed preparation must not escape as a bare [SlipstreamNotReadyException].
+     */
+    @Test
+    fun rename_account_on_a_failed_preparation_wraps_the_not_ready_failure() {
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        val failure = RuntimeException("anchor unreachable")
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                backend = backend,
+                key = key,
+                prepareInputs = prepareInputs(anchorSource = SlipstreamAnchorSource { _, _, _ -> throw failure })
+            )
+        try {
+            val thrown =
+                assertFailsWith<InitializeException.RenameAccountException> {
+                    runBlocking {
+                        withTimeout(TIMEOUT_MS) { synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME) }
+                    }
+                }
+
+            assertTrue(thrown.cause is SlipstreamNotReadyException)
+            runBlocking<Unit> { verify(backend, never()).setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME) }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
      * MOB-1667: polling is local JNI reads only, so a migration pause must leave it running — the
      * host keeps seeing live balances, heights and status for however long the pause lasts.
      */
@@ -2514,9 +2619,12 @@ class SlipstreamSynchronizerLifecycleTest {
 
     private fun newKey() = SlipstreamKey(ZcashNetwork.Testnet, "alias_${System.nanoTime()}")
 
-    private fun jniAccount(accountUuid: AccountUuid): JniAccount =
+    private fun jniAccount(
+        accountUuid: AccountUuid,
+        accountName: String = ACCOUNT_NAME
+    ): JniAccount =
         JniAccount(
-            accountName = ACCOUNT_NAME,
+            accountName = accountName,
             accountUuid = accountUuid.value,
             hdAccountIndex = NULL_HD_ACCOUNT_INDEX,
             keySource = KEY_SOURCE,
@@ -2715,6 +2823,7 @@ class SlipstreamSynchronizerLifecycleTest {
         private const val TOTAL_MEMORY_BYTES = 4_000_000_000L
         private const val UFVK = "uview1testkey"
         private const val ACCOUNT_NAME = "test account"
+        private const val RENAMED_ACCOUNT_NAME = "renamed account"
         private const val KEY_SOURCE = "test key source"
         private const val SEED_BYTES = 32
         private const val BELOW_BIRTHDAY_VALUE = 1_000_000L
