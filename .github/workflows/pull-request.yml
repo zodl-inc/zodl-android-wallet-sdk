@@ -552,6 +552,16 @@ jobs:
         timeout-minutes: 5
         run: |
           yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "emulator"
+      # EmulatorStartFailedException with an empty message (2026-10-14, all 5 snapshot attempts)
+      # says nothing about the cause: print the emulator version, whether this runner offers KVM
+      # acceleration, and its memory, so a failing run shows which one is missing.
+      - name: Emulator diagnostics
+        timeout-minutes: 2
+        run: |
+          "${ANDROID_SDK_ROOT}/emulator/emulator" -version | head -n 1
+          ls -l /dev/kvm || echo "no /dev/kvm on this runner"
+          "${ANDROID_SDK_ROOT}/emulator/emulator" -accel-check || true
+          free -m
       # pixel2Min is the Gradle Managed Device defined in
       # zcash-sdk.android-conventions.gradle.kts (Pixel 2, API ANDROID_MIN_SDK_VERSION).
       # Scoped to the same four modules the former emulator.wtf job covered;

@@ -68,7 +68,8 @@ endif
 # renderer a headless runner needs.
 MANAGED_DEVICE_FLAGS := \
 	-Pandroid.experimental.testOptions.managedDevices.maxConcurrentDevices=1 \
-	-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+	-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect \
+	-Pandroid.testoptions.manageddevices.emulator.showKernelLogging=true
 
 # Android targets the Rust JNI backend is cross-compiled for.
 RUST_ANDROID_TARGETS := \
