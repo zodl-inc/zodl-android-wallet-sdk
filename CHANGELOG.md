@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.1] - 2026-10-14
+
 ### Changed
 - `pasta_curves` is built with its `asm` feature, so field arithmetic on 64-bit devices
   (`arm64-v8a`, `x86_64`) uses the assembly implementation, which carries most of the speedup
