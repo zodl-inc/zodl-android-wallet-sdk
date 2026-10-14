@@ -3718,15 +3718,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_setDorman
 
 const JNI_HTTP_HEADER: &str = "cash/z/ecc/android/sdk/internal/model/JniHttpHeader";
 
-/// Maximum HTTP response body size for Tor HTTP calls (256 MiB + 64 KiB).
-///
-/// Matches `OhttpSender.MAX_SEALED_RESPONSE_BYTES` in Kotlin: the largest response
-/// these generic Tor HTTP functions handle is an OHTTP sealed response (256 MiB backend
-/// body limit + 64 KiB framing overhead). Sapling params (spend: ~48 MB, output: ~4 MB)
-/// are well under this cap. Applied while reading the stream, not after the fact, so a
-/// hostile relay/gateway cannot exhaust memory by returning an arbitrarily large body.
-const TOR_HTTP_MAX_RESPONSE_BYTES: usize = 268_435_456 + 65_536;
-
 /// Reads an HTTP response body into memory, counting bytes as frames arrive.
 ///
 /// Returns `Ok(None)` as soon as the body exceeds `max_bytes`, without reading the rest, so a
@@ -3746,17 +3737,6 @@ where
         }
     }
     Ok(Some(Bytes::from(out)))
-}
-
-/// Fails the call when [`collect_body_limited`] stopped at the size limit.
-fn within_response_limit(
-    response: http::Response<Option<Bytes>>,
-) -> anyhow::Result<http::Response<Bytes>> {
-    let (parts, body) = response.into_parts();
-    let body = body.ok_or_else(|| {
-        anyhow!("Tor HTTP response body exceeds {TOR_HTTP_MAX_RESPONSE_BYTES} bytes")
-    })?;
-    Ok(http::Response::from_parts(parts, body))
 }
 
 /// Fails the call when [`collect_body_limited`] stopped at the caller-supplied size limit.
