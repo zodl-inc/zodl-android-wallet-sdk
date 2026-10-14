@@ -979,6 +979,33 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_deleteAcc
     unwrap_exc_or(&mut env, res, JNI_FALSE)
 }
 
+/// Sets the human-readable name of the specified account, leaving its keys and all other state
+/// unchanged.
+///
+/// Returns `true` on success, or `false` if an error is raised (including when no account with the
+/// given UUID exists).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_setAccountName<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    account_uuid: JByteArray<'local>,
+    name: JString<'local>,
+    network_id: jint,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |env| {
+        let network = parse_network(network_id)?;
+        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
+        let account_uuid = account_id_from_jni(env, account_uuid)?;
+        let name = java_string_to_rust(env, &name)?;
+
+        db_data.set_account_name(account_uuid, &name)?;
+
+        Ok(JNI_TRUE)
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getCurrentAddress<'local>(
     mut env: JNIEnv<'local>,

@@ -1826,6 +1826,22 @@ class SlipstreamSynchronizer internal constructor(
         return deleted
     }
 
+    /**
+     * Only the account's name changes, which the engine never reads, so unlike [deleteAccount] the
+     * engine keeps running across the write.
+     */
+    override suspend fun renameAccount(
+        accountUuid: AccountUuid,
+        name: String
+    ) {
+        awaitReady()
+        runCatchingCancellable {
+            check(backend.setAccountName(accountUuid.value, name)) { "The account name was not stored." }
+        }.onFailure { Twig.error(it) { "Rename account failed." } }
+            .getOrElse { throw InitializeException.RenameAccountException(it) }
+        accountsVersion.update { it + 1 }
+    }
+
     override suspend fun getTreeState(height: BlockHeight): ByteArray {
         val serviceMode = sdkFlags ifTor ServiceMode.UniqueTor
         return when (

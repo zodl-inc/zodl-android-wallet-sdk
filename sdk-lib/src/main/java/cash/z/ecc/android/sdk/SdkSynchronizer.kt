@@ -848,6 +848,21 @@ class SdkSynchronizer private constructor(
             refreshAccountsBus.emit(Unit)
         }
 
+    override suspend fun renameAccount(
+        accountUuid: AccountUuid,
+        name: String
+    ) {
+        runCatching {
+            check(backend.setAccountName(accountUuid, name)) { "The account name was not stored." }
+        }.onFailure {
+            Twig.error(it) { "Rename account failed." }
+        }.getOrElse { cause ->
+            if (cause is CancellationException) throw cause
+            throw InitializeException.RenameAccountException(cause)
+        }
+        refreshAccountsBus.emit(Unit)
+    }
+
     override suspend fun getTreeState(height: BlockHeight): ByteArray =
         when (
             val response =

@@ -311,6 +311,17 @@ sealed class InitializeException(
         )
 
     /**
+     * Thrown by `Synchronizer.renameAccount` when the account's name cannot be stored, for example
+     * because no account with the given UUID exists in the wallet.
+     */
+    class RenameAccountException(
+        cause: Throwable?
+    ) : InitializeException(
+            "Failed to rename account due to: ${cause?.message}",
+            cause
+        )
+
+    /**
      * Thrown when [ImportAccountException] would otherwise be thrown, but the underlying
      * failure is a transient cross-pool checkpoint-parity mismatch rather than genuine wallet
      * database corruption. This can happen on a newly-imported or recently-upgraded wallet

@@ -1,5 +1,6 @@
 package cash.z.ecc.android.sdk.internal
 
+import cash.z.ecc.android.sdk.fixture.AccountFixture
 import cash.z.ecc.android.sdk.internal.jni.JNI_ACCOUNT_KEY_OVERLAP_WOULD_UPGRADE
 import cash.z.ecc.android.sdk.internal.model.JniAccount
 import cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap
@@ -12,12 +13,14 @@ import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import kotlinx.coroutines.runBlocking
 import org.mockito.ArgumentMatchers
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class TypesafeBackendImplTest {
     @Test
@@ -79,6 +82,17 @@ class TypesafeBackendImplTest {
             assertNull(overlap)
         }
 
+    @Test
+    fun setAccountName_forwards_the_uuid_bytes_and_name() =
+        runBlocking<Unit> {
+            val accountUuid = AccountFixture.new().accountUuid
+            val backend = mock(Backend::class.java)
+            `when`(backend.setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)).thenReturn(true)
+
+            assertTrue(TypesafeBackendImpl(backend).setAccountName(accountUuid, RENAMED_ACCOUNT_NAME))
+            verify(backend).setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)
+        }
+
     /**
      * A minimal, hand-encoded `cash.z.wallet.sdk.ffi.Proposal` protobuf message — see
      * `OrchardMigrationSdkImplTest.fakeProposalBytes` for the full rationale. Just field 2
@@ -109,5 +123,6 @@ class TypesafeBackendImplTest {
     companion object {
         private const val OVERLAP_UFVK = "uviewtest1overlapfixture"
         private const val OVERLAP_ACCOUNT_UUID_SIZE = 16
+        private const val RENAMED_ACCOUNT_NAME = "Renamed account"
     }
 }

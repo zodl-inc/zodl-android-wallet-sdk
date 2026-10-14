@@ -354,4 +354,9 @@ internal interface TypesafeBackend {
     fun isValidTexAddr(addr: String): Boolean
 
     suspend fun deleteAccount(accountUuid: AccountUuid): Boolean
+
+    suspend fun setAccountName(
+        accountUuid: AccountUuid,
+        name: String
+    ): Boolean
 }

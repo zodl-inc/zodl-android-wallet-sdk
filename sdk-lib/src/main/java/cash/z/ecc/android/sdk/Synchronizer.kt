@@ -1134,6 +1134,22 @@ interface Synchronizer {
     suspend fun deleteAccount(accountUuid: AccountUuid): Boolean
 
     /**
+     * Sets the human-readable name of the given account, replacing any existing name. The account's
+     * keys and all other state are left unchanged, and [accountsFlow] re-emits with the new name.
+     *
+     * @param accountUuid the account to rename
+     * @param name the new name, stored as given
+     *
+     * @throws InitializeException.RenameAccountException if the name cannot be stored, for example
+     * because no account with [accountUuid] exists in the wallet
+     */
+    @Throws(InitializeException.RenameAccountException::class)
+    suspend fun renameAccount(
+        accountUuid: AccountUuid,
+        name: String
+    )
+
+    /**
      * Returns the commitment tree state at the given block height, encoded as a protobuf [ByteArray].
      *
      * This lets app-layer consumers generate witnesses or verify inclusion proofs against a

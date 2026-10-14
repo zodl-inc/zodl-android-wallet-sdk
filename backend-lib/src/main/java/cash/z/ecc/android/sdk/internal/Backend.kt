@@ -248,6 +248,19 @@ interface Backend {
     @Throws(RuntimeException::class)
     suspend fun deleteAccount(accountUuid: ByteArray): Boolean
 
+    /**
+     * Sets the human-readable name of the specified account, leaving its keys and all other
+     * state unchanged.
+     *
+     * @throws RuntimeException as a common indicator of the operation failure, including when no
+     * account with the given UUID exists
+     */
+    @Throws(RuntimeException::class)
+    suspend fun setAccountName(
+        accountUuid: ByteArray,
+        name: String
+    ): Boolean
+
     fun isValidSaplingAddr(addr: String): Boolean
 
     fun isValidTransparentAddr(addr: String): Boolean
