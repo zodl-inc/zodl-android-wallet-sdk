@@ -504,7 +504,6 @@ class SlipstreamSynchronizerLifecycleTest {
             `when`(backend.getAccounts()).thenAnswer { listOf(jniAccount(accountUuid, storedName.get())) }
             `when`(backend.setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)).thenAnswer {
                 storedName.set(RENAMED_ACCOUNT_NAME)
-                true
             }
         }
         val synchronizer = buildSynchronizer(engine = engine, backend = backend)
@@ -546,21 +545,6 @@ class SlipstreamSynchronizerLifecycleTest {
 
         assertSame(failure, thrown.cause)
         runBlocking<Unit> { verify(backend, never()).getAccounts() }
-    }
-
-    @Test
-    fun rename_account_wraps_a_name_the_backend_did_not_store() {
-        val backend = mock(Backend::class.java)
-        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
-        runBlocking { `when`(backend.setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)).thenReturn(false) }
-        val synchronizer = buildSynchronizer(backend = backend)
-
-        val thrown =
-            assertFailsWith<InitializeException.RenameAccountException> {
-                runBlocking { synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME) }
-            }
-
-        assertTrue(thrown.cause is IllegalStateException)
     }
 
     /**

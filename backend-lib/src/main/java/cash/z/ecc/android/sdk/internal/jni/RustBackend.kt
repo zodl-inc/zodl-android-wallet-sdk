@@ -176,15 +176,14 @@ class RustBackend private constructor(
     override suspend fun setAccountName(
         accountUuid: ByteArray,
         name: String
-    ): Boolean =
-        withContext(SdkDispatchers.DATABASE_IO) {
-            setAccountName(
-                dataDbFile.absolutePath,
-                accountUuid,
-                name,
-                networkId = networkId
-            )
-        }
+    ) = withContext(SdkDispatchers.DATABASE_IO) {
+        setAccountName(
+            dataDbFile.absolutePath,
+            accountUuid,
+            name,
+            networkId = networkId
+        )
+    }
 
     override suspend fun getCurrentAddress(accountUuid: ByteArray) =
         withContext(SdkDispatchers.DATABASE_IO) {
@@ -778,7 +777,7 @@ class RustBackend private constructor(
             accountUuid: ByteArray,
             name: String,
             networkId: Int
-        ): Boolean
+        )
 
         @JvmStatic
         private external fun getCurrentAddress(

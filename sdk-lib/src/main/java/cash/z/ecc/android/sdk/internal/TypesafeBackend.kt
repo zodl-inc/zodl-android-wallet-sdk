@@ -358,5 +358,5 @@ internal interface TypesafeBackend {
     suspend fun setAccountName(
         accountUuid: AccountUuid,
         name: String
-    ): Boolean
+    )
 }

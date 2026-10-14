@@ -1838,7 +1838,7 @@ class SlipstreamSynchronizer internal constructor(
     ) {
         runCatchingCancellable {
             awaitReady()
-            check(backend.setAccountName(accountUuid.value, name)) { "The account name was not stored." }
+            backend.setAccountName(accountUuid.value, name)
         }.onFailure { Twig.error(it) { "Rename account failed." } }
             .getOrElse { throw InitializeException.RenameAccountException(it) }
         accountsVersion.update { it + 1 }

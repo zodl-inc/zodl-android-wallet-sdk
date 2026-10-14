@@ -20,7 +20,6 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 class TypesafeBackendImplTest {
     @Test
@@ -87,9 +86,8 @@ class TypesafeBackendImplTest {
         runBlocking<Unit> {
             val accountUuid = AccountFixture.new().accountUuid
             val backend = mock(Backend::class.java)
-            `when`(backend.setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)).thenReturn(true)
 
-            assertTrue(TypesafeBackendImpl(backend).setAccountName(accountUuid, RENAMED_ACCOUNT_NAME))
+            TypesafeBackendImpl(backend).setAccountName(accountUuid, RENAMED_ACCOUNT_NAME)
             verify(backend).setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)
         }
 

@@ -853,7 +853,7 @@ class SdkSynchronizer private constructor(
         name: String
     ) {
         runCatching {
-            check(backend.setAccountName(accountUuid, name)) { "The account name was not stored." }
+            backend.setAccountName(accountUuid, name)
         }.onFailure {
             Twig.error(it) { "Rename account failed." }
         }.getOrElse { cause ->

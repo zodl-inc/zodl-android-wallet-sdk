@@ -259,7 +259,7 @@ interface Backend {
     suspend fun setAccountName(
         accountUuid: ByteArray,
         name: String
-    ): Boolean
+    )
 
     fun isValidSaplingAddr(addr: String): Boolean
 

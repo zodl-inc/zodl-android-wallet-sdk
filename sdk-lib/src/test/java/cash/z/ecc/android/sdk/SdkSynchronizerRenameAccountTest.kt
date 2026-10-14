@@ -21,10 +21,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -38,7 +38,6 @@ import org.mockito.Mockito.`when`
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertIs
 import kotlin.test.assertSame
 
 /**
@@ -67,23 +66,25 @@ class SdkSynchronizerRenameAccountTest {
             `when`(backend.getAccounts()).thenAnswer { stored.get() }
             `when`(backend.setAccountName(original.accountUuid, NEW_NAME)).thenAnswer {
                 stored.set(listOf(renamed))
-                true
             }
 
-            val reEmitted =
-                async {
-                    synchronizer.accountsFlow.first { accounts -> accounts.namesOrNull() == listOf(NEW_NAME) }
+            val emissions = Channel<List<Account>>(Channel.UNLIMITED)
+            val collector =
+                launch(Dispatchers.Default) {
+                    synchronizer.accountsFlow.filterNotNull().collect { emissions.send(it) }
                 }
-            synchronizer.accountsFlow.first { accounts -> accounts.namesOrNull() == listOf(original.accountName) }
+            try {
+                assertEquals(
+                    listOf(original.accountName),
+                    withTimeout(TIMEOUT_MS) { emissions.receive() }.namesOrNull()
+                )
 
-            withTimeout(TIMEOUT_MS) {
-                while (!reEmitted.isCompleted) {
-                    synchronizer.renameAccount(original.accountUuid, NEW_NAME)
-                    delay(POLL_MS)
-                }
+                synchronizer.renameAccount(original.accountUuid, NEW_NAME)
+
+                assertEquals(listOf(NEW_NAME), withTimeout(TIMEOUT_MS) { emissions.receive() }.namesOrNull())
+            } finally {
+                collector.cancel()
             }
-
-            assertEquals(listOf(NEW_NAME), reEmitted.await().namesOrNull())
         }
 
     @Test
@@ -98,19 +99,6 @@ class SdkSynchronizerRenameAccountTest {
                     synchronizer.renameAccount(account.accountUuid, NEW_NAME)
                 }
             assertSame(failure, thrown.cause)
-        }
-
-    @Test
-    fun treats_a_name_the_backend_did_not_store_as_a_failure() =
-        withSynchronizer("rename_not_stored") { synchronizer, backend ->
-            val account = AccountFixture.new()
-            `when`(backend.setAccountName(account.accountUuid, NEW_NAME)).thenReturn(false)
-
-            val thrown =
-                assertFailsWith<InitializeException.RenameAccountException> {
-                    synchronizer.renameAccount(account.accountUuid, NEW_NAME)
-                }
-            assertIs<IllegalStateException>(thrown.cause)
         }
 
     @Test
@@ -180,6 +168,5 @@ class SdkSynchronizerRenameAccountTest {
         private const val PORT = 9067
         private const val NEW_NAME = "Renamed account"
         private const val TIMEOUT_MS = 5_000L
-        private const val POLL_MS = 20L
     }
 }
