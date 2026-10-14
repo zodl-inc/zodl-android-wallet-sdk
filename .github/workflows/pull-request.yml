@@ -558,7 +558,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends libpulse0
       # EmulatorStartFailedException comes with an empty message: print the emulator version (which
-      # also fails on a missing shared library), KVM acceleration and memory, so a failing run
+      # also fails on a missing shared library), KVM acceleration, memory and disk, so a failing run
       # shows its cause.
       - name: Emulator diagnostics
         timeout-minutes: 2
@@ -567,6 +567,7 @@ jobs:
           ls -l /dev/kvm || echo "no /dev/kvm on this runner"
           "${ANDROID_SDK_ROOT}/emulator/emulator" -accel-check || true
           free -m
+          df -h /
       # pixel2Min is the Gradle Managed Device defined in
       # zcash-sdk.android-conventions.gradle.kts (Pixel 2, API ANDROID_MIN_SDK_VERSION).
       # Scoped to the same four modules the former emulator.wtf job covered;
@@ -583,8 +584,15 @@ jobs:
         # 120 minutes for cold-cache first run (cross-compiles vendored zodl-slipstream +
         # arti/hpke for 4 ABIs, then runs instrumented tests). Warm-cache runs complete in <45 min.
         timeout-minutes: 120
+        # The managed device is x86 (dev27_default_x86_Pixel_2): building the Rust backend for the
+        # other three ABIs only filled the disk, until the emulator could not create its userdata
+        # partition ("Not enough space to create userdata partition. Available: 6725.80 MB ...,
+        # need 7372.80 MB", 2026-10-14).
+        env:
+          RUST_ANDROID_ABIS: x86
         run: |
           make test-instrumented
+          df -h /
       # AGP drops the emulator's own output (EmulatorStartFailedException with an empty
       # message). On failure, boot the managed AVD it created by hand for 90 s, so the log shows
       # why the emulator does not start.
