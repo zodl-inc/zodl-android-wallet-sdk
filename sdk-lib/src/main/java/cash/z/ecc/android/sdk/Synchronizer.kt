@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.Synchronizer.Companion.new
 import cash.z.ecc.android.sdk.WalletInitMode.RestoreWallet
 import cash.z.ecc.android.sdk.block.processor.CompactBlockProcessor
 import cash.z.ecc.android.sdk.exception.InitializeException
+import cash.z.ecc.android.sdk.exception.LedgerException
 import cash.z.ecc.android.sdk.exception.PcztException
 import cash.z.ecc.android.sdk.exception.RustLayerException
 import cash.z.ecc.android.sdk.exception.TorInitializationErrorException
@@ -29,6 +30,9 @@ import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProv
 import cash.z.ecc.android.sdk.internal.transaction.EndpointTransactionSubmitter
 import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
 import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
+import cash.z.ecc.android.sdk.ledger.LedgerAccountBinding
+import cash.z.ecc.android.sdk.ledger.LedgerApduTransport
+import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
@@ -604,6 +608,55 @@ interface Synchronizer {
         pcztWithProofs: Pczt,
         pcztWithSignatures: Pczt,
     ): Flow<TransactionSubmitResult>
+
+    /**
+     * Signs [pczt] with a Ledger hardware wallet reached over [transport].
+     *
+     * [pczt] is the PCZT [createPcztFromProposal] returned for [accountUuid], unmodified. The
+     * returned PCZT carries the device's signatures; pass it as `pcztWithSignatures` to
+     * [createTransactionFromPczt], with the result of [addProofsToPczt] on the same [pczt] as
+     * `pcztWithProofs`. Proving and signing are independent and can run concurrently:
+     *
+     * ```
+     * proposal -> createPcztFromProposal -> pczt
+     *   |- addProofsToPczt(pczt)                                      -> pcztWithProofs
+     *   `- signPcztWithLedger(pczt, accountUuid, binding, transport)  -> pcztWithSignatures
+     * createTransactionFromPczt(pcztWithProofs, pcztWithSignatures) -> submit
+     * ```
+     *
+     * The ceremony first confirms that the connected device runs a Zcash app that can sign and
+     * that its identity is [binding]'s device; no transaction data is sent to any other device.
+     * The account's viewing keys, from the wallet, let the SDK refuse a transaction the device
+     * would refuse before the user is asked to review anything. Then the transaction is sent to
+     * the device, the user reviews it on the device's screen, and the device signs.
+     *
+     * **Privacy:** the device receives the whole transaction — recipients, amounts, memos and the
+     * randomness of every shielded action — and shows the user its outputs. Nothing leaves the
+     * phone for any other destination.
+     *
+     * A failed exchange closes [transport], and so does cancelling this call; a refusal by the
+     * device does not. On [LedgerException.isRestartable] failures (the user rejected the review, a
+     * transient device refusal) the ceremony can be run again with the same [pczt].
+     *
+     * @param pczt The PCZT to sign, as [createPcztFromProposal] returned it.
+     * @param accountUuid The account [pczt] spends from; an account imported from the device with
+     *        [cash.z.ecc.android.sdk.ledger.LedgerDevice.pairAccount] under
+     *        [cash.z.ecc.android.sdk.model.Account.LEDGER_KEY_SOURCE]. Any other account fails with
+     *        [LedgerException.InvalidInput] before any device I/O.
+     * @param binding The device and ZIP 32 account index the account was paired with.
+     * @param transport An open channel to the device.
+     * @param onProgress Called on the calling coroutine as the ceremony advances. Keep it cheap.
+     * @return The PCZT carrying the device's signatures.
+     * @throws LedgerException for every failure.
+     */
+    @Throws(LedgerException::class)
+    suspend fun signPcztWithLedger(
+        pczt: Pczt,
+        accountUuid: AccountUuid,
+        binding: LedgerAccountBinding,
+        transport: LedgerApduTransport,
+        onProgress: ((LedgerSigningProgress) -> Unit)? = null
+    ): Pczt
 
     // TODO [#1534]: Add RustLayerException.ValidateAddressException
     // TODO [#1534]: https://github.com/Electric-Coin-Company/zcash-android-wallet-sdk/issues/1534

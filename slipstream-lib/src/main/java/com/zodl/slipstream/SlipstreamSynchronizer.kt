@@ -34,6 +34,8 @@ import cash.z.ecc.android.sdk.internal.TypesafeBackendImpl
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
 import cash.z.ecc.android.sdk.internal.ext.getNoBackupFilesDirSuspend
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
+import cash.z.ecc.android.sdk.internal.ledger.LedgerPcztSigner
+import cash.z.ecc.android.sdk.internal.ledger.TypesafeLedgerBackendImpl
 import cash.z.ecc.android.sdk.internal.model.JniRewindResult
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
 import cash.z.ecc.android.sdk.internal.model.TorClient
@@ -42,6 +44,9 @@ import cash.z.ecc.android.sdk.internal.model.TorHttp
 import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.requireNotMainWalletAlias
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
+import cash.z.ecc.android.sdk.ledger.LedgerAccountBinding
+import cash.z.ecc.android.sdk.ledger.LedgerApduTransport
+import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
@@ -1207,6 +1212,25 @@ class SlipstreamSynchronizer internal constructor(
     ): Flow<TransactionSubmitResult> {
         awaitReady()
         return spendService.createTransactionFromPczt(pcztWithProofs, pcztWithSignatures)
+    }
+
+    override suspend fun signPcztWithLedger(
+        pczt: Pczt,
+        accountUuid: AccountUuid,
+        binding: LedgerAccountBinding,
+        transport: LedgerApduTransport,
+        onProgress: ((LedgerSigningProgress) -> Unit)?
+    ): Pczt {
+        awaitReady()
+        return LedgerPcztSigner(TypesafeLedgerBackendImpl.new()).sign(
+            dataDbFile = backend.dataDbFile,
+            network = network,
+            pczt = pczt,
+            accountUuid = accountUuid,
+            binding = binding,
+            transport = transport,
+            onProgress = onProgress
+        )
     }
 
     override suspend fun isValidShieldedAddr(address: String): Boolean =
