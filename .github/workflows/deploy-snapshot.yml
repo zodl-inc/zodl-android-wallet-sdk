@@ -94,6 +94,8 @@ jobs:
         timeout-minutes: 50
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       # Note that GitHub Actions appears to have issues with environment variables that contain periods,
       # so the GPG variables are done as command line arguments instead.

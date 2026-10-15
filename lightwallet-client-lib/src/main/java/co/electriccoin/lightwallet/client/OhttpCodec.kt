@@ -92,7 +92,8 @@ class OhttpVerifiedKey(
 
 /**
  * Opens the relay's answer to an OHTTP sealed request. Single use: [open] consumes the opener,
- * [close] frees it if not consumed. Both are idempotent and thread-safe.
+ * [close] frees it if not consumed. [close] is idempotent and thread-safe; a second [open] throws
+ * [IllegalStateException].
  *
  * The response secret never enters the JVM; implementations wrap an opaque native handle.
  */
@@ -127,7 +128,7 @@ class OhttpSealedRequest(
     val opener: OhttpResponseOpener,
 )
 
-/** What the relay's answer came to: [OhttpCodec.complete]. */
+/** What the relay's answer came to: [OhttpResponseOpener.open]. */
 sealed interface OhttpCompletion {
     /** The sealed answer opened: the backend's response. */
     class Response(
@@ -136,7 +137,7 @@ sealed interface OhttpCompletion {
 
     /**
      * The gateway does not know the key configuration: fetch it again, seal the request again and
-     * post once more. Never returned for [OhttpCodec.complete] with an `attempt` of 1.
+     * post once more. Never returned for [OhttpResponseOpener.open] with an `attempt` of 1.
      */
     data object RefetchKeyConfig : OhttpCompletion
 

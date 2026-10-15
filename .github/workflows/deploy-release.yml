@@ -73,7 +73,7 @@ jobs:
         run: |
           ./gradlew :backend-lib:assembleRelease
       # Fail if build-time relay override env vars are set, or if the built .so files
-      # do not contain the production relay URL (guards against accidental override).
+      # do not contain the default relay URLs (guards against accidental override).
       - name: Guard against relay URL override in release
         timeout-minutes: 5
         run: |
@@ -83,22 +83,29 @@ jobs:
             exit 1
           fi
 
-          PROD_RELAY_URL="https://ohttp-relay.example/"
-          SO_FILES=$(find backend-lib/build/intermediates -name "*.so" -type f)
+          # Only libzcashwalletsdk.so links the OHTTP client; other native libs are not expected
+          # to embed the relay URLs.
+          RELAY_URLS=(
+            "https://ohttp-relay.example/"
+            "https://ohttp-relay-testnet.example/"
+          )
+          SO_FILES=$(find backend-lib/build/intermediates -name "libzcashwalletsdk.so" -type f)
           if [ -z "$SO_FILES" ]; then
-            echo "ERROR: No .so files found after assembleRelease"
+            echo "ERROR: No libzcashwalletsdk.so found after assembleRelease"
             exit 1
           fi
 
           for so in $SO_FILES; do
-            if ! grep -a -F -q "$PROD_RELAY_URL" "$so"; then
-              echo "ERROR: $so does not contain the production relay URL: $PROD_RELAY_URL"
-              echo "This indicates a build-time override or incorrect relay URL embedding."
-              exit 1
-            fi
+            for url in "${RELAY_URLS[@]}"; do
+              if ! grep -a -F -q "$url" "$so"; then
+                echo "ERROR: $so does not contain the default relay URL: $url"
+                echo "This indicates a build-time override or incorrect relay URL embedding."
+                exit 1
+              fi
+            done
           done
 
-          echo "Relay URL guard passed: all .so files contain $PROD_RELAY_URL"
+          echo "Relay URL guard passed: all libzcashwalletsdk.so files contain the default mainnet and testnet relay URLs"
       # Note that GitHub Actions appears to have issues with environment variables that contain periods,
       # so the GPG variables are done as command line arguments instead.
       - name: Deploy to Maven Central
