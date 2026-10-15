@@ -64,6 +64,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   within its budget, the change is refused and nothing is written: `importAccountByUfvk` throws
   `InitializeException.ImportAccountCheckpointsNotReadyException` (retry later), `deleteAccount`
   and `rewindToHeight` throw `IllegalStateException`, and `rewindToNearestHeight` returns `null`.
+||||||| parent of 54d21e5f ([MOB-2287] Add NU5 through NU7 to ConsensusBranchId)
+- `ConsensusBranchId` now covers NU5, NU6, NU6.1, NU6.2, NU6.3 and NU7, so `fromId`, `fromHex` and `fromName`
+  no longer return null for branches after Canopy.
 
 ## [5.2.2] - 2026-10-20
 
