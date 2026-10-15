@@ -4,10 +4,8 @@ All notable changes to this library will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-
 ## [Unreleased]
 
-<<<<<<< HEAD
 ### Added
 - OHTTP (RFC 9458) transport for lightwalletd and selected external APIs. A `LightWalletEndpoint` whose
   host is one of the ZODL OHTTP gateways (`ohttp-gateway.example`, `ohttp-gateway-testnet.example`) is
@@ -108,8 +106,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory does not exist; the directory is now created (with a clear error if creation fails)
   before the temporary file is opened, on both the Tor and direct download paths.
 
-## [5.1.0] - 2026-10-07
-=======
 ## [5.2.1] - 2026-10-14
 
 ### Changed
@@ -119,7 +115,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`armeabi-v7a`, `x86`) keep the portable arithmetic.
 
 ## [5.2.0] - 2026-10-09
->>>>>>> origin/main
 
 ### Added
 - The `zcash-android-backend` artifact gains `LedgerBackend` and its JNI implementation
