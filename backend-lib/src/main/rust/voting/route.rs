@@ -18,7 +18,7 @@ const OHTTP_GATEWAY_HOST_TESTNET: &str = "ohttp-gateway-testnet.example";
 
 /// Exact vote and PIR hosts in gateway BACKENDS (mainnet).
 /// Gateway removed suffix routing and uses exact host matching only.
-/// MUST match `/work/infra/kubernetes/apps/ohttp-gateway/deployment.yaml` BACKENDS list.
+/// MUST match the gateway's BACKENDS (infra repo, kubernetes/apps/ohttp-gateway/deployment.yaml).
 const OHTTP_VOTE_HOSTS: &[&str] = &[
     // Vote servers
     "vote.zodl.com",
@@ -398,8 +398,8 @@ mod tests {
 
     #[test]
     fn ohttp_vote_hosts_matches_gateway_backends() {
-        // This test verifies OHTTP_VOTE_HOSTS matches the gateway BACKENDS list
-        // from /work/infra/kubernetes/apps/ohttp-gateway/deployment.yaml.
+        // This test verifies OHTTP_VOTE_HOSTS matches the gateway's BACKENDS
+        // (infra repo, kubernetes/apps/ohttp-gateway/deployment.yaml).
         // Source of truth: BACKENDS env var in mainnet and testnet gateway pods.
         //
         // Expected: 12 vote servers + 3 PIR endpoints (as of 2026-10-02).
