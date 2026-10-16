@@ -386,6 +386,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
                                 currentListener.onClose(status, trailers)
                             } finally {
                                 activeCalls.decrementAndGet()
+                                callRegistry.remove(this@OhttpClientCall)
                             }
                         }
                 } else {
