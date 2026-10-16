@@ -3,7 +3,6 @@ package co.electriccoin.lightwallet.client
 import android.util.Log
 import co.electriccoin.lightwallet.client.internal.Constants
 import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
-import co.electriccoin.lightwallet.client.internal.OHTTP_PROXY_ALLOWED_SUFFIXES
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.PROXY_GATEWAY_HOST
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
@@ -77,8 +76,8 @@ class OhttpHttpClient private constructor(
 
     /**
      * Returns true if [url] can be routed through the OHTTP gateway: either the host has a static
-     * proxy mapping (near.zodl.com, vote.zodl.com) or it matches an allowlisted
-     * suffix (.valargroup.org, .valargroup.dev, chaindefuser.com).
+     * proxy mapping (near.zodl.com, vote.zodl.com) or it is one of the hosts the gateway proxies
+     * (exact match, the gateway's BACKENDS).
      */
     fun canHandle(url: String): Boolean {
         val host = runCatching { URI.create(url).host }.getOrNull()
@@ -90,7 +89,7 @@ class OhttpHttpClient private constructor(
         val allowlisted = isOhttpProxyAllowedHost(host)
         Log.d(
             Constants.LOG_TAG,
-            "OHTTP canHandle host=$host mapped=$mapped allowlisted=$allowlisted suffixes=$OHTTP_PROXY_ALLOWED_SUFFIXES",
+            "OHTTP canHandle host=$host mapped=$mapped allowlisted=$allowlisted",
         )
         return mapped || allowlisted
     }
@@ -98,7 +97,7 @@ class OhttpHttpClient private constructor(
     suspend fun execute(request: Request): Response {
         val uri = URI.create(request.url)
         val originalHost = uri.host ?: error("No host in URL: ${request.url}")
-        // Gateway v1.4.5+ supports direct proxying for allowlisted suffixes (the inner request's
+        // The gateway proxies its allowlisted hosts directly (the inner request's
         // :authority is NOT rewritten). Static proxy mappings (near.zodl.com, vote.zodl.com)
         // still get rewritten for backward compatibility.
         val proxyHost = proxyGatewayHostFor(originalHost)

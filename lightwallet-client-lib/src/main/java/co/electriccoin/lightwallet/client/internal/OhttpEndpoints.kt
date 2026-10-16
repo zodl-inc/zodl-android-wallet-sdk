@@ -45,11 +45,34 @@ internal object OhttpEndpoints {
 // directly via HTTPS (Tor OFF) or through the SDK's Tor client (Tor ON); no OHTTP proxying.
 
 /**
- * Allowlisted host suffixes for direct OHTTP proxying (gateway v1.4.5+).
- * Hosts matching these suffixes are sent to the gateway with their real `:authority`
- * (no hostname rewrite), and the gateway proxies them to `https://<authority>` directly.
+ * The hosts the gateway proxies (exact match only, as the gateway does).
+ * Requests to these hosts are sent to the gateway with their real `:authority`
+ * (no hostname rewrite), and the gateway proxies them to its backend for that host.
+ * MUST match the gateway's BACKENDS (infra repo, kubernetes/apps/ohttp-gateway/deployment.yaml),
+ * like `OHTTP_VOTE_HOSTS` in `backend-lib/src/main/rust/voting/route.rs`.
  */
-internal val OHTTP_PROXY_ALLOWED_SUFFIXES = listOf(".valargroup.org", ".valargroup.dev", "chaindefuser.com")
+internal val OHTTP_PROXY_ALLOWED_HOSTS =
+    setOf(
+        "cmc.zodl.com",
+        "near.zodl.com",
+        "vote.zodl.com",
+        "prod.vote-chain-primary.valargroup.org",
+        "voting.valargroup.dev",
+        "ru.zcash.space",
+        "147-182-192-212.sslip.io",
+        "134-209-215-69.sslip.io",
+        "mnval01.zcash.legends.sh",
+        "zvote-1.stardust.rest",
+        "zvote.zodl.com",
+        "zvote.keplr.app",
+        "zvote.zfnd.org",
+        "v.ombie.cash",
+        "lb-pir-primary.valargroup.org",
+        "lb-pir-backup.valargroup.org",
+        "zpir-1.stardust.rest",
+        "zelay.example",
+        "raw.githubusercontent.com",
+    )
 
 /**
  * Maps a real external-service hostname to the zodl OHTTP proxy hostname.
@@ -67,20 +90,8 @@ internal fun proxyGatewayHostFor(originalHost: String): String? =
         else -> null
     }
 
-/**
- * Returns true if [host] matches one of [OHTTP_PROXY_ALLOWED_SUFFIXES].
- * Match rule: a suffix starting with `.` matches `x.suffix`; a bare domain matches itself or `*.domain`.
- */
-internal fun isOhttpProxyAllowedHost(host: String): Boolean {
-    val lowerHost = host.lowercase()
-    return OHTTP_PROXY_ALLOWED_SUFFIXES.any { suffix ->
-        val lowerSuffix = suffix.lowercase()
-        when {
-            lowerSuffix.startsWith(".") -> lowerHost.endsWith(lowerSuffix) || lowerHost == lowerSuffix.drop(1)
-            else -> lowerHost == lowerSuffix || lowerHost.endsWith(".$lowerSuffix")
-        }
-    }
-}
+/** Returns true if [host] is one of [OHTTP_PROXY_ALLOWED_HOSTS] (case-insensitive, exact match). */
+internal fun isOhttpProxyAllowedHost(host: String): Boolean = OHTTP_PROXY_ALLOWED_HOSTS.contains(host.lowercase())
 
 /**
  * The gateway host whose signed key configuration the proxy requests are sealed to: the mainnet

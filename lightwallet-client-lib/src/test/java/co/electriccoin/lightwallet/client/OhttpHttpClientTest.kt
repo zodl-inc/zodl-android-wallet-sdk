@@ -86,12 +86,12 @@ class OhttpHttpClientTest {
     }
 
     @Test
-    fun `canHandle returns true for allowlisted suffixes`() {
+    fun `canHandle returns true for the hosts the gateway proxies`() {
         val client = client()
-        assertTrue(client.canHandle("https://voting-prod.valargroup.org/shielded-vote/v1/rounds"))
-        assertTrue(client.canHandle("https://voting-prod-2.valargroup.org/shielded-vote/v1/rounds/active"))
-        assertTrue(client.canHandle("https://api.valargroup.dev/config"))
-        assertTrue(client.canHandle("https://subdomain.chaindefuser.com/path"))
+        assertTrue(client.canHandle("https://prod.vote-chain-primary.valargroup.org/shielded-vote/v1/rounds"))
+        assertTrue(client.canHandle("https://lb-pir-primary.valargroup.org/root"))
+        assertTrue(client.canHandle("https://zvote.zfnd.org/shielded-vote/v1/rounds/active"))
+        assertTrue(client.canHandle("https://raw.githubusercontent.com/valargroup/token-holder-voting-config/main/config.json"))
     }
 
     @Test
@@ -104,30 +104,29 @@ class OhttpHttpClientTest {
     }
 
     @Test
-    fun `isOhttpProxyAllowedHost matches dot-prefixed suffixes correctly`() {
-        assertTrue(isOhttpProxyAllowedHost("voting-prod.valargroup.org"))
-        assertTrue(isOhttpProxyAllowedHost("api.valargroup.dev"))
-        assertTrue(isOhttpProxyAllowedHost("valargroup.org"))
-        assertTrue(isOhttpProxyAllowedHost("valargroup.dev"))
-        assertFalse(isOhttpProxyAllowedHost("valargroup.com"))
-        assertFalse(isOhttpProxyAllowedHost("evil-valargroup.org"))
-        assertFalse(isOhttpProxyAllowedHost("evilorg"))
+    fun `canHandle returns false for hosts the gateway does not proxy under an allowlisted domain`() {
+        val client = client()
+        assertFalse(client.canHandle("https://voting-prod.valargroup.org/shielded-vote/v1/rounds"))
+        assertFalse(client.canHandle("https://api.valargroup.dev/config"))
+        assertFalse(client.canHandle("https://subdomain.chaindefuser.com/path"))
     }
 
     @Test
-    fun `isOhttpProxyAllowedHost matches bare domain suffixes correctly`() {
-        assertTrue(isOhttpProxyAllowedHost("chaindefuser.com"))
-        assertTrue(isOhttpProxyAllowedHost("subdomain.chaindefuser.com"))
-        assertTrue(isOhttpProxyAllowedHost("a.b.chaindefuser.com"))
-        assertFalse(isOhttpProxyAllowedHost("chaindefuser.net"))
-        assertFalse(isOhttpProxyAllowedHost("notchaindefuser.com"))
+    fun `isOhttpProxyAllowedHost matches exact hosts only`() {
+        assertTrue(isOhttpProxyAllowedHost("prod.vote-chain-primary.valargroup.org"))
+        assertTrue(isOhttpProxyAllowedHost("voting.valargroup.dev"))
+        assertTrue(isOhttpProxyAllowedHost("near.zodl.com"))
+        assertFalse(isOhttpProxyAllowedHost("valargroup.org"))
+        assertFalse(isOhttpProxyAllowedHost("valargroup.dev"))
+        assertFalse(isOhttpProxyAllowedHost("chaindefuser.com"))
+        assertFalse(isOhttpProxyAllowedHost("x.prod.vote-chain-primary.valargroup.org"))
+        assertFalse(isOhttpProxyAllowedHost("evil-voting.valargroup.dev"))
     }
 
     @Test
     fun `isOhttpProxyAllowedHost is case-insensitive`() {
-        assertTrue(isOhttpProxyAllowedHost("VOTING-PROD.VALARGROUP.ORG"))
-        assertTrue(isOhttpProxyAllowedHost("ChainDefUser.COM"))
-        assertTrue(isOhttpProxyAllowedHost("API.ValarGroup.Dev"))
+        assertTrue(isOhttpProxyAllowedHost("PROD.VOTE-CHAIN-PRIMARY.VALARGROUP.ORG"))
+        assertTrue(isOhttpProxyAllowedHost("Voting.ValarGroup.Dev"))
     }
 
     @Test
