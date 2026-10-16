@@ -73,6 +73,8 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Test
 import org.mockito.ArgumentCaptor
+import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.Mockito.after
 import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.inOrder
@@ -574,6 +576,74 @@ class SlipstreamSynchronizerLifecycleTest {
 
             assertTrue(thrown.cause is SlipstreamNotReadyException)
             runBlocking<Unit> { verify(backend, never()).setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME) }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * Unlike [SlipstreamSynchronizer.deleteAccount], which stops the engine, restarts it and
+     * notifies it of a transaction change, a rename touches only the name, which the engine never
+     * reads, so the engine is left as it was.
+     */
+    @Test
+    fun rename_account_leaves_the_engine_running() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+
+        runBlocking { synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME) }
+
+        runBlocking {
+            verify(backend).setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)
+            verify(engine, never()).stop()
+            verify(engine, never()).start(any(), anyLong())
+            verify(engine, never()).notifyTxChange()
+        }
+    }
+
+    @Test
+    fun rename_account_propagates_cancellation_unwrapped() {
+        val backend = mock(Backend::class.java)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        runBlocking {
+            `when`(backend.setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME))
+                .thenThrow(CancellationException("cancelled"))
+        }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        assertFailsWith<CancellationException> {
+            runBlocking { synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME) }
+        }
+
+        runBlocking<Unit> { verify(backend, never()).getAccounts() }
+    }
+
+    /**
+     * A wallet database that never opens - here one belonging to another seed - fails preparation
+     * before `DbReady`, so the read-only overlap check fails with
+     * [SlipstreamNotReadyException] and never reaches the backend. The seed failure sits further down
+     * the cause chain, under a second [SlipstreamNotReadyException].
+     */
+    @Test
+    fun find_account_sharing_key_components_before_the_db_is_ready_fails_with_not_ready() {
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        runBlocking { `when`(backend.initDataDb(null)).thenReturn(SEED_NOT_RELEVANT_CODE) }
+        val synchronizer = buildSynchronizer(backend = backend, key = key, prepareInputs = prepareInputs())
+        try {
+            val thrown =
+                assertFailsWith<SlipstreamNotReadyException> {
+                    runBlocking {
+                        withTimeout(TIMEOUT_MS) {
+                            synchronizer.findAccountSharingKeyComponents(UnifiedFullViewingKey(UFVK))
+                        }
+                    }
+                }
+
+            assertCausedBySeedNotRelevant(thrown)
+            runBlocking<Unit> { verify(backend, never()).findAccountKeyOverlap(UFVK) }
         } finally {
             InstanceGuard.release(key)
         }
@@ -1184,7 +1254,7 @@ class SlipstreamSynchronizerLifecycleTest {
             assertTrue(recorded.get() is InitializeException.SeedNotRelevant)
 
             val thrown = assertFailsWith<SlipstreamNotReadyException> { runBlocking { synchronizer.getAccounts() } }
-            assertTrue(thrown.cause is InitializeException.SeedNotRelevant)
+            assertCausedBySeedNotRelevant(thrown)
         } finally {
             InstanceGuard.release(key)
         }
@@ -2494,6 +2564,12 @@ class SlipstreamSynchronizerLifecycleTest {
                 while (!condition()) delay(POLL_MS)
             }
         }
+    }
+
+    /** Asserts [thrown] or one of its causes is [InitializeException.SeedNotRelevant]. */
+    private fun assertCausedBySeedNotRelevant(thrown: Throwable) {
+        val chain = generateSequence(thrown) { it.cause }.toList()
+        assertTrue(chain.any { it is InitializeException.SeedNotRelevant }, "$chain")
     }
 
     /**

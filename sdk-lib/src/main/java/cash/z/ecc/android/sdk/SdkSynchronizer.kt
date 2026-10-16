@@ -848,17 +848,18 @@ class SdkSynchronizer private constructor(
             refreshAccountsBus.emit(Unit)
         }
 
+    @Suppress("TooGenericExceptionCaught")
     override suspend fun renameAccount(
         accountUuid: AccountUuid,
         name: String
     ) {
-        runCatching {
+        try {
             backend.setAccountName(accountUuid, name)
-        }.onFailure {
-            Twig.error(it) { "Rename account failed." }
-        }.getOrElse { cause ->
-            if (cause is CancellationException) throw cause
-            throw InitializeException.RenameAccountException(cause)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Twig.error(e) { "Rename account failed." }
+            throw InitializeException.RenameAccountException(e)
         }
         refreshAccountsBus.emit(Unit)
     }
