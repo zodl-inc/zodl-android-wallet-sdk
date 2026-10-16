@@ -76,7 +76,9 @@ internal object SaplingParams {
         torHttpClientProvider: (suspend () -> HttpClient)? = null
     ): SaplingParamPaths =
         withContext(Dispatchers.IO) {
-            destinationDir.mkdirs()
+            if (!destinationDir.exists() && !destinationDir.mkdirs()) {
+                throw IOException("Failed to create directory ${destinationDir.path}")
+            }
             val spendFile = File(destinationDir, SPEND_FILE_NAME)
             val outputFile = File(destinationDir, OUTPUT_FILE_NAME)
             ensureFile(spendFile, SPEND_SHA256, SPEND_MAX_SIZE_BYTES, torHttpClientProvider)

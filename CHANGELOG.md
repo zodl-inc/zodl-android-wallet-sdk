@@ -48,7 +48,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Gateways enforce freshness since 2026-10-11, so older builds cannot use OHTTP. A freshness refusal (inner
   400 with `ohttp-freshness: rejected`) is retried once with a fresh encapsulation. Dependency pins: see
   backend-lib/Cargo.toml.
-- **Chunked OHTTP.** OHTTP transport now uses chunked OHTTP (draft-ietf-ohai-chunked-ohttp-08) instead of
+- **Breaking: Chunked OHTTP.** OHTTP transport now uses chunked OHTTP (draft-ietf-ohai-chunked-ohttp-08) instead of
   RFC 9458 single-shot encapsulation. Content types changed from `message/ohttp-req` / `message/ohttp-res`
   to `message/ohttp-chunked-req` / `message/ohttp-chunked-res`. The gateway API is not backward compatible;
   this update is synchronized with the gateway deployment. Dependency pins: see backend-lib/Cargo.toml.
@@ -100,7 +100,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Key Configuration responses over Tor are now bounded to 64 KiB while reading the stream, not
   after the full body has crossed JNI. The native `httpGet`/`httpPost` functions gained a
   `maxResponseBytes` parameter; OHTTP key config fetches use 64 KiB, sealed relay responses use
-  256 MiB + 64 KiB, and Sapling params downloads use 256 MiB + 64 KiB. `DirectOhttpSender.readFully`
+  256 MiB + 64 KiB, and Sapling params downloads use 256 MiB + 64 KiB. `DirectOhttpSender.readBounded`
   now reads at most `limit + 1` bytes instead of overshooting by up to one buffer (16 KiB).
 - Sapling parameter downloads no longer fail with `FileNotFoundException` when the destination
   directory does not exist; the directory is now created (with a clear error if creation fails)
