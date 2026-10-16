@@ -91,7 +91,9 @@ class OhttpHttpClientTest {
         assertTrue(client.canHandle("https://prod.vote-chain-primary.valargroup.org/shielded-vote/v1/rounds"))
         assertTrue(client.canHandle("https://lb-pir-primary.valargroup.org/root"))
         assertTrue(client.canHandle("https://zvote.zfnd.org/shielded-vote/v1/rounds/active"))
-        assertTrue(client.canHandle("https://raw.githubusercontent.com/valargroup/token-holder-voting-config/main/config.json"))
+        assertTrue(
+            client.canHandle("https://raw.githubusercontent.com/valargroup/token-holder-voting-config/main/config.json")
+        )
     }
 
     @Test
