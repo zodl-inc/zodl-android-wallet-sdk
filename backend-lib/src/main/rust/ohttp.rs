@@ -9,9 +9,9 @@
 //!
 //! - `verifyKeyConfig`: the signed envelope fetched from the relay, checked and reduced to the
 //!   33 public bytes of the gateway key (`KeyConfig::to_bytes`).
-//! - `encapsulate`: a request sealed to that key. The `ResponseOpener` (which holds the secret
-//!   that opens the answer) is boxed and only an opaque `jlong` handle leaves Rust, so the secret
-//!   is never copied into the JVM heap, where it could not be zeroized.
+//! - `encapsulate`: a request sealed to that key. The `ChunkedResponseOpener` (which holds the
+//!   secret that opens the answer) is boxed and only an opaque `jlong` handle leaves Rust, so the
+//!   secret is never copied into the JVM heap, where it could not be zeroized.
 //! - `complete`: the relay's answer, classified and opened. It takes the handle **by value**
 //!   (it reclaims the `Box` before anything else can fail), so the single-use rule of the core
 //!   holds across the boundary. `openerFree` is the abandon path (the post itself failed).
