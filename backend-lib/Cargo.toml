@@ -114,8 +114,8 @@ serde_json = "1"
 # features the networked `Client` (reqwest, tokio) is not compiled: the Kotlin transport does
 # the I/O. The JNI surface is `src/main/rust/ohttp.rs`. The repository is private (CI's App
 # token must include `ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
-# it only to a commit that is on the `main` of zodl-inc/ohttp. Now at 607d8507feaffe128b359088e0cf2e10d6d69ae0 (ohttp main: chunked-only).
-zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "607d8507feaffe128b359088e0cf2e10d6d69ae0", default-features = false }
+# it only to a commit that is on the `main` of zodl-inc/ohttp. Now at e0a87714b4ec577e049a9b37b76fb24c82b8602b (ohttp main: chunked-only).
+zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "e0a87714b4ec577e049a9b37b76fb24c82b8602b", default-features = false }
 tonic = "0.14"
 
 # Logging
@@ -286,7 +286,7 @@ bip0039 = "0.12"
 base64 = "0.22"
 ed25519-dalek = "2"
 sha2 = "0.10"
-ohttp-gateway = { git = "https://github.com/zodl-inc/ohttp.git", rev = "607d8507feaffe128b359088e0cf2e10d6d69ae0" }
+ohttp-gateway = { git = "https://github.com/zodl-inc/ohttp.git", rev = "e0a87714b4ec577e049a9b37b76fb24c82b8602b" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # Driving the gateway's streaming response encoder (`chunked_stream::encode_response_stream`,
 # whose upstream items are `anyhow::Result<UpFrame>` over `Bytes`) in the `ohttp.rs` tests,
@@ -310,8 +310,8 @@ crate-type = ["staticlib", "cdylib"]
 # instead of crates.io. Once slipstream-internal PR #16 merges, the rev below must move to
 # the resulting slipstream-internal `main` commit; after that, this entry can be removed once
 # a published zodl-slipstream version containing the OHTTP transport exists on crates.io.
-# Pins slipstream-internal PR #16 head, 0ef58fa1213a5255475b98f6ce57cea048128511 (streaming pump stops when the call is dropped; catch-up failures survive tip probes; an outer 429 waits Retry-After).
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "0ef58fa1213a5255475b98f6ce57cea048128511" }
+# Pins slipstream-internal PR #16 head, af0f5531b121cd91bb739df0a76e2c03d163b10b (streaming pump stops when the call is dropped; catch-up failures survive tip probes; an outer 429 waits Retry-After).
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "af0f5531b121cd91bb739df0a76e2c03d163b10b" }
 #
 # Shielded voting on the NU7 pre-release crates.
 #
