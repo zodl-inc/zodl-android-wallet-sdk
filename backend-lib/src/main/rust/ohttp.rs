@@ -642,7 +642,6 @@ mod tests {
             max_inflight_upstream: 256,
             max_inflight_per_backend: 64,
             max_block_range: 1000,
-            log_hmac_seed: None,
             allow_unauthenticated_relay: false,
             proxy_allow_suffixes: vec![],
             network: "testnet".to_string(),
