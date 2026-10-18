@@ -260,6 +260,25 @@ class OhttpHttpClientTest {
     }
 
     @Test
+    fun `only the default relays count as independent`() {
+        val defaults =
+            object : OhttpCodec by FakeOhttpCodec() {
+                override fun relayUrlFor(gatewayHost: String) =
+                    when (gatewayHost) {
+                        "ohttp-gateway.example" -> "https://ohttp-relay.example/"
+                        "ohttp-gateway-testnet.example" -> "https://ohttp-relay-testnet.example/"
+                        else -> null
+                    }
+            }
+
+        assertTrue(defaults.usesIndependentRelay("ohttp-gateway.example"))
+        assertTrue(defaults.usesIndependentRelay("ohttp-gateway-testnet.example"))
+        assertFalse(defaults.usesIndependentRelay("example.zodl.com"))
+        // FakeOhttpCodec maps the gateways to other relays, as a relay simulator build would.
+        assertFalse(FakeOhttpCodec().usesIndependentRelay("ohttp-gateway.example"))
+    }
+
+    @Test
     fun `DirectOhttpSender disables redirects`() {
         val sender = DirectOhttpSender()
         // This test verifies that DirectOhttpSender.open() sets instanceFollowRedirects=false.

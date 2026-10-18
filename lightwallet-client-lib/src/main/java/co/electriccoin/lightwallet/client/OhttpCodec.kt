@@ -53,6 +53,21 @@ interface OhttpCodec {
     ): OhttpSealedRequest
 }
 
+/**
+ * True when the relay this build uses for [gatewayHost] is the default, independently operated one
+ * (`relays.rs` of `zodl-ohttp-client`). A build-time override (`ZODL_OHTTP_RELAY_URL_*`, e.g. the relay
+ * simulator, which the gateway operator runs) is false: such a build should present its connection as
+ * not private, since one operator then sees both the client's address and the request.
+ */
+fun OhttpCodec.usesIndependentRelay(gatewayHost: String): Boolean =
+    relayUrlFor(gatewayHost)?.let { it in INDEPENDENT_RELAY_URLS } == true
+
+private val INDEPENDENT_RELAY_URLS =
+    setOf(
+        "https://ohttp-relay.example/",
+        "https://ohttp-relay-testnet.example/",
+    )
+
 /** The request of an [OhttpCodec.encapsulate]: what the gateway forwards to its backend. */
 class OhttpCodecRequest(
     val method: String,
