@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.internal.model.JniOhttpKey
 import cash.z.ecc.android.sdk.internal.model.JniOhttpOutcome
 import cash.z.ecc.android.sdk.internal.model.JniOhttpProfile
 import cash.z.ecc.android.sdk.internal.model.JniOhttpSealed
+import cash.z.ecc.android.sdk.internal.model.JniOhttpStreamEvents
 import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
 import co.electriccoin.lightwallet.client.OhttpCodec
 import co.electriccoin.lightwallet.client.OhttpCodecRequest
@@ -14,6 +15,9 @@ import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpInternalException
 import co.electriccoin.lightwallet.client.OhttpProfileInfo
 import co.electriccoin.lightwallet.client.OhttpRequestTooLargeException
+import co.electriccoin.lightwallet.client.OhttpResponseDecoder
+import co.electriccoin.lightwallet.client.OhttpResponseEvents
+import co.electriccoin.lightwallet.client.OhttpResponseHead
 import co.electriccoin.lightwallet.client.OhttpResponseOpener
 import co.electriccoin.lightwallet.client.OhttpSealedRequest
 import co.electriccoin.lightwallet.client.OhttpVerifiedKey
@@ -24,7 +28,8 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * The response opener (the secret that opens the gateway's answer) never enters the JVM: `encapsulate`
  * returns an [OhttpResponseOpener] wrapping an opaque native handle. The opener swaps the handle for 0
- * before using it, so each one is used once.
+ * before using it, so each one is used once; [OhttpResponseOpener.openStream] turns it into the native
+ * handle of a stream, which an [OhttpResponseDecoder] holds until it is closed.
  */
 @Suppress("TooManyFunctions")
 class RustOhttpTool private constructor() : OhttpCodec {
@@ -49,10 +54,47 @@ class RustOhttpTool private constructor() : OhttpCodec {
             return this@RustOhttpTool.complete(spent, outerStatus, contentType, body, attempt)
         }
 
+        override fun openStream(
+            outerStatus: Int,
+            contentType: String?,
+            attempt: Int,
+        ): OhttpResponseDecoder {
+            val spent = handle.getAndSet(0)
+            check(spent != 0L) { "The OHTTP response opener is already spent" }
+            return ResponseDecoderImpl(
+                translating { Companion.streamOpen(PROFILE_ANDROID, spent, outerStatus, contentType, attempt) }
+            )
+        }
+
         override fun close() {
             val abandoned = handle.getAndSet(0)
             if (abandoned != 0L) this@RustOhttpTool.freeOpener(abandoned)
         }
+    }
+
+    /**
+     * Implementation of [OhttpResponseDecoder] wrapping the native handle of a stream. Every call holds
+     * [lock], so the native state is never used by two threads or after it is freed.
+     */
+    private inner class ResponseDecoderImpl(
+        stream: Long,
+    ) : OhttpResponseDecoder {
+        private val lock = Any()
+        private var handle = stream
+
+        override fun push(bytes: ByteArray): OhttpResponseEvents =
+            synchronized(lock) { events(translating { Companion.streamPush(live(), bytes) }) }
+
+        override fun finish(): OhttpResponseEvents =
+            synchronized(lock) { events(translating { Companion.streamFinish(live()) }) }
+
+        override fun close() =
+            synchronized(lock) {
+                if (handle != 0L) Companion.streamFree(handle)
+                handle = 0
+            }
+
+        private fun live(): Long = handle.also { check(it != 0L) { "The OHTTP response stream is closed" } }
     }
 
     private val profile: OhttpProfileInfo by lazy {
@@ -165,6 +207,14 @@ class RustOhttpTool private constructor() : OhttpCodec {
             }
         }
 
+    private fun events(native: JniOhttpStreamEvents): OhttpResponseEvents =
+        OhttpResponseEvents(
+            head = native.headers?.let { OhttpResponseHead(native.status, unpackResponseFields(it)) },
+            body = native.body,
+            trailers = native.trailers?.let(::unpackResponseFields),
+            end = native.end,
+        )
+
     private fun unpackResponseFields(packed: ByteArray): List<Pair<String, String>> =
         try {
             OhttpFields.unpack(packed)
@@ -249,6 +299,27 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
         @JvmStatic
         private external fun openerFree(opener: Long)
+
+        @JvmStatic
+        private external fun streamOpen(
+            profile: Int,
+            opener: Long,
+            outerStatus: Int,
+            contentType: String?,
+            attempt: Int,
+        ): Long
+
+        @JvmStatic
+        private external fun streamPush(
+            stream: Long,
+            bytes: ByteArray,
+        ): JniOhttpStreamEvents
+
+        @JvmStatic
+        private external fun streamFinish(stream: Long): JniOhttpStreamEvents
+
+        @JvmStatic
+        private external fun streamFree(stream: Long)
 
         @JvmStatic
         private external fun signedConfigUrl(

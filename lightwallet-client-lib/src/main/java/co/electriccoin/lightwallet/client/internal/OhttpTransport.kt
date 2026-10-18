@@ -6,7 +6,11 @@ import co.electriccoin.lightwallet.client.OhttpCodecResponse
 import co.electriccoin.lightwallet.client.OhttpCompletion
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpProfileInfo
+import co.electriccoin.lightwallet.client.OhttpResponseDecoder
+import co.electriccoin.lightwallet.client.OhttpResponseEvents
+import co.electriccoin.lightwallet.client.OhttpResponseHead
 import co.electriccoin.lightwallet.client.OhttpSender
+import java.io.InputStream
 import java.net.SocketTimeoutException
 
 /**
@@ -20,7 +24,7 @@ import java.net.SocketTimeoutException
  * Pure JVM apart from [codec] (`HttpURLConnection` through the default [sender]) so that the whole
  * OHTTP path can be exercised from a plain unit test with a fake [codec].
  */
-@Suppress("LongParameterList") // Network config + test/debug overrides
+@Suppress("LongParameterList", "TooManyFunctions") // Network config + test/debug overrides
 internal class OhttpTransport(
     private val relayUrl: String,
     /** The gateway's host, which the codec maps to a network and so to the signing key it trusts. */
@@ -126,6 +130,112 @@ internal class OhttpTransport(
     }
 
     /**
+     * Performs one OHTTP call like [roundTrip], but opens the gateway's answer as it is read and hands
+     * the inner response to [sink] as it is decoded: the head, then the body bytes of every chunk as
+     * soon as that chunk is decrypted, then the trailers and the end. A freshness refusal is not handed
+     * to [sink] on the first attempt but sent again, as [roundTrip] does. The sealed bytes read are
+     * counted against the profile's cap while reading; a failure (cap, chunk that does not open,
+     * truncation, transport) is thrown after whatever [sink] already got.
+     */
+    suspend fun stream(
+        request: OhttpCodecRequest,
+        timeoutMs: Int,
+        sink: OhttpResponseSink,
+    ) {
+        val deadline = CallDeadline(timeoutMs)
+        if (streamOnce(request, deadline, sink, retryStale = true)) return
+        logger("OHTTP gateway refused the request as stale; sending it again")
+        streamOnce(request, deadline, sink, retryStale = false)
+    }
+
+    /** [roundTripOnce] for [stream]: false if the answer was a freshness refusal held back for a retry. */
+    private suspend fun streamOnce(
+        request: OhttpCodecRequest,
+        deadline: CallDeadline,
+        sink: OhttpResponseSink,
+        retryStale: Boolean,
+    ): Boolean {
+        val first = keyConfig(timeoutMs = deadline.remainingMs())
+        exchangeStreaming(first, request, deadline.remainingMs(), FIRST_ATTEMPT, sink, retryStale)
+            ?.let { return it }
+        logger("OHTTP gateway rejected the request; refreshing the key config and retrying")
+        val key = keyConfig(forceRefresh = true, timeoutMs = deadline.remainingMs())
+        return exchangeStreaming(key, request, deadline.remainingMs(), RETRY_ATTEMPT, sink, retryStale)
+            ?: throw OhttpException("OHTTP gateway rejected the request again after a key config refresh")
+    }
+
+    /**
+     * [exchange] for [stream]: null if the gateway asked for a new key configuration, else whether
+     * the answer went to [sink] (false: a freshness refusal held back). The opener and the decoder are
+     * spent or freed whichever way this ends.
+     */
+    @Suppress("LongParameterList")
+    private suspend fun exchangeStreaming(
+        key: ByteArray,
+        request: OhttpCodecRequest,
+        timeoutMs: Int,
+        attempt: Int,
+        sink: OhttpResponseSink,
+        retryStale: Boolean,
+    ): Boolean? {
+        RelayBackoff.check(relayUrl, codec = codec)
+        val sealed = codec.encapsulate(key, request)
+        return sealed.opener.use { opener ->
+            try {
+                sender.postStreaming(
+                    relayUrl,
+                    sealed.body,
+                    profile.postHeaders + USER_AGENT_HEADER + traceHeaders(true),
+                    timeoutMs,
+                ) { body ->
+                    opener.openStream(HTTP_OK, null, attempt).use { decoder ->
+                        pump(body, decoder, sink, retryStale)
+                    }
+                }
+            } catch (e: OhttpException) {
+                RelayBackoff.noteIfRateLimited(relayUrl, e, codec)
+                // Only the sender's refusal of a non-200 carries a status; the opener is unspent then.
+                val status = e.httpStatus ?: throw e
+                refusal(opener.open(status, null, ByteArray(0), attempt), e)
+            }
+        }
+    }
+
+    /**
+     * Reads [body] to its end through [decoder], handing [sink] what each read completes. Returns
+     * false, without handing it anything, if [retryStale] and the head is a freshness refusal.
+     */
+    private fun pump(
+        body: InputStream,
+        decoder: OhttpResponseDecoder,
+        sink: OhttpResponseSink,
+        retryStale: Boolean,
+    ): Boolean {
+        val buffer = ByteArray(READ_BUFFER_BYTES)
+        val cap = profile.maxSealedResponseBytes
+        var read = 0L
+        var events: OhttpResponseEvents
+        do {
+            val n = body.read(buffer)
+            events =
+                if (n < 0) {
+                    decoder.finish()
+                } else {
+                    read += n
+                    if (cap >= 0 && read > cap) throw OhttpException("Response exceeded the $cap byte limit")
+                    decoder.push(buffer.copyOf(n))
+                }
+            val head = events.head
+            if (head != null && retryStale && head.isFreshnessRefusal()) return false
+            head?.let { sink.onHead(it.status, it.headers) }
+            if (events.body.isNotEmpty()) sink.onData(events.body)
+            events.trailers?.let(sink::onTrailers)
+        } while (!events.end)
+        sink.onEnd()
+        return true
+    }
+
+    /**
      * Performs one OHTTP round trip. When the relay or gateway rejects the sealed request as
      * unreadable (outer HTTP 400 or 422, which handles gateway key rotation), the key configuration
      * is refetched and the request is **sealed afresh** and sent once more: the gateway answers a
@@ -180,7 +290,7 @@ internal class OhttpTransport(
     private fun refusal(
         completion: OhttpCompletion,
         refused: OhttpException,
-    ): OhttpCodecResponse? =
+    ): Nothing? =
         when (completion) {
             OhttpCompletion.RefetchKeyConfig -> null
             else -> throw refused
@@ -221,6 +331,9 @@ internal class OhttpTransport(
         private const val RETRY_ATTEMPT = 1
 
         private const val KEY_FETCH_TIMEOUT_MS = 15_000
+
+        // One read of the sealed body; the gateway's chunks are 16 KiB.
+        private const val READ_BUFFER_BYTES = 64 * 1024
 
         /** Fixed, so the relay never sees the platform's default (device model, OS build). */
         private val USER_AGENT_HEADER = listOf("User-Agent" to "ZODL-OHTTP/1.0")
@@ -299,12 +412,37 @@ internal object RelayBackoff {
  * Whether this inner response is the gateway's freshness refusal: status 400 with
  * `ohttp-freshness: rejected` in the header section.
  */
-internal fun OhttpCodecResponse.isFreshnessRefusal(): Boolean =
+internal fun OhttpCodecResponse.isFreshnessRefusal(): Boolean = isFreshnessRefusal(status, headers)
+
+internal fun OhttpResponseHead.isFreshnessRefusal(): Boolean = isFreshnessRefusal(status, headers)
+
+private fun isFreshnessRefusal(
+    status: Int,
+    headers: List<Pair<String, String>>,
+): Boolean =
     status == HTTP_BAD_REQUEST &&
         headers.any { (name, value) ->
             name.equals(FRESHNESS_HEADER, ignoreCase = true) &&
                 value.trim().equals(FRESHNESS_REJECTED, ignoreCase = true)
         }
+
+/**
+ * Receives an inner response as [OhttpTransport.stream] decodes it, in this order: [onHead] once,
+ * [onData] any number of times, [onTrailers] at most once, [onEnd] once the response is complete and
+ * authenticated. Called on the reading thread; a sink that throws stops the read.
+ */
+internal interface OhttpResponseSink {
+    fun onHead(
+        status: Int,
+        headers: List<Pair<String, String>>,
+    )
+
+    fun onData(bytes: ByteArray)
+
+    fun onTrailers(trailers: List<Pair<String, String>>)
+
+    fun onEnd()
+}
 
 private const val HTTP_BAD_REQUEST = 400
 private const val HTTP_TOO_MANY_REQUESTS = 429

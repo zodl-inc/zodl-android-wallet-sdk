@@ -11,8 +11,8 @@ package co.electriccoin.lightwallet.client
  *
  * **One sealing per attempt.** The gateway answers a repeated nonce with 409, so [encapsulate] must
  * be called again for every attempt, after a transport error and after a key refresh alike. The
- * [OhttpSealedRequest.opener] is single use: call its [OhttpResponseOpener.open] once or
- * [OhttpResponseOpener.close] it.
+ * [OhttpSealedRequest.opener] is single use: call its [OhttpResponseOpener.open] or
+ * [OhttpResponseOpener.openStream] once, or [OhttpResponseOpener.close] it.
  *
  * Failures are [KeyConfigVerificationFailedException] (the signed key configuration was rejected)
  * or [OhttpException] (anything else). Their messages never contain request or response content.
@@ -118,9 +118,9 @@ class OhttpVerifiedKey(
 )
 
 /**
- * Opens the relay's answer to an OHTTP sealed request. Single use: [open] consumes the opener,
- * [close] frees it if not consumed. [close] is idempotent and thread-safe; a second [open] throws
- * [IllegalStateException].
+ * Opens the relay's answer to an OHTTP sealed request. Single use: [open] or [openStream] consumes
+ * the opener, [close] frees it if not consumed. [close] is idempotent and thread-safe; a second
+ * [open] or [openStream] throws [IllegalStateException].
  *
  * The response secret never enters the JVM; implementations wrap an opaque native handle.
  */
@@ -142,9 +142,65 @@ interface OhttpResponseOpener : java.io.Closeable {
         attempt: Int,
     ): OhttpCompletion
 
-    /** Frees the opener if [open] has not consumed it. Idempotent. */
+    /**
+     * Starts opening the sealed answer of an outer [outerStatus] (a 200) as it is read: feed the body
+     * to [OhttpResponseDecoder.push] as it arrives. The opener is consumed whatever happens.
+     *
+     * @throws OhttpException if the outer response is not a sealed answer
+     * @throws IllegalStateException if the opener is already spent or freed
+     */
+    fun openStream(
+        outerStatus: Int,
+        contentType: String?,
+        attempt: Int,
+    ): OhttpResponseDecoder
+
+    /** Frees the opener if [open] or [openStream] has not consumed it. Idempotent. */
     override fun close()
 }
+
+/**
+ * Opens a sealed answer chunk by chunk, as [OhttpResponseOpener.openStream] started it: every chunk
+ * is decrypted as soon as it is complete and its Binary HTTP parsed as far as it goes. Calls are
+ * serialised; [close] (idempotent) frees the native state and must follow the last call.
+ */
+interface OhttpResponseDecoder : java.io.Closeable {
+    /**
+     * More of the sealed body, counted against the size cap before it is buffered.
+     *
+     * @throws OhttpInternalException if a chunk does not open or the message is malformed
+     * @throws OhttpException if the answer passes the size cap
+     */
+    fun push(bytes: ByteArray): OhttpResponseEvents
+
+    /**
+     * The sealed body has ended: opens the final chunk and checks the message is complete
+     * ([OhttpResponseEvents.end] is then true).
+     *
+     * @throws OhttpException if the body ended before the final chunk (truncated)
+     * @throws OhttpInternalException if the final chunk does not open or the message is incomplete
+     */
+    fun finish(): OhttpResponseEvents
+
+    override fun close()
+}
+
+/**
+ * What one [OhttpResponseDecoder.push] or [OhttpResponseDecoder.finish] completed, in this order: the
+ * [head] (once per response), body bytes, the [trailers] (empty when the response has none), the [end].
+ */
+class OhttpResponseEvents(
+    val head: OhttpResponseHead?,
+    val body: ByteArray,
+    val trailers: List<Pair<String, String>>?,
+    val end: Boolean,
+)
+
+/** The inner status and header section of a streamed response. */
+class OhttpResponseHead(
+    val status: Int,
+    val headers: List<Pair<String, String>>,
+)
 
 /**
  * A sealed request: [body] is what is posted to the relay; [opener] is what opens its answer.

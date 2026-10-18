@@ -2,6 +2,11 @@ package co.electriccoin.lightwallet.client.internal
 
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpSender
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -15,8 +20,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Default OHTTP sender: direct HttpURLConnection. Used when Tor is OFF.
  *
  * `timeoutMs` bounds each read and, through a watchdog that closes the connection, the whole
- * exchange: a relay that keeps dribbling bytes cannot hold a call open past it. Every request uses a
- * connection of its own (`Connection: close`).
+ * exchange: a relay that keeps dribbling bytes cannot hold a call open past it. Cancelling the caller
+ * closes the connection too. Every request uses a connection of its own (`Connection: close`).
  */
 class DirectOhttpSender : OhttpSender {
     override suspend fun post(
@@ -24,40 +29,27 @@ class DirectOhttpSender : OhttpSender {
         body: ByteArray,
         headers: List<Pair<String, String>>,
         timeoutMs: Int,
-    ): ByteArray {
-        val connection = open(url, timeoutMs)
-        try {
-            return withDeadline(connection, timeoutMs) {
-                connection.requestMethod = "POST"
-                connection.doOutput = true
-                connection.setFixedLengthStreamingMode(body.size)
-                headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
-                connection.outputStream.use { it.write(body) }
-
-                val status = connection.responseCode
-                if (status != HttpURLConnection.HTTP_OK) {
-                    throw OhttpException(
-                        "Relay/gateway returned HTTP $status${connection.errorDetail()}",
-                        status,
-                        retryAfterSeconds =
-                            OhttpSender.retryAfterSeconds(connection.getHeaderField(RETRY_AFTER_HEADER)),
-                    )
-                }
-                connection.inputStream.use {
-                    @Suppress("TooGenericExceptionCaught")
-                    try {
-                        it.readBounded(OhttpSender.MAX_SEALED_RESPONSE_BYTES, connection.contentLength)
-                    } catch (e: OutOfMemoryError) {
-                        // A hostile or huge response: convert to OhttpException so the transport
-                        // handles it as a failed request instead of crashing the app.
-                        throw OhttpException("Response too large: out of memory reading sealed response", cause = e)
-                    }
+    ): ByteArray =
+        postWith(url, body, headers, timeoutMs) { connection ->
+            connection.inputStream.use {
+                @Suppress("TooGenericExceptionCaught")
+                try {
+                    it.readBounded(OhttpSender.MAX_SEALED_RESPONSE_BYTES, connection.contentLength)
+                } catch (e: OutOfMemoryError) {
+                    // A hostile or huge response: convert to OhttpException so the transport
+                    // handles it as a failed request instead of crashing the app.
+                    throw OhttpException("Response too large: out of memory reading sealed response", cause = e)
                 }
             }
-        } finally {
-            connection.disconnect()
         }
-    }
+
+    override suspend fun <T> postStreaming(
+        url: String,
+        body: ByteArray,
+        headers: List<Pair<String, String>>,
+        timeoutMs: Int,
+        read: (InputStream) -> T,
+    ): T = postWith(url, body, headers, timeoutMs) { connection -> connection.inputStream.use(read) }
 
     override suspend fun get(
         url: String,
@@ -66,26 +58,63 @@ class DirectOhttpSender : OhttpSender {
     ): ByteArray {
         val connection = open(url, timeoutMs)
         try {
-            return withDeadline(connection, timeoutMs) {
-                connection.requestMethod = "GET"
-                headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
+            return closingOnCancel(connection) {
+                withDeadline(connection, timeoutMs) {
+                    connection.requestMethod = "GET"
+                    headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
 
-                val status = connection.responseCode
-                if (status != HttpURLConnection.HTTP_OK) {
-                    throw OhttpException(
-                        "GET request failed: HTTP $status${connection.errorDetail()}",
-                        status,
-                        retryAfterSeconds =
-                            OhttpSender.retryAfterSeconds(connection.getHeaderField(RETRY_AFTER_HEADER)),
-                    )
-                }
-                connection.inputStream.use {
-                    @Suppress("TooGenericExceptionCaught")
-                    try {
-                        it.readBounded(OhttpSender.MAX_KEY_CONFIG_BYTES, connection.contentLength)
-                    } catch (e: OutOfMemoryError) {
-                        throw OhttpException("Key config too large: out of memory", cause = e)
+                    val status = connection.responseCode
+                    if (status != HttpURLConnection.HTTP_OK) {
+                        throw OhttpException(
+                            "GET request failed: HTTP $status${connection.errorDetail()}",
+                            status,
+                            retryAfterSeconds =
+                                OhttpSender.retryAfterSeconds(connection.getHeaderField(RETRY_AFTER_HEADER)),
+                        )
                     }
+                    connection.inputStream.use {
+                        @Suppress("TooGenericExceptionCaught")
+                        try {
+                            it.readBounded(OhttpSender.MAX_KEY_CONFIG_BYTES, connection.contentLength)
+                        } catch (e: OutOfMemoryError) {
+                            throw OhttpException("Key config too large: out of memory", cause = e)
+                        }
+                    }
+                }
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /** The POST, a non-200 thrown as [OhttpException]; [read] gets the connection of a 200. */
+    private suspend fun <T> postWith(
+        url: String,
+        body: ByteArray,
+        headers: List<Pair<String, String>>,
+        timeoutMs: Int,
+        read: (HttpURLConnection) -> T,
+    ): T {
+        val connection = open(url, timeoutMs)
+        try {
+            return closingOnCancel(connection) {
+                withDeadline(connection, timeoutMs) {
+                    connection.requestMethod = "POST"
+                    connection.doOutput = true
+                    connection.setFixedLengthStreamingMode(body.size)
+                    headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
+                    connection.outputStream.use { it.write(body) }
+
+                    val status = connection.responseCode
+                    if (status != HttpURLConnection.HTTP_OK) {
+                        throw OhttpException(
+                            "Relay/gateway returned HTTP $status${connection.errorDetail()}",
+                            status,
+                            retryAfterSeconds =
+                                OhttpSender.retryAfterSeconds(connection.getHeaderField(RETRY_AFTER_HEADER)),
+                        )
+                    }
+                    read(connection)
                 }
             }
         } finally {
@@ -121,6 +150,30 @@ class DirectOhttpSender : OhttpSender {
             ?.take(ERROR_MESSAGE_MAX_LENGTH)
             ?.let { ": $it" }
             .orEmpty()
+
+    /**
+     * Runs [block] (blocking I/O on [connection]) so that cancelling the calling coroutine closes the
+     * connection under it: a blocked read then fails at once instead of holding the call open.
+     */
+    private suspend inline fun <T> closingOnCancel(
+        connection: HttpURLConnection,
+        crossinline block: () -> T,
+    ): T =
+        coroutineScope {
+            val closer =
+                launch(Dispatchers.IO, start = CoroutineStart.UNDISPATCHED) {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        connection.disconnect()
+                    }
+                }
+            try {
+                block()
+            } finally {
+                closer.cancel()
+            }
+        }
 
     /**
      * Runs [block] (all of the connection's I/O) within [timeoutMs]. When the deadline passes, the

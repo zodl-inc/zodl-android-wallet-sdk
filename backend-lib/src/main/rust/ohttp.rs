@@ -5,7 +5,8 @@
 //! relay tables; everything protocol-shaped (key selection, signed-envelope verification,
 //! Binary HTTP, HPKE, outer-status classification, size caps) is done here, by the core.
 //!
-//! Per request there are two native calls, plus one per key fetch:
+//! Per request there are two native calls (a streamed answer: one more per read), plus one per
+//! key fetch:
 //!
 //! - `verifyKeyConfig`: the signed envelope fetched from the relay, checked and reduced to the
 //!   33 public bytes of the gateway key (`KeyConfig::to_bytes`).
@@ -15,6 +16,11 @@
 //! - `complete`: the relay's answer, classified and opened. It takes the handle **by value**
 //!   (it reclaims the `Box` before anything else can fail), so the single-use rule of the core
 //!   holds across the boundary. `openerFree` is the abandon path (the post itself failed).
+//! - `streamOpen`, `streamPush`, `streamFinish`, `streamFree`: the same answer opened as it is
+//!   read (`ChunkedResponseDecoder`). `streamOpen` spends the opener like `complete` and returns
+//!   the handle of a stream; every chunk is opened as soon as it is complete and the head, body
+//!   bytes and trailers it carried come back at once, so a server-streaming call delivers its
+//!   first message long before the response ends.
 //!
 //! Every attempt must call `encapsulate` again: the gateway answers a repeated nonce with 409.
 //!
@@ -31,9 +37,10 @@ use jni::{
     sys::{JNI_FALSE, JNI_TRUE, jint, jlong, jobject, jstring},
 };
 use zodl_ohttp_client::{
-    BhttpRequest, ChunkedResponseOpener, ClientProfile, Error, Field, KEY_BYTES, KeyConfig,
-    OuterOutcome, OuterResponse, check_size, classify_outer_response, encapsulate_chunked_request,
-    pack_fields, signed_config_url, unpack_fields, verify_signed_config, verify_signed_config_with,
+    BhttpRequest, ChunkedResponseDecoder, ChunkedResponseOpener, ClientProfile, Error, Field,
+    KEY_BYTES, KeyConfig, OuterOutcome, OuterResponse, ResponseEvent, SizeGuard, check_size,
+    classify_outer_response, encapsulate_chunked_request, pack_fields, signed_config_url,
+    unpack_fields, verify_signed_config, verify_signed_config_with,
 };
 
 use crate::utils::{
@@ -48,6 +55,7 @@ const JNI_OHTTP_KEY: &str = "cash/z/ecc/android/sdk/internal/model/JniOhttpKey";
 const JNI_OHTTP_SEALED: &str = "cash/z/ecc/android/sdk/internal/model/JniOhttpSealed";
 const JNI_OHTTP_OUTCOME: &str = "cash/z/ecc/android/sdk/internal/model/JniOhttpOutcome";
 const JNI_OHTTP_PROFILE: &str = "cash/z/ecc/android/sdk/internal/model/JniOhttpProfile";
+const JNI_OHTTP_STREAM_EVENTS: &str = "cash/z/ecc/android/sdk/internal/model/JniOhttpStreamEvents";
 
 // What failed, as the `kind` of `JniOhttpException`. Mirrored by `RustOhttpTool.kt`.
 const KIND_OTHER: jint = 0;
@@ -273,19 +281,12 @@ fn complete(
             // policy's call (`OuterPolicy::ANDROID` does not require it), made above; here the
             // sealed body is opened, and one that does not open is an error.
             check_size(body.len(), profile.limits.max_sealed_response_bytes)?;
-            let response = opener.open_response(body)?;
-
-            // Convert headers from Vec<(String, String)> to Vec<(Vec<u8>, Vec<u8>)>
-            let headers_bytes: Vec<(Vec<u8>, Vec<u8>)> = response
-                .headers
-                .into_iter()
-                .map(|(name, value)| (name.into_bytes(), value.into_bytes()))
-                .collect();
+            let response = opener.open_response(body).map_err(not_opened)?;
 
             Outcome {
                 kind: OUTCOME_RESPONSE,
                 status: jint::from(response.status),
-                headers: pack_fields(&headers_bytes)?,
+                headers: packed(response.headers)?,
                 trailers: pack_fields(&[])?, // Trailers are already appended to headers
                 body: response.body,
                 detail: None,
@@ -301,6 +302,137 @@ fn complete(
             Outcome::without_response(OUTCOME_WRONG_MEDIA_TYPE, status.into(), Some(content_type))
         }
     })
+}
+
+/// The sealed answer of an outer 200, opened as it is read: the decoder and the running size
+/// of what has been read, against the profile's cap.
+struct ResponseStream {
+    decoder: ChunkedResponseDecoder,
+    guard: SizeGuard,
+}
+
+/// The events one `push` or `finish` produced, gathered for the JVM: the head (at most one per
+/// response), the body bytes, the trailer section and whether the response ended.
+#[derive(Debug, Default)]
+struct StreamEvents {
+    head: Option<(u16, Vec<u8>)>,
+    body: Vec<u8>,
+    trailers: Option<Vec<u8>>,
+    end: bool,
+}
+
+fn packed(fields: Vec<(String, String)>) -> Result<Vec<u8>, Failure> {
+    let fields: Vec<Field> = fields
+        .into_iter()
+        .map(|(name, value)| (name.into_bytes(), value.into_bytes()))
+        .collect();
+    Ok(pack_fields(&fields)?)
+}
+
+fn gather(events: Vec<ResponseEvent>) -> Result<StreamEvents, Failure> {
+    let mut gathered = StreamEvents::default();
+    for event in events {
+        match event {
+            ResponseEvent::Head { status, headers } => {
+                gathered.head = Some((status, packed(headers)?));
+            }
+            ResponseEvent::Data(data) => gathered.body.extend_from_slice(&data),
+            ResponseEvent::Trailers(trailers) => gathered.trailers = Some(packed(trailers)?),
+            ResponseEvent::End => gathered.end = true,
+        }
+    }
+    Ok(gathered)
+}
+
+/// Starts opening the relay's answer as it arrives. The outer response is classified first
+/// (`status`, `content_type`; the body is not read yet), and `opener` is spent whatever happens.
+fn open_stream(
+    profile: &ClientProfile,
+    opener: Option<ChunkedResponseOpener>,
+    status: jint,
+    content_type: Option<&str>,
+    attempt: jint,
+) -> Result<ResponseStream, Failure> {
+    let opener = opener.ok_or_else(|| Failure::argument("the response opener is already spent"))?;
+    let status = u16::try_from(status).map_err(|_| Failure::argument("not an HTTP status"))?;
+    let attempt =
+        u32::try_from(attempt).map_err(|_| Failure::argument("a negative attempt number"))?;
+    let outcome = classify_outer_response(
+        &profile.outer,
+        &OuterResponse {
+            status,
+            content_type,
+            body: &[],
+        },
+        attempt,
+    );
+    match outcome {
+        OuterOutcome::Sealed => Ok(ResponseStream {
+            decoder: opener.decoder(),
+            guard: profile.limits.response_guard(),
+        }),
+        OuterOutcome::WrongMediaType { .. } => Err(Failure {
+            kind: KIND_MEDIA_TYPE,
+            message: "the relay's answer is not a sealed response".to_string(),
+        }),
+        OuterOutcome::RefetchKeyConfig | OuterOutcome::Refused { .. } => Err(Failure {
+            kind: KIND_REFUSED,
+            message: "the relay refused the request".to_string(),
+        }),
+    }
+}
+
+impl ResponseStream {
+    /// More sealed bytes: counted against the cap before they are buffered, then opened as far
+    /// as they complete chunks.
+    fn push(&mut self, bytes: &[u8]) -> Result<StreamEvents, Failure> {
+        self.guard.push(bytes.len())?;
+        gather(self.decoder.push(bytes).map_err(not_opened)?)
+    }
+
+    /// The body ended: the final chunk is opened and the message must be complete.
+    fn finish(&mut self) -> Result<StreamEvents, Failure> {
+        gather(self.decoder.finish()?)
+    }
+}
+
+/// The decoder reports a non-final chunk whose AEAD tag does not verify as `Error::Seal`; like the
+/// final chunk's, that is an answer that does not open (gRPC `INTERNAL`), not a local failure.
+fn not_opened(error: Error) -> Error {
+    match error {
+        Error::Seal(_) => Error::Open,
+        other => other,
+    }
+}
+
+fn stream_handle(stream: ResponseStream) -> jlong {
+    Box::into_raw(Box::new(stream)).expose_provenance() as jlong
+}
+
+/// The stream behind `handle`, borrowed for one call.
+///
+/// # Safety
+///
+/// `handle` must be 0 or a handle returned by [`stream_handle`] that has not been freed, and no
+/// other call may use it at the same time. The Kotlin wrapper holds a lock around every call
+/// and swaps its handle for 0 when it frees it.
+unsafe fn borrow_stream<'a>(handle: jlong) -> Result<&'a mut ResponseStream, Failure> {
+    let ptr = ptr::with_exposed_provenance_mut::<ResponseStream>(handle as usize);
+    // SAFETY: by the contract above, `ptr` is null or a live `Box` used by this call alone.
+    unsafe { ptr.as_mut() }.ok_or_else(|| Failure::argument("the response stream is closed"))
+}
+
+/// Frees the stream behind `handle`; 0 is a no-op.
+///
+/// # Safety
+///
+/// As for [`borrow_stream`], and `handle` is not used again.
+unsafe fn free_stream(handle: jlong) {
+    let ptr = ptr::with_exposed_provenance_mut::<ResponseStream>(handle as usize);
+    if !ptr.is_null() {
+        // SAFETY: by the contract above, `ptr` came from `Box::into_raw` and is reclaimed once.
+        drop(unsafe { Box::from_raw(ptr) });
+    }
 }
 
 /// What the Kotlin transport needs to know about the preset.
@@ -504,6 +636,117 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_openerF
     let res = catch_unwind(&mut env, |_| {
         // SAFETY: the Kotlin wrapper passes each handle once (see `take_opener`).
         drop(unsafe { take_opener(opener) });
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+/// Starts opening an outer 200 as it is read; returns the handle of the stream, which
+/// `streamPush` and `streamFinish` use and `streamFree` frees. Spends `opener` whatever happens.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_streamOpen<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    profile: jint,
+    opener: jlong,
+    outer_status: jint,
+    content_type: JString<'local>,
+    attempt: jint,
+) -> jlong {
+    let res = catch_unwind(&mut env, |env| {
+        // SAFETY: the Kotlin wrapper passes each handle once (see `take_opener`).
+        let opener = unsafe { take_opener(opener) };
+        let profile = profile_by_id(profile).map_err(|f| raise(env, f))?;
+        let content_type = java_nullable_string_to_rust(env, &content_type)?;
+        let stream = open_stream(
+            &profile,
+            opener,
+            outer_status,
+            content_type.as_deref(),
+            attempt,
+        )
+        .map_err(|f| raise(env, f))?;
+        Ok(stream_handle(stream))
+    });
+    unwrap_exc_or(&mut env, res, 0)
+}
+
+fn stream_events_object(env: &mut JNIEnv, events: StreamEvents) -> anyhow::Result<jobject> {
+    let (status, headers): (jint, JObject) = match &events.head {
+        Some((status, headers)) => (
+            jint::from(*status),
+            env.byte_array_from_slice(headers)?.into(),
+        ),
+        None => (-1, JObject::null()),
+    };
+    let trailers: JObject = match &events.trailers {
+        Some(trailers) => env.byte_array_from_slice(trailers)?.into(),
+        None => JObject::null(),
+    };
+    let body = env.byte_array_from_slice(&events.body)?;
+    Ok(env
+        .new_object(
+            JNI_OHTTP_STREAM_EVENTS,
+            "(I[B[B[BZ)V",
+            &[
+                JValue::Int(status),
+                (&headers).into(),
+                (&body).into(),
+                (&trailers).into(),
+                jboolean_of(events.end),
+            ],
+        )?
+        .into_raw())
+}
+
+/// More of the sealed body: `JniOhttpStreamEvents(status, headers, body, trailers, end)` for
+/// what it completed (`status` -1 and `headers` null until the head has been read).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_streamPush<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    stream: jlong,
+    bytes: JByteArray<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let bytes = java_bytes_to_rust(env, &bytes)?;
+        // SAFETY: the Kotlin wrapper serialises the calls on a handle (see `borrow_stream`).
+        let events = unsafe { borrow_stream(stream) }
+            .and_then(|stream| stream.push(&bytes))
+            .map_err(|f| raise(env, f))?;
+        stream_events_object(env, events)
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// The sealed body ended: the events of the final chunk, `end` true, or the failure of an
+/// incomplete or unauthenticated response.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_streamFinish<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    stream: jlong,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        // SAFETY: the Kotlin wrapper serialises the calls on a handle (see `borrow_stream`).
+        let events = unsafe { borrow_stream(stream) }
+            .and_then(|stream| stream.finish())
+            .map_err(|f| raise(env, f))?;
+        stream_events_object(env, events)
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Frees a stream (finished, failed or abandoned). 0 is a no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_streamFree<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    stream: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        // SAFETY: the Kotlin wrapper frees each handle once, outside any other call on it.
+        unsafe { free_stream(stream) };
         Ok(())
     });
     unwrap_exc_or(&mut env, res, ())
@@ -1201,6 +1444,125 @@ mod tests {
         assert_eq!(failure.kind, KIND_ARGUMENT);
         assert!(unsafe { take_opener(0) }.is_none());
         drop(unsafe { take_opener(0) });
+    }
+
+    fn streamed_answer(body: &[u8]) -> (jlong, Vec<u8>) {
+        let request = BhttpRequest::new("GET", "cmc.zodl.com", "/v1/fiat/map");
+        let (sealed, handle) = encapsulate(&android(), &verified_key().key, &request).unwrap();
+        let (_, response_ctx) = gateway_opens(&sealed);
+        let answer = gateway_streams(
+            response_ctx,
+            200,
+            &[("content-type", "application/grpc")],
+            body,
+            16,
+        );
+        (handle, answer)
+    }
+
+    fn opened_stream(handle: jlong) -> ResponseStream {
+        open_stream(&android(), unsafe { take_opener(handle) }, 200, None, 0).unwrap()
+    }
+
+    #[test]
+    fn a_streamed_answer_yields_its_head_and_body_before_it_ends() {
+        let body: Vec<u8> = (0..200u8).collect();
+        let (handle, answer) = streamed_answer(&body);
+        let mut stream = opened_stream(handle);
+
+        let (early, late) = answer.split_at(answer.len() / 2);
+        let mut seen = StreamEvents::default();
+        for byte in early {
+            let events = stream.push(&[*byte]).unwrap();
+            assert!(!events.end);
+            if events.head.is_some() {
+                seen.head = events.head;
+            }
+            seen.body.extend(events.body);
+        }
+        let (status, headers) = seen.head.expect("the head comes out with the first chunks");
+        assert_eq!(status, 200);
+        assert_eq!(
+            unpack_fields(&headers).unwrap(),
+            vec![(b"content-type".to_vec(), b"application/grpc".to_vec())]
+        );
+        assert!(!seen.body.is_empty(), "body bytes come out before the end");
+        assert_eq!(seen.body, body[..seen.body.len()]);
+
+        let rest = stream.push(late).unwrap();
+        assert!(rest.head.is_none());
+        seen.body.extend(rest.body);
+        let last = stream.finish().unwrap();
+        assert!(last.end);
+        seen.body.extend(last.body);
+        assert_eq!(seen.body, body);
+    }
+
+    #[test]
+    fn a_streamed_answer_cut_before_its_final_chunk_is_truncated() {
+        let (handle, answer) = streamed_answer(&[7; 200]);
+        let mut stream = opened_stream(handle);
+        let events = stream.push(&answer[..answer.len() / 2]).unwrap();
+        assert!(events.head.is_some());
+        let failure = stream.finish().err().unwrap();
+        assert_eq!(failure.kind, KIND_OTHER);
+        assert_eq!(failure.message, Error::Truncated.to_string());
+    }
+
+    /// A non-final chunk that does not open is `KIND_OPEN` (gRPC `INTERNAL`) as the final one is,
+    /// streamed or whole.
+    #[test]
+    fn a_tampered_chunk_fails_as_soon_as_it_is_complete() {
+        let (handle, mut answer) = streamed_answer(&[7; 200]);
+        answer[20] ^= 1;
+        let mut stream = opened_stream(handle);
+        let failure = stream.push(&answer[..answer.len() / 2]).err().unwrap();
+        assert_eq!(failure.kind, KIND_OPEN);
+
+        let (handle, mut answer) = streamed_answer(&[7; 200]);
+        answer[20] ^= 1;
+        let failure = complete(
+            &android(),
+            unsafe { take_opener(handle) },
+            200,
+            None,
+            &answer,
+            0,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(failure.kind, KIND_OPEN);
+    }
+
+    #[test]
+    fn a_streamed_answer_over_the_cap_fails_before_it_is_buffered() {
+        let (handle, answer) = streamed_answer(&[7; 200]);
+        let mut stream = opened_stream(handle);
+        stream.guard = SizeGuard::new(Some(64));
+        stream.push(&answer[..64]).unwrap();
+        let failure = stream.push(&answer[64..65]).err().unwrap();
+        assert_eq!(failure.kind, KIND_TOO_LARGE);
+    }
+
+    #[test]
+    fn opening_a_stream_spends_the_opener_and_needs_a_live_one() {
+        let failure = open_stream(&android(), None, 200, None, 0).err().unwrap();
+        assert_eq!(failure.kind, KIND_ARGUMENT);
+        let failure = open_stream(
+            &android(),
+            unsafe { take_opener(sealed_handle()) },
+            503,
+            None,
+            0,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(failure.kind, KIND_REFUSED);
+        assert!(unsafe { borrow_stream(0) }.is_err());
+        unsafe { free_stream(0) };
+        let handle = stream_handle(opened_stream(sealed_handle()));
+        assert!(unsafe { borrow_stream(handle) }.is_ok());
+        unsafe { free_stream(handle) };
     }
 
     #[test]

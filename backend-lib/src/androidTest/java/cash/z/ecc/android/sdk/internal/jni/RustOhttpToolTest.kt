@@ -4,6 +4,7 @@ import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
 import co.electriccoin.lightwallet.client.OhttpCodecRequest
 import co.electriccoin.lightwallet.client.OhttpCompletion
 import co.electriccoin.lightwallet.client.OhttpException
+import co.electriccoin.lightwallet.client.OhttpInternalException
 import co.electriccoin.lightwallet.client.OhttpSender
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -172,5 +173,39 @@ class RustOhttpToolTest {
             // The key id and suite header is the only plain part.
             assertContentEquals(byteArrayOf(1, 0, 0x20, 0, 1, 0, 1), sealed.body.copyOf(7))
             sealed.opener.close()
+        }
+
+    @Test
+    fun a_streamed_answer_crosses_the_boundary_read_by_read_and_its_handle_is_freed_once() =
+        runTest {
+            val codec = RustOhttpTool.new()
+            val opener = codec.encapsulate(key, request).opener
+            val decoder = opener.openStream(200, null, 0)
+
+            // Less than the response nonce: nothing is complete yet.
+            val events = decoder.push(ByteArray(10))
+            assertEquals(null, events.head)
+            assertEquals(0, events.body.size)
+            assertEquals(null, events.trailers)
+            assertFalse(events.end)
+            // The rest of the nonce and a zero length: the final chunk, which does not open.
+            decoder.push(ByteArray(40))
+            val failure = assertFailsWith<OhttpException> { decoder.finish() }
+            assertIs<OhttpInternalException>(failure)
+            decoder.close()
+            decoder.close()
+            assertFailsWith<IllegalStateException> { decoder.push(ByteArray(1)) }
+            assertFailsWith<IllegalStateException> { opener.openStream(200, null, 0) }
+        }
+
+    @Test
+    fun a_streamed_answer_that_ends_before_its_final_chunk_is_truncated_not_internal() =
+        runTest {
+            val codec = RustOhttpTool.new()
+            val decoder = codec.encapsulate(key, request).opener.openStream(200, null, 0)
+
+            val failure = assertFailsWith<OhttpException> { decoder.finish() }
+            assertFalse(failure is OhttpInternalException)
+            decoder.close()
         }
 }

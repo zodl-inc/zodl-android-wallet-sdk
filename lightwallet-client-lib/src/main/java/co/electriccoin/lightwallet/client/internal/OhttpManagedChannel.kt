@@ -1,7 +1,6 @@
 package co.electriccoin.lightwallet.client.internal
 
 import co.electriccoin.lightwallet.client.OhttpCodecRequest
-import co.electriccoin.lightwallet.client.OhttpCodecResponse
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpInternalException
 import co.electriccoin.lightwallet.client.OhttpRequestTooLargeException
@@ -12,6 +11,9 @@ import io.grpc.ManagedChannel
 import io.grpc.Metadata
 import io.grpc.MethodDescriptor
 import io.grpc.Status
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -32,11 +34,12 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * Each call is serialised as gRPC-over-HTTP/2 framing (`application/grpc`), wrapped in Binary HTTP,
  * HPKE-encrypted (by the shared native OHTTP core) and POSTed to the relay by [OhttpTransport]. The
- * gateway forwards the inner request to lightwalletd over h2c, buffers the (possibly streaming) response
- * and returns it in a single
- * encrypted Binary HTTP response with the gRPC trailers folded into the header section. Server
- * streaming RPCs therefore work unchanged from the stub's point of view: all messages arrive at once
- * and are delivered respecting the listener's flow-control requests.
+ * gateway forwards the inner request to lightwalletd over h2c and streams the response back as
+ * encrypted chunks of an indeterminate-length Binary HTTP response. Each chunk is opened as soon as it
+ * has arrived ([OhttpTransport.stream]) and each gRPC message is delivered as soon as it is complete,
+ * respecting the listener's flow-control requests, so a server-streaming RPC (GetBlockRange, the
+ * mempool and taddress streams) works unchanged from the stub's point of view; the status comes from
+ * the trailer section, else the header section.
  */
 @Suppress("TooManyFunctions") // gRPC ManagedChannel interface requires 11 methods
 internal class OhttpManagedChannel(
@@ -185,6 +188,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     private var closed = false
     private var started = false
     private var cancelled = false
+    private var exchange: Job? = null
 
     override fun start(
         responseListener: Listener<ResponseT>,
@@ -213,11 +217,17 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         message: String?,
         cause: Throwable?,
     ) {
-        synchronized(lock) { cancelled = true }
+        val running =
+            synchronized(lock) {
+                cancelled = true
+                exchange
+            }
         finish(
             Status.CANCELLED.withDescription(message ?: "cancelled").withCause(cause),
             Metadata(),
         )
+        // Closes the relay connection under a blocked read (DirectOhttpSender) and ends the exchange.
+        running?.cancel()
     }
 
     override fun halfClose() {
@@ -265,8 +275,17 @@ internal class OhttpClientCall<RequestT, ResponseT>(
                     body = requestBody.toByteArray(),
                 )
 
-            val response = runBlocking { transport.roundTrip(request, budget.timeoutMs) }
-            onResponse(response)
+            runBlocking {
+                synchronized(lock) {
+                    if (cancelled) return@runBlocking
+                    exchange = coroutineContext.job
+                }
+                transport.stream(request, budget.timeoutMs, ResponseReader())
+            }
+        } catch (ignored: CancellationException) {
+            // The call was cancelled and is already closed.
+        } catch (ignored: ReadAbandoned) {
+            // The response was refused while it was read and the call is already closed.
         } catch (e: SocketTimeoutException) {
             // A transport timeout is UNAVAILABLE unless the call's own deadline is what ran out.
             val deadlineHit = budget.boundByDeadline || callOptions.deadline?.isExpired == true
@@ -281,108 +300,125 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         } catch (e: RuntimeException) {
             logger("OHTTP ${method.fullMethodName} internal error: $e")
             finish(Status.INTERNAL.withDescription(e.toString()).withCause(e), Metadata())
+        } finally {
+            synchronized(lock) { exchange = null }
         }
     }
 
-    @Suppress("ReturnCount") // Early returns for validation errors make control flow clearer
-    private fun onResponse(response: OhttpCodecResponse) {
-        val validationResult = validateResponse(response)
-        if (validationResult != null) {
-            finish(validationResult.first, validationResult.second)
-            return
-        }
+    /** Thrown by [ResponseReader] to stop reading a response it has already closed the call for. */
+    private class ReadAbandoned : RuntimeException()
 
-        if (callOptions.deadline?.isExpired == true) {
-            finish(Status.DEADLINE_EXCEEDED.withDescription("deadline expired"), Metadata())
-            return
-        }
+    /**
+     * The inner response as it is decoded: the head is checked and delivered, every complete gRPC
+     * message is queued and delivered at once (as far as the listener has requested), the status is
+     * taken when the response has ended.
+     */
+    private inner class ResponseReader : OhttpResponseSink {
+        private var headers: List<Pair<String, String>> = emptyList()
+        private var trailers: List<Pair<String, String>> = emptyList()
+        private val frames = GrpcFrameReader()
 
-        val grpcStatusCode = fieldFromTrailersFirst(response, "grpc-status")?.toIntOrNull()
-        if (grpcStatusCode == null) {
-            finish(Status.INTERNAL.withDescription("response is missing grpc-status"), Metadata())
-            return
-        }
-        val grpcMessage = fieldFromTrailersFirst(response, "grpc-message")?.let { percentDecode(it) }
-        val status =
-            Status.fromCodeValue(grpcStatusCode).let {
-                if (grpcMessage != null) it.withDescription(grpcMessage) else it
+        override fun onHead(
+            status: Int,
+            headers: List<Pair<String, String>>,
+        ) {
+            validateHead(status, headers)?.let { abandon(it) }
+            if (callOptions.deadline?.isExpired == true) {
+                abandon(Status.DEADLINE_EXCEEDED.withDescription("deadline expired"))
             }
-
-        val messages =
-            try {
-                parseFrames(response.body)
-            } catch (e: IllegalArgumentException) {
-                finish(Status.INTERNAL.withDescription("malformed gRPC frames: ${e.message}"), Metadata())
-                return
-            }
-
-        val headerMetadata = toMetadata(response.headers)
-        val trailerMetadata = toMetadata(response.trailers)
-        val currentListener = synchronized(lock) { listener } ?: return
-        callbackExecutor.execute { currentListener.onHeaders(headerMetadata) }
-        synchronized(lock) {
-            pending.addAll(messages)
-            responseComplete = true
-            finalStatus = status
-            finalTrailers = trailerMetadata
+            this.headers = headers
+            val headerMetadata = toMetadata(headers)
+            val currentListener = synchronized(lock) { listener.takeUnless { closed } } ?: throw ReadAbandoned()
+            callbackExecutor.execute { currentListener.onHeaders(headerMetadata) }
         }
-        deliver()
+
+        override fun onData(bytes: ByteArray) {
+            val messages =
+                try {
+                    frames.push(bytes).map { method.responseMarshaller.parse(ByteArrayInputStream(it)) }
+                } catch (e: IllegalArgumentException) {
+                    abandon(Status.INTERNAL.withDescription("malformed gRPC frames: ${e.message}"))
+                }
+            if (messages.isEmpty()) return
+            synchronized(lock) {
+                if (closed) throw ReadAbandoned()
+                pending.addAll(messages)
+            }
+            deliver()
+        }
+
+        override fun onTrailers(trailers: List<Pair<String, String>>) {
+            this.trailers = trailers
+        }
+
+        override fun onEnd() {
+            if (frames.hasPartialFrame()) {
+                abandon(Status.INTERNAL.withDescription("malformed gRPC frames: truncated frame"))
+            }
+            if (callOptions.deadline?.isExpired == true) {
+                abandon(Status.DEADLINE_EXCEEDED.withDescription("deadline expired"))
+            }
+            val grpcStatusCode = fieldFromTrailersFirst("grpc-status")?.toIntOrNull()
+            if (grpcStatusCode == null) {
+                abandon(Status.INTERNAL.withDescription("response is missing grpc-status"))
+            }
+            val grpcMessage = fieldFromTrailersFirst("grpc-message")?.let { percentDecode(it) }
+            val status =
+                Status.fromCodeValue(grpcStatusCode).let {
+                    if (grpcMessage != null) it.withDescription(grpcMessage) else it
+                }
+            val trailerMetadata = toMetadata(trailers)
+            synchronized(lock) {
+                responseComplete = true
+                finalStatus = status
+                finalTrailers = trailerMetadata
+            }
+            deliver()
+        }
+
+        private fun abandon(status: Status): Nothing {
+            finish(status, Metadata())
+            throw ReadAbandoned()
+        }
+
+        /**
+         * The trailer section's [name] if it has one, else the header section's; within a section the
+         * last occurrence (a gateway that folds the trailers into the header section appends them).
+         */
+        private fun fieldFromTrailersFirst(name: String): String? {
+            val named: (Pair<String, String>) -> Boolean = { it.first.equals(name, ignoreCase = true) }
+            return (trailers.lastOrNull(named) ?: headers.lastOrNull(named))?.second
+        }
     }
 
-    private fun validateResponse(response: OhttpCodecResponse): Pair<Status, Metadata>? =
-        when {
-            response.status != HTTP_OK -> {
-                val statusMessage = "gateway/lightwalletd returned HTTP ${response.status}"
+    private fun validateHead(
+        status: Int,
+        headers: List<Pair<String, String>>,
+    ): Status? {
+        val field: (String) -> String? = { name ->
+            headers.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second
+        }
+        val contentType = field("content-type") ?: ""
+        val encoding = field("grpc-encoding")
+        return when {
+            status != HTTP_OK -> {
+                val statusMessage = "gateway/lightwalletd returned HTTP $status"
                 logger("OHTTP ${method.fullMethodName}: $statusMessage")
-                Status.INTERNAL.withDescription(statusMessage) to Metadata()
+                Status.INTERNAL.withDescription(statusMessage)
             }
 
-            !(response.field("content-type") ?: "").startsWith(GRPC_CONTENT_TYPE) -> {
-                val contentType = response.field("content-type") ?: ""
-                Status.INTERNAL.withDescription("unexpected content-type '$contentType'") to Metadata()
+            !contentType.startsWith(GRPC_CONTENT_TYPE) -> {
+                Status.INTERNAL.withDescription("unexpected content-type '$contentType'")
             }
 
-            response.field("grpc-encoding").let { it != null && it != "identity" } -> {
-                val encoding = response.field("grpc-encoding")
-                Status.INTERNAL.withDescription("unsupported grpc-encoding '$encoding'") to Metadata()
+            encoding != null && encoding != "identity" -> {
+                Status.INTERNAL.withDescription("unsupported grpc-encoding '$encoding'")
             }
 
             else -> {
                 null
             }
         }
-
-    /**
-     * The trailer section's [name] if it has one, else the header section's. The native core appends
-     * the trailer section to [OhttpCodecResponse.headers] (its trailers list stays empty), so there the
-     * last occurrence is the trailer's.
-     */
-    private fun fieldFromTrailersFirst(
-        response: OhttpCodecResponse,
-        name: String
-    ): String? {
-        val named: (Pair<String, String>) -> Boolean = { it.first.equals(name, ignoreCase = true) }
-        return (response.trailers.lastOrNull(named) ?: response.headers.lastOrNull(named))?.second
-    }
-
-    private fun parseFrames(body: ByteArray): List<ResponseT> {
-        val messages = ArrayList<ResponseT>()
-        var pos = 0
-        while (pos < body.size) {
-            require(body.size - pos >= GRPC_FRAME_HEADER_SIZE) { "truncated frame header" }
-            val compressed = body[pos].toInt() and BYTE_MASK
-            val length =
-                ((body[pos + GRPC_LENGTH_BYTE_1].toInt() and BYTE_MASK) shl SHIFT_24) or
-                    ((body[pos + GRPC_LENGTH_BYTE_2].toInt() and BYTE_MASK) shl SHIFT_16) or
-                    ((body[pos + GRPC_LENGTH_BYTE_3].toInt() and BYTE_MASK) shl SHIFT_8) or
-                    ((body[pos + GRPC_LENGTH_BYTE_4].toInt() and BYTE_MASK))
-            pos += GRPC_FRAME_HEADER_SIZE
-            require(compressed == 0) { "compressed frames are not supported" }
-            require(length >= 0 && length <= body.size - pos) { "truncated frame body" }
-            messages.add(method.responseMarshaller.parse(ByteArrayInputStream(body, pos, length)))
-            pos += length
-        }
-        return messages
     }
 
     /**
@@ -519,13 +555,8 @@ internal class OhttpClientCall<RequestT, ResponseT>(
     companion object {
         private const val GRPC_CONTENT_TYPE = "application/grpc"
         private const val USER_AGENT = "zodl-ohttp-grpc/1.0"
-        private const val GRPC_FRAME_HEADER_SIZE = 5
         private const val GRPC_UNCOMPRESSED_FLAG = 0
         private const val GRPC_LENGTH_FIELD_SIZE = 4
-        private const val GRPC_LENGTH_BYTE_1 = 1
-        private const val GRPC_LENGTH_BYTE_2 = 2
-        private const val GRPC_LENGTH_BYTE_3 = 3
-        private const val GRPC_LENGTH_BYTE_4 = 4
         private const val DEFAULT_TIMEOUT_MS = 75_000
         private const val MIN_TIMEOUT_MS = 1_000
 
@@ -533,14 +564,58 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         // (80 s) before the last chunk leaves: such an exchange gets 100 s, the ZIP's reference.
         private const val FULL_LENGTH_SLACK_MS = 25_000
 
-        private const val BYTE_MASK = 0xFF
-        private const val SHIFT_8 = 8
-        private const val SHIFT_16 = 16
-        private const val SHIFT_24 = 24
         private const val PERCENT_ESCAPE_LENGTH = 3
         private const val HEX_RADIX = 16
 
         private const val HTTP_OK = 200
         private const val HTTP_PAYLOAD_TOO_LARGE = 413
+    }
+}
+
+/**
+ * Splits a gRPC response body (length-prefixed messages, gRPC over HTTP/2) into messages as its bytes
+ * arrive: [push] returns the messages they completed.
+ */
+internal class GrpcFrameReader {
+    private var buffer = ByteArray(0)
+    private var start = 0
+    private var end = 0
+
+    /** @throws IllegalArgumentException on a compressed or impossibly long frame */
+    fun push(bytes: ByteArray): List<ByteArray> {
+        append(bytes)
+        val messages = ArrayList<ByteArray>()
+        while (end - start >= FRAME_HEADER_SIZE) {
+            require(buffer[start].toInt() == 0) { "compressed frames are not supported" }
+            val length = ByteBuffer.wrap(buffer, start + 1, LENGTH_FIELD_SIZE).int
+            require(length >= 0) { "frame longer than 2 GiB" }
+            val from = start + FRAME_HEADER_SIZE
+            if (end - from < length) break
+            messages.add(buffer.copyOfRange(from, from + length))
+            start = from + length
+        }
+        return messages
+    }
+
+    /** Whether bytes of a frame that has not been completed are left. */
+    fun hasPartialFrame(): Boolean = end > start
+
+    private fun append(bytes: ByteArray) {
+        if (end + bytes.size > buffer.size) {
+            val live = end - start
+            val needed = live + bytes.size
+            val target = if (needed > buffer.size) ByteArray(maxOf(needed, buffer.size * 2)) else buffer
+            System.arraycopy(buffer, start, target, 0, live)
+            buffer = target
+            start = 0
+            end = live
+        }
+        System.arraycopy(bytes, 0, buffer, end, bytes.size)
+        end += bytes.size
+    }
+
+    private companion object {
+        const val FRAME_HEADER_SIZE = 5
+        const val LENGTH_FIELD_SIZE = 4
     }
 }

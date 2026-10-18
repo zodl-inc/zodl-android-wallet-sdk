@@ -19,6 +19,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `KeyConfigVerificationFailedException` (signed key config rejected), both in `co.electriccoin.lightwallet.client`.
 - `OhttpSender` (package `co.electriccoin.lightwallet.client`): transport abstraction for the OHTTP relay leg,
   with a direct implementation and a Tor-backed one.
+- OHTTP gRPC answers are opened chunk by chunk as they arrive: a server-streaming call (`GetBlockRange`, the
+  mempool and taddress streams) gets each message as soon as it is complete. `OhttpSender.postStreaming`
+  hands the body to a reader as it arrives (the default reads it whole with `post`, as the Tor sender must);
+  `OhttpResponseOpener.openStream` returns the incremental `OhttpResponseDecoder`.
 - `Synchronizer.ohttpSenderOverTor()`: an `OhttpSender` that sends the relay leg over Tor. It defaults to
   throwing `TorUnavailableException`, so existing `Synchronizer` implementers still compile. Each call creates
   a new native Tor client owned by the sender; release it by calling `dispose()` on the sender (or the

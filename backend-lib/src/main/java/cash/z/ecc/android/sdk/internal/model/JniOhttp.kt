@@ -37,6 +37,20 @@ class JniOhttpOutcome(
     val detail: String?,
 )
 
+/**
+ * What one read of a streamed answer completed (`streamPush`, `streamFinish` of `ohttp.rs`): the
+ * head ([status] and the packed [headers], or -1 and null when it is not complete yet), the body bytes
+ * that came out, the packed trailer section (null until it is read) and whether the response ended.
+ */
+@Keep
+class JniOhttpStreamEvents(
+    val status: Int,
+    val headers: ByteArray?,
+    val body: ByteArray,
+    val trailers: ByteArray?,
+    val end: Boolean,
+)
+
 /** The preset's headers (packed field lists), size caps (-1 for none) and key cache rules. */
 @Keep
 @Suppress("LongParameterList")

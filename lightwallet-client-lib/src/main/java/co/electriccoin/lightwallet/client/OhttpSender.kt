@@ -33,6 +33,20 @@ interface OhttpSender : Disposable {
     ): ByteArray
 
     /**
+     * POSTs like [post] but hands the body of a 200 to [read] as it arrives, within [timeoutMs], and
+     * returns what [read] returns. A cancelled caller closes the connection under a blocked read. The
+     * default reads the whole body with [post] first (the native Tor client returns it whole).
+     * @throws OhttpException as [post] does, before [read] is called
+     */
+    suspend fun <T> postStreaming(
+        url: String,
+        body: ByteArray,
+        headers: List<Pair<String, String>>,
+        timeoutMs: Int,
+        read: (java.io.InputStream) -> T,
+    ): T = read(post(url, body, headers, timeoutMs).inputStream())
+
+    /**
      * GETs [url] with the given [headers] and [timeoutMs], returning the response body.
      * Used for fetching the gateway key configuration. With Tor enabled, this ensures the key
      * config fetch also goes over Tor, preventing the client IP from being exposed to the gateway.
