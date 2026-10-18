@@ -842,7 +842,7 @@ class SdkSynchronizer private constructor(
 
     @Suppress("TooGenericExceptionCaught")
     override suspend fun acquireVotingTorLease(): VotingTorLease =
-        if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
+        if (sdkFlags.isTorEnabled) {
             if (lazyTorClient == null) {
                 throw TorInitializationErrorException(
                     NullPointerException("Tor has not been initialized during synchronizer setup")

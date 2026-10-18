@@ -1798,7 +1798,7 @@ class SlipstreamSynchronizer internal constructor(
 
     @Suppress("TooGenericExceptionCaught")
     override suspend fun acquireVotingTorLease(): VotingTorLease {
-        if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
+        if (!sdkFlags.isTorEnabled) throw TorUnavailableException()
         return try {
             VotingTorLease(lazyTorClient.getOrCreate().leaseRuntime())
         } catch (e: CancellationException) {
