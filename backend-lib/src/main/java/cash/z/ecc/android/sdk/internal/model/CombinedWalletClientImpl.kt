@@ -168,7 +168,7 @@ class CombinedWalletClientImpl private constructor(
             flowOf(Response.Failure.OverTor(cause = e))
         }
 
-    @Suppress("TooGenericExceptionCaught")
+    @Suppress("TooGenericExceptionCaught", "ThrowsCount")
     private suspend fun createTorStreamingClient(): LightWalletClient {
         val factory =
             torStreamingClientFactory
