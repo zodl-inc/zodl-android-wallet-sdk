@@ -93,7 +93,6 @@ class CombinedWalletClientImpl private constructor(
         startHeight: BlockHeightUnsafe,
         serviceMode: ServiceMode
     ): Flow<Response<GetAddressUtxosReplyUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
         return executeAsFlow(serviceMode) {
             require(this is LightWalletClient)
             fetchUtxos(tAddresses, startHeight)
@@ -104,7 +103,6 @@ class CombinedWalletClientImpl private constructor(
         heightRange: ClosedRange<BlockHeightUnsafe>,
         serviceMode: ServiceMode
     ): Flow<Response<CompactBlockUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
         return executeAsFlow(serviceMode) {
             require(this is LightWalletClient)
             getBlockRange(heightRange)
@@ -116,7 +114,6 @@ class CombinedWalletClientImpl private constructor(
         blockHeightRange: ClosedRange<BlockHeightUnsafe>,
         serviceMode: ServiceMode
     ): Flow<Response<RawTransactionUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
         return executeAsFlow(serviceMode) {
             require(this is LightWalletClient)
             getTAddressTransactions(tAddress, blockHeightRange)
@@ -129,7 +126,6 @@ class CombinedWalletClientImpl private constructor(
         maxEntries: UInt,
         serviceMode: ServiceMode
     ): Flow<Response<SubtreeRootUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
         return executeAsFlow(serviceMode) {
             require(this is LightWalletClient)
             getSubtreeRoots(startIndex, shieldedProtocol, maxEntries)
@@ -139,7 +135,6 @@ class CombinedWalletClientImpl private constructor(
     override suspend fun observeMempool(
         serviceMode: ServiceMode
     ): Flow<Response<RawTransactionUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
         return executeAsFlow(serviceMode) {
             require(this is LightWalletClient)
             observeMempool()

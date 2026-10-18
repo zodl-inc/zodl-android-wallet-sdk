@@ -1367,7 +1367,7 @@ class SlipstreamSynchronizer internal constructor(
                 .fetchUtxos(
                     tAddresses = tAddresses,
                     startHeight = BlockHeightUnsafe(since.value),
-                    serviceMode = ServiceMode.Direct
+                    serviceMode = sdkFlags ifTor ServiceMode.Group("SlipstreamSynchronizer.refreshUtxos")
                 ).collect { response ->
                     if (response is Response.Success) {
                         val utxo = response.result
