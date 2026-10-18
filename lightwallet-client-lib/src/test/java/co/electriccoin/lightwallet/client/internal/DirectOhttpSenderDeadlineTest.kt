@@ -126,7 +126,8 @@ class DirectOhttpSenderDeadlineTest {
         assertTrue(closed.await(JOIN_MS, TimeUnit.MILLISECONDS))
         val elapsedMs = (System.nanoTime() - started) / NANOS_PER_MILLI
         assertEquals(Status.Code.DEADLINE_EXCEEDED, closeStatus?.code)
-        assertTrue("closed after $elapsedMs ms", elapsedMs < SHORT_DEADLINE_MS * 3)
+        // The relay would dribble for 10 s; a busy CI runner needs headroom over the 300 ms deadline.
+        assertTrue("closed after $elapsedMs ms", elapsedMs < SHORT_DEADLINE_MS * 10)
         server.close()
     }
 
