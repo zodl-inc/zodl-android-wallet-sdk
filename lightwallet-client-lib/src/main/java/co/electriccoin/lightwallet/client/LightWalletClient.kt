@@ -2,6 +2,7 @@ package co.electriccoin.lightwallet.client
 
 import android.content.Context
 import co.electriccoin.lightwallet.client.internal.AndroidChannelFactory
+import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.LightWalletClientImpl
 import co.electriccoin.lightwallet.client.internal.OhttpChannelFactory
 import co.electriccoin.lightwallet.client.internal.OhttpEndpoints
@@ -27,6 +28,8 @@ interface LightWalletClient : WalletClient {
          * @param ohttpCodec the native OHTTP protocol implementation, required (and only used) when
          *        [lightWalletEndpoint] is a ZODL OHTTP gateway. `cash.z.ecc.android.sdk.util.WalletClientFactory`
          *        supplies it for the SDK's own clients.
+         * @param ohttpSender carries the relay leg of an OHTTP gateway endpoint; null for a direct connection.
+         *        The caller owns it and disposes it.
          */
         @Suppress("LongParameterList")
         fun new(
@@ -36,6 +39,7 @@ interface LightWalletClient : WalletClient {
             streamingRequestTimeout: Duration = 75.seconds,
             ohttpClientTraceIdPrefix: String? = null,
             ohttpCodec: OhttpCodec? = null,
+            ohttpSender: OhttpSender? = null,
         ): LightWalletClient =
             LightWalletClientImpl(
                 // Endpoints that are ZODL OHTTP gateways are reached through an OHTTP relay
@@ -53,6 +57,7 @@ interface LightWalletClient : WalletClient {
                             relayUrl,
                             codec,
                             ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
+                            sender = ohttpSender ?: DirectOhttpSender(),
                         )
                     } else {
                         AndroidChannelFactory(context)
