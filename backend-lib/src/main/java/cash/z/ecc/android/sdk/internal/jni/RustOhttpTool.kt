@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicLong
  * returns an [OhttpResponseOpener] wrapping an opaque native handle. The opener swaps the handle for 0
  * before using it, so each one is used once.
  */
+@Suppress("TooManyFunctions")
 class RustOhttpTool private constructor() : OhttpCodec {
     /**
      * Implementation of [OhttpResponseOpener] wrapping a native handle. The handle is swapped for 0
