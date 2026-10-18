@@ -23,6 +23,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mempool and taddress streams) gets each message as soon as it is complete. `OhttpSender.postStreaming`
   hands the body to a reader as it arrives, over Tor too (the default reads it whole with `post`);
   `OhttpResponseOpener.openStream` returns the incremental `OhttpResponseDecoder`.
+- `OhttpHttpClient.Response.headers` (the inner response's header fields), a `timeoutMs` on
+  `OhttpHttpClient.execute`, and `OhttpHttpClient.executeStreaming`, which hands the inner response to a
+  `ResponseListener` chunk by chunk as it arrives (e.g. `text/event-stream`). `api.flexa.co` and
+  `flexa.zodl.com` route to the gateway alias `flexa.zodl.com`, with the request's `Authorization` kept.
 - `Synchronizer.ohttpSenderOverTor()`: an `OhttpSender` that sends the relay leg over Tor. It defaults to
   throwing `TorUnavailableException`, so existing `Synchronizer` implementers still compile. Each call creates
   a new native Tor client owned by the sender; release it by calling `dispose()` on the sender (or the

@@ -3,6 +3,7 @@ package co.electriccoin.lightwallet.client
 import android.util.Log
 import co.electriccoin.lightwallet.client.internal.Constants
 import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
+import co.electriccoin.lightwallet.client.internal.OhttpResponseSink
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.PROXY_GATEWAY_HOST
 import co.electriccoin.lightwallet.client.internal.PROXY_GATEWAY_HOST_TESTNET
@@ -47,10 +48,27 @@ class OhttpHttpClient private constructor(
     data class Response(
         val status: Int,
         val body: ByteArray,
+        val headers: List<Pair<String, String>> = emptyList(),
     )
 
+    /**
+     * Receives the inner response of [executeStreaming] as it is opened: [onHead] once, [onData] for
+     * the body bytes of each chunk as soon as it is decrypted, [onEnd] once the response is complete
+     * and authenticated. Called on the reading thread; a listener that throws stops the read.
+     */
+    interface ResponseListener {
+        fun onHead(
+            status: Int,
+            headers: List<Pair<String, String>>,
+        )
+
+        fun onData(bytes: ByteArray)
+
+        fun onEnd()
+    }
+
     companion object {
-        private const val DEFAULT_TIMEOUT_MS = 30_000
+        const val DEFAULT_TIMEOUT_MS = 30_000
 
         /**
          * Creates an OHTTP client for external API requests (NEAR, CMC, voting).
@@ -105,7 +123,53 @@ class OhttpHttpClient private constructor(
         return mapped || allowlisted
     }
 
-    suspend fun execute(request: Request): Response {
+    /** Sends [request] through the gateway and returns the whole inner response, within [timeoutMs]. */
+    suspend fun execute(
+        request: Request,
+        timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+    ): Response {
+        val bReq = codecRequest(request)
+        val bRes = withContext(Dispatchers.IO) { transport.roundTrip(bReq, timeoutMs) }
+        Log.d(
+            Constants.LOG_TAG,
+            "OHTTP proxy ${request.method} host=${bReq.authority} -> http=${bRes.status} (${bRes.body.size} bytes)",
+        )
+        return Response(status = bRes.status, body = bRes.body, headers = bRes.headers)
+    }
+
+    /**
+     * Sends [request] like [execute], but hands the inner response to [listener] as its chunks arrive
+     * (e.g. a `text/event-stream`), within [timeoutMs] for the whole exchange. Returns once the response
+     * is complete; a failure after the head (truncation, a chunk that does not open, the deadline) is
+     * thrown after whatever [listener] already got. Cancelling the caller stops a blocked read.
+     */
+    suspend fun executeStreaming(
+        request: Request,
+        timeoutMs: Int,
+        listener: ResponseListener,
+    ) {
+        val bReq = codecRequest(request)
+        withContext(Dispatchers.IO) {
+            transport.stream(
+                bReq,
+                timeoutMs,
+                object : OhttpResponseSink {
+                    override fun onHead(
+                        status: Int,
+                        headers: List<Pair<String, String>>,
+                    ) = listener.onHead(status, headers)
+
+                    override fun onData(bytes: ByteArray) = listener.onData(bytes)
+
+                    override fun onTrailers(trailers: List<Pair<String, String>>) = Unit
+
+                    override fun onEnd() = listener.onEnd()
+                },
+            )
+        }
+    }
+
+    private fun codecRequest(request: Request): OhttpCodecRequest {
         val uri = URI.create(request.url)
         val originalHost = uri.host ?: error("No host in URL: ${request.url}")
         // The gateway proxies its allowlisted hosts directly (the inner request's
@@ -144,12 +208,7 @@ class OhttpHttpClient private constructor(
             Constants.LOG_TAG,
             "OHTTP proxy ${request.method} host=$originalHost authority=$innerAuthority mode=$mode sender=$senderType",
         )
-        val bRes = withContext(Dispatchers.IO) { transport.roundTrip(bReq, DEFAULT_TIMEOUT_MS) }
-        Log.d(
-            Constants.LOG_TAG,
-            "OHTTP proxy ${request.method} host=$originalHost -> http=${bRes.status} (${bRes.body.size} bytes)",
-        )
-        return Response(status = bRes.status, body = bRes.body)
+        return bReq
     }
 
     /**

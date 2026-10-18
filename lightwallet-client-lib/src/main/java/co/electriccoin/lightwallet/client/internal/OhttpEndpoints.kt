@@ -72,6 +72,7 @@ internal val OHTTP_PROXY_ALLOWED_HOSTS =
         "zpir-1.stardust.rest",
         "zelay.example",
         "raw.githubusercontent.com",
+        "flexa.zodl.com",
     )
 
 /**
@@ -83,10 +84,12 @@ internal fun proxyGatewayHostFor(originalHost: String): String? =
     when (originalHost) {
         "1click.chaindefuser.com" -> "near.zodl.com"
         "pro-api.coinmarketcap.com" -> "cmc.zodl.com"
+        "api.flexa.co" -> "flexa.zodl.com"
         "voting.valargroup.dev" -> "vote.zodl.com"
         "near.zodl.com" -> "near.zodl.com"
         "cmc.zodl.com" -> "cmc.zodl.com"
         "vote.zodl.com" -> "vote.zodl.com"
+        "flexa.zodl.com" -> "flexa.zodl.com"
         else -> null
     }
 
