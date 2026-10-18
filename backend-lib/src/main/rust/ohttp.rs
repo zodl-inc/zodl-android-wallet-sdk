@@ -548,6 +548,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeR
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// The OHTTP client trace prefix a caller asked for, as this library honours it: only a build
+/// with the `ohttp-trace` feature (QA and E2E, never a release library) sends trace ids at all.
+#[cfg(feature = "ohttp-trace")]
+pub(crate) fn gated_trace_prefix(prefix: Option<String>) -> Option<String> {
+    prefix
+}
+
+/// The OHTTP client trace prefix a caller asked for, as this library honours it: only a build
+/// with the `ohttp-trace` feature (QA and E2E, never a release library) sends trace ids at all.
+#[cfg(not(feature = "ohttp-trace"))]
+pub(crate) fn gated_trace_prefix(_prefix: Option<String>) -> Option<String> {
+    None
+}
+
 /// Records that the relay at `relay_url` asked for `delay_ms` before the next request (an outer
 /// 429's `Retry-After`), in the process-wide table the Slipstream engine's OHTTP transport reads
 /// too. A shorter pause never cuts a running one short.
@@ -839,6 +853,27 @@ mod tests {
         response.push(0); // end of the content
         response.push(0); // an empty trailer section
         response
+    }
+
+    /// Without the `ohttp-trace` feature (every release library) a trace prefix is never honoured,
+    /// whatever the caller passes.
+    #[cfg(not(feature = "ohttp-trace"))]
+    #[test]
+    fn a_trace_prefix_is_ignored_without_the_ohttp_trace_feature() {
+        assert_eq!(
+            super::gated_trace_prefix(Some("qa-wallet".to_string())),
+            None
+        );
+        assert_eq!(super::gated_trace_prefix(None), None);
+    }
+
+    #[cfg(feature = "ohttp-trace")]
+    #[test]
+    fn a_trace_prefix_is_honoured_with_the_ohttp_trace_feature() {
+        assert_eq!(
+            super::gated_trace_prefix(Some("qa-wallet".to_string())).as_deref(),
+            Some("qa-wallet")
+        );
     }
 
     #[test]

@@ -701,8 +701,11 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_setDefaultOhttpClien
             Some(env.get_string(&prefix)?.to_str()?.to_string())
         };
 
-        #[cfg(feature = "slipstream")]
+        // A no-op without the `ohttp-trace` feature: a release library never sends trace ids.
+        #[cfg(feature = "ohttp-trace")]
         slipstream_core::ohttp::set_default_client_trace_prefix(prefix_opt);
+        #[cfg(not(feature = "ohttp-trace"))]
+        let _ = prefix_opt;
 
         Ok(())
     });

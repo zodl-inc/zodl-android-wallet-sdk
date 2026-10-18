@@ -22,6 +22,12 @@ android-test-fixtures = []
 # module's logging setup, and (on Android) the logcat tracing layer. OFF by default; enabled
 # for the merged native library that ships Slipstream.
 slipstream = ["dep:slipstream-core", "dep:tokio", "dep:tracing-android", "tracing-subscriber/env-filter"]
+# Honours the OHTTP client trace prefix (`X-Client-Trace-Id`). Only for QA/E2E builds: without it
+# the JNI entry points that set a prefix ignore it, so a release library has no way to send trace
+# ids (ZIP: release builds MUST NOT contain a code path that can enable them at run time).
+# Gradle enables it with -PZODL_OHTTP_TRACE=true or a non-empty -PZCASH_OHTTP_TRACE_PREFIX, and
+# refuses it for release, benchmark and publish tasks.
+ohttp-trace = []
 
 [dependencies]
 # Zcash dependencies

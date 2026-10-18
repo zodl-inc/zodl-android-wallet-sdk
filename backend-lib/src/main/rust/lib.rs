@@ -3611,11 +3611,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_createTor
 ) -> jlong {
     let res = catch_unwind(&mut env, |env| {
         let tor_dir = path_from_jni(env, tor_dir)?;
-        let client_trace_prefix = if client_trace_prefix.is_null() {
-            None
-        } else {
-            Some(env.get_string(&client_trace_prefix)?.to_str()?.to_string())
-        };
+        let client_trace_prefix =
+            crate::ohttp::gated_trace_prefix(if client_trace_prefix.is_null() {
+                None
+            } else {
+                Some(env.get_string(&client_trace_prefix)?.to_str()?.to_string())
+            });
 
         #[cfg(feature = "slipstream")]
         slipstream_core::ohttp::set_default_client_trace_prefix(client_trace_prefix.clone());

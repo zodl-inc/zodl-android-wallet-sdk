@@ -45,6 +45,25 @@ val enableAndroidTestNativeFixtures =
 
 val isSlipstreamEnabled = project.property("IS_SLIPSTREAM_ENABLED").toString().toBoolean()
 
+val isOhttpTraceEnabled =
+    findProperty("ZODL_OHTTP_TRACE")?.toString().toBoolean() ||
+        !findProperty("ZCASH_OHTTP_TRACE_PREFIX")?.toString().isNullOrBlank()
+
+val productionNativeArtifactTasksWithOhttpTrace =
+    if (isOhttpTraceEnabled) {
+        requestedTaskNames.filter { taskName -> taskName.requestsProductionNativeArtifact() }
+    } else {
+        emptyList()
+    }
+
+if (productionNativeArtifactTasksWithOhttpTrace.isNotEmpty()) {
+    throw GradleException(
+        "The ohttp-trace Cargo feature (ZODL_OHTTP_TRACE / ZCASH_OHTTP_TRACE_PREFIX) is for QA and " +
+            "E2E builds only and must not reach a release native library. Conflicting task(s): " +
+            productionNativeArtifactTasksWithOhttpTrace.joinToString()
+    )
+}
+
 val productionNativeArtifactTasksWithAndroidFixtures =
     if (enableAndroidTestNativeFixtures) {
         requestedTaskNames.filter { taskName ->
@@ -152,6 +171,9 @@ cargo {
             // Test-only fixture exports.
             features.add("android-test-fixtures")
         }
+        if (isOhttpTraceEnabled) {
+            features.add("ohttp-trace")
+        }
         if (features.isEmpty()) emptyList() else listOf("--features", features.joinToString(","))
     }
     prebuiltToolchains = true
@@ -206,6 +228,7 @@ project.afterEvaluate {
         .configureEach {
             inputs.property("androidTestNativeFixtures", enableAndroidTestNativeFixtures)
             inputs.property("slipstreamEnabled", isSlipstreamEnabled)
+            inputs.property("ohttpTraceEnabled", isOhttpTraceEnabled)
         }
 }
 
