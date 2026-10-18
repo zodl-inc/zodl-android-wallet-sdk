@@ -9,12 +9,21 @@
 //!
 //! Failures are classified so the JNI layer can raise typed Kotlin exceptions rather than a
 //! generic `RuntimeException` (see [`TorHttpError`]).
+//!
+//! [`TorHttpBody`] is the body of a response that the JVM reads as it arrives
+//! (`TorClient.httpPostStreaming`): the same deadline covers it, and a [`CancelSignal`] set from
+//! another thread ends the exchange, whether it is still waiting for the response head
+//! ([`block_on_unless_cancelled`]) or for more of the body.
 
 use std::future::Future;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
-use tor_rtcompat::{SleepProvider, SleepProviderExt};
+use bytes::Bytes;
+use http_body_util::{BodyExt, combinators::UnsyncBoxBody};
+use tor_rtcompat::{PreferredRuntime, SleepProvider, SleepProviderExt, ToplevelBlockOn};
 use zcash_client_backend::tor::{Error, http::HttpError};
 
 /// `TorHttpTimeoutException`: the caller-supplied deadline elapsed.
@@ -102,6 +111,121 @@ where
     }
 }
 
+/// The error of a body read over Tor.
+pub(crate) type BodyError = Box<dyn std::error::Error + Send + Sync>;
+
+/// How long a wait goes before it looks at the [`CancelSignal`] again.
+const CANCEL_POLL: Duration = Duration::from_millis(100);
+
+/// Set from any thread to end an exchange over Tor (`TorClient.httpPostStreaming` sets it when
+/// its caller is cancelled); a waiting exchange notices it within [`CANCEL_POLL`].
+pub(crate) type CancelSignal = Arc<AtomicBool>;
+
+fn cancelled_error() -> TorHttpError {
+    TorHttpError::Transport("the HTTP exchange over Tor was cancelled".to_string())
+}
+
+/// Runs `fut` on `runtime` until it completes, or fails it once `cancel` is set.
+pub(crate) fn block_on_unless_cancelled<T, F>(
+    runtime: &PreferredRuntime,
+    cancel: &AtomicBool,
+    fut: F,
+) -> Result<T, TorHttpError>
+where
+    F: Future<Output = Result<T, TorHttpError>>,
+{
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return Err(cancelled_error());
+        }
+        if let Ok(output) = runtime.block_on(runtime.timeout(CANCEL_POLL, fut.as_mut())) {
+            return output;
+        }
+    }
+}
+
+/// The body of an HTTP response over Tor, read one frame at a time by the JVM. The deadline of
+/// the request that produced it (`timeout_ms` from `started`) bounds every read; setting
+/// `cancel` (from any thread) makes a waiting read fail within [`CANCEL_POLL`].
+pub(crate) struct TorHttpBody {
+    runtime: PreferredRuntime,
+    body: Mutex<UnsyncBoxBody<Bytes, BodyError>>,
+    cancel: CancelSignal,
+    timeout_ms: i64,
+    deadline: Option<Instant>,
+}
+
+impl TorHttpBody {
+    pub(crate) fn new(
+        runtime: PreferredRuntime,
+        body: UnsyncBoxBody<Bytes, BodyError>,
+        cancel: CancelSignal,
+        timeout_ms: i64,
+        started: Instant,
+    ) -> Self {
+        TorHttpBody {
+            runtime,
+            body: Mutex::new(body),
+            cancel,
+            timeout_ms,
+            deadline: u64::try_from(timeout_ms)
+                .ok()
+                .filter(|ms| *ms > 0)
+                .map(|ms| started + Duration::from_millis(ms)),
+        }
+    }
+
+    /// The next bytes of the body, `None` once it has ended. Trailer frames are skipped.
+    pub(crate) fn read(&self) -> Result<Option<Bytes>, TorHttpError> {
+        let mut body = self
+            .body
+            .lock()
+            .map_err(|_| TorHttpError::Other("the response body is unusable".to_string()))?;
+        loop {
+            if self.cancel.load(Ordering::Acquire) {
+                return Err(cancelled_error());
+            }
+            let wait = match self.deadline {
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(TorHttpError::Timeout(format!(
+                            "HTTP request over Tor timed out after {} ms",
+                            self.timeout_ms
+                        )));
+                    }
+                    left.min(CANCEL_POLL)
+                }
+                None => CANCEL_POLL,
+            };
+            let frame = match self
+                .runtime
+                .block_on(self.runtime.timeout(wait, body.frame()))
+            {
+                Err(_) => continue,
+                Ok(None) => return Ok(None),
+                Ok(Some(Err(e))) => return Err(TorHttpError::Transport(e.to_string())),
+                Ok(Some(Ok(frame))) => frame,
+            };
+            if let Ok(data) = frame.into_data()
+                && !data.is_empty()
+            {
+                return Ok(Some(data));
+            }
+        }
+    }
+}
+
+/// `body` boxed for [`TorHttpBody`].
+pub(crate) fn boxed_body<B, E>(body: B) -> UnsyncBoxBody<Bytes, BodyError>
+where
+    B: BodyExt<Data = Bytes, Error = E> + Send + 'static,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    body.map_err(|e| Box::new(e) as BodyError).boxed_unsync()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +305,72 @@ mod tests {
             classify(&Error::MissingTorDirectory),
             TorHttpError::Other(_)
         ));
+    }
+
+    fn body_of(
+        bytes: &'static [u8],
+        cancel: CancelSignal,
+        timeout_ms: i64,
+        started: Instant,
+    ) -> TorHttpBody {
+        TorHttpBody::new(
+            runtime(),
+            boxed_body(http_body_util::Full::new(Bytes::from_static(bytes))),
+            cancel,
+            timeout_ms,
+            started,
+        )
+    }
+
+    #[test]
+    fn a_body_is_read_to_its_end() {
+        let body = body_of(b"sealed", CancelSignal::default(), 5_000, Instant::now());
+        assert_eq!(body.read().unwrap().as_deref(), Some(&b"sealed"[..]));
+        assert!(body.read().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_cancelled_body_read_fails_as_a_transport_failure() {
+        let cancel = CancelSignal::default();
+        let body = body_of(b"sealed", cancel.clone(), 5_000, Instant::now());
+        cancel.store(true, Ordering::Release);
+        assert!(matches!(body.read(), Err(TorHttpError::Transport(_))));
+    }
+
+    #[test]
+    fn a_body_read_past_the_request_deadline_times_out() {
+        let started = Instant::now() - Duration::from_secs(2);
+        let body = body_of(b"sealed", CancelSignal::default(), 1_000, started);
+        assert!(matches!(body.read(), Err(TorHttpError::Timeout(_))));
+        let unbounded = body_of(b"sealed", CancelSignal::default(), 0, started);
+        assert!(unbounded.read().unwrap().is_some());
+    }
+
+    #[test]
+    fn a_wait_for_the_response_head_ends_when_cancelled_from_another_thread() {
+        let rt = runtime();
+        let cancel = CancelSignal::default();
+        let setter = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                cancel.store(true, Ordering::Release);
+            })
+        };
+        let start = Instant::now();
+        let res = block_on_unless_cancelled(
+            &rt,
+            &cancel,
+            std::future::pending::<Result<(), TorHttpError>>(),
+        );
+        assert!(matches!(res, Err(TorHttpError::Transport(_))), "{res:?}");
+        assert!(start.elapsed() < Duration::from_secs(5));
+        setter.join().unwrap();
+
+        let done = block_on_unless_cancelled(&rt, &CancelSignal::default(), async {
+            Ok::<_, TorHttpError>(3u8)
+        });
+        assert_eq!(done.unwrap(), 3);
     }
 
     #[test]

@@ -21,7 +21,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a direct implementation and a Tor-backed one.
 - OHTTP gRPC answers are opened chunk by chunk as they arrive: a server-streaming call (`GetBlockRange`, the
   mempool and taddress streams) gets each message as soon as it is complete. `OhttpSender.postStreaming`
-  hands the body to a reader as it arrives (the default reads it whole with `post`, as the Tor sender must);
+  hands the body to a reader as it arrives, over Tor too (the default reads it whole with `post`);
   `OhttpResponseOpener.openStream` returns the incremental `OhttpResponseDecoder`.
 - `Synchronizer.ohttpSenderOverTor()`: an `OhttpSender` that sends the relay leg over Tor. It defaults to
   throwing `TorUnavailableException`, so existing `Synchronizer` implementers still compile. Each call creates

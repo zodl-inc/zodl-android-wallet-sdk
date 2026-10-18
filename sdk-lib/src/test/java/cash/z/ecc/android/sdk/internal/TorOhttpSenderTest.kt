@@ -17,10 +17,25 @@ import kotlin.test.assertTrue
 
 class TorOhttpSenderTest {
     private class FakeTransport(
+        private val chunks: List<() -> ByteArray> = emptyList(),
         private val response: () -> JniHttpResponseBytes
     ) : TorHttpTransport {
         var lastTimeoutMs: Long? = null
         var calls = 0
+
+        override suspend fun <T> postStreaming(
+            url: String,
+            headers: List<JniHttpHeader>,
+            body: ByteArray,
+            timeoutMs: Long,
+            read: (status: Int, headers: Array<JniHttpHeader>, next: () -> ByteArray?) -> T
+        ): T {
+            calls++
+            lastTimeoutMs = timeoutMs
+            val head = response()
+            val pending = (if (chunks.isEmpty()) listOf({ head.body }) else chunks).toMutableList()
+            return read(head.status, head.headers) { if (pending.isEmpty()) null else pending.removeAt(0)() }
+        }
 
         override suspend fun post(
             url: String,
@@ -165,4 +180,81 @@ class TorOhttpSenderTest {
                 TorOhttpSender(transport).post("https://relay.example/relay", byteArrayOf(), emptyList(), 1_000).size
             )
         }
+
+    @Test
+    fun `a streamed answer reaches the reader chunk by chunk as the native body delivers it`(): Unit =
+        runBlocking {
+            val delivered = mutableListOf<Int>()
+            val transport =
+                FakeTransport(
+                    chunks =
+                        listOf(
+                            { byteArrayOf(1, 2).also { delivered.add(1) } },
+                            { byteArrayOf(3).also { delivered.add(2) } }
+                        )
+                ) { jniResponse(200) }
+
+            val firstRead =
+                TorOhttpSender(transport).postStreaming(RELAY, byteArrayOf(), emptyList(), 9_000) {
+                    val first = it.read()
+                    val seenBeforeSecond = delivered.toList()
+                    Triple(first, seenBeforeSecond, it.readBytes().toList())
+                }
+
+            assertEquals(1, firstRead.first)
+            assertEquals(listOf(1), firstRead.second)
+            assertEquals(listOf<Byte>(2, 3), firstRead.third)
+            assertEquals(9_000L, transport.lastTimeoutMs)
+        }
+
+    @Test
+    fun `a streamed non-200 carries its status and Retry-After and never reaches the reader`(): Unit =
+        runBlocking {
+            val transport =
+                FakeTransport {
+                    JniHttpResponseBytes(
+                        status = 429,
+                        version = "HTTP/1.1",
+                        headers = arrayOf(JniHttpHeader("Retry-After", "12")),
+                        body = "slow down".toByteArray()
+                    )
+                }
+
+            val thrown =
+                assertFailsWith<OhttpException> {
+                    TorOhttpSender(transport).postStreaming(RELAY, byteArrayOf(), emptyList(), 1_000) {
+                        error("the reader must not run")
+                    }
+                }
+
+            assertEquals(429, thrown.httpStatus)
+            assertEquals(12L, thrown.retryAfterSeconds)
+            assertTrue(assertNotNull(thrown.message).contains("slow down"))
+        }
+
+    @Test
+    fun `a native timeout or transport failure mid-body fails like the direct sender`(): Unit =
+        runBlocking {
+            val timeout: () -> ByteArray = { throw TorHttpTimeoutException("timed out") }
+            val transportFailure: () -> ByteArray = { throw TorHttpTransportException("circuit closed") }
+            val timingOut = FakeTransport(chunks = listOf({ byteArrayOf(1) }, timeout)) { jniResponse(200) }
+            val broken = FakeTransport(chunks = listOf({ byteArrayOf(1) }, transportFailure)) { jniResponse(200) }
+
+            assertFailsWith<java.net.SocketTimeoutException> {
+                TorOhttpSender(timingOut).postStreaming(RELAY, byteArrayOf(), emptyList(), 1_000) {
+                    it.readBytes()
+                }
+            }
+            val thrown =
+                assertFailsWith<OhttpException> {
+                    TorOhttpSender(broken).postStreaming(RELAY, byteArrayOf(), emptyList(), 1_000) {
+                        it.readBytes()
+                    }
+                }
+            assertEquals(null, thrown.httpStatus)
+        }
+
+    private companion object {
+        const val RELAY = "https://relay.example/relay"
+    }
 }

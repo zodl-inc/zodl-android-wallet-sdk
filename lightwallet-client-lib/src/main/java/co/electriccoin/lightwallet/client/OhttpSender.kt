@@ -34,8 +34,8 @@ interface OhttpSender : Disposable {
 
     /**
      * POSTs like [post] but hands the body of a 200 to [read] as it arrives, within [timeoutMs], and
-     * returns what [read] returns. A cancelled caller closes the connection under a blocked read. The
-     * default reads the whole body with [post] first (the native Tor client returns it whole).
+     * returns what [read] returns. A cancelled caller stops a blocked read. The default reads the whole
+     * body with [post] first.
      * @throws OhttpException as [post] does, before [read] is called
      */
     suspend fun <T> postStreaming(

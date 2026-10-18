@@ -3765,16 +3765,11 @@ fn encode_http_header<'a>(
     )
 }
 
-fn encode_http_response_bytes<'a>(
+fn encode_http_headers<'a>(
     env: &mut JNIEnv<'a>,
-    response: http::Response<Bytes>,
-) -> anyhow::Result<JObject<'a>> {
-    let (parts, body) = response.into_parts();
-
-    let version = JObject::from(env.new_string(format!("{:?}", parts.version))?);
-
-    let headers = parts
-        .headers
+    headers: &http::HeaderMap,
+) -> anyhow::Result<JObjectArray<'a>> {
+    let headers = headers
         .iter()
         .map(|(name, value)| {
             value
@@ -3784,9 +3779,23 @@ fn encode_http_response_bytes<'a>(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let headers = utils::rust_vec_to_java(env, headers, JNI_HTTP_HEADER, |env, (name, value)| {
-        encode_http_header(env, name, value)
-    })?;
+    Ok(utils::rust_vec_to_java(
+        env,
+        headers,
+        JNI_HTTP_HEADER,
+        |env, (name, value)| encode_http_header(env, name, value),
+    )?)
+}
+
+fn encode_http_response_bytes<'a>(
+    env: &mut JNIEnv<'a>,
+    response: http::Response<Bytes>,
+) -> anyhow::Result<JObject<'a>> {
+    let (parts, body) = response.into_parts();
+
+    let version = JObject::from(env.new_string(format!("{:?}", parts.version))?);
+
+    let headers = encode_http_headers(env, &parts.headers)?;
 
     Ok(env.new_object(
         "cash/z/ecc/android/sdk/internal/model/JniHttpResponseBytes",
@@ -3943,6 +3952,226 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
         Ok(encode_http_response_bytes(env, response)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// A new cancel signal for `httpPostStream`: set with `httpCancelSignalSet` (from any thread),
+/// freed with `httpCancelSignalFree` once the exchange is over.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpCancelSignalNew<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+) -> jlong {
+    let res = catch_unwind(&mut env, |_| {
+        let signal = crate::tor_http::CancelSignal::default();
+        Ok(std::sync::Arc::into_raw(signal).expose_provenance() as jlong)
+    });
+    unwrap_exc_or(&mut env, res, 0)
+}
+
+/// The signal behind a handle of `httpCancelSignalNew`, as a new reference.
+///
+/// # Safety
+///
+/// `handle` must be a handle of `httpCancelSignalNew` that `httpCancelSignalFree` has not freed.
+unsafe fn cancel_signal(handle: jlong) -> anyhow::Result<crate::tor_http::CancelSignal> {
+    let ptr = ptr::with_exposed_provenance::<std::sync::atomic::AtomicBool>(handle as usize);
+    if ptr.is_null() {
+        return Err(anyhow!("The cancel signal is freed"));
+    }
+    // SAFETY: by the contract above, `ptr` came from `Arc::into_raw` and its count is live.
+    unsafe {
+        std::sync::Arc::increment_strong_count(ptr);
+        Ok(std::sync::Arc::from_raw(ptr))
+    }
+}
+
+/// Sets a cancel signal: the exchange that uses it fails within 100 ms, whether it is waiting
+/// for the response head or reading the body.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpCancelSignalSet<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    signal: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        // SAFETY: the Kotlin wrapper frees the signal only after its last use.
+        unsafe { cancel_signal(signal) }?.store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+/// Frees a cancel signal (a body that shares it keeps its own reference). 0 is a no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpCancelSignalFree<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    signal: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        let ptr = ptr::with_exposed_provenance::<std::sync::atomic::AtomicBool>(signal as usize);
+        if !ptr.is_null() {
+            // SAFETY: the Kotlin wrapper frees each signal once, after its last use.
+            drop(unsafe { std::sync::Arc::from_raw(ptr) });
+        }
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+/// Makes an HTTP POST request over Tor and returns as soon as the response head has arrived:
+/// `JniHttpStreamResponse(status, headers, body)`, where `body` is the handle of a
+/// `TorHttpBody` that the JVM reads with `httpBodyRead` as it arrives and frees with
+/// `httpBodyFree`.
+///
+/// `timeout_ms` is an overall deadline for the whole exchange, the body reads included; setting
+/// `cancel` (a handle of `httpCancelSignalNew`) ends it at any point, the wait for the head
+/// included. The exceptions are those of `httpPost`.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPostStream<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    tor_runtime: jlong,
+    url: JString<'local>,
+    headers: JObjectArray<'local>,
+    body: JByteArray<'local>,
+    retry_limit: jint,
+    timeout_ms: jlong,
+    cancel: jlong,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let started = std::time::Instant::now();
+        // SAFETY: the Kotlin wrapper frees the signal only after this call has returned.
+        let cancel = unsafe { cancel_signal(cancel) }?;
+        let tor_runtime =
+            std::ptr::with_exposed_provenance_mut::<crate::tor::TorRuntime>(tor_runtime as usize);
+        let tor_runtime =
+            unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
+
+        let url = utils::java_string_to_rust(env, &url)?
+            .try_into()
+            .map_err(|e| anyhow!("Invalid URL: {e}"))?;
+        let headers = parse_http_headers(env, headers)?;
+        let body = utils::java_bytes_to_rust(env, &body)?;
+        let retry_limit =
+            u8::try_from(retry_limit).map_err(|e| anyhow!("retryLimit is too large: {e}"))?;
+
+        let runtime = tor_runtime.runtime();
+        let response = crate::tor_http::block_on_unless_cancelled(
+            runtime,
+            &cancel,
+            crate::tor_http::with_deadline(
+                runtime,
+                timeout_ms,
+                tor_runtime.client().http_post(
+                    url,
+                    |builder| {
+                        headers
+                            .iter()
+                            .fold(builder, |builder, (key, value)| builder.header(key, value))
+                    },
+                    http_body_util::Full::new(io::Cursor::new(body)),
+                    |body| async move {
+                        Ok::<_, zcash_client_backend::tor::Error>(crate::tor_http::boxed_body(body))
+                    },
+                    retry_limit,
+                    |res| {
+                        res.is_err()
+                            .then_some(zcash_client_backend::tor::http::Retry::Same)
+                    },
+                ),
+            ),
+        )
+        .map_err(|e| throw_tor_http_error(env, e))?;
+        let (parts, body) = response.into_parts();
+        let headers = encode_http_headers(env, &parts.headers)?;
+        let body =
+            crate::tor_http::TorHttpBody::new(runtime.clone(), body, cancel, timeout_ms, started);
+        let handle = Box::into_raw(Box::new(body)).expose_provenance() as jlong;
+        match env.new_object(
+            "cash/z/ecc/android/sdk/internal/model/JniHttpStreamResponse",
+            format!("(I[L{};J)V", JNI_HTTP_HEADER),
+            &[
+                JValue::Int(parts.status.as_u16().into()),
+                (&headers).into(),
+                JValue::Long(handle),
+            ],
+        ) {
+            Ok(object) => Ok(object.into_raw()),
+            Err(e) => {
+                // SAFETY: `handle` was created above and has not left this function.
+                drop(unsafe { take_tor_http_body(handle) });
+                Err(e.into())
+            }
+        }
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Reclaims the body behind a handle of `httpPostStream`, or `None` for 0.
+///
+/// # Safety
+///
+/// `handle` must be 0 or a live handle of `httpPostStream`, used by no other call at the same
+/// time and not used again.
+unsafe fn take_tor_http_body(handle: jlong) -> Option<Box<crate::tor_http::TorHttpBody>> {
+    let ptr = ptr::with_exposed_provenance_mut::<crate::tor_http::TorHttpBody>(handle as usize);
+    // SAFETY: by the contract above, `ptr` is null or came from `Box::into_raw` and is
+    // reclaimed once.
+    (!ptr.is_null()).then(|| unsafe { Box::from_raw(ptr) })
+}
+
+/// The body behind a live handle of `httpPostStream`.
+///
+/// # Safety
+///
+/// `handle` must be a handle of `httpPostStream` that `httpBodyFree` has not freed and will not
+/// free during the borrow.
+unsafe fn tor_http_body<'a>(handle: jlong) -> anyhow::Result<&'a crate::tor_http::TorHttpBody> {
+    let ptr = ptr::with_exposed_provenance::<crate::tor_http::TorHttpBody>(handle as usize);
+    // SAFETY: by the contract above.
+    unsafe { ptr.as_ref() }.ok_or_else(|| anyhow!("The response body is closed"))
+}
+
+/// The next bytes of a response body over Tor, or null once it has ended. Fails like
+/// `httpPost` (`TorHttpTimeoutException` past the request's deadline, `TorHttpTransportException`
+/// on a broken connection or once the exchange's cancel signal is set).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpBodyRead<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    body: jlong,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        // SAFETY: the Kotlin wrapper frees the handle only after its last read.
+        let body = unsafe { tor_http_body(body) }?;
+        match body.read().map_err(|e| throw_tor_http_error(env, e))? {
+            Some(bytes) => Ok(env.byte_array_from_slice(&bytes)?.into_raw()),
+            None => Ok(ptr::null_mut()),
+        }
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Frees a response body of `httpPostStream` (read to its end or not). 0 is a no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpBodyFree<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    body: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        // SAFETY: the Kotlin wrapper frees each handle once, after its last read.
+        drop(unsafe { take_tor_http_body(body) });
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
 }
 
 /// Fetches the current ZEC-USD exchange rate over Tor.
