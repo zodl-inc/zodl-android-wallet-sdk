@@ -7,6 +7,7 @@ import co.electriccoin.lightwallet.client.OhttpCompletion
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpProfileInfo
 import co.electriccoin.lightwallet.client.OhttpSender
+import java.net.SocketTimeoutException
 
 /**
  * OHTTP (RFC 9458) client transport: seals a request to the gateway's key, POSTs it to the relay
@@ -65,7 +66,10 @@ internal class OhttpTransport(
      * configuration (less the codec's refresh margin); a forced refresh discards the cached key
      * before the fetch, when the codec's cache rules say so.
      */
-    suspend fun keyConfig(forceRefresh: Boolean = false): ByteArray {
+    suspend fun keyConfig(
+        forceRefresh: Boolean = false,
+        timeoutMs: Int = KEY_FETCH_TIMEOUT_MS,
+    ): ByteArray {
         val nowSeconds = System.currentTimeMillis() / MILLIS_PER_SECOND
         synchronized(lock) {
             if (forceRefresh && profile.dropBeforeRefetch) {
@@ -85,7 +89,7 @@ internal class OhttpTransport(
         RelayBackoff.check(relayUrl)
         val json =
             try {
-                sender.get(signedConfigUrl, headers, KEY_FETCH_TIMEOUT_MS)
+                sender.get(signedConfigUrl, headers, minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS))
             } catch (e: OhttpException) {
                 RelayBackoff.noteIfRateLimited(relayUrl, e)
                 throw e
@@ -107,16 +111,18 @@ internal class OhttpTransport(
      * freshness" in the ZIP). That response carried the gateway clock, which the codec has
      * already learned, so the second attempt is stamped right even on a device whose clock is off.
      * Never more than one such retry. One call makes at most four relay POSTs (one freshness
-     * retry × one key-refresh retry each), each bounded by [timeoutMs].
+     * retry × one key-refresh retry each); [timeoutMs] bounds the whole call, every post and key
+     * fetch getting what is left of it.
      */
     suspend fun roundTrip(
         request: OhttpCodecRequest,
         timeoutMs: Int,
     ): OhttpCodecResponse {
-        val response = roundTripOnce(request, timeoutMs)
+        val deadline = CallDeadline(timeoutMs)
+        val response = roundTripOnce(request, deadline)
         if (!response.isFreshnessRefusal()) return response
         logger("OHTTP gateway refused the request as stale; sending it again")
-        return roundTripOnce(request, timeoutMs)
+        return roundTripOnce(request, deadline)
     }
 
     /**
@@ -124,15 +130,17 @@ internal class OhttpTransport(
      * unreadable (outer HTTP 400 or 422, which handles gateway key rotation), the key configuration
      * is refetched and the request is **sealed afresh** and sent once more: the gateway answers a
      * repeated nonce with 409, so a ciphertext is never posted twice. One call makes at most two
-     * relay POSTs (one key-refresh retry), each bounded by [timeoutMs].
+     * relay POSTs (one key-refresh retry), within [deadline].
      */
     private suspend fun roundTripOnce(
         request: OhttpCodecRequest,
-        timeoutMs: Int,
+        deadline: CallDeadline,
     ): OhttpCodecResponse {
-        exchange(keyConfig(), request, timeoutMs, FIRST_ATTEMPT)?.let { return it }
+        exchange(keyConfig(timeoutMs = deadline.remainingMs()), request, deadline.remainingMs(), FIRST_ATTEMPT)
+            ?.let { return it }
         logger("OHTTP gateway rejected the request; refreshing the key config and retrying")
-        return exchange(keyConfig(forceRefresh = true), request, timeoutMs, RETRY_ATTEMPT)
+        val key = keyConfig(forceRefresh = true, timeoutMs = deadline.remainingMs())
+        return exchange(key, request, deadline.remainingMs(), RETRY_ATTEMPT)
             ?: throw OhttpException("OHTTP gateway rejected the request again after a key config refresh")
     }
 
@@ -216,6 +224,23 @@ internal class OhttpTransport(
 
         /** Fixed, so the relay never sees the platform's default (device model, OS build). */
         private val USER_AGENT_HEADER = listOf("User-Agent" to "ZODL-OHTTP/1.0")
+    }
+}
+
+/** What is left of one call's time; a call whose time is up fails as timed out. */
+private class CallDeadline(
+    timeoutMs: Int,
+) {
+    private val endNanos = System.nanoTime() + timeoutMs * NANOS_PER_MILLI
+
+    fun remainingMs(): Int {
+        val left = (endNanos - System.nanoTime()) / NANOS_PER_MILLI
+        if (left <= 0) throw SocketTimeoutException("OHTTP call deadline exceeded")
+        return left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    private companion object {
+        const val NANOS_PER_MILLI = 1_000_000L
     }
 }
 

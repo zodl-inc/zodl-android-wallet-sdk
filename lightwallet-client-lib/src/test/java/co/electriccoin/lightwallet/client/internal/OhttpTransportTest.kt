@@ -470,6 +470,21 @@ class OhttpTransportTest {
     }
 
     @Test
+    fun `the call timeout bounds the key fetch and the posts together`() {
+        sender.queueGet {
+            Thread.sleep(300)
+            "envelope".toByteArray()
+        }
+
+        assertFailsWith<java.net.SocketTimeoutException> {
+            runBlocking { transport().roundTrip(request, timeoutMs = 200) }
+        }
+
+        assertTrue(sender.getCalls.single().third <= 200)
+        assertEquals("no post once the call's time is up", 0, sender.postCalls.size)
+    }
+
+    @Test
     fun `the relay back-off is capped and ends`() {
         val relay = "https://relay-backoff.test/relay"
         RelayBackoff.note(relay, retryAfterSeconds = 3_600, nowMillis = 0)
