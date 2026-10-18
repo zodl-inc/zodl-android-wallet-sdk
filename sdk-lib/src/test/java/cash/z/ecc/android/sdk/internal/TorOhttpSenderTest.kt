@@ -8,6 +8,7 @@ import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpSender
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
+import java.net.SocketTimeoutException
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -89,28 +90,50 @@ class TorOhttpSenderTest {
         }
 
     @Test
-    fun `a native timeout propagates unchanged and is not retried`(): Unit =
+    fun `a native timeout is a socket timeout and is not retried`(): Unit =
         runBlocking {
             val timeout = TorHttpTimeoutException("HTTP request over Tor timed out after 50 ms")
             val transport = FakeTransport { throw timeout }
 
             val thrown =
-                assertFailsWith<TorHttpTimeoutException> {
-                    TorOhttpSender(transport).post("https://relay.example/relay", byteArrayOf(), emptyList(), 50)
+                assertFailsWith<SocketTimeoutException> {
+                    TorOhttpSender(transport).post(RELAY, byteArrayOf(), emptyList(), 50)
                 }
 
-            assertSame(timeout, thrown)
+            assertSame(timeout, thrown.cause)
             assertEquals(1, transport.calls)
         }
 
     @Test
-    fun `a native transport failure propagates unchanged`(): Unit =
+    fun `a native transport failure fetching the key configuration is a transport failure`(): Unit =
         runBlocking {
-            val transport = FakeTransport { throw TorHttpTransportException("circuit failed") }
+            val failure = TorHttpTransportException("circuit failed")
+            val transport = FakeTransport { throw failure }
 
-            assertFailsWith<TorHttpTransportException> {
-                TorOhttpSender(transport).get("https://relay.example/ohttp-configs", emptyList(), 1_000)
+            val thrown =
+                assertFailsWith<OhttpException> {
+                    TorOhttpSender(transport).get("https://relay.example/ohttp-configs", emptyList(), 1_000)
+                }
+
+            // No outer status: the channel maps it to UNAVAILABLE, as a direct-path connection failure.
+            assertEquals(null, thrown.httpStatus)
+            assertSame(failure, thrown.cause)
+            assertFailsWith<SocketTimeoutException> {
+                TorOhttpSender(FakeTransport { throw TorHttpTimeoutException("timed out") })
+                    .get("https://relay.example/ohttp-configs", emptyList(), 1_000)
             }
+        }
+
+    @Test
+    fun `a native transport failure posting is a transport failure`(): Unit =
+        runBlocking {
+            val thrown =
+                assertFailsWith<OhttpException> {
+                    TorOhttpSender(FakeTransport { throw TorHttpTransportException("stream closed") })
+                        .post(RELAY, byteArrayOf(), emptyList(), 1_000)
+                }
+
+            assertEquals(null, thrown.httpStatus)
         }
 
     @Test
@@ -240,7 +263,7 @@ class TorOhttpSenderTest {
             val timingOut = FakeTransport(chunks = listOf({ byteArrayOf(1) }, timeout)) { jniResponse(200) }
             val broken = FakeTransport(chunks = listOf({ byteArrayOf(1) }, transportFailure)) { jniResponse(200) }
 
-            assertFailsWith<java.net.SocketTimeoutException> {
+            assertFailsWith<SocketTimeoutException> {
                 TorOhttpSender(timingOut).postStreaming(RELAY, byteArrayOf(), emptyList(), 1_000) {
                     it.readBytes()
                 }

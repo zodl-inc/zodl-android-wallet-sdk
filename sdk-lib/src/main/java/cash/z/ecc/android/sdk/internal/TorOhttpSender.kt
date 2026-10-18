@@ -18,9 +18,9 @@ import java.net.SocketTimeoutException
  * lightwalletd calls of a Tor-mode OHTTP channel use [postStreaming], so their answers are opened
  * as they arrive over the circuit.
  *
- * The `timeoutMs` of each call is an overall deadline enforced inside the native call (a
- * [cash.z.ecc.android.sdk.internal.model.TorHttpTimeoutException] is thrown on expiry); a
- * Kotlin-side `withTimeout` could not interrupt the blocking JNI call.
+ * The `timeoutMs` of each call is an overall deadline enforced inside the native call (its
+ * [cash.z.ecc.android.sdk.internal.model.TorHttpTimeoutException] is thrown as a
+ * [SocketTimeoutException]); a Kotlin-side `withTimeout` could not interrupt the blocking JNI call.
  */
 class TorOhttpSender internal constructor(
     private val transport: TorHttpTransport
@@ -34,7 +34,7 @@ class TorOhttpSender internal constructor(
         timeoutMs: Int
     ): ByteArray {
         val jniHeaders = headers.map { (key, value) -> JniHttpHeader(key, value) }
-        val response = transport.post(url, jniHeaders, body, timeoutMs.toLong())
+        val response = asTransportFailure { transport.post(url, jniHeaders, body, timeoutMs.toLong()) }
         if (response.status != HttpURLConnection.HTTP_OK) {
             throw OhttpException(
                 "Relay/gateway returned HTTP ${response.status} (Tor path)${response.errorDetail()}",
@@ -45,11 +45,7 @@ class TorOhttpSender internal constructor(
         return response.body.requireWithinSizeLimit(OhttpSender.MAX_SEALED_RESPONSE_BYTES)
     }
 
-    /**
-     * The body of a 200 reaches [read] as Tor delivers it. A native timeout surfaces as a
-     * [SocketTimeoutException] and a transport failure (the body included) as an [OhttpException], so
-     * that a gRPC call over Tor fails as one over the direct sender does.
-     */
+    /** The body of a 200 reaches [read] as Tor delivers it. */
     override suspend fun <T> postStreaming(
         url: String,
         body: ByteArray,
@@ -58,7 +54,7 @@ class TorOhttpSender internal constructor(
         read: (InputStream) -> T
     ): T {
         val jniHeaders = headers.map { (key, value) -> JniHttpHeader(key, value) }
-        return try {
+        return asTransportFailure {
             transport.postStreaming(url, jniHeaders, body, timeoutMs.toLong()) { status, responseHeaders, next ->
                 val input = ChunkInputStream(next, OhttpSender.MAX_SEALED_RESPONSE_BYTES)
                 if (status != HttpURLConnection.HTTP_OK) {
@@ -76,10 +72,6 @@ class TorOhttpSender internal constructor(
                 }
                 read(input)
             }
-        } catch (e: TorHttpTimeoutException) {
-            throw SocketTimeoutException(e.message).apply { initCause(e) }
-        } catch (e: TorHttpTransportException) {
-            throw OhttpException(e.message.orEmpty(), cause = e)
         }
     }
 
@@ -89,7 +81,7 @@ class TorOhttpSender internal constructor(
         timeoutMs: Int
     ): ByteArray {
         val jniHeaders = headers.map { (key, value) -> JniHttpHeader(key, value) }
-        val response = transport.get(url, jniHeaders, timeoutMs.toLong())
+        val response = asTransportFailure { transport.get(url, jniHeaders, timeoutMs.toLong()) }
         if (response.status != HttpURLConnection.HTTP_OK) {
             throw OhttpException(
                 "GET request failed: HTTP ${response.status} (Tor path)${response.errorDetail()}",
@@ -109,6 +101,20 @@ class TorOhttpSender internal constructor(
      * native Tor runtime handle leaks for the rest of the process lifetime.
      */
     override suspend fun dispose() = transport.dispose()
+
+    /**
+     * A native timeout surfaces as a [SocketTimeoutException] and a transport failure (a streamed body
+     * included) as an [OhttpException], so that a call over Tor, its key configuration fetch included,
+     * fails as one over the direct sender does (UNAVAILABLE, not INTERNAL).
+     */
+    private inline fun <T> asTransportFailure(block: () -> T): T =
+        try {
+            block()
+        } catch (e: TorHttpTimeoutException) {
+            throw SocketTimeoutException(e.message).apply { initCause(e) }
+        } catch (e: TorHttpTransportException) {
+            throw OhttpException(e.message.orEmpty(), cause = e)
+        }
 
     /**
      * Renders the JNI response body as `": <detail>"` for use in an [OhttpException] message, or

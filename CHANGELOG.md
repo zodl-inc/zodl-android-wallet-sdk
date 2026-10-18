@@ -39,6 +39,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the previous no-deadline behavior). Expiry throws `TorHttpTimeoutException`; network/transport failures
   throw `TorHttpTransportException` (both extend `TorHttpException`). Slipstream's Sapling parameter download
   retries `TorHttpTransportException` (at most 2 retries); a timeout is not retried.
+  `TorOhttpSender` turns them into a `SocketTimeoutException` and an `OhttpException` on every call (key
+  configuration fetch, post, streamed post), so an OHTTP call over Tor that cannot reach the relay fails as
+  `UNAVAILABLE`, as over the direct sender, not `INTERNAL`.
 - **OHTTP transport for voting round driver.** When Tor is OFF and the round uses
   predefined vote servers (not custom user-added servers), the round driver now
   routes HTTP requests (vote commitments, shares, delegation, tree sync) through
