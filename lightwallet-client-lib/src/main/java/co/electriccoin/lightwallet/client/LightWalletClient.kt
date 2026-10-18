@@ -33,7 +33,7 @@ interface LightWalletClient : WalletClient {
             context: Context,
             lightWalletEndpoint: LightWalletEndpoint,
             singleRequestTimeout: Duration = 10.seconds,
-            streamingRequestTimeout: Duration = 90.seconds,
+            streamingRequestTimeout: Duration = 75.seconds,
             ohttpClientTraceIdPrefix: String? = null,
             ohttpCodec: OhttpCodec? = null,
         ): LightWalletClient =

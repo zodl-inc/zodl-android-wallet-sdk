@@ -504,7 +504,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         private const val GRPC_LENGTH_BYTE_2 = 2
         private const val GRPC_LENGTH_BYTE_3 = 3
         private const val GRPC_LENGTH_BYTE_4 = 4
-        private const val DEFAULT_TIMEOUT_MS = 90_000
+        private const val DEFAULT_TIMEOUT_MS = 75_000
         private const val MIN_TIMEOUT_MS = 1_000
         private const val TIMEOUT_SLACK_MS = 5_000
         private const val BYTE_MASK = 0xFF
