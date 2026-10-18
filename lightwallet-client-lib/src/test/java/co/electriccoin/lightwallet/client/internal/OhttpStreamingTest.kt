@@ -129,8 +129,10 @@ class OhttpStreamingTest {
             val sender = RecordingSender().apply { queuePost { body } }
             val codec = FakeOhttpCodec()
 
-            assertEquals(Status.Code.INTERNAL, Call(codec, sender).awaitClose().code)
-            assertTrue(codec.liveStreams.isEmpty())
+            val call = Call(codec, sender)
+
+            assertEquals(Status.Code.INTERNAL, call.awaitClose().code)
+            call.assertReleased(codec)
         }
     }
 
