@@ -244,8 +244,9 @@ internal class OhttpClientCall<RequestT, ResponseT>(
 
     @Suppress("TooGenericExceptionCaught") // RuntimeException catch bridges all errors to gRPC Status.INTERNAL
     private fun performRoundTrip() {
+        val timeoutMs = remainingTimeoutMs()
+        val budget = exchangeBudget(timeoutMs)
         try {
-            val timeoutMs = remainingTimeoutMs()
             val headers =
                 buildList {
                     add("content-type" to GRPC_CONTENT_TYPE)
@@ -264,11 +265,12 @@ internal class OhttpClientCall<RequestT, ResponseT>(
                     body = requestBody.toByteArray(),
                 )
 
-            val response = runBlocking { transport.roundTrip(request, exchangeTimeoutMs(timeoutMs)) }
+            val response = runBlocking { transport.roundTrip(request, budget.timeoutMs) }
             onResponse(response)
         } catch (e: SocketTimeoutException) {
             // A transport timeout is UNAVAILABLE unless the call's own deadline is what ran out.
-            val status = if (callOptions.deadline?.isExpired == true) Status.DEADLINE_EXCEEDED else Status.UNAVAILABLE
+            val deadlineHit = budget.boundByDeadline || callOptions.deadline?.isExpired == true
+            val status = if (deadlineHit) Status.DEADLINE_EXCEEDED else Status.UNAVAILABLE
             finish(status.withDescription("OHTTP request timed out").withCause(e), Metadata())
         } catch (e: OhttpException) {
             logger("OHTTP ${method.fullMethodName} failed: ${e.message}")
@@ -445,11 +447,20 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         }
     }
 
-    /** The time the OHTTP call gets: the call's own deadline, if it has one, bounds it. */
-    private fun exchangeTimeoutMs(grpcTimeoutMs: Int): Int {
+    private class ExchangeBudget(
+        val timeoutMs: Int,
+        val boundByDeadline: Boolean,
+    )
+
+    /** The time the OHTTP call gets: the call's own deadline, if it has one and it is shorter, bounds it. */
+    private fun exchangeBudget(grpcTimeoutMs: Int): ExchangeBudget {
         val full = grpcTimeoutMs + if (grpcTimeoutMs >= DEFAULT_TIMEOUT_MS) FULL_LENGTH_SLACK_MS else 0
-        val deadlineMs = callOptions.deadline?.timeRemaining(TimeUnit.MILLISECONDS) ?: return full
-        return deadlineMs.coerceIn(MIN_TIMEOUT_MS.toLong(), full.toLong()).toInt()
+        val deadlineMs = callOptions.deadline?.timeRemaining(TimeUnit.MILLISECONDS)
+        return if (deadlineMs != null && deadlineMs < full) {
+            ExchangeBudget(deadlineMs.coerceAtLeast(1).toInt(), boundByDeadline = true)
+        } else {
+            ExchangeBudget(full, boundByDeadline = false)
+        }
     }
 
     private fun remainingTimeoutMs(): Int {
