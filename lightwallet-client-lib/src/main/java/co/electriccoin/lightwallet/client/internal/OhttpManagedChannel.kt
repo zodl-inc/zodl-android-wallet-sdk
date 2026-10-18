@@ -1,10 +1,10 @@
 package co.electriccoin.lightwallet.client.internal
 
-import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
 import co.electriccoin.lightwallet.client.OhttpCodecRequest
 import co.electriccoin.lightwallet.client.OhttpCodecResponse
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpInternalException
+import co.electriccoin.lightwallet.client.OhttpRequestTooLargeException
 import io.grpc.CallOptions
 import io.grpc.ClientCall
 import io.grpc.ConnectivityState
@@ -267,16 +267,12 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             val response = runBlocking { transport.roundTrip(request, timeoutMs + TIMEOUT_SLACK_MS) }
             onResponse(response)
         } catch (e: SocketTimeoutException) {
-            finish(Status.DEADLINE_EXCEEDED.withDescription("OHTTP request timed out").withCause(e), Metadata())
-        } catch (e: KeyConfigVerificationFailedException) {
-            logger("OHTTP ${method.fullMethodName} key config verification failed: ${e.message}")
-            finish(Status.UNAVAILABLE.withDescription(e.message).withCause(e), Metadata())
-        } catch (e: OhttpInternalException) {
-            logger("OHTTP ${method.fullMethodName} protocol error: ${e.message}")
-            finish(Status.INTERNAL.withDescription(e.message).withCause(e), Metadata())
+            // A transport timeout is UNAVAILABLE unless the call's own deadline is what ran out.
+            val status = if (callOptions.deadline?.isExpired == true) Status.DEADLINE_EXCEEDED else Status.UNAVAILABLE
+            finish(status.withDescription("OHTTP request timed out").withCause(e), Metadata())
         } catch (e: OhttpException) {
             logger("OHTTP ${method.fullMethodName} failed: ${e.message}")
-            finish(Status.UNAVAILABLE.withDescription(e.message).withCause(e), Metadata())
+            finish(grpcStatusOf(e).withDescription(e.message).withCause(e), Metadata())
         } catch (e: java.io.IOException) {
             logger("OHTTP ${method.fullMethodName} I/O error: ${e.message}")
             finish(Status.UNAVAILABLE.withDescription(e.message).withCause(e), Metadata())
@@ -330,7 +326,8 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         when {
             response.status != HTTP_OK -> {
                 val statusMessage = "gateway/lightwalletd returned HTTP ${response.status}"
-                httpStatusToGrpc(response.status).withDescription(statusMessage) to Metadata()
+                logger("OHTTP ${method.fullMethodName}: $statusMessage")
+                Status.INTERNAL.withDescription(statusMessage) to Metadata()
             }
 
             !(response.field("content-type") ?: "").startsWith(GRPC_CONTENT_TYPE) -> {
@@ -458,19 +455,16 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             !name.endsWith(Metadata.BINARY_HEADER_SUFFIX) &&
             name.all { it.isLetterOrDigit() || it == '-' || it == '_' || it == '.' }
 
-    private fun httpStatusToGrpc(httpStatus: Int): Status =
-        when (httpStatus) {
-            HTTP_PAYLOAD_TOO_LARGE -> {
-                Status.RESOURCE_EXHAUSTED
-            }
-
-            HTTP_TOO_MANY_REQUESTS, HTTP_UPGRADE_REQUIRED, HTTP_BAD_GATEWAY, HTTP_SERVICE_UNAVAILABLE, HTTP_GATEWAY_TIMEOUT -> {
-                Status.UNAVAILABLE
-            }
-
-            else -> {
-                Status.INTERNAL
-            }
+    /**
+     * The gRPC status of a failed exchange: an answer that does not open is INTERNAL, a request over the
+     * size cap (an outer 413, or refused before sending) RESOURCE_EXHAUSTED, anything else (outer
+     * 401/403/426/429/5xx, transport, a rejected key configuration) UNAVAILABLE.
+     */
+    private fun grpcStatusOf(e: OhttpException): Status =
+        when {
+            e is OhttpInternalException -> Status.INTERNAL
+            e is OhttpRequestTooLargeException || e.httpStatus == HTTP_PAYLOAD_TOO_LARGE -> Status.RESOURCE_EXHAUSTED
+            else -> Status.UNAVAILABLE
         }
 
     /** gRPC `grpc-message` uses percent-encoding for non-printable bytes (gRPC HTTP/2 spec). */
@@ -515,15 +509,6 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         private const val HEX_RADIX = 16
 
         private const val HTTP_OK = 200
-        private const val HTTP_BAD_REQUEST = 400
-        private const val HTTP_UNAUTHORIZED = 401
-        private const val HTTP_FORBIDDEN = 403
-        private const val HTTP_NOT_FOUND = 404
         private const val HTTP_PAYLOAD_TOO_LARGE = 413
-        private const val HTTP_UPGRADE_REQUIRED = 426
-        private const val HTTP_TOO_MANY_REQUESTS = 429
-        private const val HTTP_BAD_GATEWAY = 502
-        private const val HTTP_SERVICE_UNAVAILABLE = 503
-        private const val HTTP_GATEWAY_TIMEOUT = 504
     }
 }

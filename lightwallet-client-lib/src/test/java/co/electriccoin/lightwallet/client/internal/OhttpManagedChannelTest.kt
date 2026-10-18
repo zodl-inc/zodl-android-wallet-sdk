@@ -1,6 +1,7 @@
 package co.electriccoin.lightwallet.client.internal
 
 import co.electriccoin.lightwallet.client.OhttpCodecResponse
+import co.electriccoin.lightwallet.client.OhttpException
 import io.grpc.CallOptions
 import io.grpc.ClientCall
 import io.grpc.Metadata
@@ -109,5 +110,114 @@ class OhttpManagedChannelTest {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         while (registry.isNotEmpty() && System.nanoTime() < deadline) Thread.sleep(10)
         assertTrue("completed call must leave the registry", registry.isEmpty())
+    }
+
+    @Test
+    fun `a rejected signed key configuration closes the call UNAVAILABLE`() {
+        val sender = RecordingSender()
+        sender.queueGet { "{}".toByteArray() }
+        val codec = FakeOhttpCodec(verify = FakeOhttpCodec.rejecting("not_after is in the past"))
+
+        val status = closeStatusOf(codec, sender, initialKey = null)
+
+        assertEquals(Status.Code.UNAVAILABLE, status.code)
+        assertTrue(sender.postCalls.isEmpty())
+    }
+
+    @Test
+    fun `an inner status other than 200 is INTERNAL`() {
+        for (inner in listOf(403, 404, 413, 429, 503)) {
+            val sender = RecordingSender()
+            sender.queuePost { "answer".toByteArray() }
+            val codec = FakeOhttpCodec(answer = grpcResponse(status = inner, trailers = emptyList()))
+
+            assertEquals("inner $inner", Status.Code.INTERNAL, closeStatusOf(codec, sender).code)
+        }
+    }
+
+    @Test
+    fun `the trailer grpc-status wins over the header one`() {
+        val sender = RecordingSender()
+        sender.queuePost { "answer".toByteArray() }
+        val codec =
+            FakeOhttpCodec(
+                answer =
+                    grpcResponse(
+                        headers = listOf("content-type" to "application/grpc", "grpc-status" to "0"),
+                        trailers = listOf("grpc-status" to "5"),
+                    ),
+            )
+
+        assertEquals(Status.Code.NOT_FOUND, closeStatusOf(codec, sender).code)
+    }
+
+    @Test
+    fun `an outer 413 is RESOURCE_EXHAUSTED and other refusals UNAVAILABLE`() {
+        for ((outer, expected) in listOf(413 to Status.Code.RESOURCE_EXHAUSTED, 426 to Status.Code.UNAVAILABLE)) {
+            val sender = RecordingSender()
+            sender.queuePost { throw OhttpException("refused", outer) }
+
+            assertEquals("outer $outer", expected, closeStatusOf(FakeOhttpCodec(), sender).code)
+        }
+    }
+
+    @Test
+    fun `a transport timeout before the call deadline is UNAVAILABLE`() {
+        val sender = RecordingSender()
+        sender.queuePost { throw java.net.SocketTimeoutException("read timed out") }
+
+        assertEquals(Status.Code.UNAVAILABLE, closeStatusOf(FakeOhttpCodec(), sender).code)
+    }
+
+    private fun grpcResponse(
+        status: Int = 200,
+        headers: List<Pair<String, String>> = listOf("content-type" to "application/grpc"),
+        trailers: List<Pair<String, String>> = listOf("grpc-status" to "0"),
+    ) = OhttpCodecResponse(status = status, headers = headers, trailers = trailers, body = ByteArray(0))
+
+    private fun closeStatusOf(
+        codec: FakeOhttpCodec,
+        sender: RecordingSender,
+        initialKey: ByteArray? = FakeOhttpCodec.KEY,
+    ): Status {
+        val transport =
+            OhttpTransport(
+                relayUrl = "https://relay.example/relay",
+                gatewayHost = "ohttp-gateway.example",
+                codec = codec,
+                sender = sender,
+                initialKey = initialKey,
+            )
+        val registry = ConcurrentHashMap.newKeySet<OhttpClientCall<*, *>>()
+        val call =
+            OhttpClientCall(
+                method,
+                CallOptions.DEFAULT,
+                "ohttp-gateway.example",
+                transport,
+                {},
+                AtomicInteger(0),
+                registry,
+            )
+        registry.add(call)
+        val closed = CountDownLatch(1)
+        var closeStatus: Status? = null
+        call.start(
+            object : ClientCall.Listener<ByteArray>() {
+                override fun onClose(
+                    status: Status,
+                    trailers: Metadata,
+                ) {
+                    closeStatus = status
+                    closed.countDown()
+                }
+            },
+            Metadata(),
+        )
+        call.request(1)
+        call.sendMessage(byteArrayOf(1))
+        call.halfClose()
+        assertTrue("call must close", closed.await(5, TimeUnit.SECONDS))
+        return closeStatus!!
     }
 }

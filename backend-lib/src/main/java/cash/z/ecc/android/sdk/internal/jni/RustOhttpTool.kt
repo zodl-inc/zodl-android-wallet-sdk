@@ -13,6 +13,7 @@ import co.electriccoin.lightwallet.client.OhttpCompletion
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpInternalException
 import co.electriccoin.lightwallet.client.OhttpProfileInfo
+import co.electriccoin.lightwallet.client.OhttpRequestTooLargeException
 import co.electriccoin.lightwallet.client.OhttpResponseOpener
 import co.electriccoin.lightwallet.client.OhttpSealedRequest
 import co.electriccoin.lightwallet.client.OhttpVerifiedKey
@@ -87,7 +88,7 @@ class RustOhttpTool private constructor() : OhttpCodec {
         key: ByteArray,
         request: OhttpCodecRequest,
     ): OhttpSealedRequest =
-        translating {
+        translating(sealing = true) {
             Companion.encapsulate(
                 PROFILE_ANDROID,
                 key,
@@ -116,11 +117,14 @@ class RustOhttpTool private constructor() : OhttpCodec {
      */
     private fun freeOpener(opener: Long) = Companion.openerFree(opener)
 
-    private inline fun <T> translating(block: () -> T): T =
+    private inline fun <T> translating(
+        sealing: Boolean = false,
+        block: () -> T
+    ): T =
         try {
             block()
         } catch (e: JniOhttpException) {
-            throw Companion.mapFailure(e)
+            throw Companion.mapFailure(e, sealing)
         }
 
     private fun completion(outcome: JniOhttpOutcome): OhttpCompletion =
@@ -171,8 +175,10 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
         // Mirrors `KIND_*` in ohttp.rs.
         internal const val KIND_KEY_CONFIG = 1
-        internal const val KIND_OPEN = 2
-        internal const val KIND_BHTTP_FORMAT = 3
+        internal const val KIND_OPEN = 3
+        internal const val KIND_NOT_A_RESPONSE = 4
+        internal const val KIND_BHTTP_FORMAT = 5
+        internal const val KIND_TOO_LARGE = 6
 
         private val instance = RustOhttpTool()
 
@@ -184,15 +190,22 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
         /**
          * Maps a failure of the native core to the exceptions of the [OhttpCodec] contract: a rejected
-         * key configuration is a [KeyConfigVerificationFailedException], AEAD/format failures are
-         * [OhttpInternalException], anything else an [OhttpException].
+         * key configuration is a [KeyConfigVerificationFailedException], an answer that does not open
+         * (AEAD, chunk framing, Binary HTTP) an [OhttpInternalException], a request over the size cap
+         * ([sealing]) an [OhttpRequestTooLargeException], anything else an [OhttpException].
          */
-        internal fun mapFailure(e: JniOhttpException): Exception =
-            when (e.kind) {
-                KIND_KEY_CONFIG -> KeyConfigVerificationFailedException(e.message.orEmpty(), e)
-                KIND_OPEN, KIND_BHTTP_FORMAT -> OhttpInternalException(e.message.orEmpty(), e)
+        internal fun mapFailure(
+            e: JniOhttpException,
+            sealing: Boolean = false
+        ): OhttpException =
+            when {
+                e.kind == KIND_KEY_CONFIG -> KeyConfigVerificationFailedException(e.message.orEmpty(), e)
+                e.kind in ANSWER_DOES_NOT_OPEN -> OhttpInternalException(e.message.orEmpty(), e)
+                sealing && e.kind == KIND_TOO_LARGE -> OhttpRequestTooLargeException(e.message.orEmpty(), e)
                 else -> OhttpException(e.message.orEmpty(), cause = e)
             }
+
+        private val ANSWER_DOES_NOT_OPEN = setOf(KIND_OPEN, KIND_NOT_A_RESPONSE, KIND_BHTTP_FORMAT)
 
         @JvmStatic
         private external fun verifyKeyConfig(
