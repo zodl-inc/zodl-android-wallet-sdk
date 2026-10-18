@@ -13,5 +13,5 @@ internal object OhttpDebugFlags {
      * sends a trace id even if the app passes a prefix.
      */
     @VisibleForTesting
-    val allowTracePrefix: Boolean = BuildConfig.DEBUG
+    var allowTracePrefix: Boolean = BuildConfig.DEBUG
 }
