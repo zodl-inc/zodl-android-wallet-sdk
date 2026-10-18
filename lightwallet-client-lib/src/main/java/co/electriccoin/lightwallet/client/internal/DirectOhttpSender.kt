@@ -15,7 +15,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Default OHTTP sender: direct HttpURLConnection. Used when Tor is OFF.
  *
  * `timeoutMs` bounds each read and, through a watchdog that closes the connection, the whole
- * exchange: a relay that keeps dribbling bytes cannot hold a call open past it.
+ * exchange: a relay that keeps dribbling bytes cannot hold a call open past it. Every request uses a
+ * connection of its own (`Connection: close`).
  */
 class DirectOhttpSender : OhttpSender {
     override suspend fun post(
@@ -107,6 +108,9 @@ class DirectOhttpSender : OhttpSender {
         connection.readTimeout = timeoutMs
         connection.useCaches = false
         connection.instanceFollowRedirects = false
+        // No keep-alive: a pooled connection to the relay could otherwise live as long as the app, and
+        // its lifetime is linkable metadata the relay sees (ZIP: SHOULD NOT with Tor mode off).
+        connection.setRequestProperty("Connection", "close")
         return connection
     }
 
