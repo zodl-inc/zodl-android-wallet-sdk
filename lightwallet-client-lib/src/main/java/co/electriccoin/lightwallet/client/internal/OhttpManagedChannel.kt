@@ -528,9 +528,11 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         private const val GRPC_LENGTH_BYTE_4 = 4
         private const val DEFAULT_TIMEOUT_MS = 75_000
         private const val MIN_TIMEOUT_MS = 1_000
+
         // A call at the grpc-timeout cap may be held by the gateway for its whole upstream timeout
         // (80 s) before the last chunk leaves: such an exchange gets 100 s, the ZIP's reference.
         private const val FULL_LENGTH_SLACK_MS = 25_000
+
         private const val BYTE_MASK = 0xFF
         private const val SHIFT_8 = 8
         private const val SHIFT_16 = 16
