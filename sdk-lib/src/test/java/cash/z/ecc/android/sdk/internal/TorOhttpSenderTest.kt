@@ -116,6 +116,28 @@ class TorOhttpSenderTest {
         }
 
     @Test
+    fun `a 429 carries the relay's Retry-After`(): Unit =
+        runBlocking {
+            val transport =
+                FakeTransport {
+                    JniHttpResponseBytes(
+                        status = 429,
+                        version = "HTTP/1.1",
+                        headers = arrayOf(JniHttpHeader("retry-after", "30")),
+                        body = ByteArray(0)
+                    )
+                }
+
+            val thrown =
+                assertFailsWith<OhttpException> {
+                    TorOhttpSender(transport).post("https://relay.example/relay", byteArrayOf(), emptyList(), 1_000)
+                }
+
+            assertEquals(429, thrown.httpStatus)
+            assertEquals(30L, thrown.retryAfterSeconds)
+        }
+
+    @Test
     fun `non-200 GET response carries status and body`(): Unit =
         runBlocking {
             val transport = FakeTransport { jniResponse(503, "unavailable".toByteArray()) }

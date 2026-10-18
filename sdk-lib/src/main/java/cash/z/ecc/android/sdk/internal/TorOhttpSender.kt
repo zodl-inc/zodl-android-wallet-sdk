@@ -32,7 +32,8 @@ class TorOhttpSender internal constructor(
         if (response.status != HttpURLConnection.HTTP_OK) {
             throw OhttpException(
                 "Relay/gateway returned HTTP ${response.status} (Tor path)${response.errorDetail()}",
-                response.status
+                response.status,
+                retryAfterSeconds = OhttpSender.retryAfterSeconds(response.header(RETRY_AFTER_HEADER))
             )
         }
         return response.body.requireWithinSizeLimit(OhttpSender.MAX_SEALED_RESPONSE_BYTES)
@@ -70,6 +71,9 @@ class TorOhttpSender internal constructor(
      * Mirrors [co.electriccoin.lightwallet.client.internal.DirectOhttpSender]'s error-stream
      * handling so callers see the same gateway error detail regardless of whether Tor is on.
      */
+    private fun JniHttpResponseBytes.header(name: String): String? =
+        headers.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
+
     private fun JniHttpResponseBytes.errorDetail(): String =
         body.toString(Charsets.UTF_8).take(ERROR_MESSAGE_MAX_LENGTH).let { if (it.isEmpty()) "" else ": $it" }
 
@@ -90,6 +94,7 @@ class TorOhttpSender internal constructor(
 
     private companion object {
         const val ERROR_MESSAGE_MAX_LENGTH = 200
+        const val RETRY_AFTER_HEADER = "Retry-After"
     }
 }
 

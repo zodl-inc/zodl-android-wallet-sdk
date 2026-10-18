@@ -47,12 +47,14 @@ internal class OhttpTransport(
      * Production code should leave this null.
      */
     initialExpirySeconds: Long? = null,
+    /** Whether a trace prefix is honoured; [OhttpDebugFlags.allowTracePrefix] outside of tests. */
+    allowTracePrefix: Boolean = OhttpDebugFlags.allowTracePrefix,
 ) {
     private val lock = Any()
     private var cachedKey: ByteArray? = initialKey
     private var cachedExpiry: Long? = initialExpirySeconds
     private val clientTrace: OhttpClientTrace? =
-        if (OhttpDebugFlags.allowTracePrefix) {
+        if (allowTracePrefix) {
             ohttpClientTraceIdPrefix?.let { OhttpClientTrace(it) }
         } else {
             null
@@ -81,7 +83,7 @@ internal class OhttpTransport(
             }
         }
 
-        val headers = profile.keyFetchHeaders + listOf("User-Agent" to "ZODL-OHTTP/1.0") + traceHeaders(profile.traceOnKeyFetch)
+        val headers = profile.keyFetchHeaders + USER_AGENT_HEADER + traceHeaders(profile.traceOnKeyFetch)
         val json = sender.get(signedConfigUrl, headers, KEY_FETCH_TIMEOUT_MS)
 
         val verified = codec.verifyKeyConfig(gatewayHost, json, nowSeconds)
@@ -106,6 +108,7 @@ internal class OhttpTransport(
         request: OhttpCodecRequest,
         timeoutMs: Int,
     ): OhttpCodecResponse {
+        RelayBackoff.check(relayUrl)
         val response = roundTripOnce(request, timeoutMs)
         if (!response.isFreshnessRefusal()) return response
         logger("OHTTP gateway refused the request as stale; sending it again")
@@ -144,8 +147,14 @@ internal class OhttpTransport(
         return sealed.opener.use { opener ->
             val answer =
                 try {
-                    sender.post(relayUrl, sealed.body, profile.postHeaders + listOf("User-Agent" to "ZODL-OHTTP/1.0") + traceHeaders(true), timeoutMs)
+                    sender.post(
+                        relayUrl,
+                        sealed.body,
+                        profile.postHeaders + USER_AGENT_HEADER + traceHeaders(true),
+                        timeoutMs,
+                    )
                 } catch (e: OhttpException) {
+                    if (e.httpStatus == HTTP_TOO_MANY_REQUESTS) RelayBackoff.note(relayUrl, e.retryAfterSeconds)
                     // The senders only return the body of a 200, and throw the relay's other
                     // statuses: let the opener decide whether this one asks for a new key.
                     val status = e.httpStatus ?: throw e
@@ -199,6 +208,47 @@ internal class OhttpTransport(
         private const val RETRY_ATTEMPT = 1
 
         private const val KEY_FETCH_TIMEOUT_MS = 15_000
+
+        /** Fixed, so the relay never sees the platform's default (device model, OS build). */
+        private val USER_AGENT_HEADER = listOf("User-Agent" to "ZODL-OHTTP/1.0")
+    }
+}
+
+/**
+ * Relays that answered 429 with a `Retry-After`: nothing is sent through such a relay until that delay,
+ * capped at [MAX_RETRY_AFTER_SECONDS], is over; a call in the meantime fails as the 429 did (UNAVAILABLE).
+ * Shared by every transport of the process, since they share the relay's view of this client's address.
+ */
+internal object RelayBackoff {
+    const val MAX_RETRY_AFTER_SECONDS = 120L
+    private const val MILLIS_PER_SECOND = 1000L
+    private val until = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun note(
+        relayUrl: String,
+        retryAfterSeconds: Long?,
+        nowMillis: Long = System.currentTimeMillis(),
+    ) {
+        val seconds = retryAfterSeconds?.coerceAtMost(MAX_RETRY_AFTER_SECONDS) ?: return
+        until[relayUrl] = nowMillis + seconds * MILLIS_PER_SECOND
+    }
+
+    fun check(
+        relayUrl: String,
+        nowMillis: Long = System.currentTimeMillis(),
+    ) {
+        val end = until[relayUrl] ?: return
+        val left = end - nowMillis
+        if (left <= 0) {
+            until.remove(relayUrl, end)
+            return
+        }
+        val seconds = (left + MILLIS_PER_SECOND - 1) / MILLIS_PER_SECOND
+        throw OhttpException(
+            "The relay asked this client to wait (HTTP 429); $seconds s left",
+            HTTP_TOO_MANY_REQUESTS,
+            retryAfterSeconds = seconds,
+        )
     }
 }
 
@@ -214,6 +264,7 @@ internal fun OhttpCodecResponse.isFreshnessRefusal(): Boolean =
         }
 
 private const val HTTP_BAD_REQUEST = 400
+private const val HTTP_TOO_MANY_REQUESTS = 429
 private const val FRESHNESS_HEADER = "ohttp-freshness"
 private const val FRESHNESS_REJECTED = "rejected"
 

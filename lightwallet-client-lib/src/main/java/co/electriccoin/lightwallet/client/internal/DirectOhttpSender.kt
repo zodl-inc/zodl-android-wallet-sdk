@@ -2,12 +2,20 @@ package co.electriccoin.lightwallet.client.internal
 
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpSender
+import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URI
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Default OHTTP sender: direct HttpURLConnection. Used when Tor is OFF.
+ *
+ * `timeoutMs` bounds each read and, through a watchdog that closes the connection, the whole
+ * exchange: a relay that keeps dribbling bytes cannot hold a call open past it.
  */
 class DirectOhttpSender : OhttpSender {
     override suspend fun post(
@@ -18,32 +26,31 @@ class DirectOhttpSender : OhttpSender {
     ): ByteArray {
         val connection = open(url, timeoutMs)
         try {
-            connection.requestMethod = "POST"
-            connection.doOutput = true
-            connection.setFixedLengthStreamingMode(body.size)
-            headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
-            connection.outputStream.use { it.write(body) }
+            return withDeadline(connection, timeoutMs) {
+                connection.requestMethod = "POST"
+                connection.doOutput = true
+                connection.setFixedLengthStreamingMode(body.size)
+                headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
+                connection.outputStream.use { it.write(body) }
 
-            val status = connection.responseCode
-            if (status != HttpURLConnection.HTTP_OK) {
-                val detail =
-                    connection.errorStream
-                        ?.use { it.readBounded(MAX_ERROR_BODY_BYTES) }
-                        ?.toString(Charsets.UTF_8)
-                        ?.take(ERROR_MESSAGE_MAX_LENGTH)
-                throw OhttpException(
-                    "Relay/gateway returned HTTP $status${detail?.let { ": $it" } ?: ""}",
-                    status,
-                )
-            }
-            return connection.inputStream.use {
-                @Suppress("TooGenericExceptionCaught")
-                try {
-                    it.readBounded(OhttpSender.MAX_SEALED_RESPONSE_BYTES, connection.contentLength)
-                } catch (e: OutOfMemoryError) {
-                    // A hostile or huge response: convert to OhttpException so the transport
-                    // handles it as a failed request instead of crashing the app.
-                    throw OhttpException("Response too large: out of memory reading sealed response", cause = e)
+                val status = connection.responseCode
+                if (status != HttpURLConnection.HTTP_OK) {
+                    throw OhttpException(
+                        "Relay/gateway returned HTTP $status${connection.errorDetail()}",
+                        status,
+                        retryAfterSeconds =
+                            OhttpSender.retryAfterSeconds(connection.getHeaderField(RETRY_AFTER_HEADER)),
+                    )
+                }
+                connection.inputStream.use {
+                    @Suppress("TooGenericExceptionCaught")
+                    try {
+                        it.readBounded(OhttpSender.MAX_SEALED_RESPONSE_BYTES, connection.contentLength)
+                    } catch (e: OutOfMemoryError) {
+                        // A hostile or huge response: convert to OhttpException so the transport
+                        // handles it as a failed request instead of crashing the app.
+                        throw OhttpException("Response too large: out of memory reading sealed response", cause = e)
+                    }
                 }
             }
         } finally {
@@ -58,27 +65,21 @@ class DirectOhttpSender : OhttpSender {
     ): ByteArray {
         val connection = open(url, timeoutMs)
         try {
-            connection.requestMethod = "GET"
-            headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
+            return withDeadline(connection, timeoutMs) {
+                connection.requestMethod = "GET"
+                headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
 
-            val status = connection.responseCode
-            if (status != HttpURLConnection.HTTP_OK) {
-                val detail =
-                    connection.errorStream
-                        ?.use { it.readBounded(MAX_ERROR_BODY_BYTES) }
-                        ?.toString(Charsets.UTF_8)
-                        ?.take(ERROR_MESSAGE_MAX_LENGTH)
-                throw OhttpException(
-                    "GET request failed: HTTP $status${detail?.let { ": $it" } ?: ""}",
-                    status,
-                )
-            }
-            return connection.inputStream.use {
-                @Suppress("TooGenericExceptionCaught")
-                try {
-                    it.readBounded(OhttpSender.MAX_KEY_CONFIG_BYTES, connection.contentLength)
-                } catch (e: OutOfMemoryError) {
-                    throw OhttpException("Key config too large: out of memory", cause = e)
+                val status = connection.responseCode
+                if (status != HttpURLConnection.HTTP_OK) {
+                    throw OhttpException("GET request failed: HTTP $status${connection.errorDetail()}", status)
+                }
+                connection.inputStream.use {
+                    @Suppress("TooGenericExceptionCaught")
+                    try {
+                        it.readBounded(OhttpSender.MAX_KEY_CONFIG_BYTES, connection.contentLength)
+                    } catch (e: OutOfMemoryError) {
+                        throw OhttpException("Key config too large: out of memory", cause = e)
+                    }
                 }
             }
         } finally {
@@ -97,20 +98,65 @@ class DirectOhttpSender : OhttpSender {
         timeoutMs: Int,
     ): HttpURLConnection {
         val connection = URI(url).toURL().openConnection() as HttpURLConnection
-        connection.connectTimeout = CONNECT_TIMEOUT_MS
+        connection.connectTimeout = minOf(CONNECT_TIMEOUT_MS, timeoutMs)
         connection.readTimeout = timeoutMs
         connection.useCaches = false
         connection.instanceFollowRedirects = false
         return connection
     }
 
+    private fun HttpURLConnection.errorDetail(): String =
+        errorStream
+            ?.use { it.readBounded(MAX_ERROR_BODY_BYTES) }
+            ?.toString(Charsets.UTF_8)
+            ?.take(ERROR_MESSAGE_MAX_LENGTH)
+            ?.let { ": $it" }
+            .orEmpty()
+
+    /**
+     * Runs [block] (all of the connection's I/O) within [timeoutMs]. When the deadline passes, the
+     * connection is closed under it, and the I/O error that follows is reported as a timeout.
+     */
+    private inline fun <T> withDeadline(
+        connection: HttpURLConnection,
+        timeoutMs: Int,
+        block: () -> T,
+    ): T {
+        val expired = AtomicBoolean(false)
+        val watchdog =
+            deadlines.schedule(
+                {
+                    expired.set(true)
+                    connection.disconnect()
+                },
+                timeoutMs.toLong(),
+                TimeUnit.MILLISECONDS,
+            )
+        try {
+            return block()
+        } catch (e: IOException) {
+            if (expired.get()) {
+                throw SocketTimeoutException("OHTTP exchange exceeded $timeoutMs ms").apply { initCause(e) }
+            }
+            throw e
+        } finally {
+            watchdog.cancel(false)
+        }
+    }
+
     companion object {
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val ERROR_MESSAGE_MAX_LENGTH = 200
+        private const val RETRY_AFTER_HEADER = "Retry-After"
 
         // Only the first ERROR_MESSAGE_MAX_LENGTH characters of an error body are quoted, but the
         // whole stream is drained up to this bound (unchanged from before the shared OHTTP core).
         private const val MAX_ERROR_BODY_BYTES = 64 * 1024 * 1024
+
+        private val deadlines =
+            Executors.newSingleThreadScheduledExecutor { runnable ->
+                Thread(runnable, "ohttp-deadline").apply { isDaemon = true }
+            }
     }
 }
 

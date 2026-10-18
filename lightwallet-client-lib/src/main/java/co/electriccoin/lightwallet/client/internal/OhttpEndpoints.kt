@@ -94,7 +94,9 @@ internal fun proxyGatewayHostFor(originalHost: String): String? =
 internal fun isOhttpProxyAllowedHost(host: String): Boolean = OHTTP_PROXY_ALLOWED_HOSTS.contains(host.lowercase())
 
 /**
- * The gateway host whose signed key configuration the proxy requests are sealed to: the mainnet
- * gateway (every proxy host uses the mainnet relay).
+ * The gateway hosts whose signed key configuration the proxy requests are sealed to, by the wallet's
+ * network (both gateways proxy the same BACKENDS).
  */
 internal const val PROXY_GATEWAY_HOST = "ohttp-gateway.example"
+
+internal const val PROXY_GATEWAY_HOST_TESTNET = "ohttp-gateway-testnet.example"

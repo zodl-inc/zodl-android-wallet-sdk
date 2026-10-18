@@ -65,7 +65,7 @@ class OhttpTransportTest {
         assertEquals(listOf("https://relay.test/relay"), codec.signedConfigUrls)
         assertEquals(1, sender.getCalls.size)
         assertEquals("https://relay.test/ohttp-configs/signed", sender.getCalls[0].first)
-        assertEquals(FakeOhttpCodec.PROFILE.keyFetchHeaders, sender.getCalls[0].second)
+        assertEquals(FakeOhttpCodec.PROFILE.keyFetchHeaders + FIXED_USER_AGENT, sender.getCalls[0].second)
         assertEquals(0, sender.postCalls.size)
         val (host, json, _) = codec.verified.single()
         assertEquals("ohttp-gateway-testnet.example", host)
@@ -187,7 +187,7 @@ class OhttpTransportTest {
         val (url, body, headers) = sender.postCalls.single()
         assertEquals("https://relay.test/relay", url)
         assertArrayEquals(codec.sealedBodies.single(), body)
-        assertEquals(FakeOhttpCodec.PROFILE.postHeaders, headers)
+        assertEquals(FakeOhttpCodec.PROFILE.postHeaders + FIXED_USER_AGENT, headers)
         val completion = codec.completed.single()
         assertEquals(200, completion.outerStatus)
         assertEquals(0, completion.attempt)
@@ -433,6 +433,38 @@ class OhttpTransportTest {
         assertFailsWith<IllegalStateException> { runBlocking { opener.open(200, null, ByteArray(0), 0) } }
     }
 
+    @Test
+    fun `a 429 with Retry-After keeps every transport off that relay until the delay is over`() {
+        val relay = "https://relay-429.test/relay"
+        val limited = RecordingSender()
+        limited.queuePost { throw OhttpException("rate limited", 429, retryAfterSeconds = 30) }
+        val (first, second) =
+            List(2) {
+                OhttpTransport(relay, "ohttp-gateway-testnet.example", codec, limited, initialKey = FakeOhttpCodec.KEY)
+            }
+
+        val refused = assertFailsWith<OhttpException> { runBlocking { first.roundTrip(request, timeoutMs = 5_000) } }
+        val waiting = assertFailsWith<OhttpException> { runBlocking { second.roundTrip(request, timeoutMs = 5_000) } }
+
+        assertEquals(429, refused.httpStatus)
+        assertEquals(429, waiting.httpStatus)
+        assertEquals("nothing is posted while the relay asked to wait", 1, limited.postCalls.size)
+        assertTrue(codec.liveOpeners.isEmpty())
+    }
+
+    @Test
+    fun `the relay back-off is capped and ends`() {
+        val relay = "https://relay-backoff.test/relay"
+        RelayBackoff.note(relay, retryAfterSeconds = 3_600, nowMillis = 0)
+
+        val waiting = assertFailsWith<OhttpException> { RelayBackoff.check(relay, nowMillis = 1_000) }
+        assertEquals(RelayBackoff.MAX_RETRY_AFTER_SECONDS - 1, waiting.retryAfterSeconds)
+
+        RelayBackoff.check(relay, nowMillis = RelayBackoff.MAX_RETRY_AFTER_SECONDS * 1_000)
+        RelayBackoff.note(relay, retryAfterSeconds = null, nowMillis = 0)
+        RelayBackoff.check(relay, nowMillis = 0)
+    }
+
     private fun profile(
         cacheRefreshMarginSecs: Long = 0,
         dropBeforeRefetch: Boolean = true,
@@ -447,5 +479,9 @@ class OhttpTransportTest {
             traceOnKeyFetch = it.traceOnKeyFetch,
             bodyWindow = it.bodyWindow,
         )
+    }
+
+    private companion object {
+        val FIXED_USER_AGENT = listOf("User-Agent" to "ZODL-OHTTP/1.0")
     }
 }

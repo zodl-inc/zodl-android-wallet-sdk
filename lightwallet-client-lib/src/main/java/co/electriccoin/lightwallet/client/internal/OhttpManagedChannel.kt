@@ -264,7 +264,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
                     body = requestBody.toByteArray(),
                 )
 
-            val response = runBlocking { transport.roundTrip(request, timeoutMs + TIMEOUT_SLACK_MS) }
+            val response = runBlocking { transport.roundTrip(request, exchangeTimeoutMs(timeoutMs)) }
             onResponse(response)
         } catch (e: SocketTimeoutException) {
             // A transport timeout is UNAVAILABLE unless the call's own deadline is what ran out.
@@ -435,6 +435,9 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         }
     }
 
+    private fun exchangeTimeoutMs(grpcTimeoutMs: Int): Int =
+        grpcTimeoutMs + if (grpcTimeoutMs >= DEFAULT_TIMEOUT_MS) FULL_LENGTH_SLACK_MS else TIMEOUT_SLACK_MS
+
     private fun remainingTimeoutMs(): Int {
         val deadline = callOptions.deadline ?: return DEFAULT_TIMEOUT_MS
         val remaining = deadline.timeRemaining(TimeUnit.MILLISECONDS)
@@ -501,6 +504,10 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         private const val DEFAULT_TIMEOUT_MS = 75_000
         private const val MIN_TIMEOUT_MS = 1_000
         private const val TIMEOUT_SLACK_MS = 5_000
+
+        // A call at the grpc-timeout cap may be held by the gateway for its whole upstream timeout
+        // (80 s) before the last chunk leaves: such an exchange gets 100 s, the ZIP's reference.
+        private const val FULL_LENGTH_SLACK_MS = 25_000
         private const val BYTE_MASK = 0xFF
         private const val SHIFT_8 = 8
         private const val SHIFT_16 = 16

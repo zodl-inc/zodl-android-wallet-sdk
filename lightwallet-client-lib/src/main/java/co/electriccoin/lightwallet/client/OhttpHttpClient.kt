@@ -5,6 +5,7 @@ import co.electriccoin.lightwallet.client.internal.Constants
 import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.PROXY_GATEWAY_HOST
+import co.electriccoin.lightwallet.client.internal.PROXY_GATEWAY_HOST_TESTNET
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import co.electriccoin.lightwallet.client.internal.proxyGatewayHostFor
 import co.electriccoin.lightwallet.client.internal.stripSecretsForGateway
@@ -22,14 +23,15 @@ class OhttpHttpClient private constructor(
      * for details.
      */
     private val ohttpClientTraceIdPrefix: String? = null,
+    gatewayHost: String = PROXY_GATEWAY_HOST,
 ) : Disposable {
     // F-07 fix: Reuse OhttpTransport instance to share key cache across requests
     private val transport =
         OhttpTransport(
             relayUrl =
-                codec.relayUrlFor(PROXY_GATEWAY_HOST)
-                    ?: error("No OHTTP relay configured for gateway host $PROXY_GATEWAY_HOST"),
-            gatewayHost = PROXY_GATEWAY_HOST,
+                codec.relayUrlFor(gatewayHost)
+                    ?: error("No OHTTP relay configured for gateway host $gatewayHost"),
+            gatewayHost = gatewayHost,
             codec = codec,
             sender = sender,
             ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
@@ -66,12 +68,21 @@ class OhttpHttpClient private constructor(
          * @param codec the native OHTTP protocol implementation; in an app that uses the SDK, get it from
          *   `cash.z.ecc.android.sdk.util.OhttpCodecFactory`.
          * @param ohttpClientTraceIdPrefix Optional client trace ID prefix for end-to-end tracing.
+         * @param testnet seal to the testnet gateway (through its relay) instead of the mainnet one: the
+         *   gateway must match the wallet's network, as the SDK's own voting route does.
          */
         fun create(
             codec: OhttpCodec,
             sender: OhttpSender = DirectOhttpSender(),
             ohttpClientTraceIdPrefix: String? = null,
-        ): OhttpHttpClient = OhttpHttpClient(codec, sender, ohttpClientTraceIdPrefix)
+            testnet: Boolean = false,
+        ): OhttpHttpClient =
+            OhttpHttpClient(
+                codec,
+                sender,
+                ohttpClientTraceIdPrefix,
+                if (testnet) PROXY_GATEWAY_HOST_TESTNET else PROXY_GATEWAY_HOST,
+            )
     }
 
     /**

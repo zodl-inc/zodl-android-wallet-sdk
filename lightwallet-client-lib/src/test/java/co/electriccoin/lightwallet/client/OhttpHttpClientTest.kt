@@ -2,11 +2,12 @@ package co.electriccoin.lightwallet.client
 
 import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.FakeOhttpCodec
-import co.electriccoin.lightwallet.client.internal.OhttpDebugFlags
 import co.electriccoin.lightwallet.client.internal.OhttpEndpoints
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
+import co.electriccoin.lightwallet.client.internal.RecordingSender
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -49,6 +50,7 @@ class OhttpHttpClientTest {
             sender = mockSender,
             ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
             initialKey = FakeOhttpCodec.KEY,
+            allowTracePrefix = true,
         )
     }
 
@@ -153,7 +155,6 @@ class OhttpHttpClientTest {
 
     @Test
     fun `client trace ID header is present and well-formed when prefix set`() {
-        OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val transport = capturingTransport(capturedHeaders, ohttpClientTraceIdPrefix = "test-wallet")
         // Make two requests to verify sequence counter increments
@@ -195,7 +196,6 @@ class OhttpHttpClientTest {
 
     @Test
     fun `client trace ID sanitises invalid characters`() {
-        OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val transport = capturingTransport(capturedHeaders, ohttpClientTraceIdPrefix = "test@wallet#123")
         val exceptionThrown = roundTripAndIgnoreFailure(transport)
@@ -221,7 +221,6 @@ class OhttpHttpClientTest {
 
     @Test
     fun `client trace ID truncates to 64 chars`() {
-        OhttpDebugFlags.allowTracePrefix = true
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         // Long prefix: 60 'a' + 1 '-' + 36 UUID + 1 '-' + 6 digits = 104 chars → truncated to 64
         val transport = capturingTransport(capturedHeaders, ohttpClientTraceIdPrefix = "a".repeat(60))
@@ -234,6 +233,30 @@ class OhttpHttpClientTest {
         assertTrue("Trace ID must be exactly 64 chars", traceId.length == 64)
         // Must still start with the prefix (truncated)
         assertTrue("Trace ID must start with truncated prefix", traceId.startsWith("a"))
+    }
+
+    @Test
+    fun `a testnet client seals to the testnet gateway through the testnet relay`() {
+        val cases =
+            listOf(
+                Triple(false, "ohttp-gateway.example", "https://relay-prod.zodl.com/relay"),
+                Triple(true, "ohttp-gateway-testnet.example", "https://relay-dev.zodl.com/relay"),
+            )
+        for ((testnet, gateway, relay) in cases) {
+            val codec = FakeOhttpCodec()
+            val sender = RecordingSender()
+            sender.queueGet { "envelope".toByteArray() }
+            sender.queuePost { "answer".toByteArray() }
+
+            runBlocking {
+                OhttpHttpClient
+                    .create(codec, sender, testnet = testnet)
+                    .execute(OhttpHttpClient.Request(url = "https://vote.zodl.com/v1/rounds"))
+            }
+
+            assertEquals(gateway, codec.verified.single().first)
+            assertEquals(relay, sender.postCalls.single().first)
+        }
     }
 
     @Test

@@ -20,8 +20,10 @@ import co.electriccoin.lightwallet.client.util.Disposable
  */
 interface OhttpSender : Disposable {
     /**
-     * POSTs [body] to [url] with the given [headers] and [timeoutMs], returning the response body.
-     * @throws OhttpException on failure (network, HTTP error, timeout).
+     * POSTs [body] to [url] with the given [headers], returning the response body. [timeoutMs] bounds
+     * the whole exchange, not only each read.
+     * @throws OhttpException on failure (network, HTTP error, timeout); a 429 carries the relay's
+     * `Retry-After` as [OhttpException.retryAfterSeconds].
      */
     suspend fun post(
         url: String,
@@ -57,5 +59,8 @@ interface OhttpSender : Disposable {
          * of the native OHTTP core, which enforces it again before parsing the envelope.
          */
         const val MAX_KEY_CONFIG_BYTES: Int = 64 * 1024
+
+        /** A `Retry-After` value in the delay-seconds form, or null (absent, an HTTP date, malformed). */
+        fun retryAfterSeconds(value: String?): Long? = value?.trim()?.toLongOrNull()?.takeIf { it >= 0 }
     }
 }
