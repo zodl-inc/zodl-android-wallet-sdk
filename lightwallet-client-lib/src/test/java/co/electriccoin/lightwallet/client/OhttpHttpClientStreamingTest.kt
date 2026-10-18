@@ -12,8 +12,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 import java.io.InputStream
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -24,10 +24,11 @@ class OhttpHttpClientStreamingTest {
     fun `api_flexa_co is sealed to the flexa_zodl_com alias with its Authorization kept`() {
         val codec = FakeOhttpCodec()
         codec.answer = OhttpCodecResponse(200, listOf("date" to DATE), emptyList(), "{}".toByteArray())
-        val sender = RecordingSender().apply {
-            queueGet { "envelope".toByteArray() }
-            queuePost { "answer".toByteArray() }
-        }
+        val sender =
+            RecordingSender().apply {
+                queueGet { "envelope".toByteArray() }
+                queuePost { "answer".toByteArray() }
+            }
         val client = OhttpHttpClient.create(codec, sender)
 
         assertTrue(client.canHandle("https://api.flexa.co/accounts/me"))
@@ -54,10 +55,11 @@ class OhttpHttpClientStreamingTest {
     fun `a streamed answer reaches the listener chunk by chunk before it ends`() {
         val feed = Feed()
         val codec = FakeOhttpCodec()
-        val sender = RecordingSender().apply {
-            queueGet { "envelope".toByteArray() }
-            queuePostStream { feed }
-        }
+        val sender =
+            RecordingSender().apply {
+                queueGet { "envelope".toByteArray() }
+                queuePostStream { feed }
+            }
         val client = OhttpHttpClient.create(codec, sender)
         val heads = CopyOnWriteArrayList<Pair<Int, List<Pair<String, String>>>>()
         val data = CopyOnWriteArrayList<String>()
