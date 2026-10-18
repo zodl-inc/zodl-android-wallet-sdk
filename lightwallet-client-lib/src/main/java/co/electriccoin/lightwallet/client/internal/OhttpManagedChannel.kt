@@ -4,6 +4,7 @@ import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
 import co.electriccoin.lightwallet.client.OhttpCodecRequest
 import co.electriccoin.lightwallet.client.OhttpCodecResponse
 import co.electriccoin.lightwallet.client.OhttpException
+import co.electriccoin.lightwallet.client.OhttpInternalException
 import io.grpc.CallOptions
 import io.grpc.ClientCall
 import io.grpc.ConnectivityState
@@ -270,6 +271,9 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         } catch (e: KeyConfigVerificationFailedException) {
             logger("OHTTP ${method.fullMethodName} key config verification failed: ${e.message}")
             finish(Status.UNAVAILABLE.withDescription(e.message).withCause(e), Metadata())
+        } catch (e: OhttpInternalException) {
+            logger("OHTTP ${method.fullMethodName} protocol error: ${e.message}")
+            finish(Status.INTERNAL.withDescription(e.message).withCause(e), Metadata())
         } catch (e: OhttpException) {
             logger("OHTTP ${method.fullMethodName} failed: ${e.message}")
             finish(Status.UNAVAILABLE.withDescription(e.message).withCause(e), Metadata())
@@ -290,12 +294,12 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             return
         }
 
-        val grpcStatusCode = response.field("grpc-status")?.toIntOrNull()
+        val grpcStatusCode = fieldFromTrailersFirst(response, "grpc-status")?.toIntOrNull()
         if (grpcStatusCode == null) {
             finish(Status.INTERNAL.withDescription("response is missing grpc-status"), Metadata())
             return
         }
-        val grpcMessage = response.field("grpc-message")?.let { percentDecode(it) }
+        val grpcMessage = fieldFromTrailersFirst(response, "grpc-message")?.let { percentDecode(it) }
         val status =
             Status.fromCodeValue(grpcStatusCode).let {
                 if (grpcMessage != null) it.withDescription(grpcMessage) else it
@@ -343,6 +347,14 @@ internal class OhttpClientCall<RequestT, ResponseT>(
                 null
             }
         }
+
+    private fun fieldFromTrailersFirst(
+        response: OhttpCodecResponse,
+        name: String
+    ): String? =
+        (response.trailers.asSequence() + response.headers.asSequence())
+            .firstOrNull { it.first.equals(name, ignoreCase = true) }
+            ?.second
 
     private fun parseFrames(body: ByteArray): List<ResponseT> {
         val messages = ArrayList<ResponseT>()
@@ -448,28 +460,16 @@ internal class OhttpClientCall<RequestT, ResponseT>(
 
     private fun httpStatusToGrpc(httpStatus: Int): Status =
         when (httpStatus) {
-            HTTP_BAD_REQUEST -> {
-                Status.INTERNAL
+            HTTP_PAYLOAD_TOO_LARGE -> {
+                Status.RESOURCE_EXHAUSTED
             }
 
-            HTTP_UNAUTHORIZED -> {
-                Status.UNAUTHENTICATED
-            }
-
-            HTTP_FORBIDDEN -> {
-                Status.PERMISSION_DENIED
-            }
-
-            HTTP_NOT_FOUND -> {
-                Status.UNIMPLEMENTED
-            }
-
-            HTTP_TOO_MANY_REQUESTS, HTTP_BAD_GATEWAY, HTTP_SERVICE_UNAVAILABLE, HTTP_GATEWAY_TIMEOUT -> {
+            HTTP_TOO_MANY_REQUESTS, HTTP_UPGRADE_REQUIRED, HTTP_BAD_GATEWAY, HTTP_SERVICE_UNAVAILABLE, HTTP_GATEWAY_TIMEOUT -> {
                 Status.UNAVAILABLE
             }
 
             else -> {
-                Status.UNKNOWN
+                Status.INTERNAL
             }
         }
 
@@ -519,6 +519,8 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         private const val HTTP_UNAUTHORIZED = 401
         private const val HTTP_FORBIDDEN = 403
         private const val HTTP_NOT_FOUND = 404
+        private const val HTTP_PAYLOAD_TOO_LARGE = 413
+        private const val HTTP_UPGRADE_REQUIRED = 426
         private const val HTTP_TOO_MANY_REQUESTS = 429
         private const val HTTP_BAD_GATEWAY = 502
         private const val HTTP_SERVICE_UNAVAILABLE = 503

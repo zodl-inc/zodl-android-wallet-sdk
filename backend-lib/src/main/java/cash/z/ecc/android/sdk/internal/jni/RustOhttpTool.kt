@@ -11,6 +11,7 @@ import co.electriccoin.lightwallet.client.OhttpCodecRequest
 import co.electriccoin.lightwallet.client.OhttpCodecResponse
 import co.electriccoin.lightwallet.client.OhttpCompletion
 import co.electriccoin.lightwallet.client.OhttpException
+import co.electriccoin.lightwallet.client.OhttpInternalException
 import co.electriccoin.lightwallet.client.OhttpProfileInfo
 import co.electriccoin.lightwallet.client.OhttpResponseOpener
 import co.electriccoin.lightwallet.client.OhttpSealedRequest
@@ -170,6 +171,8 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
         // Mirrors `KIND_*` in ohttp.rs.
         internal const val KIND_KEY_CONFIG = 1
+        internal const val KIND_OPEN = 2
+        internal const val KIND_BHTTP_FORMAT = 3
 
         private val instance = RustOhttpTool()
 
@@ -181,14 +184,14 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
         /**
          * Maps a failure of the native core to the exceptions of the [OhttpCodec] contract: a rejected
-         * key configuration is a [KeyConfigVerificationFailedException], anything else an
-         * [OhttpException].
+         * key configuration is a [KeyConfigVerificationFailedException], AEAD/format failures are
+         * [OhttpInternalException], anything else an [OhttpException].
          */
         internal fun mapFailure(e: JniOhttpException): Exception =
-            if (e.kind == KIND_KEY_CONFIG) {
-                KeyConfigVerificationFailedException(e.message.orEmpty(), e)
-            } else {
-                OhttpException(e.message.orEmpty(), cause = e)
+            when (e.kind) {
+                KIND_KEY_CONFIG -> KeyConfigVerificationFailedException(e.message.orEmpty(), e)
+                KIND_OPEN, KIND_BHTTP_FORMAT -> OhttpInternalException(e.message.orEmpty(), e)
+                else -> OhttpException(e.message.orEmpty(), cause = e)
             }
 
         @JvmStatic
