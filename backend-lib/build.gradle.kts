@@ -56,12 +56,32 @@ val productionNativeArtifactTasksWithOhttpTrace =
         emptyList()
     }
 
-if (productionNativeArtifactTasksWithOhttpTrace.isNotEmpty()) {
+fun failOhttpTraceInRelease(tasks: List<String>): Nothing =
     throw GradleException(
         "The ohttp-trace Cargo feature (ZODL_OHTTP_TRACE / ZCASH_OHTTP_TRACE_PREFIX) is for QA and " +
             "E2E builds only and must not reach a release native library. Conflicting task(s): " +
-            productionNativeArtifactTasksWithOhttpTrace.joinToString()
+            tasks.joinToString()
     )
+
+if (productionNativeArtifactTasksWithOhttpTrace.isNotEmpty()) {
+    failOhttpTraceInRelease(productionNativeArtifactTasksWithOhttpTrace)
+}
+
+// Also on the resolved task graph, so a release, benchmark or publish task reached through any other
+// entry point (an aggregate or custom task) cannot package a trace-enabled library either.
+if (isOhttpTraceEnabled) {
+    gradle.taskGraph.whenReady {
+        val releaseTasks =
+            allTasks
+                .map { it.path }
+                .filter { path ->
+                    val name = path.substringAfterLast(":")
+                    name.contains("Release", ignoreCase = true) ||
+                        name.contains("Benchmark", ignoreCase = true) ||
+                        name.startsWith("publish", ignoreCase = true)
+                }
+        if (releaseTasks.isNotEmpty()) failOhttpTraceInRelease(releaseTasks)
+    }
 }
 
 val productionNativeArtifactTasksWithAndroidFixtures =
