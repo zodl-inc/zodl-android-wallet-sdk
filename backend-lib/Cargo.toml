@@ -120,8 +120,9 @@ serde_json = "1"
 # features the networked `Client` (reqwest, tokio) is not compiled: the Kotlin transport does
 # the I/O. The JNI surface is `src/main/rust/ohttp.rs`. The repository is private (CI's App
 # token must include `ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
-# it only to a commit that is on the `main` of zodl-inc/ohttp. Now at a2986679ec50494755a432e57d97a64c64544d66 (ohttp main: merged zodl-inc/ohttp#4).
-zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "a2986679ec50494755a432e57d97a64c64544d66", default-features = false }
+# it only to a commit that is on the `main` of zodl-inc/ohttp, the one zodl-slipstream pins (one copy of the
+# core, so its relay backoff table is shared). Now at 1b6ab2d83a3fea8d4824cecdbf5a98869d3601de (ohttp main: merged zodl-inc/ohttp#10).
+zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "1b6ab2d83a3fea8d4824cecdbf5a98869d3601de", default-features = false }
 tonic = "0.14"
 
 # Logging
@@ -292,7 +293,7 @@ bip0039 = "0.12"
 base64 = "0.22"
 ed25519-dalek = "2"
 sha2 = "0.10"
-ohttp-gateway = { git = "https://github.com/zodl-inc/ohttp.git", rev = "a2986679ec50494755a432e57d97a64c64544d66" }
+ohttp-gateway = { git = "https://github.com/zodl-inc/ohttp.git", rev = "1b6ab2d83a3fea8d4824cecdbf5a98869d3601de" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # Driving the gateway's streaming response encoder (`chunked_stream::encode_response_stream`,
 # whose upstream items are `anyhow::Result<UpFrame>` over `Bytes`) in the `ohttp.rs` tests,
@@ -316,8 +317,8 @@ crate-type = ["staticlib", "cdylib"]
 # instead of crates.io. Once slipstream-internal PR #16 merges, the rev below must move to
 # the resulting slipstream-internal `main` commit; after that, this entry can be removed once
 # a published zodl-slipstream version containing the OHTTP transport exists on crates.io.
-# Pins slipstream-internal PR #16 head, 6d10cdc95fc3ff42debc7d41fd3d5e282a9823b8 (a gateway of another network is refused; rate limits and oversized requests never count as unreachable; zodl-ohttp-client a2986679).
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "6d10cdc95fc3ff42debc7d41fd3d5e282a9823b8" }
+# Pins slipstream-internal PR #16 head, dc760ef2eadd89e0f13444cf139810913dfaec7f (zodl-ohttp-client 1b6ab2d8).
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "dc760ef2eadd89e0f13444cf139810913dfaec7f" }
 #
 # Shielded voting on the NU7 pre-release crates.
 #

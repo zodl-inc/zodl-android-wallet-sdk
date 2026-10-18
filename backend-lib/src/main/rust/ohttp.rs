@@ -281,7 +281,7 @@ fn complete(
             // policy's call (`OuterPolicy::ANDROID` does not require it), made above; here the
             // sealed body is opened, and one that does not open is an error.
             check_size(body.len(), profile.limits.max_sealed_response_bytes)?;
-            let response = opener.open_response(body).map_err(not_opened)?;
+            let response = opener.open_response(body)?;
 
             Outcome {
                 kind: OUTCOME_RESPONSE,
@@ -387,21 +387,12 @@ impl ResponseStream {
     /// as they complete chunks.
     fn push(&mut self, bytes: &[u8]) -> Result<StreamEvents, Failure> {
         self.guard.push(bytes.len())?;
-        gather(self.decoder.push(bytes).map_err(not_opened)?)
+        gather(self.decoder.push(bytes)?)
     }
 
     /// The body ended: the final chunk is opened and the message must be complete.
     fn finish(&mut self) -> Result<StreamEvents, Failure> {
         gather(self.decoder.finish()?)
-    }
-}
-
-/// The decoder reports a non-final chunk whose AEAD tag does not verify as `Error::Seal`; like the
-/// final chunk's, that is an answer that does not open (gRPC `INTERNAL`), not a local failure.
-fn not_opened(error: Error) -> Error {
-    match error {
-        Error::Seal(_) => Error::Open,
-        other => other,
     }
 }
 
@@ -950,6 +941,7 @@ mod tests {
             configs_signing_seed: None,
             chunk_size: 16384,
             chunk_flush_ms: 50,
+            flexa_publishable_key: None,
         }
     }
 
@@ -1509,8 +1501,26 @@ mod tests {
         assert_eq!(failure.message, Error::Truncated.to_string());
     }
 
+    /// Whole, as streamed: the core's `Error::Truncated` is `KIND_OTHER` (gRPC `UNAVAILABLE`).
+    #[test]
+    fn a_whole_answer_cut_before_its_final_chunk_is_truncated() {
+        let (handle, answer) = streamed_answer(&[7; 200]);
+        let failure = complete(
+            &android(),
+            unsafe { take_opener(handle) },
+            200,
+            Some(CONTENT_TYPE_CHUNKED_RES),
+            &answer[..answer.len() / 2],
+            0,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(failure.kind, KIND_OTHER);
+        assert_eq!(failure.message, Error::Truncated.to_string());
+    }
+
     /// A non-final chunk that does not open is `KIND_OPEN` (gRPC `INTERNAL`) as the final one is,
-    /// streamed or whole.
+    /// streamed or whole: the core reports it as `Error::Open` itself.
     #[test]
     fn a_tampered_chunk_fails_as_soon_as_it_is_complete() {
         let (handle, mut answer) = streamed_answer(&[7; 200]);
