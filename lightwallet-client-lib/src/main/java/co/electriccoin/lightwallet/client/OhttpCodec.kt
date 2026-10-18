@@ -51,6 +51,18 @@ interface OhttpCodec {
         key: ByteArray,
         request: OhttpCodecRequest,
     ): OhttpSealedRequest
+
+    /**
+     * Records that the relay at [relayUrl] asked for [delayMs] before the next request (an outer
+     * 429's `Retry-After`) where the native transports see it too. No-op by default.
+     */
+    fun noteRelayBackoff(
+        relayUrl: String,
+        delayMs: Long,
+    ) = Unit
+
+    /** What is left, in ms, of a pause the relay at [relayUrl] asked any native transport for; 0 if none. */
+    fun relayBackoffRemainingMs(relayUrl: String): Long = 0
 }
 
 /**

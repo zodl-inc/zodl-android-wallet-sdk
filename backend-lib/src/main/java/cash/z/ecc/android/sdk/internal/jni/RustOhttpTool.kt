@@ -73,6 +73,13 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
     override fun relayUrlFor(gatewayHost: String): String? = nativeRelayUrlFor(gatewayHost)
 
+    override fun noteRelayBackoff(
+        relayUrl: String,
+        delayMs: Long,
+    ) = nativeRelayBackoffNote(relayUrl, delayMs)
+
+    override fun relayBackoffRemainingMs(relayUrl: String): Long = nativeRelayBackoffRemainingMs(relayUrl)
+
     override fun signedConfigUrl(relayUrl: String): String =
         translating { Companion.signedConfigUrl(PROFILE_ANDROID, relayUrl) }
 
@@ -254,6 +261,15 @@ class RustOhttpTool private constructor() : OhttpCodec {
          */
         @JvmStatic
         private external fun nativeRelayUrlFor(gatewayHost: String): String?
+
+        @JvmStatic
+        private external fun nativeRelayBackoffNote(
+            relayUrl: String,
+            delayMs: Long,
+        )
+
+        @JvmStatic
+        private external fun nativeRelayBackoffRemainingMs(relayUrl: String): Long
 
         @JvmStatic
         private external fun profileInfo(profile: Int): JniOhttpProfile

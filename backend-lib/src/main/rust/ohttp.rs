@@ -22,6 +22,7 @@
 //! arguments), never request or response content.
 
 use std::ptr;
+use std::time::Duration;
 
 use anyhow::anyhow;
 use jni::{
@@ -545,6 +546,48 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeR
         }
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Records that the relay at `relay_url` asked for `delay_ms` before the next request (an outer
+/// 429's `Retry-After`), in the process-wide table the Slipstream engine's OHTTP transport reads
+/// too. A shorter pause never cuts a running one short.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeRelayBackoffNote<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    relay_url: JString<'local>,
+    delay_ms: jlong,
+) {
+    let res = catch_unwind(&mut env, |env| {
+        let relay_url = java_string_to_rust(env, &relay_url)?;
+        let delay = Duration::from_millis(u64::try_from(delay_ms).unwrap_or(0));
+        zodl_ohttp_client::RelayBackoff::global().note(&relay_url, delay);
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+/// What is left, in milliseconds, of the pause the relay at `relay_url` asked for (from either
+/// transport); 0 when a request may be sent now.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeRelayBackoffRemainingMs<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    relay_url: JString<'local>,
+) -> jlong {
+    let res = catch_unwind(&mut env, |env| {
+        let relay_url = java_string_to_rust(env, &relay_url)?;
+        Ok(zodl_ohttp_client::RelayBackoff::global()
+            .remaining(&relay_url)
+            .map_or(0, |left| {
+                jlong::try_from(left.as_millis()).unwrap_or(jlong::MAX)
+            }))
+    });
+    unwrap_exc_or(&mut env, res, 0)
 }
 
 /// The preset's headers, limits and cache rules:

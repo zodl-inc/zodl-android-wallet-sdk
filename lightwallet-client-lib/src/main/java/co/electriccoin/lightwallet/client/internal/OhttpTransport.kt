@@ -86,12 +86,12 @@ internal class OhttpTransport(
         }
 
         val headers = profile.keyFetchHeaders + USER_AGENT_HEADER + traceHeaders(profile.traceOnKeyFetch)
-        RelayBackoff.check(relayUrl)
+        RelayBackoff.check(relayUrl, codec = codec)
         val json =
             try {
                 sender.get(signedConfigUrl, headers, minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS))
             } catch (e: OhttpException) {
-                RelayBackoff.noteIfRateLimited(relayUrl, e)
+                RelayBackoff.noteIfRateLimited(relayUrl, e, codec)
                 throw e
             }
 
@@ -155,7 +155,7 @@ internal class OhttpTransport(
         timeoutMs: Int,
         attempt: Int,
     ): OhttpCodecResponse? {
-        RelayBackoff.check(relayUrl)
+        RelayBackoff.check(relayUrl, codec = codec)
         val sealed = codec.encapsulate(key, request)
         return sealed.opener.use { opener ->
             val answer =
@@ -167,7 +167,7 @@ internal class OhttpTransport(
                         timeoutMs,
                     )
                 } catch (e: OhttpException) {
-                    RelayBackoff.noteIfRateLimited(relayUrl, e)
+                    RelayBackoff.noteIfRateLimited(relayUrl, e, codec)
                     // The senders only return the body of a 200, and throw the relay's other
                     // statuses: let the opener decide whether this one asks for a new key.
                     val status = e.httpStatus ?: throw e
@@ -247,7 +247,8 @@ private class CallDeadline(
 /**
  * Relays that answered 429 with a `Retry-After`: nothing is sent through such a relay until that delay,
  * capped at [MAX_RETRY_AFTER_SECONDS], is over; a call in the meantime fails as the 429 did (UNAVAILABLE).
- * Shared by every transport of the process, since they share the relay's view of this client's address.
+ * Shared by every transport of the process, since they share the relay's view of this client's address,
+ * and mirrored into the codec, whose native table the Slipstream engine's transport uses.
  */
 internal object RelayBackoff {
     const val MAX_RETRY_AFTER_SECONDS = 120L
@@ -257,29 +258,34 @@ internal object RelayBackoff {
     fun noteIfRateLimited(
         relayUrl: String,
         e: OhttpException,
+        codec: OhttpCodec? = null,
     ) {
-        if (e.httpStatus == HTTP_TOO_MANY_REQUESTS) note(relayUrl, e.retryAfterSeconds)
+        if (e.httpStatus != HTTP_TOO_MANY_REQUESTS) return
+        val seconds = e.retryAfterSeconds?.coerceAtMost(MAX_RETRY_AFTER_SECONDS) ?: return
+        note(relayUrl, seconds)
+        codec?.noteRelayBackoff(relayUrl, seconds * MILLIS_PER_SECOND)
     }
 
+    /** A shorter pause never cuts a running one short. */
     fun note(
         relayUrl: String,
         retryAfterSeconds: Long?,
         nowMillis: Long = System.currentTimeMillis(),
     ) {
         val seconds = retryAfterSeconds?.coerceAtMost(MAX_RETRY_AFTER_SECONDS) ?: return
-        until[relayUrl] = nowMillis + seconds * MILLIS_PER_SECOND
+        until.merge(relayUrl, nowMillis + seconds * MILLIS_PER_SECOND, ::maxOf)
     }
 
     fun check(
         relayUrl: String,
         nowMillis: Long = System.currentTimeMillis(),
+        codec: OhttpCodec? = null,
     ) {
-        val end = until[relayUrl] ?: return
-        val left = end - nowMillis
-        if (left <= 0) {
-            until.remove(relayUrl, end)
-            return
-        }
+        val end = until[relayUrl]
+        val ownLeft = end?.let { it - nowMillis } ?: 0
+        if (end != null && ownLeft <= 0) until.remove(relayUrl, end)
+        val left = maxOf(ownLeft, codec?.relayBackoffRemainingMs(relayUrl) ?: 0)
+        if (left <= 0) return
         val seconds = (left + MILLIS_PER_SECOND - 1) / MILLIS_PER_SECOND
         throw OhttpException(
             "The relay asked this client to wait (HTTP 429); $seconds s left",

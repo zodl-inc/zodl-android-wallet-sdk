@@ -485,6 +485,34 @@ class OhttpTransportTest {
     }
 
     @Test
+    fun `the relay back-off is shared with the codec's native table both ways`() {
+        val relay = "https://relay-native.test/relay"
+        val noted = mutableListOf<Pair<String, Long>>()
+        val native =
+            object : co.electriccoin.lightwallet.client.OhttpCodec by FakeOhttpCodec() {
+                override fun noteRelayBackoff(
+                    relayUrl: String,
+                    delayMs: Long,
+                ) {
+                    noted += relayUrl to delayMs
+                }
+
+                override fun relayBackoffRemainingMs(relayUrl: String) = if (relayUrl == relay) 5_000L else 0L
+            }
+
+        val waiting = assertFailsWith<OhttpException> { RelayBackoff.check(relay, codec = native) }
+        assertEquals(5L, waiting.retryAfterSeconds)
+        RelayBackoff.check("https://other.test/relay", codec = native)
+
+        RelayBackoff.noteIfRateLimited(
+            "https://relay-mirror.test/relay",
+            OhttpException("rate limited", 429, retryAfterSeconds = 7),
+            native,
+        )
+        assertEquals(listOf("https://relay-mirror.test/relay" to 7_000L), noted)
+    }
+
+    @Test
     fun `the relay back-off is capped and ends`() {
         val relay = "https://relay-backoff.test/relay"
         RelayBackoff.note(relay, retryAfterSeconds = 3_600, nowMillis = 0)

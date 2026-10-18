@@ -168,6 +168,9 @@ fn can_handle_ohttp(host: &str) -> bool {
 /// 64 MiB response cap ([`MAX_RESPONSE_BYTES`]), client trace prefix.
 pub(super) struct ZodlOhttpRoute {
     gateway_host: String,
+    /// The network of `gateway_host`; the transport refuses a gateway of another network.
+    #[cfg_attr(not(feature = "slipstream"), allow(dead_code))]
+    gateway_network: zcash_protocol::consensus::NetworkType,
 }
 
 impl ZodlOhttpRoute {
@@ -195,14 +198,20 @@ impl ZodlOhttpRoute {
         }
 
         // Select gateway based on network
-        let gateway_host = match network {
-            zcash_voting::types::Network::Mainnet => OHTTP_GATEWAY_HOST_MAINNET,
-            zcash_voting::types::Network::Testnet => OHTTP_GATEWAY_HOST_TESTNET,
-            zcash_voting::types::Network::Regtest => OHTTP_GATEWAY_HOST_TESTNET,
-        }
-        .to_string();
+        use zcash_protocol::consensus::NetworkType;
+        let (gateway_host, gateway_network) = match network {
+            zcash_voting::types::Network::Mainnet => {
+                (OHTTP_GATEWAY_HOST_MAINNET, NetworkType::Main)
+            }
+            zcash_voting::types::Network::Testnet | zcash_voting::types::Network::Regtest => {
+                (OHTTP_GATEWAY_HOST_TESTNET, NetworkType::Test)
+            }
+        };
 
-        Ok(Self { gateway_host })
+        Ok(Self {
+            gateway_host: gateway_host.to_string(),
+            gateway_network,
+        })
     }
 }
 
@@ -231,6 +240,7 @@ impl RouteHttp for ZodlOhttpRoute {
             let max_response_bytes = request.max_response_bytes.min(MAX_RESPONSE_BYTES);
 
             let gateway_host = self.gateway_host.clone();
+            let gateway_network = self.gateway_network;
 
             // Track whether the request has been dispatched (on_dispatch was called).
             // Errors before dispatch (key-config fetch, encapsulation) map to
@@ -249,6 +259,7 @@ impl RouteHttp for ZodlOhttpRoute {
 
             let result = http_round_trip_with_dispatch(
                 &gateway_host,
+                gateway_network,
                 dialer,
                 &method,
                 &url,
@@ -366,22 +377,26 @@ mod tests {
 
     #[test]
     fn ohttp_route_selects_gateway_by_network() {
+        use zcash_protocol::consensus::NetworkType;
         use zcash_voting::types::Network;
 
         let mainnet_route =
             ZodlOhttpRoute::new("https://voting.valargroup.dev/api", Network::Mainnet)
                 .expect("mainnet route should succeed");
         assert_eq!(mainnet_route.gateway_host, OHTTP_GATEWAY_HOST_MAINNET);
+        assert_eq!(mainnet_route.gateway_network, NetworkType::Main);
 
         let testnet_route =
             ZodlOhttpRoute::new("https://voting.valargroup.dev/api", Network::Testnet)
                 .expect("testnet route should succeed");
         assert_eq!(testnet_route.gateway_host, OHTTP_GATEWAY_HOST_TESTNET);
+        assert_eq!(testnet_route.gateway_network, NetworkType::Test);
 
         let regtest_route =
             ZodlOhttpRoute::new("https://voting.valargroup.dev/api", Network::Regtest)
                 .expect("regtest route should succeed");
         assert_eq!(regtest_route.gateway_host, OHTTP_GATEWAY_HOST_TESTNET);
+        assert_eq!(regtest_route.gateway_network, NetworkType::Test);
     }
 
     #[test]
