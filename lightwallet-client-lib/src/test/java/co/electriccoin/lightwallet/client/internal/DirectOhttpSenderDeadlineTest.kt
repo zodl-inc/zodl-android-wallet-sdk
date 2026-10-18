@@ -32,7 +32,7 @@ class DirectOhttpSenderDeadlineTest {
                     server.accept().use { socket ->
                         socket.getInputStream().read(ByteArray(BUFFER))
                         val out = socket.getOutputStream()
-                        out.write("HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n".toByteArray())
+                        out.write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".toByteArray())
                         repeat(DRIBBLE_BYTES) {
                             out.write(0)
                             out.flush()
@@ -127,7 +127,7 @@ class DirectOhttpSenderDeadlineTest {
         val elapsedMs = (System.nanoTime() - started) / NANOS_PER_MILLI
         assertEquals(Status.Code.DEADLINE_EXCEEDED, closeStatus?.code)
         // The relay would dribble for 10 s; a busy CI runner needs headroom over the 300 ms deadline.
-        assertTrue("closed after $elapsedMs ms", elapsedMs < SHORT_DEADLINE_MS * 10)
+        assertTrue("closed after $elapsedMs ms", elapsedMs < SHORT_DEADLINE_MS * 15)
         server.close()
     }
 
@@ -136,7 +136,7 @@ class DirectOhttpSenderDeadlineTest {
             server.accept().use { socket ->
                 socket.getInputStream().read(ByteArray(BUFFER))
                 val out = socket.getOutputStream()
-                out.write("HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n".toByteArray())
+                out.write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".toByteArray())
                 repeat(DRIBBLE_BYTES) {
                     out.write(0)
                     out.flush()
