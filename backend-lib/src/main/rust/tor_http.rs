@@ -139,7 +139,9 @@ where
         if cancel.load(Ordering::Acquire) {
             return Err(cancelled_error());
         }
-        if let Ok(output) = runtime.block_on(runtime.timeout(CANCEL_POLL, fut.as_mut())) {
+        // The timer is made inside the runtime: `timeout` is called in the async block.
+        let polled = runtime.block_on(async { runtime.timeout(CANCEL_POLL, fut.as_mut()).await });
+        if let Ok(output) = polled {
             return output;
         }
     }
@@ -199,10 +201,8 @@ impl TorHttpBody {
                 }
                 None => CANCEL_POLL,
             };
-            let frame = match self
-                .runtime
-                .block_on(self.runtime.timeout(wait, body.frame()))
-            {
+            let next = async { self.runtime.timeout(wait, body.frame()).await };
+            let frame = match self.runtime.block_on(next) {
                 Err(_) => continue,
                 Ok(None) => return Ok(None),
                 Ok(Some(Err(e))) => return Err(TorHttpError::Transport(e.to_string())),
