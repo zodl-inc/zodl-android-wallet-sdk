@@ -290,6 +290,11 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             return
         }
 
+        if (callOptions.deadline?.isExpired == true) {
+            finish(Status.DEADLINE_EXCEEDED.withDescription("deadline expired"), Metadata())
+            return
+        }
+
         val grpcStatusCode = fieldFromTrailersFirst(response, "grpc-status")?.toIntOrNull()
         if (grpcStatusCode == null) {
             finish(Status.INTERNAL.withDescription("response is missing grpc-status"), Metadata())
@@ -345,13 +350,18 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             }
         }
 
+    /**
+     * The trailer section's [name] if it has one, else the header section's. The native core appends
+     * the trailer section to [OhttpCodecResponse.headers] (its trailers list stays empty), so there the
+     * last occurrence is the trailer's.
+     */
     private fun fieldFromTrailersFirst(
         response: OhttpCodecResponse,
         name: String
-    ): String? =
-        (response.trailers.asSequence() + response.headers.asSequence())
-            .firstOrNull { it.first.equals(name, ignoreCase = true) }
-            ?.second
+    ): String? {
+        val named: (Pair<String, String>) -> Boolean = { it.first.equals(name, ignoreCase = true) }
+        return (response.trailers.lastOrNull(named) ?: response.headers.lastOrNull(named))?.second
+    }
 
     private fun parseFrames(body: ByteArray): List<ResponseT> {
         val messages = ArrayList<ResponseT>()

@@ -2,6 +2,7 @@ package co.electriccoin.lightwallet.client
 
 import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.FakeOhttpCodec
+import co.electriccoin.lightwallet.client.internal.OhttpDebugFlags
 import co.electriccoin.lightwallet.client.internal.OhttpEndpoints
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
 import co.electriccoin.lightwallet.client.internal.RecordingSender
@@ -10,6 +11,8 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeFalse
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 @Suppress("ktlint:standard:max-line-length", "ktlint:standard:chain-method-continuation")
@@ -50,7 +53,6 @@ class OhttpHttpClientTest {
             sender = mockSender,
             ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
             initialKey = FakeOhttpCodec.KEY,
-            allowTracePrefix = true,
         )
     }
 
@@ -154,7 +156,17 @@ class OhttpHttpClientTest {
     }
 
     @Test
+    fun `a release build sends no client trace ID even with a prefix`() {
+        assumeFalse(OhttpDebugFlags.allowTracePrefix)
+        val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
+        val transport = capturingTransport(capturedHeaders, ohttpClientTraceIdPrefix = "test-wallet")
+        roundTripAndIgnoreFailure(transport)
+        assertFalse(capturedHeaders.single().any { it.first == "X-Client-Trace-Id" })
+    }
+
+    @Test
     fun `client trace ID header is present and well-formed when prefix set`() {
+        assumeTrue("trace ids exist in debug builds only", OhttpDebugFlags.allowTracePrefix)
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val transport = capturingTransport(capturedHeaders, ohttpClientTraceIdPrefix = "test-wallet")
         // Make two requests to verify sequence counter increments
@@ -196,6 +208,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `client trace ID sanitises invalid characters`() {
+        assumeTrue("trace ids exist in debug builds only", OhttpDebugFlags.allowTracePrefix)
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         val transport = capturingTransport(capturedHeaders, ohttpClientTraceIdPrefix = "test@wallet#123")
         val exceptionThrown = roundTripAndIgnoreFailure(transport)
@@ -221,6 +234,7 @@ class OhttpHttpClientTest {
 
     @Test
     fun `client trace ID truncates to 64 chars`() {
+        assumeTrue("trace ids exist in debug builds only", OhttpDebugFlags.allowTracePrefix)
         val capturedHeaders = mutableListOf<List<Pair<String, String>>>()
         // Long prefix: 60 'a' + 1 '-' + 36 UUID + 1 '-' + 6 digits = 104 chars → truncated to 64
         val transport = capturingTransport(capturedHeaders, ohttpClientTraceIdPrefix = "a".repeat(60))

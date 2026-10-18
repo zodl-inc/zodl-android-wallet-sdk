@@ -152,6 +152,27 @@ class OhttpManagedChannelTest {
     }
 
     @Test
+    fun `with the trailers appended to the headers, as the native core does, the trailer status wins`() {
+        val sender = RecordingSender()
+        sender.queuePost { "answer".toByteArray() }
+        val codec =
+            FakeOhttpCodec(
+                answer =
+                    grpcResponse(
+                        headers =
+                            listOf(
+                                "content-type" to "application/grpc",
+                                "grpc-status" to "0",
+                                "grpc-status" to "5",
+                            ),
+                        trailers = emptyList(),
+                    ),
+            )
+
+        assertEquals(Status.Code.NOT_FOUND, closeStatusOf(codec, sender).code)
+    }
+
+    @Test
     fun `an outer 413 is RESOURCE_EXHAUSTED and other refusals UNAVAILABLE`() {
         for ((outer, expected) in listOf(413 to Status.Code.RESOURCE_EXHAUSTED, 426 to Status.Code.UNAVAILABLE)) {
             val sender = RecordingSender()

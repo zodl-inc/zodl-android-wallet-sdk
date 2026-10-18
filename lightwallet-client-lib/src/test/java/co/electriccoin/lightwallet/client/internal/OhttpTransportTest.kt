@@ -453,6 +453,23 @@ class OhttpTransportTest {
     }
 
     @Test
+    fun `a 429 on the key fetch defers the next fetch through that relay`() {
+        val limited = RecordingSender()
+        limited.queueGet { throw OhttpException("rate limited", 429, retryAfterSeconds = 30) }
+        val transport =
+            OhttpTransport("https://relay-429-get.test/relay", "ohttp-gateway-testnet.example", codec, limited)
+
+        repeat(2) {
+            val thrown =
+                assertFailsWith<OhttpException> { runBlocking { transport.roundTrip(request, timeoutMs = 5_000) } }
+            assertEquals(429, thrown.httpStatus)
+        }
+
+        assertEquals(1, limited.getCalls.size)
+        assertEquals(0, limited.postCalls.size)
+    }
+
+    @Test
     fun `the relay back-off is capped and ends`() {
         val relay = "https://relay-backoff.test/relay"
         RelayBackoff.note(relay, retryAfterSeconds = 3_600, nowMillis = 0)

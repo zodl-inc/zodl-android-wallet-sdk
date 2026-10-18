@@ -49,7 +49,8 @@ class TorOhttpSender internal constructor(
         if (response.status != HttpURLConnection.HTTP_OK) {
             throw OhttpException(
                 "GET request failed: HTTP ${response.status} (Tor path)${response.errorDetail()}",
-                response.status
+                response.status,
+                retryAfterSeconds = OhttpSender.retryAfterSeconds(response.header(RETRY_AFTER_HEADER))
             )
         }
         return response.body.requireWithinSizeLimit(OhttpSender.MAX_KEY_CONFIG_BYTES)

@@ -47,14 +47,12 @@ internal class OhttpTransport(
      * Production code should leave this null.
      */
     initialExpirySeconds: Long? = null,
-    /** Whether a trace prefix is honoured; [OhttpDebugFlags.allowTracePrefix] outside of tests. */
-    allowTracePrefix: Boolean = OhttpDebugFlags.allowTracePrefix,
 ) {
     private val lock = Any()
     private var cachedKey: ByteArray? = initialKey
     private var cachedExpiry: Long? = initialExpirySeconds
     private val clientTrace: OhttpClientTrace? =
-        if (allowTracePrefix) {
+        if (OhttpDebugFlags.allowTracePrefix) {
             ohttpClientTraceIdPrefix?.let { OhttpClientTrace(it) }
         } else {
             null
@@ -84,7 +82,14 @@ internal class OhttpTransport(
         }
 
         val headers = profile.keyFetchHeaders + USER_AGENT_HEADER + traceHeaders(profile.traceOnKeyFetch)
-        val json = sender.get(signedConfigUrl, headers, KEY_FETCH_TIMEOUT_MS)
+        RelayBackoff.check(relayUrl)
+        val json =
+            try {
+                sender.get(signedConfigUrl, headers, KEY_FETCH_TIMEOUT_MS)
+            } catch (e: OhttpException) {
+                RelayBackoff.noteIfRateLimited(relayUrl, e)
+                throw e
+            }
 
         val verified = codec.verifyKeyConfig(gatewayHost, json, nowSeconds)
         logger("OHTTP signed key config verified: network=${verified.network}, valid_until=${verified.notAfter}")
@@ -108,7 +113,6 @@ internal class OhttpTransport(
         request: OhttpCodecRequest,
         timeoutMs: Int,
     ): OhttpCodecResponse {
-        RelayBackoff.check(relayUrl)
         val response = roundTripOnce(request, timeoutMs)
         if (!response.isFreshnessRefusal()) return response
         logger("OHTTP gateway refused the request as stale; sending it again")
@@ -143,6 +147,7 @@ internal class OhttpTransport(
         timeoutMs: Int,
         attempt: Int,
     ): OhttpCodecResponse? {
+        RelayBackoff.check(relayUrl)
         val sealed = codec.encapsulate(key, request)
         return sealed.opener.use { opener ->
             val answer =
@@ -154,7 +159,7 @@ internal class OhttpTransport(
                         timeoutMs,
                     )
                 } catch (e: OhttpException) {
-                    if (e.httpStatus == HTTP_TOO_MANY_REQUESTS) RelayBackoff.note(relayUrl, e.retryAfterSeconds)
+                    RelayBackoff.noteIfRateLimited(relayUrl, e)
                     // The senders only return the body of a 200, and throw the relay's other
                     // statuses: let the opener decide whether this one asks for a new key.
                     val status = e.httpStatus ?: throw e
@@ -223,6 +228,13 @@ internal object RelayBackoff {
     const val MAX_RETRY_AFTER_SECONDS = 120L
     private const val MILLIS_PER_SECOND = 1000L
     private val until = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun noteIfRateLimited(
+        relayUrl: String,
+        e: OhttpException,
+    ) {
+        if (e.httpStatus == HTTP_TOO_MANY_REQUESTS) note(relayUrl, e.retryAfterSeconds)
+    }
 
     fun note(
         relayUrl: String,

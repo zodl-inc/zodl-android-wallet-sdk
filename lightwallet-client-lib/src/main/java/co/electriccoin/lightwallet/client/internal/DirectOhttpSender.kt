@@ -71,7 +71,12 @@ class DirectOhttpSender : OhttpSender {
 
                 val status = connection.responseCode
                 if (status != HttpURLConnection.HTTP_OK) {
-                    throw OhttpException("GET request failed: HTTP $status${connection.errorDetail()}", status)
+                    throw OhttpException(
+                        "GET request failed: HTTP $status${connection.errorDetail()}",
+                        status,
+                        retryAfterSeconds =
+                            OhttpSender.retryAfterSeconds(connection.getHeaderField(RETRY_AFTER_HEADER)),
+                    )
                 }
                 connection.inputStream.use {
                     @Suppress("TooGenericExceptionCaught")
