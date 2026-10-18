@@ -123,10 +123,13 @@ class OhttpHttpClient private constructor(
         return mapped || allowlisted
     }
 
+    /** Sends [request] through the gateway and returns the whole inner response, within 30 s. */
+    suspend fun execute(request: Request): Response = execute(request, DEFAULT_TIMEOUT_MS)
+
     /** Sends [request] through the gateway and returns the whole inner response, within [timeoutMs]. */
     suspend fun execute(
         request: Request,
-        timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+        timeoutMs: Int,
     ): Response {
         val bReq = codecRequest(request)
         val bRes = withContext(Dispatchers.IO) { transport.roundTrip(bReq, timeoutMs) }
