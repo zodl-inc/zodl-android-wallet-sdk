@@ -81,7 +81,7 @@ internal class OhttpTransport(
             }
         }
 
-        val headers = profile.keyFetchHeaders + traceHeaders(profile.traceOnKeyFetch)
+        val headers = profile.keyFetchHeaders + listOf("User-Agent" to "ZODL-OHTTP/1.0") + traceHeaders(profile.traceOnKeyFetch)
         val json = sender.get(signedConfigUrl, headers, KEY_FETCH_TIMEOUT_MS)
 
         val verified = codec.verifyKeyConfig(gatewayHost, json, nowSeconds)
@@ -144,7 +144,7 @@ internal class OhttpTransport(
         return sealed.opener.use { opener ->
             val answer =
                 try {
-                    sender.post(relayUrl, sealed.body, profile.postHeaders + traceHeaders(true), timeoutMs)
+                    sender.post(relayUrl, sealed.body, profile.postHeaders + listOf("User-Agent" to "ZODL-OHTTP/1.0") + traceHeaders(true), timeoutMs)
                 } catch (e: OhttpException) {
                     // The senders only return the body of a 200, and throw the relay's other
                     // statuses: let the opener decide whether this one asks for a new key.
