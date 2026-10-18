@@ -1,5 +1,6 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
 import co.electriccoin.lightwallet.client.OhttpCodecRequest
 import co.electriccoin.lightwallet.client.OhttpCodecResponse
 import co.electriccoin.lightwallet.client.OhttpException
@@ -266,6 +267,9 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             onResponse(response)
         } catch (e: SocketTimeoutException) {
             finish(Status.DEADLINE_EXCEEDED.withDescription("OHTTP request timed out").withCause(e), Metadata())
+        } catch (e: KeyConfigVerificationFailedException) {
+            logger("OHTTP ${method.fullMethodName} key config verification failed: ${e.message}")
+            finish(Status.UNAVAILABLE.withDescription(e.message).withCause(e), Metadata())
         } catch (e: OhttpException) {
             logger("OHTTP ${method.fullMethodName} failed: ${e.message}")
             finish(Status.UNAVAILABLE.withDescription(e.message).withCause(e), Metadata())
