@@ -1450,7 +1450,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d308ebe4b10924331bd079044b418da7b227d724d3e2408567a47ad7c3da2a0"
 dependencies = [
  "derive-deftly-macros",
- "heck 0.4.1",
+ "heck 0.5.0",
 ]
 
 [[package]]
@@ -1459,7 +1459,7 @@ version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd5f2b7218a51c827a11d22d1439b598121fac94bf9b99452e4afffe512d78c9"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "indexmap 2.14.2",
  "itertools 0.15.0",
  "proc-macro-crate",
@@ -1575,7 +1575,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1825,7 +1825,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3101,7 +3101,7 @@ version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a1886916523694cd6ea3d175f03a1e5010699a2a4cc13696d83d7bea1d80638"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3496,7 +3496,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3624,7 +3624,7 @@ dependencies = [
 [[package]]
 name = "ohttp-gateway"
 version = "1.0.0"
-source = "git+https://github.com/zodl-inc/ohttp.git?rev=1b6ab2d83a3fea8d4824cecdbf5a98869d3601de#1b6ab2d83a3fea8d4824cecdbf5a98869d3601de"
+source = "git+https://github.com/zodl-inc/ohttp.git?rev=dc65e3991d34c1ba29d078d0ddbd28f74d27d0e2#dc65e3991d34c1ba29d078d0ddbd28f74d27d0e2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4507,7 +4507,7 @@ version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -5054,7 +5054,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5733,7 +5733,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -5968,7 +5968,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8067,7 +8067,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9154,7 +9154,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 [[package]]
 name = "zodl-ohttp-client"
 version = "0.1.0"
-source = "git+https://github.com/zodl-inc/ohttp.git?rev=1b6ab2d83a3fea8d4824cecdbf5a98869d3601de#1b6ab2d83a3fea8d4824cecdbf5a98869d3601de"
+source = "git+https://github.com/zodl-inc/ohttp.git?rev=dc65e3991d34c1ba29d078d0ddbd28f74d27d0e2#dc65e3991d34c1ba29d078d0ddbd28f74d27d0e2"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -9173,7 +9173,7 @@ dependencies = [
 [[package]]
 name = "zodl-slipstream"
 version = "0.4.0-pre.1"
-source = "git+https://github.com/zodl-inc/slipstream-internal.git?rev=dc760ef2eadd89e0f13444cf139810913dfaec7f#dc760ef2eadd89e0f13444cf139810913dfaec7f"
+source = "git+https://github.com/zodl-inc/slipstream-internal.git?rev=4c91c10859c13b1d143258b15ee137ec06a3fdea#4c91c10859c13b1d143258b15ee137ec06a3fdea"
 dependencies = [
  "arti-client",
  "bytes",
