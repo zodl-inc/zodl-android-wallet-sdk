@@ -918,6 +918,8 @@ mod tests {
             hpke_keys: vec![(1, private_key)],
             lwd_timeout_secs: 80,
             long_poll_idle_secs: 3,
+            long_poll_max_initial_silence_secs: 25,
+            sse_keepalive_secs: 20,
             redis_url: String::new(),
             redis_security_url: String::new(),
             backends: HashMap::new(),
