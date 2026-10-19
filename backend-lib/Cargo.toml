@@ -121,8 +121,8 @@ serde_json = "1"
 # the I/O. The JNI surface is `src/main/rust/ohttp.rs`. The repository is private (CI's App
 # token must include `ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
 # it only to a commit that is on the `main` of zodl-inc/ohttp, the one zodl-slipstream pins (one copy of the
-# core, so its relay backoff table is shared). Now at 1e4f6156fa2097c5cc5f36a86bf9fa419b33e9f0 (ohttp main: audit fixes CRATE-RESP-LIMIT/CRATE-LIB-PRESET/GW-SSE-BOUNDARY/GW-FRAMING-MSG).
-zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "1e4f6156fa2097c5cc5f36a86bf9fa419b33e9f0", default-features = false }
+# core, so its relay backoff table is shared). Now at 1b6ab2d83a3fea8d4824cecdbf5a98869d3601de (ohttp main: merged zodl-inc/ohttp#10).
+zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "1b6ab2d83a3fea8d4824cecdbf5a98869d3601de", default-features = false }
 tonic = "0.14"
 
 # Logging
