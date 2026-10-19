@@ -61,12 +61,13 @@ interface OhttpSender : Disposable {
     companion object {
         /**
          * The largest sealed response a sender reads: the gateway's 256 MiB backend body limit plus
-         * 64 KiB of framing, encryption overhead and header fields. Mirrors
+         * 1 MiB of chunking overhead (per-chunk AEAD tags and length prefixes; for a maximal response
+         * in the gateway's 16 KiB chunks, this is about 320 KiB). Mirrors
          * `GATEWAY_MAX_SEALED_RESPONSE_BYTES` of the native OHTTP core, which enforces it again on
          * the whole body before decrypting; a sender uses it to stop reading a hostile relay's
          * answer early. (`RustOhttpToolTest` checks that the two agree.)
          */
-        const val MAX_SEALED_RESPONSE_BYTES: Int = 268_435_456 + 65_536
+        const val MAX_SEALED_RESPONSE_BYTES: Int = 268_435_456 + 1024 * 1024
 
         /**
          * The largest key configuration document a sender reads (64 KiB). Mirrors `MAX_KEY_CONFIG_BYTES`
