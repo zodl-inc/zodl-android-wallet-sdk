@@ -63,6 +63,33 @@ interface OhttpCodec {
 
     /** What is left, in ms, of a pause the relay at [relayUrl] asked any native transport for; 0 if none. */
     fun relayBackoffRemainingMs(relayUrl: String): Long = 0
+
+    /**
+     * Returns the DNS name of the signed Key Configuration TXT record for [gatewayHost]:
+     * `ohttp-keys.example` or `ohttp-keys-testnet.example`. Used for DNS-over-HTTPS
+     * fallback when the relay fetch fails.
+     */
+    fun keyConfigDnsName(gatewayHost: String): String
+
+    /**
+     * Returns the DoH query URL (JSON API) for [resolver] and [gatewayHost]: the URL to GET
+     * to fetch the TXT record as JSON.
+     */
+    fun dohQueryUrl(resolver: String, gatewayHost: String): String
+
+    /**
+     * Parses a DoH JSON response [dohBody] (the body of `GET dohQueryUrl(...)`) and extracts
+     * the signed envelope, which can then be verified with [verifyKeyConfig].
+     *
+     * @throws OhttpException if the DoH response is malformed or the envelope cannot be parsed
+     */
+    fun envelopeFromDohJson(dohBody: ByteArray, gatewayHost: String): ByteArray
+
+    /**
+     * Returns the DNS-over-HTTPS resolvers tried in order: Cloudflare, then Google.
+     */
+    fun dohResolvers(): Array<String>
+
 }
 
 /**

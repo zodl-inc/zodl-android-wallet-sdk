@@ -134,6 +134,19 @@ class RustOhttpTool private constructor() : OhttpCodec {
         translating { Companion.verifyKeyConfig(PROFILE_ANDROID, gatewayHost, envelopeJson, nowSeconds) }
             .let { OhttpVerifiedKey(key = it.key, notAfter = it.notAfter, network = it.network) }
 
+    override fun keyConfigDnsName(gatewayHost: String): String =
+        Companion.keyConfigDnsName(gatewayHost)
+
+    override fun dohQueryUrl(resolver: String, gatewayHost: String): String =
+        Companion.dohQueryUrl(resolver, gatewayHost)
+
+    override fun envelopeFromDohJson(dohBody: ByteArray, gatewayHost: String): ByteArray =
+        translating { Companion.envelopeFromDohJson(dohBody, gatewayHost) }
+
+    override fun dohResolvers(): Array<String> =
+        Companion.dohResolvers()
+
+
     override fun encapsulate(
         key: ByteArray,
         request: OhttpCodecRequest,

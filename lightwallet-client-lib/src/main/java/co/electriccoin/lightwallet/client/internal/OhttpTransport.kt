@@ -92,32 +92,32 @@ internal class OhttpTransport(
         val headers = profile.keyFetchHeaders + USER_AGENT_HEADER + traceHeaders(profile.traceOnKeyFetch)
         RelayBackoff.check(relayUrl, codec = codec)
 
-        // Try relay fetch first (primary source)
+        // Try relay first: fetch AND verify. If either fails, fall back to DNS.
         val relayResult =
             runCatching {
-                sender.get(signedConfigUrl, headers, minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS))
+                val json = sender.get(signedConfigUrl, headers, minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS))
+                val verified = codec.verifyKeyConfig(gatewayHost, json, nowSeconds)
+                logger("OHTTP key config fetched and verified from relay")
+                verified
             }
 
-        val json =
+        // If relay failed (fetch OR verification), try DNS fallback
+        val verified =
             when {
-                relayResult.isSuccess -> {
-                    logger("OHTTP key config fetched from relay")
-                    relayResult.getOrThrow()
-                }
+                relayResult.isSuccess -> relayResult.getOrThrow()
+
                 else -> {
-                    // Relay fetch failed, try DNS fallback
                     val relayErr = relayResult.exceptionOrNull()
                     if (relayErr is OhttpException) {
                         RelayBackoff.noteIfRateLimited(relayUrl, relayErr, codec)
                     }
-                    logger("OHTTP relay key config fetch failed: $relayErr, trying DNS")
+                    logger("OHTTP relay key config failed: $relayErr, trying DNS")
 
                     tryDnsFallback(nowSeconds, minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS))
                         ?: throw relayErr ?: OhttpException("Key config fetch failed")
                 }
             }
 
-        val verified = codec.verifyKeyConfig(gatewayHost, json, nowSeconds)
         logger("OHTTP signed key config verified: network=${verified.network}, valid_until=${verified.notAfter}")
 
         synchronized(lock) {
@@ -129,79 +129,48 @@ internal class OhttpTransport(
 
     /**
      * Tries DNS-over-HTTPS as a fallback source for the signed key configuration when the relay
-     * fetch fails. Queries each resolver in order (Cloudflare, then Google), parses the DoH JSON
-     * response to extract the signed envelope, and returns it for verification. Returns null if
-     * all resolvers fail.
+     * fetch or verification fails. Queries each resolver in order (Cloudflare, then Google), parses
+     * the DoH JSON response to extract the signed envelope, and verifies it. Returns the verified
+     * key or null if all resolvers fail.
      */
     private suspend fun tryDnsFallback(
         nowSeconds: Long,
         timeoutMs: Int,
-    ): ByteArray? {
-        // Import DNS helpers from RustOhttpTool
-        val dnsHelpers =
-            try {
-                // Try to access Dns helper - it will be available if RustOhttpTool is used
-                val toolClass = Class.forName("cash.z.ecc.android.sdk.internal.jni.RustOhttpTool")
-                val dnsClass = toolClass.getDeclaredClasses().find { it.simpleName == "Dns" }
-                dnsClass
-            } catch (e: Exception) {
-                logger("OHTTP DNS fallback not available: ${e.message}")
-                return null
-            } ?: return null
+    ): OhttpVerifiedKey? {
+        val resolvers = codec.dohResolvers()
+        var lastError: Exception? = null
 
-        try {
-            val resolversMethod = dnsHelpers.getDeclaredField("resolvers").apply { isAccessible = true }
-            val dohQueryUrlMethod =
-                dnsHelpers.getDeclaredMethod("dohQueryUrl", String::class.java, String::class.java)
-                    .apply { isAccessible = true }
-            val envelopeFromDohJsonMethod =
-                dnsHelpers.getDeclaredMethod("envelopeFromDohJson", ByteArray::class.java, String::class.java)
-                    .apply { isAccessible = true }
+        for (resolver in resolvers) {
+            val dohUrl = codec.dohQueryUrl(resolver, gatewayHost)
+            logger("OHTTP trying DoH resolver: $resolver")
 
-            @Suppress("UNCHECKED_CAST")
-            val resolvers = resolversMethod.get(null) as Array<String>
-            var lastError: Exception? = null
+            // For DNS, we fetch, parse, AND verify. If any step fails, try next resolver.
+            val dnsResult =
+                runCatching {
+                    val headers =
+                        listOf(
+                            "Accept" to "application/dns-json",
+                        ) + USER_AGENT_HEADER
+                    val dohBody = sender.get(dohUrl, headers, timeoutMs)
+                    val envelope = codec.envelopeFromDohJson(dohBody, gatewayHost)
+                    codec.verifyKeyConfig(gatewayHost, envelope, nowSeconds)
+                }
 
-            for (resolver in resolvers) {
-                val dohUrl =
-                    dohQueryUrlMethod.invoke(null, resolver, gatewayHost) as? String
-                        ?: continue
+            when {
+                dnsResult.isSuccess -> {
+                    val verified = dnsResult.getOrThrow()
+                    logger("OHTTP key config fetched and verified from DNS via $resolver")
+                    return verified
+                }
 
-                logger("OHTTP trying DoH resolver: $resolver")
-
-                val dohResult =
-                    runCatching {
-                        val headers =
-                            listOf(
-                                "Accept" to "application/dns-json",
-                            ) + USER_AGENT_HEADER
-                        sender.get(dohUrl, headers, timeoutMs)
-                    }
-
-                when {
-                    dohResult.isSuccess -> {
-                        val dohBody = dohResult.getOrThrow()
-                        try {
-                            val envelope = envelopeFromDohJsonMethod.invoke(null, dohBody, gatewayHost) as ByteArray
-                            logger("OHTTP key config fetched from DNS via $resolver")
-                            return envelope
-                        } catch (e: Exception) {
-                            lastError = e
-                            logger("OHTTP DoH parse failed for $resolver: ${e.message}")
-                        }
-                    }
-                    else -> {
-                        lastError = dohResult.exceptionOrNull() as? Exception
-                        logger("OHTTP DoH fetch failed for $resolver: ${lastError?.message}")
-                    }
+                else -> {
+                    lastError = dnsResult.exceptionOrNull() as? Exception
+                    logger("OHTTP DNS resolver $resolver failed: ${lastError?.message}")
                 }
             }
-
-            logger("OHTTP DNS fallback: all resolvers failed, last error: ${lastError?.message}")
-        } catch (e: Exception) {
-            logger("OHTTP DNS fallback error: ${e.message}")
         }
 
+        logger("OHTTP all DNS resolvers failed, last error: ${lastError?.message}")
         return null
     }
 
