@@ -10,6 +10,10 @@ package cash.z.ecc.android.sdk.model
  *
  * [ZIP 316]: https://zips.z.cash/zip-0316
  *
+ * Further components may be added in a later release. As this is a data class, adding one changes
+ * its constructor, `copy` and `componentN` functions, so construct it, copy it or destructure it only
+ * where recompiling against a newer SDK is acceptable; reading its properties stays compatible.
+ *
  * @param hasP2pkh the key has a transparent P2PKH component.
  * @param hasP2sh the key has a transparent P2SH viewing key item.
  * @param hasSapling the key has a Sapling component.

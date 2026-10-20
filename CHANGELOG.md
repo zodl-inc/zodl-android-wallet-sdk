@@ -9,7 +9,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `DerivationTool.describeUnifiedFullViewingKey(ufvk, network)` returns the components of a
   `UnifiedFullViewingKey` as a new `UnifiedFullViewingKeyComponents`, or `null` when the key is not a
-  valid UFVK for the network; it never throws for an invalid key.
+  valid UFVK for the network; an invalid key returns `null` rather than throwing.
 - `Synchronizer.findAccountSharingKeyComponents(ufvk)` returns the existing account that shares a
   viewing key component with a UFVK as a new `AccountKeyOverlap`, whose `kind` and `importWouldFail`
   tell what `importAccountByUfvk` would do, or `null` when the import would add a new account. It
@@ -39,6 +39,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DerivationTool.deriveUnifiedAddress` with a viewing key) now ignore leading and trailing
   whitespace around the encoding, as `DerivationTool.describeUnifiedFullViewingKey` does, instead of
   rejecting it.
+- `InitializeException.CreateAccountException` and `InitializeException.ImportAccountException` have
+  fixed messages ("Failed to create new account." and "Failed to import new account based on UFVK.")
+  instead of appending the cause's message, which could carry key material into error dialogs and
+  logs. The failure is still chained as `cause`; read it there where the detail is needed.
 
 ## [5.2.1] - 2026-10-14
 

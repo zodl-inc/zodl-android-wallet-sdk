@@ -89,8 +89,9 @@ interface DerivationTool {
      *
      * Leading and trailing whitespace in the encoding is ignored, as it is by every SDK call that
      * takes a UFVK, so a key reported as valid here is accepted by account import with the same
-     * encoding. This method never throws for an invalid key, and never logs the key or includes it
-     * in an error message.
+     * encoding. An invalid key is reported by returning `null`, not by throwing; an internal failure
+     * of the native library still surfaces as a `RuntimeException`. This method never logs the key or
+     * includes it in an error message.
      *
      * @param ufvk the key to describe.
      * @param network the network the key must belong to.

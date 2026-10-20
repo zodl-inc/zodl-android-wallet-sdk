@@ -296,17 +296,27 @@ sealed class InitializeException(
             cause
         )
 
+    /**
+     * Thrown when creating a new account fails. The message is fixed and never contains the cause's
+     * message, which may echo key material; the failure is chained as the [cause].
+     */
     class CreateAccountException(
         cause: Throwable?
     ) : InitializeException(
-            "Failed to create new account due to: ${cause?.message}",
+            "Failed to create new account.",
             cause
         )
 
+    /**
+     * Thrown when importing an account from a UFVK fails for a reason other than those of
+     * [ImportAccountCheckpointsNotReadyException] and [ImportAccountCollisionException]. The message
+     * is fixed and never contains the key or the cause's message, which may echo key material; the
+     * failure is chained as the [cause].
+     */
     class ImportAccountException(
         cause: Throwable?
     ) : InitializeException(
-            "Failed to import new account based on UFVK due to: ${cause?.message}",
+            "Failed to import new account based on UFVK.",
             cause
         )
 
