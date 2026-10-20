@@ -121,8 +121,8 @@ serde_json = "1"
 # the I/O. The JNI surface is `src/main/rust/ohttp.rs`. The repository is private (CI's App
 # token must include `ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
 # it only to a commit that is on the `main` of zodl-inc/ohttp, the one zodl-slipstream pins (one copy of the
-# core, so its relay backoff table is shared). Now at dc65e3991d34c1ba29d078d0ddbd28f74d27d0e2 (ohttp main: sealed-response cap 256 MiB + 1 MiB, library preset decapsulates outer 200 only, fuzzing fixes).
-zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "dc65e3991d34c1ba29d078d0ddbd28f74d27d0e2", default-features = false }
+# core, so its relay backoff table is shared). Now at 3778974dfb2e89d49b4a0f8e87b0c7e39edcf8a7 (ohttp main: sealed-response cap 256 MiB + 1 MiB, library preset decapsulates outer 200 only, fuzzing fixes).
+zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "3778974dfb2e89d49b4a0f8e87b0c7e39edcf8a7", default-features = false }
 tonic = "0.14"
 
 # Logging
@@ -293,7 +293,7 @@ bip0039 = "0.12"
 base64 = "0.22"
 ed25519-dalek = "2"
 sha2 = "0.10"
-ohttp-gateway = { git = "https://github.com/zodl-inc/ohttp.git", rev = "dc65e3991d34c1ba29d078d0ddbd28f74d27d0e2" }
+ohttp-gateway = { git = "https://github.com/zodl-inc/ohttp.git", rev = "3778974dfb2e89d49b4a0f8e87b0c7e39edcf8a7" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # Driving the gateway's streaming response encoder (`chunked_stream::encode_response_stream`,
 # whose upstream items are `anyhow::Result<UpFrame>` over `Bytes`) in the `ohttp.rs` tests,
@@ -317,8 +317,8 @@ crate-type = ["staticlib", "cdylib"]
 # instead of crates.io. Once slipstream-internal PR #16 merges, the rev below must move to
 # the resulting slipstream-internal `main` commit; after that, this entry can be removed once
 # a published zodl-slipstream version containing the OHTTP transport exists on crates.io.
-# Pins slipstream-internal PR #16 head, 4c91c10859c13b1d143258b15ee137ec06a3fdea (zodl-ohttp-client dc65e399).
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "4c91c10859c13b1d143258b15ee137ec06a3fdea" }
+# Pins slipstream-internal PR #16 head, 050c0af7f6c31d6a90d477c784bbc114344cf12d (zodl-ohttp-client 3778974d).
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "050c0af7f6c31d6a90d477c784bbc114344cf12d" }
 #
 # Shielded voting on the NU7 pre-release crates.
 #
