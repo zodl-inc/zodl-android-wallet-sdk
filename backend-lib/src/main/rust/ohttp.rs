@@ -877,7 +877,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_profile
 /// Returns the DNS name of the signed Key Configuration TXT record for the gateway at `gateway_host`:
 /// `ohttp-keys.example` or `ohttp-keys-testnet.example`.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_keyConfigDnsName<
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeKeyConfigDnsName<
     'local,
 >(
     mut env: JNIEnv<'local>,
@@ -898,7 +898,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_keyConf
 
 /// Returns the DoH query URL for the resolver and gateway: the JSON API URL to fetch the TXT record.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_dohQueryUrl<'local>(
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeDohQueryUrl<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     resolver: JString<'local>,
@@ -920,7 +922,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_dohQuer
 /// Parses a DoH JSON response (the body of `GET <doh_query_url>`) and extracts the signed envelope.
 /// The envelope can then be verified with `verifyKeyConfig`.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_envelopeFromDohJson<
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeEnvelopeFromDohJson<
     'local,
 >(
     mut env: JNIEnv<'local>,
@@ -944,7 +946,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_envelop
 
 /// Returns the DNS-over-HTTPS resolvers as a string array (Cloudflare, then Google).
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_dohResolvers<'local>(
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeDohResolvers<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
 ) -> jobject {

@@ -146,42 +146,28 @@ internal class OhttpTransport(
         nowSeconds: Long,
         timeoutMs: Int,
     ): OhttpVerifiedKey? {
-        val resolvers = codec.dohResolvers()
-        var lastError: Exception? = null
-
-        for (resolver in resolvers) {
-            val dohUrl = codec.dohQueryUrl(resolver, gatewayHost)
-            logger("OHTTP trying DoH resolver: $resolver")
-
-            // For DNS, we fetch, parse, AND verify. If any step fails, try next resolver.
-            val dnsResult =
-                runCatching {
-                    val headers =
-                        listOf(
-                            "Accept" to "application/dns-json",
-                        ) + USER_AGENT_HEADER
-                    val dohBody = sender.get(dohUrl, headers, timeoutMs)
-                    val envelope = codec.envelopeFromDohJson(dohBody, gatewayHost)
-                    codec.verifyKeyConfig(gatewayHost, envelope, nowSeconds)
-                }
-
-            when {
-                dnsResult.isSuccess -> {
-                    val verified = dnsResult.getOrThrow()
-                    logger("OHTTP key config fetched and verified from DNS via $resolver")
-                    return verified
-                }
-
-                else -> {
-                    dnsResult.exceptionOrNull()?.let { if (it is CancellationException) throw it }
-                    lastError = dnsResult.exceptionOrNull() as? Exception
-                    logger("OHTTP DNS resolver $resolver failed: ${lastError?.message}")
-                }
+        for (resolver in codec.dohResolvers()) {
+            val result = runCatching { fetchFromDns(resolver, nowSeconds, timeoutMs) }
+            val error = result.exceptionOrNull()
+            if (error is CancellationException) throw error
+            if (error == null) {
+                logger("OHTTP key config fetched and verified from DNS via $resolver")
+                return result.getOrThrow()
             }
+            logger("OHTTP DNS resolver $resolver failed: ${error.message}")
         }
-
-        logger("OHTTP all DNS resolvers failed, last error: ${lastError?.message}")
         return null
+    }
+
+    private suspend fun fetchFromDns(
+        resolver: String,
+        nowSeconds: Long,
+        timeoutMs: Int,
+    ): OhttpVerifiedKey {
+        val dohUrl = codec.dohQueryUrl(resolver, gatewayHost)
+        val dohBody = sender.get(dohUrl, listOf("Accept" to "application/dns-json") + USER_AGENT_HEADER, timeoutMs)
+        val envelope = codec.envelopeFromDohJson(dohBody, gatewayHost)
+        return codec.verifyKeyConfig(gatewayHost, envelope, nowSeconds)
     }
 
     /**

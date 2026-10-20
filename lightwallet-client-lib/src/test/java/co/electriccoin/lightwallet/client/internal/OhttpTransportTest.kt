@@ -165,6 +165,55 @@ class OhttpTransportTest {
     }
 
     @Test
+    fun `a failed relay fetch falls back to the DNS record, verified like the relay one`() {
+        val codec = FakeOhttpCodec(resolvers = arrayOf("https://doh-a.test/dns-query", "https://doh-b.test/dns-query"))
+        sender.queueGet { throw OhttpException("relay down") }
+        sender.queueGet { "dns-envelope".toByteArray() }
+
+        val key = runBlocking { transport(codec).keyConfig() }
+
+        assertArrayEquals(FakeOhttpCodec.KEY, key)
+        assertEquals(
+            "https://doh-a.test/dns-query?name=ohttp-keys-testnet.example&type=TXT",
+            sender.getCalls[1].first,
+        )
+        assertEquals("dns-envelope", String(codec.verified.single().second))
+    }
+
+    @Test
+    fun `when the relay and every DNS record fail verification the relay error is thrown`() {
+        val codec =
+            FakeOhttpCodec(
+                verify = FakeOhttpCodec.rejecting("Invalid Ed25519 signature"),
+                resolvers = arrayOf("https://doh-a.test/dns-query", "https://doh-b.test/dns-query"),
+            )
+        queueSignedConfigs(3)
+
+        runBlocking {
+            assertFailsWith<KeyConfigVerificationFailedException> { transport(codec).keyConfig() }
+        }
+
+        assertEquals(3, sender.getCalls.size)
+        assertEquals(3, codec.verified.size)
+    }
+
+    @Test
+    fun `a non-https relay fails before any request, without the DNS fallback`() {
+        val codec = FakeOhttpCodec(resolvers = arrayOf("https://doh-a.test/dns-query"))
+        val transport =
+            OhttpTransport(
+                relayUrl = "http://relay.test/relay",
+                gatewayHost = "ohttp-gateway-testnet.example",
+                codec = codec,
+                sender = sender,
+            )
+
+        runBlocking { assertFailsWith<OhttpException> { transport.keyConfig() } }
+
+        assertEquals(0, sender.getCalls.size)
+    }
+
+    @Test
     fun `a pre-seeded key without expiry is used without any fetch`() {
         val key = ByteArray(33) { 7 }
 

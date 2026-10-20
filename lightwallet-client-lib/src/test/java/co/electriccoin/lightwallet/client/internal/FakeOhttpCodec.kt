@@ -38,6 +38,7 @@ internal class FakeOhttpCodec(
         OhttpVerifiedKey(key = KEY, notAfter = now + ONE_HOUR_SECONDS, network = "testnet")
     },
     var answer: OhttpCodecResponse = OhttpCodecResponse(200, emptyList(), emptyList(), byteArrayOf(1)),
+    private val resolvers: Array<String> = emptyArray(),
 ) : OhttpCodec {
     /** Inner responses for successive opened answers; [answer] once these are used up. */
     val answers = mutableListOf<OhttpCodecResponse>()
@@ -189,6 +190,21 @@ internal class FakeOhttpCodec(
         verified.add(Triple(gatewayHost, envelopeJson, nowSeconds))
         return verify(gatewayHost, envelopeJson, nowSeconds)
     }
+
+    override fun keyConfigDnsName(gatewayHost: String): String = "ohttp-keys-testnet.example"
+
+    override fun dohQueryUrl(
+        resolver: String,
+        gatewayHost: String,
+    ): String = "$resolver?name=${keyConfigDnsName(gatewayHost)}&type=TXT"
+
+    /** The fake DoH body is the envelope itself. */
+    override fun envelopeFromDohJson(
+        dohBody: ByteArray,
+        gatewayHost: String,
+    ): ByteArray = dohBody
+
+    override fun dohResolvers(): Array<String> = resolvers
 
     override fun encapsulate(
         key: ByteArray,
