@@ -146,7 +146,6 @@ class RustOhttpTool private constructor() : OhttpCodec {
     override fun dohResolvers(): Array<String> =
         Companion.dohResolvers()
 
-
     override fun encapsulate(
         key: ByteArray,
         request: OhttpCodecRequest,

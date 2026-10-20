@@ -89,7 +89,6 @@ interface OhttpCodec {
      * Returns the DNS-over-HTTPS resolvers tried in order: Cloudflare, then Google.
      */
     fun dohResolvers(): Array<String>
-
 }
 
 /**

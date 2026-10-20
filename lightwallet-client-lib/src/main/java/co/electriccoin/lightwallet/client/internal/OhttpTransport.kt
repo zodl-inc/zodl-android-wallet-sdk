@@ -105,7 +105,6 @@ internal class OhttpTransport(
         val verified =
             when {
                 relayResult.isSuccess -> relayResult.getOrThrow()
-
                 else -> {
                     val relayErr = relayResult.exceptionOrNull()
                     if (relayErr is OhttpException) {

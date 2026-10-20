@@ -874,6 +874,96 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_profile
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
+/// Returns the DNS name of the signed Key Configuration TXT record for the gateway at `gateway_host`:
+/// `ohttp-keys.example` or `ohttp-keys-testnet.example`.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_keyConfigDnsName<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    gateway_host: JString<'local>,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        use zodl_ohttp_client::{NetworkRule, key_config_dns_name};
+        let host = java_string_to_rust(env, &gateway_host)?;
+        let network = NetworkRule::KnownHosts
+            .network_for(&host)
+            .map_err(|e| raise(env, Failure::argument(&e.to_string())))?;
+        let dns_name = key_config_dns_name(network);
+        Ok(env.new_string(dns_name)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Returns the DoH query URL for the resolver and gateway: the JSON API URL to fetch the TXT record.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_dohQueryUrl<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    resolver: JString<'local>,
+    gateway_host: JString<'local>,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        use zodl_ohttp_client::{NetworkRule, doh_query_url};
+        let resolver = java_string_to_rust(env, &resolver)?;
+        let host = java_string_to_rust(env, &gateway_host)?;
+        let network = NetworkRule::KnownHosts
+            .network_for(&host)
+            .map_err(|e| raise(env, Failure::argument(&e.to_string())))?;
+        let url = doh_query_url(&resolver, network);
+        Ok(env.new_string(url)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Parses a DoH JSON response (the body of `GET <doh_query_url>`) and extracts the signed envelope.
+/// The envelope can then be verified with `verifyKeyConfig`.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_envelopeFromDohJson<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    doh_body: JByteArray<'local>,
+    gateway_host: JString<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        use zodl_ohttp_client::{NetworkRule, envelope_from_doh_json};
+        let body = java_bytes_to_rust(env, &doh_body)?;
+        let host = java_string_to_rust(env, &gateway_host)?;
+        let network = NetworkRule::KnownHosts
+            .network_for(&host)
+            .map_err(|e| raise(env, Failure::argument(&e.to_string())))?;
+        let envelope =
+            envelope_from_doh_json(&body, network).map_err(|e| raise(env, Failure::from(e)))?;
+        Ok(env.byte_array_from_slice(&envelope)?.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Returns the DNS-over-HTTPS resolvers as a string array (Cloudflare, then Google).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_dohResolvers<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        use zodl_ohttp_client::DOH_RESOLVERS;
+        let array = env.new_object_array(
+            DOH_RESOLVERS.len() as i32,
+            "java/lang/String",
+            env.new_string("")?,
+        )?;
+        for (i, resolver) in DOH_RESOLVERS.iter().enumerate() {
+            let jstr = env.new_string(*resolver)?;
+            env.set_object_array_element(&array, i as i32, jstr)?;
+        }
+        Ok(array.into_raw())
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
 #[cfg(test)]
 mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -1131,7 +1221,7 @@ mod tests {
             unpack_fields(&info.key_fetch_headers).unwrap(),
             vec![(b"Accept".to_vec(), b"application/json".to_vec())]
         );
-        assert_eq!(info.max_sealed_response, 268_435_456 + 65_536);
+        assert_eq!(info.max_sealed_response, 269_484_032);
         assert_eq!(info.max_key_config, 65_536);
         assert_eq!(info.cache_refresh_margin_secs, 0);
         assert!(info.drop_before_refetch);
@@ -1604,94 +1694,4 @@ mod tests {
             "https://relay.example/ohttp-configs/signed"
         );
     }
-}
-
-/// Returns the DNS name of the signed Key Configuration TXT record for the gateway at `gateway_host`:
-/// `ohttp-keys.example` or `ohttp-keys-testnet.example`.
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_keyConfigDnsName<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    gateway_host: JString<'local>,
-) -> jstring {
-    let res = catch_unwind(&mut env, |env| {
-        use zodl_ohttp_client::{NetworkRule, key_config_dns_name};
-        let host = java_string_to_rust(env, &gateway_host)?;
-        let network = NetworkRule::KnownHosts
-            .network_for(&host)
-            .map_err(|e| raise(env, Failure::argument(&e.to_string())))?;
-        let dns_name = key_config_dns_name(network);
-        Ok(env.new_string(dns_name)?.into_raw())
-    });
-    unwrap_exc_or(&mut env, res, ptr::null_mut())
-}
-
-/// Returns the DoH query URL for the resolver and gateway: the JSON API URL to fetch the TXT record.
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_dohQueryUrl<'local>(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    resolver: JString<'local>,
-    gateway_host: JString<'local>,
-) -> jstring {
-    let res = catch_unwind(&mut env, |env| {
-        use zodl_ohttp_client::{NetworkRule, doh_query_url};
-        let resolver = java_string_to_rust(env, &resolver)?;
-        let host = java_string_to_rust(env, &gateway_host)?;
-        let network = NetworkRule::KnownHosts
-            .network_for(&host)
-            .map_err(|e| raise(env, Failure::argument(&e.to_string())))?;
-        let url = doh_query_url(&resolver, network);
-        Ok(env.new_string(url)?.into_raw())
-    });
-    unwrap_exc_or(&mut env, res, ptr::null_mut())
-}
-
-/// Parses a DoH JSON response (the body of `GET <doh_query_url>`) and extracts the signed envelope.
-/// The envelope can then be verified with `verifyKeyConfig`.
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_envelopeFromDohJson<
-    'local,
->(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-    doh_body: JByteArray<'local>,
-    gateway_host: JString<'local>,
-) -> jobject {
-    let res = catch_unwind(&mut env, |env| {
-        use zodl_ohttp_client::{NetworkRule, envelope_from_doh_json};
-        let body = java_bytes_to_rust(env, &doh_body)?;
-        let host = java_string_to_rust(env, &gateway_host)?;
-        let network = NetworkRule::KnownHosts
-            .network_for(&host)
-            .map_err(|e| raise(env, Failure::argument(&e.to_string())))?;
-        let envelope =
-            envelope_from_doh_json(&body, network).map_err(|e| raise(env, Failure::from(e)))?;
-        Ok(env.byte_array_from_slice(&envelope)?.into_raw())
-    });
-    unwrap_exc_or(&mut env, res, ptr::null_mut())
-}
-
-/// Returns the DNS-over-HTTPS resolvers as a string array (Cloudflare, then Google).
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_dohResolvers<'local>(
-    mut env: JNIEnv<'local>,
-    _: JClass<'local>,
-) -> jobject {
-    let res = catch_unwind(&mut env, |env| {
-        use zodl_ohttp_client::DOH_RESOLVERS;
-        let array = env.new_object_array(
-            DOH_RESOLVERS.len() as i32,
-            "java/lang/String",
-            env.new_string("")?,
-        )?;
-        for (i, resolver) in DOH_RESOLVERS.iter().enumerate() {
-            let jstr = env.new_string(*resolver)?;
-            env.set_object_array_element(&array, i as i32, jstr)?;
-        }
-        Ok(array.into_raw())
-    });
-    unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
