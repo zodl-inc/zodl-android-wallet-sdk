@@ -17,6 +17,7 @@ package co.electriccoin.lightwallet.client
  * Failures are [KeyConfigVerificationFailedException] (the signed key configuration was rejected)
  * or [OhttpException] (anything else). Their messages never contain request or response content.
  */
+@Suppress("TooManyFunctions")
 interface OhttpCodec {
     /** The preset's headers, size caps and key cache rules. Constant for the lifetime of the codec. */
     fun profileInfo(): OhttpProfileInfo

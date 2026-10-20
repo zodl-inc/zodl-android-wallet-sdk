@@ -104,7 +104,10 @@ internal class OhttpTransport(
         // If relay failed (fetch OR verification), try DNS fallback
         val verified =
             when {
-                relayResult.isSuccess -> relayResult.getOrThrow()
+                relayResult.isSuccess -> {
+                    relayResult.getOrThrow()
+                }
+
                 else -> {
                     val relayErr = relayResult.exceptionOrNull()
                     if (relayErr is OhttpException) {
