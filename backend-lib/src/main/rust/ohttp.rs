@@ -1609,7 +1609,9 @@ mod tests {
 /// Returns the DNS name of the signed Key Configuration TXT record for the gateway at `gateway_host`:
 /// `ohttp-keys.example` or `ohttp-keys-testnet.example`.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_keyConfigDnsName<'local>(
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_keyConfigDnsName<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     gateway_host: JString<'local>,
@@ -1650,7 +1652,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_dohQuer
 /// Parses a DoH JSON response (the body of `GET <doh_query_url>`) and extracts the signed envelope.
 /// The envelope can then be verified with `verifyKeyConfig`.
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_envelopeFromDohJson<'local>(
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_envelopeFromDohJson<
+    'local,
+>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     doh_body: JByteArray<'local>,
@@ -1663,8 +1667,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_envelop
         let network = NetworkRule::KnownHosts
             .network_for(&host)
             .map_err(|e| raise(env, Failure::argument(&e.to_string())))?;
-        let envelope = envelope_from_doh_json(&body, network)
-            .map_err(|e| raise(env, Failure::from(e)))?;
+        let envelope =
+            envelope_from_doh_json(&body, network).map_err(|e| raise(env, Failure::from(e)))?;
         Ok(env.byte_array_from_slice(&envelope)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
