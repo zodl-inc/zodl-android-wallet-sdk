@@ -10,8 +10,10 @@ import co.electriccoin.lightwallet.client.OhttpResponseDecoder
 import co.electriccoin.lightwallet.client.OhttpResponseEvents
 import co.electriccoin.lightwallet.client.OhttpResponseHead
 import co.electriccoin.lightwallet.client.OhttpSender
+import co.electriccoin.lightwallet.client.OhttpVerifiedKey
 import java.io.InputStream
 import java.net.SocketTimeoutException
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * OHTTP (RFC 9458) client transport: seals a request to the gateway's key, POSTs it to the relay
@@ -70,8 +72,8 @@ internal class OhttpTransport(
      * configuration (less the codec's refresh margin); a forced refresh discards the cached key
      * before the fetch, when the codec's cache rules say so.
      *
-     * Configuration errors (non-https URLs, unknown gateway) fail closed without any network requests.
-     * Relay fetch or verification failures trigger DNS-over-HTTPS fallback.
+     * Non-https URLs fail closed without any request. A failed relay fetch or verification falls back to
+     * DNS-over-HTTPS; when that fails too, the relay error is thrown.
      */
     suspend fun keyConfig(
         forceRefresh: Boolean = false,
@@ -92,50 +94,19 @@ internal class OhttpTransport(
             }
         }
 
-        // Configuration validation: check relay URL and signed config URL are https BEFORE any network call.
-        // Configuration errors fail closed without DNS fallback.
-        if (!relayUrl.startsWith("https://", ignoreCase = true)) {
-            throw OhttpException("OHTTP endpoints must use https: $relayUrl")
-        }
-        if (!signedConfigUrl.startsWith("https://", ignoreCase = true)) {
-            throw OhttpException("OHTTP endpoints must use https: $signedConfigUrl")
-        }
+        // Configuration errors fail closed, before any request and without the DNS fallback.
+        requireHttps(relayUrl)
+        requireHttps(signedConfigUrl)
 
-        // Validate gateway is known (has a DNS source) for potential DNS fallback
-        val resolvers = codec.dohResolvers()
-        if (resolvers.isEmpty()) {
-            throw OhttpException("Unknown gateway host: $gatewayHost")
-        }
-
-        val headers = profile.keyFetchHeaders + USER_AGENT_HEADER + traceHeaders(profile.traceOnKeyFetch)
-        RelayBackoff.check(relayUrl, codec = codec)
-
-        // Try relay first: fetch AND verify. If either fails, fall back to DNS.
-        val relayResult =
-            runCatching {
-                val json = sender.get(signedConfigUrl, headers, minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS))
-                val verified = codec.verifyKeyConfig(gatewayHost, json, nowSeconds)
-                logger("OHTTP key config fetched and verified from relay")
-                verified
-            }
-
-        // If relay failed (fetch OR verification), try DNS fallback
+        val fetchTimeoutMs = minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS)
         val verified =
-            when {
-                relayResult.isSuccess -> {
-                    relayResult.getOrThrow()
+            runCatching { fetchFromRelay(nowSeconds, fetchTimeoutMs) }.getOrElse { relayErr ->
+                if (relayErr is CancellationException) throw relayErr
+                if (relayErr is OhttpException) {
+                    RelayBackoff.noteIfRateLimited(relayUrl, relayErr, codec)
                 }
-
-                else -> {
-                    val relayErr = relayResult.exceptionOrNull()
-                    if (relayErr is OhttpException) {
-                        RelayBackoff.noteIfRateLimited(relayUrl, relayErr, codec)
-                    }
-                    logger("OHTTP relay key config failed: $relayErr, trying DNS")
-
-                    tryDnsFallback(nowSeconds, minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS))
-                        ?: throw relayErr ?: OhttpException("Key config fetch failed")
-                }
+                logger("OHTTP relay key config failed: $relayErr, trying DNS")
+                tryDnsFallback(nowSeconds, fetchTimeoutMs) ?: throw relayErr
             }
 
         logger("OHTTP signed key config verified: network=${verified.network}, valid_until=${verified.notAfter}")
@@ -145,6 +116,24 @@ internal class OhttpTransport(
             cachedExpiry = verified.notAfter
         }
         return verified.key
+    }
+
+    private fun requireHttps(url: String) {
+        if (!url.startsWith("https://", ignoreCase = true)) {
+            throw OhttpException("OHTTP endpoints must use https: $url")
+        }
+    }
+
+    private suspend fun fetchFromRelay(
+        nowSeconds: Long,
+        timeoutMs: Int,
+    ): OhttpVerifiedKey {
+        val headers = profile.keyFetchHeaders + USER_AGENT_HEADER + traceHeaders(profile.traceOnKeyFetch)
+        RelayBackoff.check(relayUrl, codec = codec)
+        val json = sender.get(signedConfigUrl, headers, timeoutMs)
+        val verified = codec.verifyKeyConfig(gatewayHost, json, nowSeconds)
+        logger("OHTTP key config fetched and verified from relay")
+        return verified
     }
 
     /**
@@ -184,6 +173,7 @@ internal class OhttpTransport(
                 }
 
                 else -> {
+                    dnsResult.exceptionOrNull()?.let { if (it is CancellationException) throw it }
                     lastError = dnsResult.exceptionOrNull() as? Exception
                     logger("OHTTP DNS resolver $resolver failed: ${lastError?.message}")
                 }
