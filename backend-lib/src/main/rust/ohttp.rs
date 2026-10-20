@@ -1221,7 +1221,7 @@ mod tests {
             unpack_fields(&info.key_fetch_headers).unwrap(),
             vec![(b"Accept".to_vec(), b"application/json".to_vec())]
         );
-        assert_eq!(info.max_sealed_response, 269_484_032);
+        assert_eq!(info.max_sealed_response, 268_435_456 + 1024 * 1024);
         assert_eq!(info.max_key_config, 65_536);
         assert_eq!(info.cache_refresh_margin_secs, 0);
         assert!(info.drop_before_refetch);
