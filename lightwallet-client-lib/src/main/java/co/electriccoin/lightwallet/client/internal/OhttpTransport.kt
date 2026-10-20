@@ -69,6 +69,9 @@ internal class OhttpTransport(
      * Fetches (or returns the cached) gateway key. A key is used until the `not_after` of its signed
      * configuration (less the codec's refresh margin); a forced refresh discards the cached key
      * before the fetch, when the codec's cache rules say so.
+     *
+     * Configuration errors (non-https URLs, unknown gateway) fail closed without any network requests.
+     * Relay fetch or verification failures trigger DNS-over-HTTPS fallback.
      */
     suspend fun keyConfig(
         forceRefresh: Boolean = false,
@@ -87,6 +90,21 @@ internal class OhttpTransport(
             if (!forceRefresh && cached != null && fresh) {
                 return cached
             }
+        }
+
+        // Configuration validation: check relay URL and signed config URL are https BEFORE any network call.
+        // Configuration errors fail closed without DNS fallback.
+        if (!relayUrl.startsWith("https://", ignoreCase = true)) {
+            throw OhttpException("OHTTP endpoints must use https: $relayUrl")
+        }
+        if (!signedConfigUrl.startsWith("https://", ignoreCase = true)) {
+            throw OhttpException("OHTTP endpoints must use https: $signedConfigUrl")
+        }
+
+        // Validate gateway is known (has a DNS source) for potential DNS fallback
+        val resolvers = codec.dohResolvers()
+        if (resolvers.isEmpty()) {
+            throw OhttpException("Unknown gateway host: $gatewayHost")
         }
 
         val headers = profile.keyFetchHeaders + USER_AGENT_HEADER + traceHeaders(profile.traceOnKeyFetch)
