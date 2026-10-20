@@ -345,5 +345,67 @@ class RustOhttpTool private constructor() : OhttpCodec {
 
         @JvmStatic
         private external fun profileInfo(profile: Int): JniOhttpProfile
+
+        /**
+         * Returns the DNS name of the signed Key Configuration TXT record for [gatewayHost]:
+         * `ohttp-keys.example` or `ohttp-keys-testnet.example`.
+         */
+        @JvmStatic
+        private external fun keyConfigDnsName(gatewayHost: String): String
+
+        /**
+         * Returns the DoH query URL (JSON API) for [resolver] and [gatewayHost]: the URL to GET
+         * to fetch the TXT record as JSON.
+         */
+        @JvmStatic
+        private external fun dohQueryUrl(
+            resolver: String,
+            gatewayHost: String,
+        ): String
+
+        /**
+         * Parses a DoH JSON response [dohBody] (the body of `GET dohQueryUrl(...)`) and extracts
+         * the signed envelope, which can then be verified with [verifyKeyConfig].
+         *
+         * @throws OhttpException if the DoH response is malformed or the envelope cannot be parsed
+         */
+        @JvmStatic
+        private external fun envelopeFromDohJson(
+            dohBody: ByteArray,
+            gatewayHost: String,
+        ): ByteArray
+
+        /**
+         * Returns the DNS-over-HTTPS resolvers tried in order: Cloudflare, then Google.
+         */
+        @JvmStatic
+        private external fun dohResolvers(): Array<String>
+
+        /**
+         * Public helpers for DNS fallback, used by [co.electriccoin.lightwallet.client.internal.OhttpTransport].
+         */
+        object Dns {
+            /** The DNS name of the signed Key Configuration TXT record for [gatewayHost]. */
+            fun keyConfigDnsName(gatewayHost: String): String = Companion.keyConfigDnsName(gatewayHost)
+
+            /** The DoH query URL (JSON API) for [resolver] and [gatewayHost]. */
+            fun dohQueryUrl(
+                resolver: String,
+                gatewayHost: String,
+            ): String = Companion.dohQueryUrl(resolver, gatewayHost)
+
+            /**
+             * Parses a DoH JSON response and extracts the signed envelope.
+             *
+             * @throws OhttpException if the response is malformed
+             */
+            fun envelopeFromDohJson(
+                dohBody: ByteArray,
+                gatewayHost: String,
+            ): ByteArray = Companion.envelopeFromDohJson(dohBody, gatewayHost)
+
+            /** The DNS-over-HTTPS resolvers tried in order. */
+            val resolvers: Array<String> by lazy { Companion.dohResolvers() }
+        }
     }
 }

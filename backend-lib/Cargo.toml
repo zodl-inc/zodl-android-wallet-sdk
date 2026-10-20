@@ -121,8 +121,8 @@ serde_json = "1"
 # the I/O. The JNI surface is `src/main/rust/ohttp.rs`. The repository is private (CI's App
 # token must include `ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
 # it only to a commit that is on the `main` of zodl-inc/ohttp, the one zodl-slipstream pins (one copy of the
-# core, so its relay backoff table is shared). Now at 3778974d72c916b05a866588fd3eba20666fe320 (ohttp main: sealed-response cap 256 MiB + 1 MiB, library preset decapsulates outer 200 only, fuzzing fixes).
-zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "3778974d72c916b05a866588fd3eba20666fe320", default-features = false }
+# core, so its relay backoff table is shared). Now at b0b2087c9d867115f38ddfbd6021988b64abf8f9 (DNS fallback for signed key configuration).
+zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "b0b2087c9d867115f38ddfbd6021988b64abf8f9", default-features = false }
 tonic = "0.14"
 
 # Logging
@@ -317,8 +317,8 @@ crate-type = ["staticlib", "cdylib"]
 # instead of crates.io. Once slipstream-internal PR #16 merges, the rev below must move to
 # the resulting slipstream-internal `main` commit; after that, this entry can be removed once
 # a published zodl-slipstream version containing the OHTTP transport exists on crates.io.
-# Pins slipstream-internal PR #16 head, a82e8a02b035bf6e0110a6974962397ebaf5220d (zodl-ohttp-client 3778974d, webpki-roots 1.0.10).
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "a82e8a02b035bf6e0110a6974962397ebaf5220d" }
+# Pins slipstream-internal PR #16 head, 8a4e73174f5b0a6e9d62ffc3e0c42c2e4fa5e08d (DNS fallback, zodl-ohttp-client b0b2087c).
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "8a4e73174f5b0a6e9d62ffc3e0c42c2e4fa5e08d" }
 #
 # Shielded voting on the NU7 pre-release crates.
 #
