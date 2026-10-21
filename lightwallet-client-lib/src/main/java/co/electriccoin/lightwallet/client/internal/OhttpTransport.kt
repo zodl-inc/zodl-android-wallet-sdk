@@ -151,11 +151,13 @@ internal class OhttpTransport(
      * fetch or verification fails. Queries each resolver in order (Cloudflare, then Google), parses
      * the DoH JSON response to extract the signed envelope, and verifies it. Returns the verified
      * key, or null if all resolvers fail or the key fetch's [deadline] (shared with the relay fetch)
-     * is up before a resolver is tried.
+     * is up before a resolver is tried. A relay pause begun meanwhile (another request's 429) holds
+     * the resolvers too.
      */
     private suspend fun tryDnsFallback(deadline: CallDeadline): OhttpVerifiedKey? {
         for (resolver in codec.dohResolvers()) {
             val timeoutMs = deadline.remainingMsOrNull() ?: break
+            RelayBackoff.check(backoffKey, codec = codec)
             val result = runCatching { fetchFromDns(resolver, timeoutMs) }
             val error = result.exceptionOrNull()
             if (error is CancellationException) throw error

@@ -222,6 +222,22 @@ class OhttpTransportTest {
     }
 
     @Test
+    fun `a pause begun during the relay fetch holds the DNS fallback too`() {
+        val relay = "https://relay-paused-during-fetch.test/relay"
+        val codec = FakeOhttpCodec(resolvers = arrayOf("https://doh-a.test/dns-query"))
+        sender.queueGet {
+            RelayBackoff.note(relay, retryAfterSeconds = 30)
+            throw OhttpException("relay down")
+        }
+        val transport = OhttpTransport(relay, "ohttp-gateway-testnet.example", codec, sender)
+
+        val thrown = assertFailsWith<OhttpException> { runBlocking { transport.keyConfig() } }
+
+        assertEquals(429, thrown.httpStatus)
+        assertEquals("no DNS query while the relay asked to wait", 1, sender.getCalls.size)
+    }
+
+    @Test
     fun `when the relay and every DNS record fail verification the relay error is thrown`() {
         val codec =
             FakeOhttpCodec(
