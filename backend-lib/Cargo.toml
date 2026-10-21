@@ -317,8 +317,8 @@ crate-type = ["staticlib", "cdylib"]
 # instead of crates.io. Once slipstream-internal PR #16 merges, the rev below must move to
 # the resulting slipstream-internal `main` commit; after that, this entry can be removed once
 # a published zodl-slipstream version containing the OHTTP transport exists on crates.io.
-# Pins slipstream-internal PR #16 (head 631a3f7c9f5dd3293e70af7361189608f3a679e2, crate 0.4.0-pre.2): DNS fallback for signed key configuration, a key-fetch 429 or relay pause rate limited without the DNS fallback, DoH queries with the relay fetch headers, slipstream main merged (0.4.0-pre.2), zodl-ohttp-client b0b2087c.
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "631a3f7c9f5dd3293e70af7361189608f3a679e2" }
+# Pins slipstream-internal PR #16 (head cec3491fe36cd3e3c4a9cc2c328fe1667a859d83, crate 0.4.0-pre.2): DNS fallback for signed key configuration, a key-fetch 429 or relay pause rate limited without the DNS fallback, DoH queries with the relay fetch headers, dispatch hook at the real send and a per-request response ceiling (slipstream-internal #25), slipstream main merged (0.4.0-pre.2), zodl-ohttp-client b0b2087c.
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "cec3491fe36cd3e3c4a9cc2c328fe1667a859d83" }
 #
 # Shielded voting on the NU7 pre-release crates.
 #
