@@ -186,6 +186,24 @@ class OhttpStreamingTest {
     @Test
     fun `the transport hands the head, the body and the trailers over as they are decoded`() {
         val feed = ChunkFeed()
+    @Test
+    fun `a response that ends before its final chunk after the deadline passed is DEADLINE_EXCEEDED`() {
+        val feed = ChunkFeed()
+        val sender = RecordingSender().apply { queuePostStream { feed } }
+        val codec = FakeOhttpCodec()
+        val options = CallOptions.DEFAULT.withDeadlineAfter(DEADLINE_MS, TimeUnit.MILLISECONDS)
+        val call = Call(codec, sender, options = options)
+
+        feed.send(streamStart() + grpcHead + dataRecord(frame(MESSAGE_1)))
+        assertTrue(call.firstMessage.await(WAIT_S, TimeUnit.SECONDS))
+        // The watchdog's disconnect can surface as an early end of the body rather than an I/O error.
+        while (options.deadline?.isExpired != true) Thread.sleep(POLL_MS)
+        feed.end()
+
+        assertEquals(Status.Code.DEADLINE_EXCEEDED, call.awaitClose().code)
+        call.assertReleased(codec)
+    }
+
         val sender = RecordingSender().apply { queuePostStream { feed } }
         val transport = transport(FakeOhttpCodec(), sender)
         val events = LinkedBlockingQueue<String>()

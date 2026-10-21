@@ -288,21 +288,38 @@ internal class OhttpClientCall<RequestT, ResponseT>(
             // The response was refused while it was read and the call is already closed.
         } catch (e: SocketTimeoutException) {
             // A transport timeout is UNAVAILABLE unless the call's own deadline is what ran out.
-            val deadlineHit = budget.boundByDeadline || callOptions.deadline?.isExpired == true
-            val status = if (deadlineHit) Status.DEADLINE_EXCEEDED else Status.UNAVAILABLE
-            finish(status.withDescription("OHTTP request timed out").withCause(e), Metadata())
+            val status = if (budget.boundByDeadline) Status.DEADLINE_EXCEEDED else Status.UNAVAILABLE
+            fail(status.withDescription("OHTTP request timed out"), e)
         } catch (e: OhttpException) {
             logger("OHTTP ${method.fullMethodName} failed: ${e.message}")
-            finish(grpcStatusOf(e).withDescription(e.message).withCause(e), Metadata())
+            fail(grpcStatusOf(e).withDescription(e.message), e)
         } catch (e: java.io.IOException) {
             logger("OHTTP ${method.fullMethodName} I/O error: ${e.message}")
-            finish(Status.UNAVAILABLE.withDescription(e.message).withCause(e), Metadata())
+            fail(Status.UNAVAILABLE.withDescription(e.message), e)
         } catch (e: RuntimeException) {
             logger("OHTTP ${method.fullMethodName} internal error: $e")
             finish(Status.INTERNAL.withDescription(e.toString()).withCause(e), Metadata())
         } finally {
             synchronized(lock) { exchange = null }
         }
+    }
+
+    /**
+     * Closes the call with [status], or DEADLINE_EXCEEDED once the call's deadline has passed: the
+     * disconnect the sender's watchdog makes surfaces as a timeout, an I/O error or a response that
+     * ends before its final chunk, depending on where the read was.
+     */
+    private fun fail(
+        status: Status,
+        cause: Exception,
+    ) {
+        val reported =
+            if (callOptions.deadline?.isExpired == true) {
+                Status.DEADLINE_EXCEEDED.withDescription("deadline expired")
+            } else {
+                status
+            }
+        finish(reported.withCause(cause), Metadata())
     }
 
     /** Thrown by [ResponseReader] to stop reading a response it has already closed the call for. */
