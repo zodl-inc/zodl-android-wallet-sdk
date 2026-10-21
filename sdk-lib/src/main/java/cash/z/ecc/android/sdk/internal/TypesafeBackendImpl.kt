@@ -449,4 +449,9 @@ internal class TypesafeBackendImpl(
     override fun isValidTexAddr(addr: String): Boolean = backend.isValidTexAddr(addr)
 
     override suspend fun deleteAccount(accountUuid: AccountUuid) = backend.deleteAccount(accountUuid.value)
+
+    override suspend fun setAccountName(
+        accountUuid: AccountUuid,
+        name: String
+    ) = backend.setAccountName(accountUuid.value, name)
 }

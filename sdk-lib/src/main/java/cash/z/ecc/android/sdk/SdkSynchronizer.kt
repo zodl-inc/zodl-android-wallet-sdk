@@ -848,6 +848,22 @@ class SdkSynchronizer private constructor(
             refreshAccountsBus.emit(Unit)
         }
 
+    @Suppress("TooGenericExceptionCaught")
+    override suspend fun renameAccount(
+        accountUuid: AccountUuid,
+        name: String
+    ) {
+        try {
+            backend.setAccountName(accountUuid, name)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Twig.error(e) { "Rename account failed." }
+            throw InitializeException.RenameAccountException(e)
+        }
+        refreshAccountsBus.emit(Unit)
+    }
+
     override suspend fun getTreeState(height: BlockHeight): ByteArray =
         when (
             val response =

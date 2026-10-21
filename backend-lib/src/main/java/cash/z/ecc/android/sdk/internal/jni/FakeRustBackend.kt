@@ -243,6 +243,11 @@ class FakeRustBackend(
     override suspend fun deleteAccount(accountUuid: ByteArray): Boolean =
         error("Intentionally not implemented in mocked FakeRustBackend implementation.")
 
+    override suspend fun setAccountName(
+        accountUuid: ByteArray,
+        name: String
+    ): Unit = error("Intentionally not implemented in mocked FakeRustBackend implementation.")
+
     override fun isValidSaplingAddr(addr: String): Boolean =
         error("Intentionally not implemented in mocked FakeRustBackend implementation.")
 

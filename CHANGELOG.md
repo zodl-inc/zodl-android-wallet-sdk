@@ -18,10 +18,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matches more than one account. `AccountKeyOverlap.Kind` may gain values in a later release.
 - `InitializeException.ImportAccountCollisionException`, thrown by `importAccountByUfvk` when the key
   collides with existing accounts. Its message is fixed and never contains the key.
+- `Synchronizer.renameAccount(accountUuid, name)` stores a new name for an existing account, leaving
+  its keys and all other state unchanged; `accountsFlow` re-emits with the new name. It throws the
+  new `InitializeException.RenameAccountException` when the name cannot be stored, for example when
+  no account with the given UUID exists. Its message is fixed ("Failed to rename account.") and never
+  contains the cause's message; the failure is chained as `cause`.
 
 ### Changed
 - `Synchronizer` declares `findAccountSharingKeyComponents(ufvk)`: any implementer or test fake must
   now provide it.
+- `Synchronizer` declares `renameAccount(accountUuid, name)`: any implementer or test fake must now
+  provide it.
 - `DerivationTool` declares `describeUnifiedFullViewingKey(ufvk, network)`: any implementer or test
   fake must now provide it.
 - `importAccountByUfvk` throws `InitializeException.ImportAccountCollisionException` instead of

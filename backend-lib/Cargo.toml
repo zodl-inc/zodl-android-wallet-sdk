@@ -326,6 +326,20 @@ zakura-wallet-lib = { git = "https://github.com/zodl-inc/zakura-wallet-libraries
 #zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 #zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 #zip321 = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+equihash = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+f4jumble = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "cbf8984db61e2f7fbf95fc62a4dbd41231dfe822" }
 
 # The Ledger tests build the Orchard proving key once, to extract and verify a proof-bearing
 # transaction a device signed. Key generation synthesizes the Orchard circuit, which takes minutes
