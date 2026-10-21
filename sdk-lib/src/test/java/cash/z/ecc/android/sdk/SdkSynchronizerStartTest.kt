@@ -27,7 +27,6 @@ import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
-import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -109,7 +108,8 @@ class SdkSynchronizerStartTest {
                 )
 
             try {
-                assertFailsWith<TorUnavailableException> { synchronizer.ohttpSenderOverTor() }
+                val thrown = runCatching { synchronizer.ohttpSenderOverTor() }.exceptionOrNull()
+                assertTrue(thrown is TorUnavailableException, "Tor off, exchange rates on: $thrown")
             } finally {
                 synchronizer.close()
             }
