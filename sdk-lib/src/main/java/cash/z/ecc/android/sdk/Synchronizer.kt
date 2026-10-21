@@ -1082,9 +1082,9 @@ interface Synchronizer {
      * isolated Tor client the way [getTorHttpClient] does -- owning any such isolation for the
      * voting round driver's traffic is that driver's job, not this accessor's.
      *
-     * Deliberately keeps the stricter `isTorEnabled || isExchangeRateEnabled` gate
-     * ([TorUnavailableException] otherwise) even on engines where [getTorHttpClient] itself no
-     * longer enforces it (the Slipstream engine's `getTorHttpClient` now always provides a
+     * Deliberately keeps its own `isTorEnabled` gate ([TorUnavailableException] otherwise, as
+     * [ohttpSenderOverTor] does) even on engines where [getTorHttpClient] itself no
+     * longer enforces one (the Slipstream engine's `getTorHttpClient` now always provides a
      * client, created lazily, so a caller like the currency picker never fails just because Tor
      * is off). Voting is not that caller: it is expected to respect the user's Tor preference
      * explicitly rather than silently routing over plain HTTP the moment a client happens to
@@ -1102,7 +1102,7 @@ interface Synchronizer {
      * [VotingTorLease] for the full contract.
      *
      * @throws TorInitializationErrorException if an error occurred during Tor setup
-     * @throws TorUnavailableException if Tor or exchange rate is not enabled
+     * @throws TorUnavailableException if Tor is not enabled
      */
     @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
     suspend fun acquireVotingTorLease(): VotingTorLease
