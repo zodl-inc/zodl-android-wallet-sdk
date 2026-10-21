@@ -65,7 +65,7 @@ class OhttpTransportTest {
         assertEquals(listOf("https://relay.test/relay"), codec.signedConfigUrls)
         assertEquals(1, sender.getCalls.size)
         assertEquals("https://relay.test/ohttp-configs/signed", sender.getCalls[0].first)
-        assertEquals(FakeOhttpCodec.PROFILE.keyFetchHeaders + FIXED_USER_AGENT, sender.getCalls[0].second)
+        assertEquals(FakeOhttpCodec.PROFILE.keyFetchHeaders + FIXED_GET_HEADERS, sender.getCalls[0].second)
         assertEquals(0, sender.postCalls.size)
         val (host, json, _) = codec.verified.single()
         assertEquals("ohttp-gateway-testnet.example", host)
@@ -178,6 +178,47 @@ class OhttpTransportTest {
             sender.getCalls[1].first,
         )
         assertEquals("dns-envelope", String(codec.verified.single().second))
+    }
+
+    @Test
+    fun `a DoH query carries the relay fetch's fixed headers, with the DNS Accept in place of the relay's`() {
+        val codec = FakeOhttpCodec(resolvers = arrayOf("https://doh-a.test/dns-query"))
+        sender.queueGet { throw OhttpException("relay down") }
+        sender.queueGet { "dns-envelope".toByteArray() }
+
+        runBlocking { transport(codec).keyConfig() }
+
+        val (relayGet, dohGet) = sender.getCalls.map { it.second }
+        assertEquals(listOf("Accept" to "application/json") + FIXED_GET_HEADERS, relayGet)
+        assertEquals(listOf("Accept" to "application/dns-json") + FIXED_GET_HEADERS, dohGet)
+    }
+
+    @Test
+    fun `a 429 on the key fetch is thrown without the DNS fallback`() {
+        val codec = FakeOhttpCodec(resolvers = arrayOf("https://doh-a.test/dns-query"))
+        val limited = RecordingSender()
+        val refused = OhttpException("rate limited", 429, retryAfterSeconds = 30)
+        limited.queueGet { throw refused }
+        val transport =
+            OhttpTransport("https://relay-429-no-dns.test/relay", "ohttp-gateway-testnet.example", codec, limited)
+
+        val thrown = assertFailsWith<OhttpException> { runBlocking { transport.keyConfig() } }
+
+        assertSame(refused, thrown)
+        assertEquals("no DNS query after the 429", 1, limited.getCalls.size)
+    }
+
+    @Test
+    fun `the relay's pause holds the key fetch without the DNS fallback`() {
+        val relay = "https://relay-paused-key.test/relay"
+        RelayBackoff.note(relay, retryAfterSeconds = 30)
+        val codec = FakeOhttpCodec(resolvers = arrayOf("https://doh-a.test/dns-query"))
+        val transport = OhttpTransport(relay, "ohttp-gateway-testnet.example", codec, sender)
+
+        val thrown = assertFailsWith<OhttpException> { runBlocking { transport.keyConfig() } }
+
+        assertEquals(429, thrown.httpStatus)
+        assertEquals("nothing is fetched while the relay asked to wait", 0, sender.getCalls.size)
     }
 
     @Test
@@ -623,5 +664,6 @@ class OhttpTransportTest {
 
     private companion object {
         val FIXED_USER_AGENT = listOf("User-Agent" to "ZODL-OHTTP/1.0")
+        val FIXED_GET_HEADERS = listOf("Accept-Encoding" to "identity") + FIXED_USER_AGENT
     }
 }

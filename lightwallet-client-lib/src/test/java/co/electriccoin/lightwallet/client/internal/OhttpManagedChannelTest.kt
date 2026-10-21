@@ -125,6 +125,19 @@ class OhttpManagedChannelTest {
     }
 
     @Test
+    fun `a 429 on the key fetch closes the call UNAVAILABLE, as one on the post does`() {
+        val sender = RecordingSender()
+        sender.queueGet { throw OhttpException("rate limited", 429) }
+        val codec = FakeOhttpCodec(resolvers = arrayOf("https://doh.example/dns-query"))
+
+        val status = closeStatusOf(codec, sender, initialKey = null)
+
+        assertEquals(Status.Code.UNAVAILABLE, status.code)
+        assertEquals("no DNS query after the 429", 1, sender.getCalls.size)
+        assertTrue(sender.postCalls.isEmpty())
+    }
+
+    @Test
     fun `an inner status other than 200 is INTERNAL`() {
         for (inner in listOf(403, 404, 413, 429, 503)) {
             val sender = RecordingSender()

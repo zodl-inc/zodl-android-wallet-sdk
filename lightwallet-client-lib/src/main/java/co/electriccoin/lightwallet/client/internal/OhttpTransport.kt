@@ -79,8 +79,10 @@ internal class OhttpTransport(
      * before the fetch, when the codec's cache rules say so.
      *
      * Non-https URLs fail closed without any request. A failed relay fetch or verification falls back to
-     * DNS-over-HTTPS; when that fails too, the relay error is thrown. [timeoutMs] (at most
-     * [KEY_FETCH_TIMEOUT_MS]) bounds the relay fetch and every DNS attempt together.
+     * DNS-over-HTTPS; when that fails too, the relay error is thrown. A 429, or the relay's running pause,
+     * is the relay's back-off signal, not a relay that could not deliver: it is thrown without the DNS
+     * fallback. [timeoutMs] (at most [KEY_FETCH_TIMEOUT_MS]) bounds the relay fetch and every DNS attempt
+     * together.
      */
     suspend fun keyConfig(
         forceRefresh: Boolean = false,
@@ -111,6 +113,7 @@ internal class OhttpTransport(
                 if (relayErr is CancellationException) throw relayErr
                 if (relayErr is OhttpException) {
                     RelayBackoff.noteIfRateLimited(backoffKey, relayErr, codec)
+                    if (relayErr.httpStatus == HTTP_TOO_MANY_REQUESTS) throw relayErr
                 }
                 logger("OHTTP relay key config failed: $relayErr, trying DNS")
                 tryDnsFallback(deadline) ?: throw relayErr
@@ -135,7 +138,7 @@ internal class OhttpTransport(
     }
 
     private suspend fun fetchFromRelay(timeoutMs: Int): OhttpVerifiedKey {
-        val headers = profile.keyFetchHeaders + USER_AGENT_HEADER + traceHeaders(profile.traceOnKeyFetch)
+        val headers = profile.keyFetchHeaders + FIXED_GET_HEADERS + traceHeaders(profile.traceOnKeyFetch)
         RelayBackoff.check(backoffKey, codec = codec)
         val json = sender.get(signedConfigUrl, headers, timeoutMs)
         val verified = codec.verifyKeyConfig(gatewayHost, json, currentSeconds())
@@ -170,7 +173,12 @@ internal class OhttpTransport(
         timeoutMs: Int,
     ): OhttpVerifiedKey {
         val dohUrl = codec.dohQueryUrl(resolver, gatewayHost)
-        val dohBody = sender.get(dohUrl, listOf("Accept" to "application/dns-json") + USER_AGENT_HEADER, timeoutMs)
+        // The relay fetch's headers, with the DoH `Accept` in place of the relay's.
+        val headers =
+            listOf("Accept" to "application/dns-json") +
+                profile.keyFetchHeaders.filterNot { (name, _) -> name.equals("Accept", ignoreCase = true) } +
+                FIXED_GET_HEADERS
+        val dohBody = sender.get(dohUrl, headers, timeoutMs)
         val envelope = codec.envelopeFromDohJson(dohBody, gatewayHost)
         return codec.verifyKeyConfig(gatewayHost, envelope, currentSeconds())
     }
@@ -408,6 +416,13 @@ internal class OhttpTransport(
 
         /** Fixed, so the relay never sees the platform's default (device model, OS build). */
         private val USER_AGENT_HEADER = listOf("User-Agent" to "ZODL-OHTTP/1.0")
+
+        /**
+         * On every GET, to the relay and to a resolver: identity encoding, so that the platform does not
+         * add an `Accept-Encoding` of its own (the post carries it through the profile), and the fixed
+         * `User-Agent`.
+         */
+        private val FIXED_GET_HEADERS = listOf("Accept-Encoding" to "identity") + USER_AGENT_HEADER
     }
 }
 
