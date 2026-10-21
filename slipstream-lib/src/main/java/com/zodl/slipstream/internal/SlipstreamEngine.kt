@@ -1,4 +1,4 @@
-@file:Suppress("MaxLineLength")
+@file:Suppress("MaxLineLength", "TooManyFunctions")
 
 package com.zodl.slipstream.internal
 
@@ -127,15 +127,30 @@ internal class SlipstreamEngine(
     }
 
     /**
-     * @return the native quiescence verdict: `true` if the aborted task join and the wallet-writer
-     * drain both confirmed quiescence within their bounded waits, `false` if either timed out
-     * (see `FFI_JNI_CONTRACT.md` section 3.6's deliberate deviation from the iOS reference
-     * wrapper). `true` unconditionally when the handle is already closed (`handle == 0L`), since
-     * there is nothing left to quiesce.
+     * The plain stop (backgrounding, shutdown, a restart that leaves the wallet alone).
+     *
+     * @return the engine's quiescence verdict: `true` if every aborted pass on the engine's record
+     * finished and its wallet commit drained within their bounded waits, `false` if either ran out
+     * - also for a pass an earlier stop or start gave up on. `true` unconditionally when the handle
+     * is already closed (`handle == 0L`), since there is nothing left to quiesce.
      */
     suspend fun stop(): Boolean =
         withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
             val quiescent = if (handle != 0L) SlipstreamNative.stop(handle) else true
+            running = false
+            quiescent
+        }
+
+    /**
+     * The stop to make right before changing the wallet (an account import or deletion, a rewind):
+     * the engine asks the running session to end at its next block, then stops exactly as [stop]
+     * does. The caller refuses the change on `false`.
+     *
+     * @return the same verdict as [stop].
+     */
+    suspend fun stopForWalletChange(): Boolean =
+        withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
+            val quiescent = if (handle != 0L) SlipstreamNative.stopForWalletChange(handle) else true
             running = false
             quiescent
         }

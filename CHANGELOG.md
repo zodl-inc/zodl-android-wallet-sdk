@@ -55,6 +55,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (zcash/librustzcash#3139), and the `zodl-slipstream` 0.4.0-pre.2 engine from a git revision
   built on it. No release carries these yet, so no SDK release can be cut from this state.
 
+### Fixed
+- The Slipstream engine's stop no longer reports the wallet quiescent while a sync pass that an
+  earlier stop or start gave up waiting for is still running: stopping and starting the engine now
+  use the engine's own quiescent stop, which keeps such a pass on record until it has finished.
+  Account import and deletion and both rewinds stop the engine for a wallet change, which also
+  asks a running scan to end at its next block. When that stop cannot prove the wallet quiescent
+  within its budget, the change is refused and nothing is written: `importAccountByUfvk` throws
+  `InitializeException.ImportAccountCheckpointsNotReadyException` (retry later), `deleteAccount`
+  and `rewindToHeight` throw `IllegalStateException`, and `rewindToNearestHeight` returns `null`.
+
 ## [5.2.1] - 2026-10-14
 
 ### Changed

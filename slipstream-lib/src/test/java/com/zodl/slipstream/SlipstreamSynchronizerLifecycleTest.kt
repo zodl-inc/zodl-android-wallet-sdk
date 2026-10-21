@@ -19,7 +19,9 @@ import cash.z.ecc.android.sdk.internal.model.WalletSummary
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
+import cash.z.ecc.android.sdk.model.AccountImportSetup
 import cash.z.ecc.android.sdk.model.AccountKeyOverlap
+import cash.z.ecc.android.sdk.model.AccountPurpose
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
@@ -81,6 +83,7 @@ import org.mockito.Mockito.inOrder
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.timeout
+import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
@@ -112,9 +115,10 @@ import kotlin.time.Duration.Companion.seconds
  * constructor - `Companion.new`/`newLocked` are skipped entirely, so no test here ever touches
  * `SlipstreamNative`.
  *
- * Deliberately NOT covered: `importAccountByUfvk`. Its `restoreAnchor` anchor resolution is a
+ * Deliberately NOT covered: `importAccountByUfvk`'s anchor resolution. Its `restoreAnchor` is a
  * direct call to the `SlipstreamNative` object (a `object`-scoped native binding, not an injectable
- * collaborator), which would require `mockStatic` - out of scope for this plain-Mockito suite.
+ * collaborator), which would require `mockStatic` - out of scope for this plain-Mockito suite. Its
+ * engine-facing half, `importResolvedAccount`, is covered.
  *
  * The suite's size tracks the lifecycle surface it pins - construction, the readiness gates, the
  * close/prepare races, and the DbReady read phase belong to one state machine, so the class is
@@ -406,6 +410,145 @@ class SlipstreamSynchronizerLifecycleTest {
         runBlocking {
             verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
             verify(engine, never()).notifyTxChange()
+        }
+    }
+
+    @Test
+    fun account_import_stops_the_engine_for_a_wallet_change_then_imports_and_restarts() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        runBlocking {
+            `when`(importViewOnlyAccount(backend)).thenReturn(jniAccount(accountUuid))
+        }
+
+        val account =
+            runBlocking { synchronizer.importResolvedAccount(viewOnlyImportSetup(), TREE_STATE, ANCHOR_HEIGHT) }
+
+        assertEquals(accountUuid, account.accountUuid)
+        val order = inOrder(engine, backend)
+        runBlocking {
+            order.verify(engine).stopForWalletChange()
+            importViewOnlyAccount(order.verify(backend))
+            order.verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+            verify(engine, never()).stop()
+        }
+    }
+
+    /**
+     * A stop that could not prove the wallet file quiescent refuses the import with the exception
+     * the SDK already documents for a transient refusal, so the host retries it; nothing is
+     * imported and the engine is restarted. The refusal is looked for along the cause chain:
+     * coroutines' stack trace recovery may wrap the thrown exception in a copy of itself.
+     */
+    @Test
+    fun account_import_is_refused_as_checkpoints_not_ready_when_the_engine_does_not_quiesce() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        runBlocking { `when`(engine.stopForWalletChange()).thenReturn(false) }
+
+        val thrown =
+            assertFailsWith<InitializeException.ImportAccountCheckpointsNotReadyException> {
+                runBlocking { synchronizer.importResolvedAccount(viewOnlyImportSetup(), TREE_STATE, ANCHOR_HEIGHT) }
+            }
+
+        assertTrue(generateSequence(thrown.cause) { it.cause }.any { it is IllegalStateException })
+        runBlocking {
+            importViewOnlyAccount(verify(backend, never()))
+            verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+        }
+    }
+
+    @Test
+    fun delete_account_stops_the_engine_for_a_wallet_change_then_deletes_and_restarts() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        runBlocking { `when`(backend.deleteAccount(accountUuid.value)).thenReturn(true) }
+
+        assertTrue(runBlocking { synchronizer.deleteAccount(accountUuid) })
+
+        val order = inOrder(engine, backend)
+        runBlocking {
+            order.verify(engine).stopForWalletChange()
+            order.verify(backend).deleteAccount(accountUuid.value)
+            order.verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+            verify(engine, never()).stop()
+        }
+    }
+
+    @Test
+    fun delete_account_is_refused_and_keeps_the_account_when_the_engine_does_not_quiesce() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        runBlocking { `when`(engine.stopForWalletChange()).thenReturn(false) }
+
+        assertFailsWith<IllegalStateException> {
+            runBlocking { synchronizer.deleteAccount(accountUuid) }
+        }
+
+        runBlocking {
+            verify(backend, never()).deleteAccount(accountUuid.value)
+            verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+            verify(engine, never()).notifyTxChange()
+        }
+    }
+
+    @Test
+    fun rewind_stops_the_engine_for_a_wallet_change() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val height = BlockHeight.new(3_000_000L)
+        runBlocking {
+            `when`(backend.rewindToHeight(height.value)).thenReturn(JniRewindResult.Success(height.value))
+        }
+
+        runBlocking { synchronizer.rewindToHeight(height) }
+        assertEquals(height, runBlocking { synchronizer.rewindToNearestHeight(height) })
+
+        runBlocking {
+            verify(engine, times(2)).stopForWalletChange()
+            verify(engine, never()).stop()
+        }
+    }
+
+    @Test
+    fun rewind_to_height_is_refused_when_the_engine_does_not_quiesce() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val height = BlockHeight.new(3_000_000L)
+        runBlocking { `when`(engine.stopForWalletChange()).thenReturn(false) }
+
+        assertFailsWith<IllegalStateException> {
+            runBlocking { synchronizer.rewindToHeight(height) }
+        }
+
+        runBlocking {
+            verify(backend, never()).rewindToHeight(height.value)
+            verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+        }
+    }
+
+    @Test
+    fun rewind_to_nearest_height_answers_null_when_the_engine_does_not_quiesce() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val height = BlockHeight.new(3_000_000L)
+        runBlocking { `when`(engine.stopForWalletChange()).thenReturn(false) }
+
+        assertNull(runBlocking { synchronizer.rewindToNearestHeight(height) })
+
+        runBlocking {
+            verify(backend, never()).rewindToHeight(height.value)
+            verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
         }
     }
 
@@ -2695,6 +2838,27 @@ class SlipstreamSynchronizerLifecycleTest {
             uivk = null
         )
 
+    private fun viewOnlyImportSetup() =
+        AccountImportSetup(
+            accountName = ACCOUNT_NAME,
+            keySource = KEY_SOURCE,
+            purpose = AccountPurpose.ViewOnly,
+            ufvk = UnifiedFullViewingKey(UFVK)
+        )
+
+    /** The backend import [viewOnlyImportSetup] leads to, on [backend] (a mock, or a verification). */
+    private suspend fun importViewOnlyAccount(backend: Backend) =
+        backend.importAccountUfvk(
+            accountName = ACCOUNT_NAME,
+            keySource = KEY_SOURCE,
+            ufvk = UFVK,
+            treeState = TREE_STATE,
+            recoverUntil = ANCHOR_HEIGHT,
+            purpose = AccountPurpose.ViewOnly.value,
+            seedFingerprint = null,
+            zip32AccountIndex = null
+        )
+
     /**
      * The `onTick` callback the synchronizer's `init` installs on the engine. A mock records the
      * setter call but its getter answers `null`, so the lambda has to be captured from the call
@@ -2733,7 +2897,9 @@ class SlipstreamSynchronizerLifecycleTest {
      * Builds a [SlipstreamSynchronizer] with every collaborator mocked out, bypassing
      * [SlipstreamSynchronizer.Companion.new]/`newLocked` (and therefore `SlipstreamNative`)
      * entirely. [engine]'s flow-typed properties are stubbed with real [MutableStateFlow]s
-     * because they are read once, eagerly, as field initializers when the constructor runs.
+     * because they are read once, eagerly, as field initializers when the constructor runs, and
+     * its [SlipstreamEngine.stopForWalletChange] reports a quiescent stop unless a test stubs it
+     * again after building.
      */
     @Suppress("LongParameterList")
     private fun buildSynchronizer(
@@ -2759,6 +2925,7 @@ class SlipstreamSynchronizerLifecycleTest {
             .thenReturn(walletBalancesOverride ?: MutableStateFlow<Map<AccountUuid, AccountBalance>?>(null))
         `when`(engine.lastSnapshot).thenReturn(lastSnapshotOverride ?: MutableStateFlow<SlipstreamSnapshot?>(null))
         `when`(transactionsController.allTransactions).thenReturn(flowOf(emptyList()))
+        runBlocking { `when`(engine.stopForWalletChange()).thenReturn(true) }
 
         return SlipstreamSynchronizer(
             context = mock(Context::class.java),
