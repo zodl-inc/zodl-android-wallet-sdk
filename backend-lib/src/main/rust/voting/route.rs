@@ -265,13 +265,14 @@ impl RouteHttp for ZodlOhttpRoute {
                 &url,
                 &headers,
                 &body,
+                max_response_bytes,
                 &on_dispatch_wrapper,
             )
             .await;
 
             match result {
                 Ok((status, response_headers, response_body)) => {
-                    // Enforce response size cap
+                    // The core stops reading at the cap; this is the exact check once more.
                     if response_body.len() > max_response_bytes {
                         return Err(RouteError::after_dispatch(format!(
                             "response body too large: {} > {} bytes",
