@@ -27,6 +27,9 @@ class TorOhttpSender internal constructor(
 ) : OhttpSender {
     constructor(torClient: TorClient) : this(TorClientTransport(torClient))
 
+    override val viaTor: Boolean
+        get() = true
+
     override suspend fun post(
         url: String,
         body: ByteArray,

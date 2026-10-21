@@ -68,6 +68,12 @@ internal class OhttpTransport(
     private val signedConfigUrl: String by lazy { codec.signedConfigUrl(relayUrl) }
 
     /**
+     * The relay pause of requests over Tor is kept apart from the one outside Tor (ZIP "Retrieval,
+     * caching and rotation"), so that neither links the two.
+     */
+    private val backoffKey: String = if (sender.viaTor) "tor $relayUrl" else relayUrl
+
+    /**
      * Fetches (or returns the cached) gateway key. A key is used until the `not_after` of its signed
      * configuration (less the codec's refresh margin); a forced refresh discards the cached key
      * before the fetch, when the codec's cache rules say so.
@@ -103,7 +109,7 @@ internal class OhttpTransport(
             runCatching { fetchFromRelay(nowSeconds, fetchTimeoutMs) }.getOrElse { relayErr ->
                 if (relayErr is CancellationException) throw relayErr
                 if (relayErr is OhttpException) {
-                    RelayBackoff.noteIfRateLimited(relayUrl, relayErr, codec)
+                    RelayBackoff.noteIfRateLimited(backoffKey, relayErr, codec)
                 }
                 logger("OHTTP relay key config failed: $relayErr, trying DNS")
                 tryDnsFallback(nowSeconds, fetchTimeoutMs) ?: throw relayErr
@@ -129,7 +135,7 @@ internal class OhttpTransport(
         timeoutMs: Int,
     ): OhttpVerifiedKey {
         val headers = profile.keyFetchHeaders + USER_AGENT_HEADER + traceHeaders(profile.traceOnKeyFetch)
-        RelayBackoff.check(relayUrl, codec = codec)
+        RelayBackoff.check(backoffKey, codec = codec)
         val json = sender.get(signedConfigUrl, headers, timeoutMs)
         val verified = codec.verifyKeyConfig(gatewayHost, json, nowSeconds)
         logger("OHTTP key config fetched and verified from relay")
@@ -239,7 +245,7 @@ internal class OhttpTransport(
         sink: OhttpResponseSink,
         retryStale: Boolean,
     ): Boolean? {
-        RelayBackoff.check(relayUrl, codec = codec)
+        RelayBackoff.check(backoffKey, codec = codec)
         val sealed = codec.encapsulate(key, request)
         return sealed.opener.use { opener ->
             try {
@@ -254,7 +260,7 @@ internal class OhttpTransport(
                     }
                 }
             } catch (e: OhttpException) {
-                RelayBackoff.noteIfRateLimited(relayUrl, e, codec)
+                RelayBackoff.noteIfRateLimited(backoffKey, e, codec)
                 // Only the sender's refusal of a non-200 carries a status; the opener is unspent then.
                 val status = e.httpStatus ?: throw e
                 refusal(opener.open(status, null, ByteArray(0), attempt), e)
@@ -326,7 +332,7 @@ internal class OhttpTransport(
         timeoutMs: Int,
         attempt: Int,
     ): OhttpCodecResponse? {
-        RelayBackoff.check(relayUrl, codec = codec)
+        RelayBackoff.check(backoffKey, codec = codec)
         val sealed = codec.encapsulate(key, request)
         return sealed.opener.use { opener ->
             val answer =
@@ -338,7 +344,7 @@ internal class OhttpTransport(
                         timeoutMs,
                     )
                 } catch (e: OhttpException) {
-                    RelayBackoff.noteIfRateLimited(relayUrl, e, codec)
+                    RelayBackoff.noteIfRateLimited(backoffKey, e, codec)
                     // The senders only return the body of a 200, and throw the relay's other
                     // statuses: let the opener decide whether this one asks for a new key.
                     val status = e.httpStatus ?: throw e

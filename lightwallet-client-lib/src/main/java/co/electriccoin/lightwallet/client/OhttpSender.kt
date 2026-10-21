@@ -19,6 +19,10 @@ import co.electriccoin.lightwallet.client.util.Disposable
  * [OhttpHttpClient] reference has no way to free that native resource at all.
  */
 interface OhttpSender : Disposable {
+    /** Whether this sender reaches the relay over Tor (the relay pause is kept apart per kind). */
+    val viaTor: Boolean
+        get() = false
+
     /**
      * POSTs [body] to [url] with the given [headers], returning the response body. [timeoutMs] bounds
      * the whole exchange, not only each read.
