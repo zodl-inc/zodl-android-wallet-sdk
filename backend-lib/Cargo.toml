@@ -33,7 +33,7 @@ ohttp-trace = []
 # Zcash dependencies
 
 # The NU7 pre-release generation: orchard 0.16 with the `=`-pinned librustzcash pre-releases
-# below, the same generation `slipstream-core` 0.4.0-pre.1 and the pinned `zcash_voting` are
+# below, the same generation `slipstream-core` 0.4.0-pre.2 and the pinned `zcash_voting` are
 # built against. Everything here resolves from crates.io; no orchard [patch] entry is needed.
 #
 # `unstable-voting-circuits` is not requested here, but it IS enabled in the built graph:
@@ -221,7 +221,7 @@ ff = { version = "0.14" }
 # the `zodl-slipstream` crate, currently from a git patch (see [patch.crates-io] below), built
 # against the same librustzcash generation as the rest of this graph — verify with `cargo tree -d`
 # after any bump.
-slipstream-core = { package = "zodl-slipstream", version = "=0.4.0-pre.1", optional = true }
+slipstream-core = { package = "zodl-slipstream", version = "=0.4.0-pre.2", optional = true }
 # The module's owned engine runtime (HOSTING.md §3.1) and the logcat logging layer it wires up.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 
@@ -313,12 +313,12 @@ crate-type = ["staticlib", "cdylib"]
 [patch.crates-io]
 # The slipstream engine's OHTTP transport lives in the private slipstream-internal repository
 # until a published zodl-slipstream release contains the OHTTP transport. This
-# patch makes the 0.4.0-pre.1 dependency line above resolve from the private git repository
+# patch makes the 0.4.0-pre.2 dependency line above resolve from the private git repository
 # instead of crates.io. Once slipstream-internal PR #16 merges, the rev below must move to
 # the resulting slipstream-internal `main` commit; after that, this entry can be removed once
 # a published zodl-slipstream version containing the OHTTP transport exists on crates.io.
-# Pins slipstream-internal PR #16 (head cee00c13eaad7a21859f7ecbf44f289460334240): DNS fallback for signed key configuration, a key-fetch 429 rate limited, public slipstream main merged (wallet-change stop), zodl-ohttp-client b0b2087c.
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "cee00c13eaad7a21859f7ecbf44f289460334240" }
+# Pins slipstream-internal PR #16 (head dd19f68245e2b326d613f1492678934cfe99b2f4, crate 0.4.0-pre.2): DNS fallback for signed key configuration, a key-fetch 429 or relay pause rate limited without the DNS fallback, DoH queries with the relay fetch headers, slipstream main merged (0.4.0-pre.2), zodl-ohttp-client b0b2087c.
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "dd19f68245e2b326d613f1492678934cfe99b2f4" }
 #
 # Shielded voting on the NU7 pre-release crates.
 #
