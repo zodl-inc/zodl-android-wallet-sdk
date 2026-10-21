@@ -152,7 +152,7 @@ internal class OhttpTransport(
      */
     private suspend fun tryDnsFallback(deadline: CallDeadline): OhttpVerifiedKey? {
         for (resolver in codec.dohResolvers()) {
-            val timeoutMs = deadline.remainingMsOrNull() ?: return null
+            val timeoutMs = deadline.remainingMsOrNull() ?: break
             val result = runCatching { fetchFromDns(resolver, timeoutMs) }
             val error = result.exceptionOrNull()
             if (error is CancellationException) throw error
