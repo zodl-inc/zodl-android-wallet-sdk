@@ -2135,28 +2135,16 @@ class SlipstreamSynchronizerLifecycleTest {
                     prepareInputs(
                         anchorSource =
                             SlipstreamAnchorSource { _, _, _ ->
-                                anchorEntered.countDown()
-                                try {
-                                    awaitCancellation()
-                                } finally {
-                                    anchorCancelled.complete(Unit)
-                                }
+                                inFlightUntilCancelled(anchorEntered, anchorCancelled)
                             },
-                        exactBirthdayTreeState = {
-                            fetchEntered.countDown()
-                            try {
-                                awaitCancellation()
-                            } finally {
-                                fetchCancelled.complete(Unit)
-                            }
-                        },
+                        exactBirthdayTreeState = { inFlightUntilCancelled(fetchEntered, fetchCancelled) },
                         birthdayResolved = birthdayResolved
                     )
             )
-        assertTrue(initEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
         // Both are in flight only once their coroutines have started; a cancel that lands first never runs them.
-        assertTrue(anchorEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
-        assertTrue(fetchEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        for (entered in listOf(initEntered, anchorEntered, fetchEntered)) {
+            assertTrue(entered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        }
 
         synchronizer.close()
         initProceed.countDown()
@@ -2424,6 +2412,19 @@ class SlipstreamSynchronizerLifecycleTest {
             gate.await()
             SlipstreamRestoreAnchor(ANCHOR_HEIGHT, null)
         }
+
+    /** Counts [entered] down, then waits to be cancelled, completing [cancelled] when it is. */
+    private suspend fun inFlightUntilCancelled(
+        entered: CountDownLatch,
+        cancelled: CompletableDeferred<Unit>
+    ): Nothing {
+        entered.countDown()
+        try {
+            awaitCancellation()
+        } finally {
+            cancelled.complete(Unit)
+        }
+    }
 
     /**
      * Mockito answers `null` for unstubbed suspend calls (their erased return type is `Object`),
