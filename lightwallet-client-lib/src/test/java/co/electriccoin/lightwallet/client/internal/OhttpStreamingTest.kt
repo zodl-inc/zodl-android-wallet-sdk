@@ -1,5 +1,6 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpProfileInfo
 import co.electriccoin.lightwallet.client.internal.FakeOhttpCodec.Companion.dataRecord
 import co.electriccoin.lightwallet.client.internal.FakeOhttpCodec.Companion.finalRecord
@@ -16,6 +17,7 @@ import io.grpc.Status
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -30,6 +32,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
+import kotlin.test.assertFailsWith
 
 /** Server-streaming calls over [OhttpTransport.stream]: messages are delivered as their chunks arrive. */
 class OhttpStreamingTest {
@@ -184,9 +187,6 @@ class OhttpStreamingTest {
     }
 
     @Test
-    fun `the transport hands the head, the body and the trailers over as they are decoded`() {
-        val feed = ChunkFeed()
-    @Test
     fun `a response that ends before its final chunk after the deadline passed is DEADLINE_EXCEEDED`() {
         val feed = ChunkFeed()
         val sender = RecordingSender().apply { queuePostStream { feed } }
@@ -204,6 +204,9 @@ class OhttpStreamingTest {
         call.assertReleased(codec)
     }
 
+    @Test
+    fun `the transport hands the head, the body and the trailers over as they are decoded`() {
+        val feed = ChunkFeed()
         val sender = RecordingSender().apply { queuePostStream { feed } }
         val transport = transport(FakeOhttpCodec(), sender)
         val events = LinkedBlockingQueue<String>()
@@ -239,6 +242,39 @@ class OhttpStreamingTest {
         feed.end()
         assertEquals("end", events.poll(WAIT_S, TimeUnit.SECONDS))
         reader.join(TimeUnit.SECONDS.toMillis(WAIT_S))
+    }
+
+    @Test
+    fun `a sink failure that carries a status is not a relay refusal`() {
+        val sender = RecordingSender()
+        sender.queuePost { streamed(grpcHead, dataRecord(frame(MESSAGE_1)), okTrailers, finalRecord()) }
+        val codec = FakeOhttpCodec()
+        val relayUrl = "https://relay-sink.test/relay"
+        val refused = OhttpException("inner refusal", 429, retryAfterSeconds = 30)
+        val sink =
+            object : OhttpResponseSink {
+                override fun onHead(
+                    status: Int,
+                    headers: List<Pair<String, String>>
+                ) = Unit
+
+                override fun onData(bytes: ByteArray): Unit = throw refused
+
+                override fun onTrailers(trailers: List<Pair<String, String>>) = Unit
+
+                override fun onEnd() = Unit
+            }
+
+        val thrown =
+            assertFailsWith<OhttpException> {
+                runBlocking { transport(codec, sender, relayUrl).stream(request(), TIMEOUT_MS, sink) }
+            }
+
+        assertSame(refused, thrown)
+        RelayBackoff.check(relayUrl)
+        assertEquals(1, sender.postCalls.size)
+        assertTrue("opener spent", codec.liveOpeners.isEmpty())
+        assertTrue("decoder closed", codec.liveStreams.isEmpty())
     }
 
     @Test

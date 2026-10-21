@@ -244,6 +244,9 @@ internal class OhttpTransport(
         RelayBackoff.check(backoffKey, codec = codec)
         val sealed = codec.encapsulate(key, request)
         return sealed.opener.use { opener ->
+            // Set once the sender has handed the body of a 200 over: from then on a failure is the
+            // decoder's or the sink's, not the relay's refusal, whatever status it may carry.
+            var reading = false
             try {
                 sender.postStreaming(
                     relayUrl,
@@ -251,11 +254,13 @@ internal class OhttpTransport(
                     profile.postHeaders + USER_AGENT_HEADER + traceHeaders(true),
                     timeoutMs,
                 ) { body ->
+                    reading = true
                     opener.openStream(HTTP_OK, null, attempt).use { decoder ->
                         pump(body, decoder, sink, retryStale)
                     }
                 }
             } catch (e: OhttpException) {
+                if (reading) throw e
                 RelayBackoff.noteIfRateLimited(backoffKey, e, codec)
                 // Only the sender's refusal of a non-200 carries a status; the opener is unspent then.
                 val status = e.httpStatus ?: throw e
