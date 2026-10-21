@@ -2112,6 +2112,8 @@ class SlipstreamSynchronizerLifecycleTest {
         val key = newKey()
         val initEntered = CountDownLatch(1)
         val initProceed = CountDownLatch(1)
+        val anchorEntered = CountDownLatch(1)
+        val fetchEntered = CountDownLatch(1)
         val anchorCancelled = CompletableDeferred<Unit>()
         val fetchCancelled = CompletableDeferred<Unit>()
         val birthdayResolved = CompletableDeferred<Boolean>()
@@ -2133,6 +2135,7 @@ class SlipstreamSynchronizerLifecycleTest {
                     prepareInputs(
                         anchorSource =
                             SlipstreamAnchorSource { _, _, _ ->
+                                anchorEntered.countDown()
                                 try {
                                     awaitCancellation()
                                 } finally {
@@ -2140,6 +2143,7 @@ class SlipstreamSynchronizerLifecycleTest {
                                 }
                             },
                         exactBirthdayTreeState = {
+                            fetchEntered.countDown()
                             try {
                                 awaitCancellation()
                             } finally {
@@ -2150,6 +2154,9 @@ class SlipstreamSynchronizerLifecycleTest {
                     )
             )
         assertTrue(initEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        // Both are in flight only once their coroutines have started; a cancel that lands first never runs them.
+        assertTrue(anchorEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        assertTrue(fetchEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
 
         synchronizer.close()
         initProceed.countDown()
