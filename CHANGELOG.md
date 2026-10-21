@@ -21,7 +21,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Synchronizer.renameAccount(accountUuid, name)` stores a new name for an existing account, leaving
   its keys and all other state unchanged; `accountsFlow` re-emits with the new name. It throws the
   new `InitializeException.RenameAccountException` when the name cannot be stored, for example when
-  no account with the given UUID exists.
+  no account with the given UUID exists. Its message is fixed ("Failed to rename account.") and never
+  contains the cause's message; the failure is chained as `cause`.
 
 ### Changed
 - `Synchronizer` declares `findAccountSharingKeyComponents(ufvk)`: any implementer or test fake must

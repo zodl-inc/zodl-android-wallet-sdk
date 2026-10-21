@@ -98,16 +98,19 @@ class ImportAccountErrorsTest {
     }
 
     @Test
-    fun the_import_and_create_exception_messages_are_fixed_and_carry_no_key() {
+    fun the_import_create_and_rename_exception_messages_are_fixed_and_carry_no_key() {
         val cause = RuntimeException("Value did not decode as a valid UFVK: $FAKE_UFVK")
 
         val import = InitializeException.ImportAccountException(cause)
         val create = InitializeException.CreateAccountException(cause)
+        val rename = InitializeException.RenameAccountException(cause)
 
         assertEquals("Failed to import new account based on UFVK.", import.message)
         assertEquals("Failed to create new account.", create.message)
+        assertEquals("Failed to rename account.", rename.message)
         assertSame(cause, import.cause)
         assertSame(cause, create.cause)
+        assertSame(cause, rename.cause)
     }
 
     companion object {

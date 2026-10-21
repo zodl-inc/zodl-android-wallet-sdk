@@ -322,12 +322,13 @@ sealed class InitializeException(
 
     /**
      * Thrown by `Synchronizer.renameAccount` when the account's name cannot be stored, for example
-     * because no account with the given UUID exists in the wallet.
+     * because no account with the given UUID exists in the wallet. The message is fixed and never
+     * contains the cause's message, which may echo wallet data; the failure is chained as the [cause].
      */
     class RenameAccountException(
         cause: Throwable?
     ) : InitializeException(
-            "Failed to rename account due to: ${cause?.message}",
+            "Failed to rename account.",
             cause
         )
 

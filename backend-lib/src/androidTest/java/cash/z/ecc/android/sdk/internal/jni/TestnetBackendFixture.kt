@@ -6,11 +6,11 @@ import kotlin.test.assertEquals
 
 /** A fresh, account-less testnet wallet and the full viewing key of the test seed, for the JNI tests. */
 internal object TestnetBackendFixture {
-    const val SEED_PHRASE =
+    private const val SEED_PHRASE =
         "kitchen renew wide common vague fold vacuum tilt amazing pear square gossip jewel month tree shock scan" +
             " alpha just spot fluid toilet view dinner"
-    const val TESTNET_ID = 0
-    const val INIT_DATA_DB_SUCCESS = 0
+    private const val TESTNET_ID = 0
+    private const val INIT_DATA_DB_SUCCESS = 0
 
     /** A testnet backend over an initialized, empty data db in a new temp directory named after [prefix]. */
     suspend fun newBackend(prefix: String): RustBackend {

@@ -551,7 +551,9 @@ class SlipstreamSynchronizerLifecycleTest {
 
     /**
      * `Synchronizer.renameAccount` declares only [InitializeException.RenameAccountException], so a
-     * failed preparation must not escape as a bare [SlipstreamNotReadyException].
+     * failed preparation must not escape as a bare [SlipstreamNotReadyException]. The failure is
+     * looked for along the cause chain: with assertions on, coroutines' stack trace recovery wraps
+     * the thrown exception in a copy of itself, since its message is fixed.
      */
     @Test
     fun rename_account_on_a_failed_preparation_wraps_the_not_ready_failure() {
@@ -574,7 +576,7 @@ class SlipstreamSynchronizerLifecycleTest {
                     }
                 }
 
-            assertTrue(thrown.cause is SlipstreamNotReadyException)
+            assertTrue(generateSequence(thrown.cause) { it.cause }.any { it is SlipstreamNotReadyException })
             runBlocking<Unit> { verify(backend, never()).setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME) }
         } finally {
             InstanceGuard.release(key)
