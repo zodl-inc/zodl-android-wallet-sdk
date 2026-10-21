@@ -399,11 +399,9 @@ jobs:
           cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
           cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
-      # 120 minutes for cold-cache first run: this branch re-enables shielded voting, which
-      # turns on orchard's `unstable-voting-circuits` and pulls the halo2 voting circuits
-      # into the native build. `make test-unit` builds the crate for all four ABIs, so that
-      # lands four times over. Additionally includes vendored zodl-slipstream + arti/hpke deps.
-      # Warm-cache runs (after the setup action Rust cache seeds artifacts) complete in <45 min.
+      # The JVM unit tests load no native library, so `make test-unit` leaves the four-ABI
+      # cargo build out: compiled alongside, it starved the tests with real-time budgets
+      # (OhttpStreamingTest, SlipstreamSynchronizerLifecycleTest) and failed the job.
       - name: Build and test
         timeout-minutes: 120
         run: |
