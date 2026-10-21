@@ -117,6 +117,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory does not exist; the directory is now created (with a clear error if creation fails)
   before the temporary file is opened, on both the Tor and direct download paths.
 
+## [5.2.2] - 2026-10-20
+
+### Security
+- Updated the bundled Rust TLS root certificates (`rustls-webpki` 0.103.16, `webpki-roots` 1.0.10), so TLS connections
+  made from the Rust layer to lightwalletd servers no longer trust the revoked eMudhra roots.
+
 ## [5.2.1] - 2026-10-14
 
 ### Changed
