@@ -247,11 +247,16 @@ class TorClient private constructor(
             }
         }
 
-    /** The body of an [httpPostStreaming] response, read and closed by the reading thread. */
+    /**
+     * The body of an [httpPostStreaming] response. [read] and [close] are serialised and [close] is
+     * idempotent, so the native body is never freed under a read nor twice: a [close] during a read
+     * waits for it (a waiting read ends within 100 ms of the exchange's cancellation).
+     */
     class HttpBody internal constructor(
-        private val handle: Long
+        handle: Long
     ) : Closeable {
-        private var closed = false
+        private val lock = Any()
+        private var handle = handle
 
         /**
          * The next bytes of the body, null once it has ended.
@@ -259,14 +264,18 @@ class TorClient private constructor(
          * @throws TorHttpTimeoutException if the request's deadline passed
          * @throws TorHttpTransportException on a broken connection or once the caller is cancelled
          */
-        fun read(): ByteArray? {
-            check(!closed) { "The response body is closed" }
-            return httpBodyRead(handle)
-        }
+        fun read(): ByteArray? =
+            synchronized(lock) {
+                check(handle != 0L) { "The response body is closed" }
+                httpBodyRead(handle)
+            }
 
         override fun close() {
-            if (!closed) httpBodyFree(handle)
-            closed = true
+            synchronized(lock) {
+                val freed = handle
+                handle = 0
+                if (freed != 0L) httpBodyFree(freed)
+            }
         }
     }
 
