@@ -110,11 +110,10 @@ internal class OhttpTransport(
         val deadline = CallDeadline(minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS))
         val verified =
             runCatching { fetchFromRelay(deadline.remainingMs()) }.getOrElse { relayErr ->
-                if (relayErr is CancellationException) throw relayErr
                 if (relayErr is OhttpException) {
                     RelayBackoff.noteIfRateLimited(backoffKey, relayErr, codec)
-                    if (relayErr.httpStatus == HTTP_TOO_MANY_REQUESTS) throw relayErr
                 }
+                if (relayErr is CancellationException || relayErr.isRelayRateLimit()) throw relayErr
                 logger("OHTTP relay key config failed: $relayErr, trying DNS")
                 tryDnsFallback(deadline) ?: throw relayErr
             }
@@ -538,6 +537,9 @@ private const val HTTP_BAD_REQUEST = 400
 private const val HTTP_TOO_MANY_REQUESTS = 429
 private const val FRESHNESS_HEADER = "ohttp-freshness"
 private const val FRESHNESS_REJECTED = "rejected"
+
+/** A relay 429, or the relay's running pause: the relay's back-off signal, not a relay that could not deliver. */
+private fun Throwable.isRelayRateLimit(): Boolean = this is OhttpException && httpStatus == HTTP_TOO_MANY_REQUESTS
 
 /**
  * Gateway-mapped hosts where the gateway injects secrets server-side. The app must NOT send
