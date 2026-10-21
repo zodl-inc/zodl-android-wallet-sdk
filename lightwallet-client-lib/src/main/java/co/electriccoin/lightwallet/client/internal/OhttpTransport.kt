@@ -106,13 +106,13 @@ internal class OhttpTransport(
 
         val fetchTimeoutMs = minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS)
         val verified =
-            runCatching { fetchFromRelay(nowSeconds, fetchTimeoutMs) }.getOrElse { relayErr ->
+            runCatching { fetchFromRelay(fetchTimeoutMs) }.getOrElse { relayErr ->
                 if (relayErr is CancellationException) throw relayErr
                 if (relayErr is OhttpException) {
                     RelayBackoff.noteIfRateLimited(backoffKey, relayErr, codec)
                 }
                 logger("OHTTP relay key config failed: $relayErr, trying DNS")
-                tryDnsFallback(nowSeconds, fetchTimeoutMs) ?: throw relayErr
+                tryDnsFallback(fetchTimeoutMs) ?: throw relayErr
             }
 
         logger("OHTTP signed key config verified: network=${verified.network}, valid_until=${verified.notAfter}")
@@ -124,20 +124,20 @@ internal class OhttpTransport(
         return verified.key
     }
 
+    /** The time an envelope is verified at: when it arrived, not when the fetch began. */
+    private fun currentSeconds(): Long = System.currentTimeMillis() / MILLIS_PER_SECOND
+
     private fun requireHttps(url: String) {
         if (!url.startsWith("https://", ignoreCase = true)) {
             throw OhttpException("OHTTP endpoints must use https: $url")
         }
     }
 
-    private suspend fun fetchFromRelay(
-        nowSeconds: Long,
-        timeoutMs: Int,
-    ): OhttpVerifiedKey {
+    private suspend fun fetchFromRelay(timeoutMs: Int): OhttpVerifiedKey {
         val headers = profile.keyFetchHeaders + USER_AGENT_HEADER + traceHeaders(profile.traceOnKeyFetch)
         RelayBackoff.check(backoffKey, codec = codec)
         val json = sender.get(signedConfigUrl, headers, timeoutMs)
-        val verified = codec.verifyKeyConfig(gatewayHost, json, nowSeconds)
+        val verified = codec.verifyKeyConfig(gatewayHost, json, currentSeconds())
         logger("OHTTP key config fetched and verified from relay")
         return verified
     }
@@ -148,12 +148,9 @@ internal class OhttpTransport(
      * the DoH JSON response to extract the signed envelope, and verifies it. Returns the verified
      * key or null if all resolvers fail.
      */
-    private suspend fun tryDnsFallback(
-        nowSeconds: Long,
-        timeoutMs: Int,
-    ): OhttpVerifiedKey? {
+    private suspend fun tryDnsFallback(timeoutMs: Int): OhttpVerifiedKey? {
         for (resolver in codec.dohResolvers()) {
-            val result = runCatching { fetchFromDns(resolver, nowSeconds, timeoutMs) }
+            val result = runCatching { fetchFromDns(resolver, timeoutMs) }
             val error = result.exceptionOrNull()
             if (error is CancellationException) throw error
             if (error == null) {
@@ -167,13 +164,12 @@ internal class OhttpTransport(
 
     private suspend fun fetchFromDns(
         resolver: String,
-        nowSeconds: Long,
         timeoutMs: Int,
     ): OhttpVerifiedKey {
         val dohUrl = codec.dohQueryUrl(resolver, gatewayHost)
         val dohBody = sender.get(dohUrl, listOf("Accept" to "application/dns-json") + USER_AGENT_HEADER, timeoutMs)
         val envelope = codec.envelopeFromDohJson(dohBody, gatewayHost)
-        return codec.verifyKeyConfig(gatewayHost, envelope, nowSeconds)
+        return codec.verifyKeyConfig(gatewayHost, envelope, currentSeconds())
     }
 
     /**
