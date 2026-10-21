@@ -50,6 +50,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixed messages ("Failed to create new account." and "Failed to import new account based on UFVK.")
   instead of appending the cause's message, which could carry key material into error dialogs and
   logs. The failure is still chained as `cause`; read it there where the detail is needed.
+- The Rust backend takes the underlying Zcash Rust crates from a git revision of the
+  `zcash_client_sqlite` 0.23.0-pre.1 generation that adds `WalletWrite::set_account_name`
+  (zcash/librustzcash#3139), and the `zodl-slipstream` 0.4.0-pre.2 engine from a git revision
+  built on it. No release carries these yet, so no SDK release can be cut from this state.
 
 ## [5.2.1] - 2026-10-14
 

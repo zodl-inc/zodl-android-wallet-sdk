@@ -346,6 +346,7 @@ fn open_handle(
         state: Arc::new(Mutex::new(SyncState::Idle)),
         events: Arc::new(Mutex::new(Vec::new())),
         task: None,
+        unfinished_passes: Vec::new(),
         pass_lock: Arc::new(tokio::sync::Mutex::new(())),
         endpoint: Endpoint {
             host: host.to_string(),
