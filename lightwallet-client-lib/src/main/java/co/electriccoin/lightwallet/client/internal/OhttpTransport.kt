@@ -79,7 +79,8 @@ internal class OhttpTransport(
      * before the fetch, when the codec's cache rules say so.
      *
      * Non-https URLs fail closed without any request. A failed relay fetch or verification falls back to
-     * DNS-over-HTTPS; when that fails too, the relay error is thrown.
+     * DNS-over-HTTPS; when that fails too, the relay error is thrown. [timeoutMs] (at most
+     * [KEY_FETCH_TIMEOUT_MS]) bounds the relay fetch and every DNS attempt together.
      */
     suspend fun keyConfig(
         forceRefresh: Boolean = false,
@@ -104,15 +105,15 @@ internal class OhttpTransport(
         requireHttps(relayUrl)
         requireHttps(signedConfigUrl)
 
-        val fetchTimeoutMs = minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS)
+        val deadline = CallDeadline(minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS))
         val verified =
-            runCatching { fetchFromRelay(fetchTimeoutMs) }.getOrElse { relayErr ->
+            runCatching { fetchFromRelay(deadline.remainingMs()) }.getOrElse { relayErr ->
                 if (relayErr is CancellationException) throw relayErr
                 if (relayErr is OhttpException) {
                     RelayBackoff.noteIfRateLimited(backoffKey, relayErr, codec)
                 }
                 logger("OHTTP relay key config failed: $relayErr, trying DNS")
-                tryDnsFallback(fetchTimeoutMs) ?: throw relayErr
+                tryDnsFallback(deadline) ?: throw relayErr
             }
 
         logger("OHTTP signed key config verified: network=${verified.network}, valid_until=${verified.notAfter}")
@@ -146,10 +147,12 @@ internal class OhttpTransport(
      * Tries DNS-over-HTTPS as a fallback source for the signed key configuration when the relay
      * fetch or verification fails. Queries each resolver in order (Cloudflare, then Google), parses
      * the DoH JSON response to extract the signed envelope, and verifies it. Returns the verified
-     * key or null if all resolvers fail.
+     * key, or null if all resolvers fail or the key fetch's [deadline] (shared with the relay fetch)
+     * is up before a resolver is tried.
      */
-    private suspend fun tryDnsFallback(timeoutMs: Int): OhttpVerifiedKey? {
+    private suspend fun tryDnsFallback(deadline: CallDeadline): OhttpVerifiedKey? {
         for (resolver in codec.dohResolvers()) {
+            val timeoutMs = deadline.remainingMsOrNull() ?: return null
             val result = runCatching { fetchFromDns(resolver, timeoutMs) }
             val error = result.exceptionOrNull()
             if (error is CancellationException) throw error
@@ -414,10 +417,12 @@ private class CallDeadline(
 ) {
     private val endNanos = System.nanoTime() + timeoutMs * NANOS_PER_MILLI
 
-    fun remainingMs(): Int {
+    fun remainingMs(): Int = remainingMsOrNull() ?: throw SocketTimeoutException("OHTTP call deadline exceeded")
+
+    /** What is left, or null once the time is up. */
+    fun remainingMsOrNull(): Int? {
         val left = (endNanos - System.nanoTime()) / NANOS_PER_MILLI
-        if (left <= 0) throw SocketTimeoutException("OHTTP call deadline exceeded")
-        return left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        return if (left <= 0) null else left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
     private companion object {

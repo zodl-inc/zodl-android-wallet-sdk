@@ -534,6 +534,37 @@ class OhttpTransportTest {
     }
 
     @Test
+    fun `the key fetch's time is shared by the relay fetch and the DNS resolvers`() {
+        val codec = FakeOhttpCodec(resolvers = arrayOf("https://doh-a.test/dns-query", "https://doh-b.test/dns-query"))
+        sender.queueGet {
+            Thread.sleep(500)
+            throw OhttpException("relay down")
+        }
+        sender.queueGet { "dns-envelope".toByteArray() }
+
+        runBlocking { transport(codec).keyConfig(timeoutMs = 5_000) }
+
+        assertEquals(2, sender.getCalls.size)
+        val dnsTimeout = sender.getCalls[1].third
+        assertTrue("the resolver gets what the relay left, not the whole time: $dnsTimeout", dnsTimeout <= 4_500)
+    }
+
+    @Test
+    fun `a relay fetch that used up the key fetch's time leaves no DNS attempt, and its error is thrown`() {
+        val codec = FakeOhttpCodec(resolvers = arrayOf("https://doh-a.test/dns-query"))
+        val relayDown = OhttpException("relay down")
+        sender.queueGet {
+            Thread.sleep(300)
+            throw relayDown
+        }
+
+        val thrown = assertFailsWith<OhttpException> { runBlocking { transport(codec).keyConfig(timeoutMs = 200) } }
+
+        assertSame(relayDown, thrown)
+        assertEquals(1, sender.getCalls.size)
+    }
+
+    @Test
     fun `the relay back-off is shared with the codec's native table both ways`() {
         val relay = "https://relay-native.test/relay"
         val noted = mutableListOf<Pair<String, Long>>()
