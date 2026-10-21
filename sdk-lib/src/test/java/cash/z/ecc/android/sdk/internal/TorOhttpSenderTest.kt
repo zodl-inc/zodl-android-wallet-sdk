@@ -256,6 +256,34 @@ class TorOhttpSenderTest {
         }
 
     @Test
+    fun `a streamed non-200 whose body stalls or breaks off still carries its status and Retry-After`(): Unit =
+        runBlocking {
+            val timeout: () -> ByteArray = { throw TorHttpTimeoutException("timed out") }
+            val broken: () -> ByteArray = { throw TorHttpTransportException("stream reset") }
+            for (failure in listOf(timeout, broken)) {
+                val transport =
+                    FakeTransport(chunks = listOf(failure)) {
+                        JniHttpResponseBytes(
+                            status = 429,
+                            version = "HTTP/1.1",
+                            headers = arrayOf(JniHttpHeader("Retry-After", "12")),
+                            body = ByteArray(0)
+                        )
+                    }
+
+                val thrown =
+                    assertFailsWith<OhttpException> {
+                        TorOhttpSender(transport).postStreaming(RELAY, byteArrayOf(), emptyList(), 1_000) {
+                            error("the reader must not run")
+                        }
+                    }
+
+                assertEquals(429, thrown.httpStatus)
+                assertEquals(12L, thrown.retryAfterSeconds)
+            }
+        }
+
+    @Test
     fun `a native timeout or transport failure mid-body fails like the direct sender`(): Unit =
         runBlocking {
             val timeout: () -> ByteArray = { throw TorHttpTimeoutException("timed out") }

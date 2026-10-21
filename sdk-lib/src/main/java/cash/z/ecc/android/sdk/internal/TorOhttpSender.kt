@@ -61,14 +61,13 @@ class TorOhttpSender internal constructor(
             transport.postStreaming(url, jniHeaders, body, timeoutMs.toLong()) { status, responseHeaders, next ->
                 val input = ChunkInputStream(next, OhttpSender.MAX_SEALED_RESPONSE_BYTES)
                 if (status != HttpURLConnection.HTTP_OK) {
-                    val detail =
-                        input.readUpTo(ERROR_MESSAGE_MAX_LENGTH).toString(Charsets.UTF_8).let {
-                            if (it.isEmpty()) "" else ": $it"
-                        }
+                    // The status and Retry-After are known from the head; the diagnostic body is read
+                    // best-effort, so one that stalls or breaks off does not lose them.
                     val retryAfter =
                         responseHeaders.firstOrNull { it.key.equals(RETRY_AFTER_HEADER, ignoreCase = true) }?.value
+                    val detail = runCatching { input.readUpTo(ERROR_MESSAGE_MAX_LENGTH) }.getOrDefault(ByteArray(0))
                     throw OhttpException(
-                        "Relay/gateway returned HTTP $status (Tor path)$detail",
+                        "Relay/gateway returned HTTP $status (Tor path)${detail.asDetail()}",
                         status,
                         retryAfterSeconds = OhttpSender.retryAfterSeconds(retryAfter)
                     )
@@ -128,16 +127,17 @@ class TorOhttpSender internal constructor(
     private fun JniHttpResponseBytes.header(name: String): String? =
         headers.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
 
-    private fun JniHttpResponseBytes.errorDetail(): String =
-        body.toString(Charsets.UTF_8).take(ERROR_MESSAGE_MAX_LENGTH).let { if (it.isEmpty()) "" else ": $it" }
+    private fun JniHttpResponseBytes.errorDetail(): String = body.asDetail()
+
+    private fun ByteArray.asDetail(): String =
+        toString(Charsets.UTF_8).take(ERROR_MESSAGE_MAX_LENGTH).let { if (it.isEmpty()) "" else ": $it" }
 
     /**
-     * `torClient.httpPost`/`httpGet` cross the JNI boundary as an already-fully-materialized
-     * [ByteArray] -- unlike [co.electriccoin.lightwallet.client.internal.DirectOhttpSender], there
-     * is no streaming read to bound here, so this can only reject an oversized response after the
-     * fact, not prevent the Rust side from buffering it. Kept for parity with
-     * [co.electriccoin.lightwallet.client.internal.DirectOhttpSender] (same limits, see [OhttpSender]): a
-     * malicious/compromised relay or gateway should not get a bigger blast radius just because Tor is on.
+     * `torClient.httpPost`/`httpGet` already bound the body while reading it (their `maxResponseBytes`,
+     * enforced by the native `collect_body_limited` frame by frame, which stops the read at the first
+     * frame past the limit): this is the same limit checked again on the materialised [ByteArray], a
+     * defence in depth with the same bounds as
+     * [co.electriccoin.lightwallet.client.internal.DirectOhttpSender] (see [OhttpSender]).
      */
     private fun ByteArray.requireWithinSizeLimit(maxBytes: Int): ByteArray {
         if (size > maxBytes) {
