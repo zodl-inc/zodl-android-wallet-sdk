@@ -822,7 +822,7 @@ class SdkSynchronizer private constructor(
 
     @Suppress("TooGenericExceptionCaught")
     override suspend fun ohttpSenderOverTor(): OhttpSender {
-        if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
+        if (!sdkFlags.isTorEnabled) throw TorUnavailableException()
         if (lazyTorClient == null) {
             throw TorInitializationErrorException(
                 NullPointerException("Tor has not been initialized during synchronizer setup")

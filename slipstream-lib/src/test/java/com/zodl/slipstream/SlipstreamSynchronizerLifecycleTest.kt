@@ -4,6 +4,7 @@ import android.content.Context
 import cash.z.ecc.android.sdk.Synchronizer
 import cash.z.ecc.android.sdk.WalletInitMode
 import cash.z.ecc.android.sdk.exception.InitializeException
+import cash.z.ecc.android.sdk.exception.TorUnavailableException
 import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
 import cash.z.ecc.android.sdk.internal.model.JniAccount
@@ -190,6 +191,19 @@ class SlipstreamSynchronizerLifecycleTest {
                 verify(walletClient, timeout(TIMEOUT_MS).times(1)).dispose()
             }
         } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    @Test
+    fun ohttpSenderOverTor_needs_Tor_mode_not_only_exchange_rates() {
+        val key = newKey()
+        val synchronizer =
+            buildSynchronizer(key = key, sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = true))
+        try {
+            runBlocking { assertFailsWith<TorUnavailableException> { synchronizer.ohttpSenderOverTor() } }
+        } finally {
+            synchronizer.close()
             InstanceGuard.release(key)
         }
     }
@@ -2523,7 +2537,8 @@ class SlipstreamSynchronizerLifecycleTest {
         lastSnapshotOverride: MutableStateFlow<SlipstreamSnapshot?>? = null,
         walletBalancesOverride: MutableStateFlow<Map<AccountUuid, AccountBalance>?>? = null,
         prepareInputs: PrepareInputs? = null,
-        spendService: SlipstreamSpendService = mock(SlipstreamSpendService::class.java)
+        spendService: SlipstreamSpendService = mock(SlipstreamSpendService::class.java),
+        sdkFlags: SdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false)
     ): SlipstreamSynchronizer {
         `when`(engine.status).thenReturn(engineStatusOverride ?: MutableStateFlow(Synchronizer.Status.SYNCED))
         `when`(engine.progress).thenReturn(MutableStateFlow(PercentDecimal.ZERO_PERCENT))
@@ -2548,7 +2563,7 @@ class SlipstreamSynchronizerLifecycleTest {
             engineTorDir = null,
             lazyTorClient = LazyTorClient { error("Tor is not exercised by this test") },
             exchangeRateFetcher = null,
-            sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false),
+            sdkFlags = sdkFlags,
             fastestServerFetcher = mock(FastestServerFetcher::class.java),
             transactionReader = mock(SlipstreamTransactionReader::class.java),
             transactionsController = transactionsController,

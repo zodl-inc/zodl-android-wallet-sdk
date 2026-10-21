@@ -1784,7 +1784,7 @@ class SlipstreamSynchronizer internal constructor(
 
     @Suppress("TooGenericExceptionCaught")
     override suspend fun ohttpSenderOverTor(): OhttpSender {
-        if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
+        if (!sdkFlags.isTorEnabled) throw TorUnavailableException()
         val isolated =
             try {
                 lazyTorClient.getOrCreate().isolatedTorClient()
