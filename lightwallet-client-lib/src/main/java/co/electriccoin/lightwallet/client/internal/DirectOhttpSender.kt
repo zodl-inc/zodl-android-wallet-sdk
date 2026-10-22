@@ -259,7 +259,8 @@ class DirectOhttpSender internal constructor(
         }
 
         /** An end of stream ([n] < 0) after the deadline passed is the timeout; anything else is passed on. */
-        private fun endOrTimeout(n: Int): Int = if (n < 0 && expired.get()) throw exchangeTimeout(timeoutMs, null) else n
+        private fun endOrTimeout(n: Int): Int =
+            if (n < 0 && expired.get()) throw exchangeTimeout(timeoutMs, null) else n
     }
 
     companion object {
