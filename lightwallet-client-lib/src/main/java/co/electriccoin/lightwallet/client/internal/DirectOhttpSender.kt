@@ -69,7 +69,7 @@ class DirectOhttpSender internal constructor(
         headers: List<Pair<String, String>>,
         timeoutMs: Int,
     ): ByteArray =
-        exchange(timeoutMs, Request.Builder().url(url).get().withHeaders(headers)) { response ->
+        exchange(timeoutMs, getRequest(url, headers)) { response ->
             if (response.code != HTTP_OK) {
                 throw OhttpException(
                     "GET request failed: HTTP ${response.code}${response.errorDetail()}",
@@ -95,7 +95,7 @@ class DirectOhttpSender internal constructor(
         timeoutMs: Int,
         read: (Response) -> T,
     ): T =
-        exchange(timeoutMs, Request.Builder().url(url).post(body.toRequestBody()).withHeaders(headers)) { response ->
+        exchange(timeoutMs, postRequest(url, body, headers)) { response ->
             if (response.code != HTTP_OK) {
                 throw OhttpException(
                     "Relay/gateway returned HTTP ${response.code}${response.errorDetail()}",
@@ -205,6 +205,27 @@ class DirectOhttpSender internal constructor(
             }
     }
 }
+
+private fun getRequest(
+    url: String,
+    headers: List<Pair<String, String>>,
+): Request.Builder =
+    Request
+        .Builder()
+        .url(url)
+        .get()
+        .withHeaders(headers)
+
+private fun postRequest(
+    url: String,
+    body: ByteArray,
+    headers: List<Pair<String, String>>,
+): Request.Builder =
+    Request
+        .Builder()
+        .url(url)
+        .post(body.toRequestBody())
+        .withHeaders(headers)
 
 private fun Request.Builder.withHeaders(headers: List<Pair<String, String>>): Request.Builder =
     apply { headers.forEach { (key, value) -> addHeader(key, value) } }
