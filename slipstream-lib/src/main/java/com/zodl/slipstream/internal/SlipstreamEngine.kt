@@ -46,6 +46,9 @@ internal class SlipstreamEngine(
     private var gate = PollGate.INITIAL
     private var errorGate = ErrorEpisodeGate.INITIAL
     private var pollJob: Job? = null
+
+    /** Guards [pollJob] across [startPolling]/[stopPolling] (see [stopPolling]); never the engine itself. */
+    private val pollLock = Any()
     private var lastStartBirthday: Long = 0L
 
     /** Written on [SlipstreamDispatchers.SLIPSTREAM_IO] by [start]/[stop], read by [dispatchState] there too. */
@@ -155,34 +158,38 @@ internal class SlipstreamEngine(
      * exactly like any other coroutine cancellation.
      */
     @Suppress("TooGenericExceptionCaught")
-    @Synchronized
     fun startPolling() {
         if (handle == 0L) return
-        pollJob?.cancel()
-        pollJob =
-            scope.launch(SlipstreamDispatchers.SLIPSTREAM_IO) {
-                while (isActive) {
-                    try {
-                        tick()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        onCriticalErrorHandler?.invoke(e)
+        synchronized(pollLock) {
+            pollJob?.cancel()
+            pollJob =
+                scope.launch(SlipstreamDispatchers.SLIPSTREAM_IO) {
+                    while (isActive) {
+                        try {
+                            tick()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            onCriticalErrorHandler?.invoke(e)
+                        }
+                        delay(POLL_INTERVAL_MS.milliseconds)
                     }
-                    delay(POLL_INTERVAL_MS.milliseconds)
                 }
-            }
+        }
     }
 
     /**
-     * [startPolling] and this are synchronized with each other: both are reached from several host
+     * [startPolling] and this are serialized on [pollLock]: both are reached from several host
      * coroutines (the preparation tail, `onForeground`, `resume`, a sync burst's restore), and an
-     * unsynchronized cancel-then-relaunch could leave a loop running that no later stop reaches.
+     * unsynchronized cancel-then-relaunch could leave a loop running that no later stop reaches. A
+     * private lock rather than `@Synchronized`: a synchronized method takes the instance's monitor
+     * before anything else runs, which the unit tests' Mockito mocks of this class contend on.
      */
-    @Synchronized
     fun stopPolling() {
-        pollJob?.cancel()
-        pollJob = null
+        synchronized(pollLock) {
+            pollJob?.cancel()
+            pollJob = null
+        }
     }
 
     /**
