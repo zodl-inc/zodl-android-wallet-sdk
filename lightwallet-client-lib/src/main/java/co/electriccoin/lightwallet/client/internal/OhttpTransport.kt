@@ -23,7 +23,7 @@ import kotlin.coroutines.cancellation.CancellationException
  * size caps) is done by the shared native core behind [codec]; this class keeps the I/O, the key
  * cache, the retry loop and the trace id.
  *
- * Pure JVM apart from [codec] (`HttpURLConnection` through the default [sender]) so that the whole
+ * Pure JVM apart from [codec] (OkHttp through the default [sender]) so that the whole
  * OHTTP path can be exercised from a plain unit test with a fake [codec].
  */
 @Suppress("LongParameterList", "TooManyFunctions") // Network config + test/debug overrides

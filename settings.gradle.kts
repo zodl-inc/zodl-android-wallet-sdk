@@ -122,6 +122,7 @@ dependencyResolutionManagement {
             val kotlinxImmutableCollectionsVersion = extra["KOTLINX_IMMUTABLE_COLLECTIONS_VERSION"].toString()
             val ktorVersion = extra["KTOR_VERSION"].toString()
             val mockitoVersion = extra["MOCKITO_VERSION"].toString()
+            val okhttpVersion = extra["OKHTTP_VERSION"].toString()
             val protocVersion = extra["PROTOC_VERSION"].toString()
             val rustGradlePluginVersion = extra["RUST_GRADLE_PLUGIN_VERSION"].toString()
             val zcashWalletPluginVersion = extra["ZCASH_WALLET_PLUGINS_VERSION"].toString()
@@ -177,6 +178,7 @@ dependencyResolutionManagement {
             library("kotlinx-immutable", "org.jetbrains.kotlinx:kotlinx-collections-immutable:$kotlinxImmutableCollectionsVersion")
             library("ktor-core", "io.ktor:ktor-client-core:$ktorVersion")
             library("material", "com.google.android.material:material:$googleMaterialVersion")
+            library("okhttp", "com.squareup.okhttp3:okhttp:$okhttpVersion")
             library("zcashwalletplgn", "com.github.zcash:zcash-android-wallet-plugins:$zcashWalletPluginVersion")
 
             // Demo app
@@ -211,6 +213,7 @@ dependencyResolutionManagement {
             library("kotlinx-coroutines-test", "org.jetbrains.kotlinx:kotlinx-coroutines-test:$kotlinxCoroutinesVersion")
             library("mockito-android", "org.mockito:mockito-android:$mockitoVersion")
             library("mockito-junit", "org.mockito:mockito-junit-jupiter:$mockitoVersion")
+            library("okhttp-mockwebserver", "com.squareup.okhttp3:mockwebserver:$okhttpVersion")
 
             // Bundles
             bundle(

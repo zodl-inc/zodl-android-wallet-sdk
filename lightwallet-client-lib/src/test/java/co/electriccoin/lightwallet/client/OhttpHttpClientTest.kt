@@ -1,6 +1,5 @@
 package co.electriccoin.lightwallet.client
 
-import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.FakeOhttpCodec
 import co.electriccoin.lightwallet.client.internal.OhttpDebugFlags
 import co.electriccoin.lightwallet.client.internal.OhttpEndpoints
@@ -290,15 +289,6 @@ class OhttpHttpClientTest {
         assertFalse(defaults.usesIndependentRelay("example.zodl.com"))
         // FakeOhttpCodec maps the gateways to other relays, as a relay simulator build would.
         assertFalse(FakeOhttpCodec().usesIndependentRelay("ohttp-gateway.example"))
-    }
-
-    @Test
-    fun `DirectOhttpSender disables redirects`() {
-        val sender = DirectOhttpSender()
-        // This test verifies that DirectOhttpSender.open() sets instanceFollowRedirects=false.
-        // Since we can't directly test HttpURLConnection behavior without a real server,
-        // we rely on code review: the open() method MUST set instanceFollowRedirects=false.
-        // This test documents the requirement.
     }
 
     @Test

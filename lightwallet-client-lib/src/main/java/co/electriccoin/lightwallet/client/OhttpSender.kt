@@ -3,8 +3,8 @@ package co.electriccoin.lightwallet.client
 import co.electriccoin.lightwallet.client.util.Disposable
 
 /**
- * Transport abstraction for the OHTTP relay POST leg, supporting both direct HttpURLConnection
- * and Tor-backed sending. The Tor path is used when Tor is enabled in the app and the target
+ * Transport abstraction for the OHTTP relay POST leg, supporting both direct sending (pooled OkHttp
+ * connections, [co.electriccoin.lightwallet.client.internal.DirectOhttpSender]) and Tor-backed sending. The Tor path is used when Tor is enabled in the app and the target
  * is a gateway-mapped external API (CMC, NEAR) — the relay leg goes over Tor, hiding the
  * app's IP from the relay, and the gateway injects the secret server-side.
  *

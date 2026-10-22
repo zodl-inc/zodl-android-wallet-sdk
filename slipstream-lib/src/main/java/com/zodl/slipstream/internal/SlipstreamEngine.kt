@@ -47,6 +47,9 @@ internal class SlipstreamEngine(
     private var errorGate = ErrorEpisodeGate.INITIAL
     private var pollJob: Job? = null
     private var lastStartBirthday: Long = 0L
+
+    /** Written on [SlipstreamDispatchers.SLIPSTREAM_IO] by [start]/[stop], read by [dispatchState] there too. */
+    @Volatile
     private var running = false
 
     /**
@@ -135,9 +138,10 @@ internal class SlipstreamEngine(
      */
     suspend fun stop(): Boolean =
         withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
-            val quiescent = if (handle != 0L) SlipstreamNative.stop(handle) else true
+            // Cleared before the native stop leaves the engine idle, so no tick can read that idle as the
+            // engine's own (see [nextStatus]).
             running = false
-            quiescent
+            if (handle != 0L) SlipstreamNative.stop(handle) else true
         }
 
     suspend fun notifyTxChange() =
@@ -151,6 +155,7 @@ internal class SlipstreamEngine(
      * exactly like any other coroutine cancellation.
      */
     @Suppress("TooGenericExceptionCaught")
+    @Synchronized
     fun startPolling() {
         if (handle == 0L) return
         pollJob?.cancel()
@@ -169,6 +174,12 @@ internal class SlipstreamEngine(
             }
     }
 
+    /**
+     * [startPolling] and this are synchronized with each other: both are reached from several host
+     * coroutines (the preparation tail, `onForeground`, `resume`, a sync burst's restore), and an
+     * unsynchronized cancel-then-relaunch could leave a loop running that no later stop reaches.
+     */
+    @Synchronized
     fun stopPolling() {
         pollJob?.cancel()
         pollJob = null
@@ -234,9 +245,10 @@ internal class SlipstreamEngine(
      * exactly once per episode (a `true` return retries via [start]); the first `state ∈ {0, 1, 3}`
      * tick after an episode dispatches [onProcessorErrorResolved]. [ErrorEpisodeGate] is the pure
      * enter/stay/leave/none decision; this function is only the side-effecting shell around it.
+     * The status itself is [nextStatus]: an idle engine the host stopped keeps its last status.
      */
     private suspend fun dispatchState(snap: SlipstreamSnapshot) {
-        status.value = mapEngineState(snap.state)
+        status.value = nextStatus(previous = status.value, state = snap.state, running = running)
         val (transition, next) = errorGate.reduce(snap.state)
         errorGate = next
         when (transition) {

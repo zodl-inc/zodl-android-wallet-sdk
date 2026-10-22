@@ -7,34 +7,47 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import okhttp3.Call
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import java.io.IOException
 import java.io.InputStream
-import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
-import java.net.URI
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Default OHTTP sender: direct HttpURLConnection. Used when Tor is OFF.
+ * Default OHTTP sender: direct OkHttp exchanges with the relay. Used when Tor is OFF.
  *
- * `timeoutMs` bounds each read and, through a watchdog that closes the connection, the whole
- * exchange: a relay that keeps dribbling bytes cannot hold a call open past it. Cancelling the caller
- * closes the connection too. Every request uses a connection of its own (`Connection: close`).
+ * Relay connections are pooled and reused across requests and across senders ([RelayConnections]: one
+ * HTTP/2 connection multiplexes concurrent exchanges when the relay negotiates it), and never reused
+ * past [RelayConnections.MAX_CONNECTION_AGE_MINUTES], the ZIP's reference rotation for Tor-off mode and
+ * slipstream's `H2_MAX_CONNECTION_AGE`. Only the headers the caller passes are sent (plus what OkHttp
+ * adds for a transparent response encoding); redirects are not followed.
+ *
+ * `timeoutMs` bounds each read and, through a watchdog that cancels the call, the whole exchange: a
+ * relay that keeps dribbling bytes cannot hold a call open past it. Cancelling the caller cancels the
+ * call too, which closes the connection under it (a pooled connection is simply not returned to the
+ * pool).
  */
-class DirectOhttpSender : OhttpSender {
+class DirectOhttpSender internal constructor(
+    private val connections: RelayConnections,
+) : OhttpSender {
+    constructor() : this(RelayConnections.shared)
+
     override suspend fun post(
         url: String,
         body: ByteArray,
         headers: List<Pair<String, String>>,
         timeoutMs: Int,
     ): ByteArray =
-        postWith(url, body, headers, timeoutMs) { connection ->
-            connection.inputStream.use {
+        postWith(url, body, headers, timeoutMs) { response ->
+            response.bodyStream().use {
                 @Suppress("TooGenericExceptionCaught")
                 try {
-                    it.readBounded(OhttpSender.MAX_SEALED_RESPONSE_BYTES, connection.contentLength)
+                    it.readBounded(OhttpSender.MAX_SEALED_RESPONSE_BYTES, response.contentLengthHint())
                 } catch (e: OutOfMemoryError) {
                     // A hostile or huge response: convert to OhttpException so the transport
                     // handles it as a failed request instead of crashing the app.
@@ -49,133 +62,84 @@ class DirectOhttpSender : OhttpSender {
         headers: List<Pair<String, String>>,
         timeoutMs: Int,
         read: (InputStream) -> T,
-    ): T = postWith(url, body, headers, timeoutMs) { connection -> connection.inputStream.use(read) }
+    ): T = postWith(url, body, headers, timeoutMs) { response -> response.bodyStream().use(read) }
 
     override suspend fun get(
         url: String,
         headers: List<Pair<String, String>>,
         timeoutMs: Int,
-    ): ByteArray {
-        val connection = open(url, timeoutMs)
-        try {
-            return closingOnCancel(connection) {
-                withDeadline(connection, timeoutMs) {
-                    connection.requestMethod = "GET"
-                    headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
-
-                    val status = connection.responseCode
-                    if (status != HttpURLConnection.HTTP_OK) {
-                        throw OhttpException(
-                            "GET request failed: HTTP $status${connection.errorDetail()}",
-                            status,
-                            retryAfterSeconds =
-                                OhttpSender.retryAfterSeconds(connection.getHeaderField(RETRY_AFTER_HEADER)),
-                        )
-                    }
-                    connection.inputStream.use {
-                        @Suppress("TooGenericExceptionCaught")
-                        try {
-                            it.readBounded(OhttpSender.MAX_KEY_CONFIG_BYTES, connection.contentLength)
-                        } catch (e: OutOfMemoryError) {
-                            throw OhttpException("Key config too large: out of memory", cause = e)
-                        }
-                    }
+    ): ByteArray =
+        exchange(timeoutMs, Request.Builder().url(url).get().withHeaders(headers)) { response ->
+            if (response.code != HTTP_OK) {
+                throw OhttpException(
+                    "GET request failed: HTTP ${response.code}${response.errorDetail()}",
+                    response.code,
+                    retryAfterSeconds = OhttpSender.retryAfterSeconds(response.header(RETRY_AFTER_HEADER)),
+                )
+            }
+            response.bodyStream().use {
+                @Suppress("TooGenericExceptionCaught")
+                try {
+                    it.readBounded(OhttpSender.MAX_KEY_CONFIG_BYTES, response.contentLengthHint())
+                } catch (e: OutOfMemoryError) {
+                    throw OhttpException("Key config too large: out of memory", cause = e)
                 }
             }
-        } finally {
-            connection.disconnect()
         }
-    }
 
-    /** The POST, a non-200 thrown as [OhttpException]; [read] gets the connection of a 200. */
+    /** The POST, a non-200 thrown as [OhttpException]; [read] gets the response of a 200. */
     private suspend fun <T> postWith(
         url: String,
         body: ByteArray,
         headers: List<Pair<String, String>>,
         timeoutMs: Int,
-        read: (HttpURLConnection) -> T,
-    ): T {
-        val connection = open(url, timeoutMs)
-        try {
-            return closingOnCancel(connection) {
-                withDeadline(connection, timeoutMs) {
-                    connection.requestMethod = "POST"
-                    connection.doOutput = true
-                    connection.setFixedLengthStreamingMode(body.size)
-                    headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
-                    connection.outputStream.use { it.write(body) }
+        read: (Response) -> T,
+    ): T =
+        exchange(timeoutMs, Request.Builder().url(url).post(body.toRequestBody()).withHeaders(headers)) { response ->
+            if (response.code != HTTP_OK) {
+                throw OhttpException(
+                    "Relay/gateway returned HTTP ${response.code}${response.errorDetail()}",
+                    response.code,
+                    retryAfterSeconds = OhttpSender.retryAfterSeconds(response.header(RETRY_AFTER_HEADER)),
+                )
+            }
+            read(response)
+        }
 
-                    val status = connection.responseCode
-                    if (status != HttpURLConnection.HTTP_OK) {
-                        throw OhttpException(
-                            "Relay/gateway returned HTTP $status${connection.errorDetail()}",
-                            status,
-                            retryAfterSeconds =
-                                OhttpSender.retryAfterSeconds(connection.getHeaderField(RETRY_AFTER_HEADER)),
-                        )
-                    }
-                    read(connection)
+    /**
+     * One exchange on a pooled connection: [read] gets the response, which is closed afterwards (a body
+     * [read] did not finish is discarded with its connection). Whatever the outcome, the pools retired by
+     * a rotation are swept, so a connection that outlived its generation in flight is closed now.
+     */
+    private suspend fun <T> exchange(
+        timeoutMs: Int,
+        request: Request.Builder,
+        read: (Response) -> T,
+    ): T {
+        val call = connections.client(timeoutMs).newCall(request.build())
+        try {
+            return closingOnCancel(call) {
+                withDeadline(call, timeoutMs) {
+                    call.execute().use(read)
                 }
             }
         } finally {
-            connection.disconnect()
+            connections.reapRetired()
         }
     }
 
     /**
-     * No-op: each connection is closed in its own request's `finally { connection.disconnect() }`, so
-     * there is no cross-request resource to release.
+     * No-op: the relay connections are shared by every sender of the process ([RelayConnections.shared])
+     * and outlive any one of them; idle ones close at the pool's keep-alive, all of them at rotation.
      */
     override suspend fun dispose() = Unit
 
-    private fun open(
-        url: String,
-        timeoutMs: Int,
-    ): HttpURLConnection {
-        val connection = URI(url).toURL().openConnection() as HttpURLConnection
-        connection.connectTimeout = minOf(CONNECT_TIMEOUT_MS, timeoutMs)
-        connection.readTimeout = timeoutMs
-        connection.useCaches = false
-        connection.instanceFollowRedirects = false
-        // No keep-alive: a pooled connection to the relay could otherwise live as long as the app, and
-        // its lifetime is linkable metadata the relay sees (ZIP: SHOULD NOT with Tor mode off).
-        connection.setRequestProperty("Connection", "close")
-        return connection
-    }
-
     /**
-     * The start of an error page, for the message of the exception that carries its status. Read within
-     * the fixed [MAX_ERROR_BODY_BYTES] and cut there (a longer page is not read on), and a page that
-     * cannot be read gives nothing: the status is the answer, so neither its length nor a failed read
-     * replaces it.
-     */
-    private fun HttpURLConnection.errorDetail(): String =
-        runCatching { errorStream?.use { it.readPrefix(MAX_ERROR_BODY_BYTES) } }
-            .getOrNull()
-            ?.toString(Charsets.UTF_8)
-            ?.take(ERROR_MESSAGE_MAX_LENGTH)
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { ": $it" }
-            .orEmpty()
-
-    /** The first [maxBytes] of this stream, or all of it when shorter: never an error for a longer one. */
-    private fun InputStream.readPrefix(maxBytes: Int): ByteArray {
-        val buffer = ByteArray(maxBytes)
-        var total = 0
-        while (total < maxBytes) {
-            val n = read(buffer, total, maxBytes - total)
-            if (n < 0) break
-            total += n
-        }
-        return buffer.copyOf(total)
-    }
-
-    /**
-     * Runs [block] (blocking I/O on [connection]) so that cancelling the calling coroutine closes the
-     * connection under it: a blocked read then fails at once instead of holding the call open.
+     * Runs [block] (blocking I/O of [call]) so that cancelling the calling coroutine cancels the call
+     * under it: a blocked read then fails at once instead of holding the exchange open.
      */
     private suspend inline fun <T> closingOnCancel(
-        connection: HttpURLConnection,
+        call: Call,
         crossinline block: () -> T,
     ): T =
         coroutineScope {
@@ -184,7 +148,7 @@ class DirectOhttpSender : OhttpSender {
                     try {
                         awaitCancellation()
                     } finally {
-                        connection.disconnect()
+                        call.cancel()
                     }
                 }
             try {
@@ -195,11 +159,11 @@ class DirectOhttpSender : OhttpSender {
         }
 
     /**
-     * Runs [block] (all of the connection's I/O) within [timeoutMs]. When the deadline passes, the
-     * connection is closed under it, and the I/O error that follows is reported as a timeout.
+     * Runs [block] (all of the call's I/O) within [timeoutMs]. When the deadline passes, the call is
+     * cancelled under it, and the I/O error that follows is reported as a timeout.
      */
     private inline fun <T> withDeadline(
-        connection: HttpURLConnection,
+        call: Call,
         timeoutMs: Int,
         block: () -> T,
     ): T {
@@ -208,7 +172,7 @@ class DirectOhttpSender : OhttpSender {
             deadlines.schedule(
                 {
                     expired.set(true)
-                    connection.disconnect()
+                    call.cancel()
                 },
                 timeoutMs.toLong(),
                 TimeUnit.MILLISECONDS,
@@ -226,20 +190,58 @@ class DirectOhttpSender : OhttpSender {
     }
 
     companion object {
-        private const val CONNECT_TIMEOUT_MS = 15_000
-        private const val ERROR_MESSAGE_MAX_LENGTH = 200
+        private const val HTTP_OK = 200
+        internal const val ERROR_MESSAGE_MAX_LENGTH = 200
         private const val RETRY_AFTER_HEADER = "Retry-After"
 
         // The most read of an error page (a non-200 answer), whatever the caller's cap for a body: enough
         // for the ERROR_MESSAGE_MAX_LENGTH characters quoted. The same fixed 64 KiB guard as slipstream's
         // `read_error_body`, so an oversized error page never turns a 429 or 503 into a size error.
-        private const val MAX_ERROR_BODY_BYTES = 64 * 1024
+        internal const val MAX_ERROR_BODY_BYTES = 64 * 1024
 
         private val deadlines =
             Executors.newSingleThreadScheduledExecutor { runnable ->
                 Thread(runnable, "ohttp-deadline").apply { isDaemon = true }
             }
     }
+}
+
+private fun Request.Builder.withHeaders(headers: List<Pair<String, String>>): Request.Builder =
+    apply { headers.forEach { (key, value) -> addHeader(key, value) } }
+
+private fun Response.bodyStream(): InputStream = checkNotNull(body).byteStream()
+
+/** The relay-declared Content-Length as the `Int` hint [readBounded] takes: -1 when unknown or absurd. */
+private fun Response.contentLengthHint(): Int {
+    val length = checkNotNull(body).contentLength()
+    return if (length in 1..Int.MAX_VALUE.toLong()) length.toInt() else -1
+}
+
+/**
+ * The start of an error page, for the message of the exception that carries its status. Read within
+ * the fixed [DirectOhttpSender.MAX_ERROR_BODY_BYTES] and cut there (a longer page is not read on), and a page that
+ * cannot be read gives nothing: the status is the answer, so neither its length nor a failed read
+ * replaces it.
+ */
+private fun Response.errorDetail(): String =
+    runCatching { bodyStream().readPrefix(DirectOhttpSender.MAX_ERROR_BODY_BYTES) }
+        .getOrNull()
+        ?.toString(Charsets.UTF_8)
+        ?.take(DirectOhttpSender.ERROR_MESSAGE_MAX_LENGTH)
+        ?.takeIf { it.isNotEmpty() }
+        ?.let { ": $it" }
+        .orEmpty()
+
+/** The first [maxBytes] of this stream, or all of it when shorter: never an error for a longer one. */
+private fun InputStream.readPrefix(maxBytes: Int): ByteArray {
+    val buffer = ByteArray(maxBytes)
+    var total = 0
+    while (total < maxBytes) {
+        val n = read(buffer, total, maxBytes - total)
+        if (n < 0) break
+        total += n
+    }
+    return buffer.copyOf(total)
 }
 
 /** Upper bound for the initial buffer, whatever the relay-declared Content-Length claims. */

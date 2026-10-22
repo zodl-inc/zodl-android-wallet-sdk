@@ -14,15 +14,84 @@ import kotlin.test.assertTrue
 
 class EngineMappingTest {
     @Test
-    fun engine_states_map_to_the_four_steady_statuses() {
-        assertEquals(Status.DISCONNECTED, mapEngineState(0)) // idle while running (section 2.3)
-        assertEquals(Status.SYNCING, mapEngineState(1))
-        assertEquals(Status.DISCONNECTED, mapEngineState(2)) // error => "offer retry" (their enum has no ERROR)
-        assertEquals(Status.SYNCED, mapEngineState(3))
+    fun engine_states_map_to_the_four_steady_statuses_while_running() {
+        // idle while running = the engine itself went idle between retries (section 2.3)
+        assertEquals(Status.DISCONNECTED, nextStatus(Status.SYNCED, ENGINE_STATE_IDLE, running = true))
+        assertEquals(Status.SYNCING, nextStatus(Status.DISCONNECTED, ENGINE_STATE_SYNCING, running = true))
+        // error => "offer retry" (their enum has no ERROR)
+        assertEquals(Status.DISCONNECTED, nextStatus(Status.SYNCED, ENGINE_STATE_ERROR, running = true))
+        assertEquals(Status.SYNCED, nextStatus(Status.SYNCING, ENGINE_STATE_DONE, running = true))
     }
 
     @Test
-    fun unknown_engine_state_degrades_to_disconnected_never_throws() = assertEquals(Status.DISCONNECTED, mapEngineState(99))
+    fun unknown_engine_state_degrades_to_disconnected_never_throws() {
+        assertEquals(Status.DISCONNECTED, nextStatus(Status.SYNCED, 99, running = true))
+        assertEquals(Status.DISCONNECTED, nextStatus(Status.SYNCED, 99, running = false))
+    }
+
+    /**
+     * Regression, 2026-10-22 device logs: the app went to the background (`onBackground` -> `stop()`, the
+     * native engine idle) while synced, a tick then read the idle snapshot, and the status flipped to
+     * DISCONNECTED - frozen there for the whole background stay, shown as the "Disconnected" banner when
+     * the activity came back, and fed to the app's connectivity fallback as a 20 s outage, with the
+     * network fine throughout. An idle the host asked for carries no network information.
+     */
+    @Test
+    fun an_idle_snapshot_after_the_host_stopped_the_engine_keeps_the_last_status() {
+        var status = Status.INITIALIZING
+        fun tick(
+            state: Int,
+            running: Boolean
+        ) {
+            status = nextStatus(status, state, running)
+        }
+
+        tick(ENGINE_STATE_SYNCING, running = true)
+        tick(ENGINE_STATE_DONE, running = true)
+        assertEquals(Status.SYNCED, status)
+
+        // onBackground: stop() clears `running`, the native stop leaves the engine idle, a tick reads it.
+        tick(ENGINE_STATE_IDLE, running = false)
+        assertEquals(Status.SYNCED, status, "a host-stopped engine is not a disconnected one")
+        tick(ENGINE_STATE_IDLE, running = false)
+        assertEquals(Status.SYNCED, status)
+
+        // onForeground: start() sets state 1 synchronously; the first tick recovers without any grace.
+        tick(ENGINE_STATE_SYNCING, running = true)
+        assertEquals(Status.SYNCING, status)
+        tick(ENGINE_STATE_DONE, running = true)
+        assertEquals(Status.SYNCED, status)
+    }
+
+    /** `open()` ticks once before `start()`: an engine that has not been started is initializing, not disconnected. */
+    @Test
+    fun the_first_snapshot_of_an_opened_but_not_started_engine_stays_initializing() =
+        assertEquals(Status.INITIALIZING, nextStatus(Status.INITIALIZING, ENGINE_STATE_IDLE, running = false))
+
+    /**
+     * The engine reports its own trouble through state 2 (error episode, `Error(3)` = endpoint unreachable after
+     * `ENDPOINT_UNREACHABLE_THRESHOLD` consecutive probe failures) and clears it on the next good probe: the
+     * status follows within one tick, no lifecycle event needed.
+     */
+    @Test
+    fun an_error_episode_and_its_recovery_are_reflected_within_one_tick() {
+        var status = Status.SYNCED
+        status = nextStatus(status, ENGINE_STATE_ERROR, running = true)
+        assertEquals(Status.DISCONNECTED, status)
+        status = nextStatus(status, ENGINE_STATE_DONE, running = true)
+        assertEquals(Status.SYNCED, status)
+    }
+
+    /** A failed initial pass (the engine idles between retries while running) is reported as disconnected. */
+    @Test
+    fun an_engine_that_idles_on_its_own_while_running_is_disconnected() {
+        var status = Status.INITIALIZING
+        status = nextStatus(status, ENGINE_STATE_SYNCING, running = true)
+        status = nextStatus(status, ENGINE_STATE_IDLE, running = true)
+        assertEquals(Status.DISCONNECTED, status)
+        status = nextStatus(status, ENGINE_STATE_SYNCING, running = true)
+        assertEquals(Status.SYNCING, status)
+    }
 
     @Test
     fun permille_endpoints_and_midpoint() {

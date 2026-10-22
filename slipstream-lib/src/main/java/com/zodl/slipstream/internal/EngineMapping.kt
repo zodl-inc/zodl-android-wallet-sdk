@@ -12,17 +12,44 @@ import com.zodl.slipstream.model.SlipstreamPoolBalance
 import com.zodl.slipstream.model.SlipstreamWalletSummary
 
 /**
- * snapshot.state -> [Status]. State 0 = idle-while-running -> DISCONNECTED
- * (`KOTLIN_ROSETTA.md` section 2.3: a state-0 snapshot while running stays DISCONNECTED - iOS
- * parity). `INITIALIZING`/`STOPPED` are lifecycle values the synchronizer sets outside the tick
- * (pre-open / after stop), never here.
+ * The [Status] one snapshot leaves the engine in, given the status it had ([previous]) and whether the
+ * host has the engine [running] (between `start()` and `stop()`).
+ *
+ * `state` 1 -> SYNCING, 3 -> SYNCED, 2 -> DISCONNECTED (an error episode, see [ErrorEpisodeGate]; the
+ * public enum has no ERROR), any unknown value -> DISCONNECTED. The idle state 0 depends on who made
+ * the engine idle:
+ * - While the host has it running, the engine only goes idle on its own between the retries of a
+ *   failed initial pass or Tor bootstrap (`session.rs`), i.e. when it cannot reach the server:
+ *   DISCONNECTED (`KOTLIN_ROSETTA.md` section 2.3 - iOS parity). `start` sets state 1 synchronously, so
+ *   a running engine never reports a healthy idle.
+ * - While the host has it stopped (before `start`, after `stop`, backgrounded), idle is the expected
+ *   state and says nothing about the network: the status stays [previous]. Mapping it to DISCONNECTED
+ *   showed a "Disconnected" banner on every return to the foreground and fed the app's connectivity
+ *   fallback a false outage (2026-10-22 device logs: `MainActivity.onStop` 12:29:02 -> status
+ *   DISCONNECTED -> "Home message: Disconnected shown" 12:29:05, with the engine healthy a second before
+ *   and again a second after the restart).
+ *
+ * `INITIALIZING`/`STOPPED` are lifecycle values the synchronizer sets outside the tick (pre-open /
+ * after close), never here: a snapshot of an opened but not yet started engine therefore leaves the
+ * status at INITIALIZING.
  */
-internal fun mapEngineState(state: Int): Status =
+internal fun nextStatus(
+    previous: Status,
+    state: Int,
+    running: Boolean
+): Status =
     when (state) {
-        1 -> Status.SYNCING
-        3 -> Status.SYNCED
-        else -> Status.DISCONNECTED // 0 idle, 2 error (offer retry), and any unknown value
+        ENGINE_STATE_IDLE -> if (running) Status.DISCONNECTED else previous
+        ENGINE_STATE_SYNCING -> Status.SYNCING
+        ENGINE_STATE_DONE -> Status.SYNCED
+        else -> Status.DISCONNECTED // 2 error (offer retry), and any unknown value
     }
+
+/** `SlipstreamSnapshot.state` values (`FFI_JNI_CONTRACT.md`: 0 idle, 1 syncing, 2 error, 3 done). */
+internal const val ENGINE_STATE_IDLE = 0
+internal const val ENGINE_STATE_SYNCING = 1
+internal const val ENGINE_STATE_ERROR = 2
+internal const val ENGINE_STATE_DONE = 3
 
 /**
  * Render, never derive (DECISIONS.md D11) - the only arithmetic allowed is the unit change;

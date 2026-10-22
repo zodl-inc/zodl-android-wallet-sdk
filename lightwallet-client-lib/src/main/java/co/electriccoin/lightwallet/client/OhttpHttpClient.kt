@@ -74,7 +74,7 @@ class OhttpHttpClient private constructor(
          * Creates an OHTTP client for external API requests (NEAR, CMC, voting).
          *
          * Privacy routing:
-         * - [sender] = DirectOhttpSender() (default, Tor OFF): direct OHTTP via HttpURLConnection. The relay sees
+         * - [sender] = DirectOhttpSender() (default, Tor OFF): direct OHTTP on pooled relay connections. The relay sees
          *   the app's clearnet IP; the gateway (which injects secrets) does not.
          * - [sender] = TorOhttpSender (Tor ON): OHTTP relay leg goes over an isolated Tor stream. The
          *   relay sees only a Tor exit; the gateway still injects secrets server-side. The app MUST
