@@ -6,6 +6,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The Rust backend moves to the NU7 release crates (`zcash_client_backend` 0.25.0, `zcash_client_sqlite` 0.23.0,
+  `zcash_protocol` 0.11.0, `zcash_pool_migration` 0.2.0 and the rest of the family) and `zcash_voting` 5.2.0-rc.2.
+  Transactions now expire after 120 blocks from NU7, and the ZIP 318 migration schedule is drawn in 75-second
+  reference blocks, so it keeps its length in time across NU7.
+- The Rust toolchain is 1.99.1 (at least 1.97.0 is required by `zcash_voting`).
+- Slipstream's stop-to-start tip freshness window is 1.6 target blocks (120 s before NU7, 40 s from it).
+
 ## [5.2.2] - 2026-10-20
 
 ### Security
