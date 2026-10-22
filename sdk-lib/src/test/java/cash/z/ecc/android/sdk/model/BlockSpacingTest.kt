@@ -35,7 +35,10 @@ class BlockSpacingTest {
 
     @Test
     fun between_before_nu7_is_75_seconds_per_block() {
-        assertEquals(75L * 1_000, BlockSpacing.targetSecondsBetween(ZcashNetwork.Mainnet, h(nu7 - 2_000), h(nu7 - 1_000)))
+        assertEquals(
+            75L * 1_000,
+            BlockSpacing.targetSecondsBetween(ZcashNetwork.Mainnet, h(nu7 - 2_000), h(nu7 - 1_000))
+        )
     }
 
     @Test

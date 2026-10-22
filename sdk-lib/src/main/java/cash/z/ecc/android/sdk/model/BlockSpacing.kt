@@ -75,6 +75,7 @@ object BlockSpacing {
         if (to.value <= from.value) return 0L
         val blossom = blossomActivationHeight(network)?.value
         val nu7 = nu7ActivationHeight(network)?.value
+
         // Heights in (from, to] at or above `start`; zero if `start` is null.
         fun countAtOrAbove(start: Long?): Long {
             if (start == null) return 0L

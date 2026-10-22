@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.ext.toBlockHeight
 import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.BlockSpacing
 import cash.z.ecc.android.sdk.model.FastestServersResult
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -395,7 +396,13 @@ internal class FastestServerFetcher(
             return null
         }
 
-        if (remoteInfo.estimatedHeight >= remoteInfo.blockHeightUnsafe.value + SYNCED_THRESHOLD_BLOCKS) {
+        val behindSeconds =
+            BlockSpacing.targetSecondsBetween(
+                network,
+                BlockHeight(remoteInfo.blockHeightUnsafe.value),
+                BlockHeight(remoteInfo.estimatedHeight)
+            )
+        if (behindSeconds >= SYNCED_THRESHOLD_SECONDS) {
             logRuledOut("estimatedHeight does not match")
             return null
         }
@@ -500,7 +507,11 @@ private val RPC_TIMEOUT = 5.seconds
  */
 private val DISPOSE_TIMEOUT = 5.seconds
 
-private const val SYNCED_THRESHOLD_BLOCKS = 288
+/**
+ * How far a server may lag its own estimated height, as target time. It was 288 blocks, which is six hours at the
+ * 75 s spacing, and stays six hours after NU7 shortens the spacing.
+ */
+private const val SYNCED_THRESHOLD_SECONDS = 6 * 60 * 60L
 
 private const val FASTEST_SERVER_LOG_PREFIX = "Fastest Server"
 

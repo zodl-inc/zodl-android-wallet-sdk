@@ -90,16 +90,18 @@ internal fun secondsPerBlockFromSamples(
         } else {
             FALLBACK_SECONDS_PER_BLOCK
         }
-    if (samples.size < SAMPLE_PAIR_SIZE) return fallback
     val nu7 = network?.let { BlockSpacing.nu7ActivationHeight(it)?.value }
-    val windowMixesEras = nu7 != null && samples[2] < nu7 && samples[0] >= nu7
-    if (windowMixesEras) return fallback
-    return measuredSecondsPerBlock(
-        olderHeight = samples[2],
-        olderTimeEpochSeconds = samples[3],
-        newerHeight = samples[0],
-        newerTimeEpochSeconds = samples[1],
-    )
+    val windowMixesEras = samples.size >= SAMPLE_PAIR_SIZE && nu7 != null && samples[2] < nu7 && samples[0] >= nu7
+    return if (samples.size < SAMPLE_PAIR_SIZE || windowMixesEras) {
+        fallback
+    } else {
+        measuredSecondsPerBlock(
+            olderHeight = samples[2],
+            olderTimeEpochSeconds = samples[3],
+            newerHeight = samples[0],
+            newerTimeEpochSeconds = samples[1],
+        )
+    }
 }
 
 /**
