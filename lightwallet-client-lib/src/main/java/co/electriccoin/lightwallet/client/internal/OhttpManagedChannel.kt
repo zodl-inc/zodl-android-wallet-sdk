@@ -308,6 +308,10 @@ internal class OhttpClientCall<RequestT, ResponseT>(
      * Closes the call with [status], or DEADLINE_EXCEEDED once the call's deadline has passed: the
      * disconnect the sender's watchdog makes surfaces as a timeout, an I/O error or a response that
      * ends before its final chunk, depending on where the read was.
+     *
+     * A refusal that arrived in time but is handled after the deadline (for example a policy denial
+     * or a 429 read a few ms late) is also reported as DEADLINE_EXCEEDED; its class survives only
+     * in the cause. This matches grpc-java, which also reports a late close as a deadline.
      */
     private fun fail(
         status: Status,
