@@ -56,9 +56,10 @@ use zcash_client_sqlite::AccountUuid;
 use zcash_client_sqlite::util::SystemClock;
 use zcash_primitives::transaction::fees::zip317::MARGINAL_FEE;
 use zcash_protocol::consensus::{
-    BLOCKS_PER_HOUR, BlockHeight, Network, NetworkConstants, Parameters,
+    BlockHeight, Network, NetworkConstants, Parameters, target_time_between,
 };
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::zip318::BlockSpacing;
 use zcash_protocol::{PoolType, ShieldedPool};
 
 use zcash_pool_migration::wallet::{WalletMigrationProver, WalletProveError};
@@ -970,6 +971,7 @@ fn encode_migration_schedule<'a>(
     plan: &MigrationPlan,
     tip: BlockHeight,
     plan_handle: crate::migration_plan_cache::PlanHandle,
+    network: &Network,
 ) -> anyhow::Result<JObject<'a>> {
     // `funding_notes()`, NOT `note_split().crossing_values()`: the funding notes are the
     // post-reconciliation values (crossing_values() minus whatever the smallest denominations
@@ -1077,19 +1079,18 @@ fn encode_migration_schedule<'a>(
         },
     )?;
 
-    // Estimated duration: span from the earliest to the latest scheduled broadcast height, in
-    // hours (75s/block, matching `zcash_protocol::SECONDS_PER_BLOCK`/`BLOCKS_PER_HOUR`).
+    // Estimated duration: the target time from the earliest to the latest scheduled broadcast
+    // height, in whole hours. `target_time_between` applies the target block spacing in force at
+    // each height (75 s before NU7, 25 s from NU7 activation), so the estimate is a duration in
+    // time rather than a block count; before NU7 it equals the former
+    // `(max - min) / BLOCKS_PER_HOUR` (48 blocks per hour at 75 s).
     let estimated_duration_hours = schedule
         .iter()
-        .map(|e| u32::from(e.broadcast_height()))
+        .map(|e| e.broadcast_height())
         .max()
-        .zip(
-            schedule
-                .iter()
-                .map(|e| u32::from(e.broadcast_height()))
-                .min(),
-        )
-        .map(|(max, min)| max.saturating_sub(min) / BLOCKS_PER_HOUR)
+        .zip(schedule.iter().map(|e| e.broadcast_height()).min())
+        .map(|(max, min)| target_time_between(network, min, max).as_secs() / 3600)
+        .and_then(|hours| u32::try_from(hours).ok())
         .unwrap_or(0);
 
     // Constructor parameter order matches the Kotlin field declaration order in JniMigrationSchedule:
@@ -1137,7 +1138,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let (migration_plan, tip, plan_handle) = plan(env, db_data, network_id, account_uuid)?;
-        Ok(encode_migration_schedule(env, &migration_plan, tip, plan_handle)?.into_raw())
+        Ok(encode_migration_schedule(
+            env,
+            &migration_plan,
+            tip,
+            plan_handle,
+            &crate::parse_network(network_id)?,
+        )?
+        .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -1172,7 +1180,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             .chain_height()
             .map_err(|e| anyhow!("chain height lookup failed: {}", e))?
             .ok_or_else(|| anyhow!("wallet has no chain tip yet"))?;
-        Ok(encode_migration_schedule(env, &migration_plan, tip, plan_handle)?.into_raw())
+        Ok(encode_migration_schedule(
+            env,
+            &migration_plan,
+            tip,
+            plan_handle,
+            &crate::parse_network(network_id)?,
+        )?
+        .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -2112,14 +2127,21 @@ fn any_overdue(
     state: &mut MigrationState,
     scanned_tip: BlockHeight,
     effective_tip: BlockHeight,
+    spacing: BlockSpacing,
 ) -> anyhow::Result<bool> {
     if state.is_terminal() {
         return Ok(false);
     }
     let scanned_target = scanned_tip + 1;
     let estimated_target = std::cmp::max(scanned_target, effective_tip + 1);
-    let (code, _id, _next_height, _next_kind) =
-        advance_step(rng, backend, state, scanned_target, estimated_target)?;
+    let (code, _id, _next_height, _next_kind) = advance_step(
+        rng,
+        backend,
+        state,
+        scanned_target,
+        estimated_target,
+        spacing,
+    )?;
     Ok(code == STEP_BROADCAST)
 }
 
@@ -2153,6 +2175,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
                     &mut state,
                     scanned_tip,
                     effective_tip,
+                    BlockSpacing::for_network(wallet.params()),
                 )? {
                     JNI_TRUE
                 } else {
@@ -2674,6 +2697,7 @@ fn next_due_transfer_result<'a>(
     state: &'a mut MigrationState,
     scanned_tip: BlockHeight,
     effective_tip: BlockHeight,
+    spacing: BlockSpacing,
 ) -> anyhow::Result<DueTransferResult<'a>> {
     if state.is_terminal() {
         return Ok(DueTransferResult::NothingDue);
@@ -2683,8 +2707,14 @@ fn next_due_transfer_result<'a>(
     // function already pass scanned_tip/effective_tip as raw tips (not +1), so convert here.
     let scanned_target = scanned_tip + 1;
     let estimated_target = std::cmp::max(scanned_target, effective_tip + 1);
-    let (code, id, _next_height, _next_kind) =
-        advance_step(rng, backend, state, scanned_target, estimated_target)?;
+    let (code, id, _next_height, _next_kind) = advance_step(
+        rng,
+        backend,
+        state,
+        scanned_target,
+        estimated_target,
+        spacing,
+    )?;
     Ok(match code {
         STEP_BROADCAST => {
             let tx_id = MigrationTransferId::new(id as u32);
@@ -2762,6 +2792,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             &mut state,
             scanned_tip,
             effective_tip,
+            BlockSpacing::for_network(wallet.params()),
         )? {
             DueTransferResult::NothingDue => Ok(env
                 .new_object(
@@ -3347,7 +3378,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let (migration_plan, tip, plan_handle) = plan(env, db_data, network_id, account_uuid)?;
-        Ok(encode_migration_schedule(env, &migration_plan, tip, plan_handle)?.into_raw())
+        Ok(encode_migration_schedule(
+            env,
+            &migration_plan,
+            tip,
+            plan_handle,
+            &crate::parse_network(network_id)?,
+        )?
+        .into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
@@ -5464,8 +5502,15 @@ mod next_due_transfer_tests {
             state: state.clone(),
             as_of: scanned,
         };
-        next_due_transfer_result(&mut system_rng(), &mut store, state, scanned, effective)
-            .expect("in-memory store never errors")
+        next_due_transfer_result(
+            &mut system_rng(),
+            &mut store,
+            state,
+            scanned,
+            effective,
+            BlockSpacing::UNIFORM,
+        )
+        .expect("in-memory store never errors")
     }
 
     /// 1. Terminal migration (Failed status) yields NothingDue even with a Proved+due transfer.
@@ -5598,8 +5643,15 @@ mod next_due_transfer_tests {
             as_of: tip,
         };
         assert!(
-            any_overdue(&mut system_rng(), &mut store, &mut state, tip, tip)
-                .expect("in-memory store never errors"),
+            any_overdue(
+                &mut system_rng(),
+                &mut store,
+                &mut state,
+                tip,
+                tip,
+                BlockSpacing::UNIFORM,
+            )
+            .expect("in-memory store never errors"),
             "a due Proved preparation must count as overdue (sync gate must close)"
         );
 
@@ -5765,7 +5817,7 @@ mod next_due_transfer_tests {
             &mut store,
             &mut st,
             DuenessTargets::new(scanned, BlockHeight::from_u32(estimated)),
-            &AdvanceConfig::new(SETTLE_DEPTH),
+            &AdvanceConfig::new(SETTLE_DEPTH, zcash_protocol::zip318::BlockSpacing::UNIFORM),
             &mut system_rng(),
         )
         .expect("in-memory store never errors");
@@ -6064,7 +6116,7 @@ mod advance_step_peek_tests {
             &mut store_a,
             &mut state_a,
             targets,
-            &AdvanceConfig::new(SETTLE_DEPTH),
+            &AdvanceConfig::new(SETTLE_DEPTH, zcash_protocol::zip318::BlockSpacing::UNIFORM),
             &mut system_rng(),
         )
         .expect("in-memory store never errors");
@@ -6089,6 +6141,7 @@ mod advance_step_peek_tests {
             &mut state_b,
             tip + 1,
             tip + 1,
+            BlockSpacing::UNIFORM,
         )
         .expect("advance_step over the in-memory store");
 
@@ -6133,9 +6186,15 @@ mod advance_step_peek_tests {
             as_of: tip,
         };
         let mut st = state.clone();
-        let (code, _id, next_height, next_kind) =
-            advance_step(&mut system_rng(), &mut store, &mut st, tip + 1, tip + 1)
-                .expect("advance_step over the in-memory store");
+        let (code, _id, next_height, next_kind) = advance_step(
+            &mut system_rng(),
+            &mut store,
+            &mut st,
+            tip + 1,
+            tip + 1,
+            BlockSpacing::UNIFORM,
+        )
+        .expect("advance_step over the in-memory store");
         assert_eq!(code, STEP_COMPLETE);
         assert_eq!(next_height, -1);
         assert_eq!(next_kind, -1);
@@ -7415,7 +7474,10 @@ mod state_machine_trace_tests {
                 &mut store,
                 &mut state,
                 DuenessTargets::at(target),
-                &AdvanceConfig::new(ReorgSettleDepth::new(10)),
+                &AdvanceConfig::new(
+                    ReorgSettleDepth::new(10),
+                    zcash_protocol::zip318::BlockSpacing::UNIFORM,
+                ),
                 &mut rng(),
             )
             .expect("advance_migration over the no-op store")
@@ -7921,7 +7983,10 @@ mod state_machine_trace_tests {
             &mut store,
             &mut state,
             DuenessTargets::at(BlockHeight::from_u32(1_001)),
-            &AdvanceConfig::new(ReorgSettleDepth::new(10)),
+            &AdvanceConfig::new(
+                ReorgSettleDepth::new(10),
+                zcash_protocol::zip318::BlockSpacing::UNIFORM,
+            ),
             &mut rng(),
         )
         .expect("advance_migration over the no-op store")
@@ -8044,9 +8109,10 @@ fn advance_step(
     state: &mut MigrationState,
     scanned_target: BlockHeight,
     estimated_target: BlockHeight,
+    spacing: BlockSpacing,
 ) -> anyhow::Result<(i64, i64, i64, i64)> {
     let targets = DuenessTargets::new(scanned_target, estimated_target);
-    let config = AdvanceConfig::new(SETTLE_DEPTH);
+    let config = AdvanceConfig::new(SETTLE_DEPTH, spacing);
     let advance = advance_migration(backend, state, targets, &config, rng)
         .map_err(|e| anyhow!("Error advancing migration: {:?}", e))?;
     let (code, id) = match advance.step() {
@@ -8132,6 +8198,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             &mut state,
             scanned,
             estimated,
+            BlockSpacing::for_network(wallet.params()),
         )?;
         let arr = env.new_long_array(4)?;
         env.set_long_array_region(&arr, 0, &[code, id, next_height, next_kind])?;
