@@ -30,8 +30,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * `timeoutMs` bounds each read and, through a watchdog that cancels the call, the whole exchange: a
  * relay that keeps dribbling bytes cannot hold a call open past it. Cancelling the caller cancels the
- * call too, which closes the connection under it (a pooled connection is simply not returned to the
- * pool).
+ * call too, which ends the exchange under a blocked read at once: on HTTP/1.1 the connection is closed
+ * and not returned to the pool, on HTTP/2 the stream is reset and the multiplexed connection stays up
+ * for the other exchanges on it (as slipstream's h2 pool does).
  */
 class DirectOhttpSender internal constructor(
     private val connections: RelayConnections,
@@ -138,7 +139,8 @@ class DirectOhttpSender internal constructor(
 
     /**
      * Runs [block] (blocking I/O of [call]) so that cancelling the calling coroutine cancels the call
-     * under it: a blocked read then fails at once instead of holding the exchange open.
+     * under it: a blocked read then fails at once instead of holding the exchange open (HTTP/1.1: the
+     * connection is closed; HTTP/2: the stream is reset, the connection is kept for its other exchanges).
      */
     private suspend inline fun <T> closingOnCancel(
         call: Call,
