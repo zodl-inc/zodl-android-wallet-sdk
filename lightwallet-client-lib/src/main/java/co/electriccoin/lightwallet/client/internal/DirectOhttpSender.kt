@@ -11,6 +11,7 @@ import okhttp3.Call
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.net.SocketTimeoutException
@@ -43,11 +44,11 @@ class DirectOhttpSender internal constructor(
         headers: List<Pair<String, String>>,
         timeoutMs: Int,
     ): ByteArray =
-        postWith(url, body, headers, timeoutMs) { response ->
-            response.bodyStream().use {
+        postWith(url, body, headers, timeoutMs) { answer ->
+            answer.bodyStream().use {
                 @Suppress("TooGenericExceptionCaught")
                 try {
-                    it.readBounded(OhttpSender.MAX_SEALED_RESPONSE_BYTES, response.contentLengthHint())
+                    it.readBounded(OhttpSender.MAX_SEALED_RESPONSE_BYTES, answer.contentLengthHint())
                 } catch (e: OutOfMemoryError) {
                     // A hostile or huge response: convert to OhttpException so the transport
                     // handles it as a failed request instead of crashing the app.
@@ -62,65 +63,66 @@ class DirectOhttpSender internal constructor(
         headers: List<Pair<String, String>>,
         timeoutMs: Int,
         read: (InputStream) -> T,
-    ): T = postWith(url, body, headers, timeoutMs) { response -> response.bodyStream().use(read) }
+    ): T = postWith(url, body, headers, timeoutMs) { answer -> answer.bodyStream().use(read) }
 
     override suspend fun get(
         url: String,
         headers: List<Pair<String, String>>,
         timeoutMs: Int,
     ): ByteArray =
-        exchange(timeoutMs, getRequest(url, headers)) { response ->
-            if (response.code != HTTP_OK) {
+        exchange(timeoutMs, getRequest(url, headers)) { answer ->
+            if (answer.code != HTTP_OK) {
                 throw OhttpException(
-                    "GET request failed: HTTP ${response.code}${response.errorDetail()}",
-                    response.code,
-                    retryAfterSeconds = OhttpSender.retryAfterSeconds(response.header(RETRY_AFTER_HEADER)),
+                    "GET request failed: HTTP ${answer.code}${answer.errorDetail()}",
+                    answer.code,
+                    retryAfterSeconds = OhttpSender.retryAfterSeconds(answer.header(RETRY_AFTER_HEADER)),
                 )
             }
-            response.bodyStream().use {
+            answer.bodyStream().use {
                 @Suppress("TooGenericExceptionCaught")
                 try {
-                    it.readBounded(OhttpSender.MAX_KEY_CONFIG_BYTES, response.contentLengthHint())
+                    it.readBounded(OhttpSender.MAX_KEY_CONFIG_BYTES, answer.contentLengthHint())
                 } catch (e: OutOfMemoryError) {
                     throw OhttpException("Key config too large: out of memory", cause = e)
                 }
             }
         }
 
-    /** The POST, a non-200 thrown as [OhttpException]; [read] gets the response of a 200. */
+    /** The POST, a non-200 thrown as [OhttpException]; [read] gets the answer of a 200. */
     private suspend fun <T> postWith(
         url: String,
         body: ByteArray,
         headers: List<Pair<String, String>>,
         timeoutMs: Int,
-        read: (Response) -> T,
+        read: (Answer) -> T,
     ): T =
-        exchange(timeoutMs, postRequest(url, body, headers)) { response ->
-            if (response.code != HTTP_OK) {
+        exchange(timeoutMs, postRequest(url, body, headers)) { answer ->
+            if (answer.code != HTTP_OK) {
                 throw OhttpException(
-                    "Relay/gateway returned HTTP ${response.code}${response.errorDetail()}",
-                    response.code,
-                    retryAfterSeconds = OhttpSender.retryAfterSeconds(response.header(RETRY_AFTER_HEADER)),
+                    "Relay/gateway returned HTTP ${answer.code}${answer.errorDetail()}",
+                    answer.code,
+                    retryAfterSeconds = OhttpSender.retryAfterSeconds(answer.header(RETRY_AFTER_HEADER)),
                 )
             }
-            read(response)
+            read(answer)
         }
 
     /**
-     * One exchange on a pooled connection: [read] gets the response, which is closed afterwards (a body
-     * [read] did not finish is discarded with its connection). Whatever the outcome, the pools retired by
-     * a rotation are swept, so a connection that outlived its generation in flight is closed now.
+     * One exchange on a pooled connection: [read] gets the answer, whose response is closed afterwards (a
+     * body [read] did not finish is discarded with its connection). Whatever the outcome, the pools
+     * retired by a rotation are swept, so a connection that outlived its generation in flight is closed
+     * now.
      */
     private suspend fun <T> exchange(
         timeoutMs: Int,
         request: Request.Builder,
-        read: (Response) -> T,
+        read: (Answer) -> T,
     ): T {
         val call = connections.client(timeoutMs).newCall(request.build())
         try {
             return closingOnCancel(call) {
-                withDeadline(call, timeoutMs) {
-                    call.execute().use(read)
+                withDeadline(call, timeoutMs) { expired ->
+                    call.execute().use { response -> read(Answer(response, timeoutMs, expired)) }
                 }
             }
         } finally {
@@ -160,12 +162,14 @@ class DirectOhttpSender internal constructor(
 
     /**
      * Runs [block] (all of the call's I/O) within [timeoutMs]. When the deadline passes, the call is
-     * cancelled under it, and the I/O error that follows is reported as a timeout.
+     * cancelled under it, and the I/O error that follows is reported as a timeout. [block] gets the
+     * flag the watchdog raises, for the body reads that see the cancelled call as an end of stream
+     * rather than an error (see [Answer.bodyStream]).
      */
     private inline fun <T> withDeadline(
         call: Call,
         timeoutMs: Int,
-        block: () -> T,
+        block: (expired: AtomicBoolean) -> T,
     ): T {
         val expired = AtomicBoolean(false)
         val watchdog =
@@ -178,26 +182,91 @@ class DirectOhttpSender internal constructor(
                 TimeUnit.MILLISECONDS,
             )
         try {
-            return block()
+            return block(expired)
         } catch (e: IOException) {
-            if (expired.get()) {
-                throw SocketTimeoutException("OHTTP exchange exceeded $timeoutMs ms").apply { initCause(e) }
-            }
+            if (expired.get() && e !is SocketTimeoutException) throw exchangeTimeout(timeoutMs, e)
             throw e
         } finally {
             watchdog.cancel(false)
         }
     }
 
+    /**
+     * The response of one exchange. Its body is read through the exchange's deadline: a call the
+     * watchdog cancelled surfaces as a clean end of the body on OkHttp (the socket is simply closed), which
+     * a caller would otherwise report as a truncated or short response a few milliseconds before its own
+     * deadline runs out; here it is the [SocketTimeoutException] the exchange timeout is.
+     */
+    private class Answer(
+        private val response: Response,
+        private val timeoutMs: Int,
+        private val expired: AtomicBoolean,
+    ) {
+        val code: Int get() = response.code
+
+        fun header(name: String): String? = response.header(name)
+
+        fun bodyStream(): InputStream =
+            DeadlineGuardedInput(checkNotNull(response.body).byteStream(), timeoutMs, expired)
+
+        /** The relay-declared Content-Length as the `Int` hint [readBounded] takes: -1 when unknown or absurd. */
+        fun contentLengthHint(): Int {
+            val length = checkNotNull(response.body).contentLength()
+            return if (length in 1..Int.MAX_VALUE.toLong()) length.toInt() else -1
+        }
+
+        /**
+         * The start of an error page, for the message of the exception that carries its status. Read within
+         * the fixed [MAX_ERROR_BODY_BYTES] and cut there (a longer page is not read on), and a page that
+         * cannot be read gives nothing: the status is the answer, so neither its length nor a failed read
+         * replaces it.
+         */
+        fun errorDetail(): String =
+            runCatching { bodyStream().readPrefix(MAX_ERROR_BODY_BYTES) }
+                .getOrNull()
+                ?.toString(Charsets.UTF_8)
+                ?.take(ERROR_MESSAGE_MAX_LENGTH)
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { ": $it" }
+                .orEmpty()
+    }
+
+    /** A body stream whose end, or error, after the exchange deadline passed is the exchange timeout. */
+    private class DeadlineGuardedInput(
+        delegate: InputStream,
+        private val timeoutMs: Int,
+        private val expired: AtomicBoolean,
+    ) : FilterInputStream(delegate) {
+        override fun read(): Int = guarded { `in`.read() }
+
+        override fun read(
+            b: ByteArray,
+            off: Int,
+            len: Int,
+        ): Int = guarded { `in`.read(b, off, len) }
+
+        private inline fun guarded(read: () -> Int): Int {
+            val n =
+                try {
+                    read()
+                } catch (e: IOException) {
+                    if (expired.get() && e !is SocketTimeoutException) throw exchangeTimeout(timeoutMs, e)
+                    throw e
+                }
+            if (n < 0 && expired.get()) throw exchangeTimeout(timeoutMs, null)
+            return n
+        }
+    }
+
     companion object {
         private const val HTTP_OK = 200
-        internal const val ERROR_MESSAGE_MAX_LENGTH = 200
+        private const val ERROR_MESSAGE_MAX_LENGTH = 200
         private const val RETRY_AFTER_HEADER = "Retry-After"
 
         // The most read of an error page (a non-200 answer), whatever the caller's cap for a body: enough
         // for the ERROR_MESSAGE_MAX_LENGTH characters quoted. The same fixed 64 KiB guard as slipstream's
         // `read_error_body`, so an oversized error page never turns a 429 or 503 into a size error.
-        internal const val MAX_ERROR_BODY_BYTES = 64 * 1024
+        private const val MAX_ERROR_BODY_BYTES = 64 * 1024
 
         private val deadlines =
             Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -230,28 +299,12 @@ private fun postRequest(
 private fun Request.Builder.withHeaders(headers: List<Pair<String, String>>): Request.Builder =
     apply { headers.forEach { (key, value) -> addHeader(key, value) } }
 
-private fun Response.bodyStream(): InputStream = checkNotNull(body).byteStream()
-
-/** The relay-declared Content-Length as the `Int` hint [readBounded] takes: -1 when unknown or absurd. */
-private fun Response.contentLengthHint(): Int {
-    val length = checkNotNull(body).contentLength()
-    return if (length in 1..Int.MAX_VALUE.toLong()) length.toInt() else -1
-}
-
-/**
- * The start of an error page, for the message of the exception that carries its status. Read within
- * the fixed [DirectOhttpSender.MAX_ERROR_BODY_BYTES] and cut there (a longer page is not read on), and a page that
- * cannot be read gives nothing: the status is the answer, so neither its length nor a failed read
- * replaces it.
- */
-private fun Response.errorDetail(): String =
-    runCatching { bodyStream().readPrefix(DirectOhttpSender.MAX_ERROR_BODY_BYTES) }
-        .getOrNull()
-        ?.toString(Charsets.UTF_8)
-        ?.take(DirectOhttpSender.ERROR_MESSAGE_MAX_LENGTH)
-        ?.takeIf { it.isNotEmpty() }
-        ?.let { ": $it" }
-        .orEmpty()
+/** The exchange timeout as reported to the caller, [cause] being the I/O error the cancelled call produced. */
+private fun exchangeTimeout(
+    timeoutMs: Int,
+    cause: IOException?,
+): SocketTimeoutException =
+    SocketTimeoutException("OHTTP exchange exceeded $timeoutMs ms").apply { cause?.let(::initCause) }
 
 /** The first [maxBytes] of this stream, or all of it when shorter: never an error for a longer one. */
 private fun InputStream.readPrefix(maxBytes: Int): ByteArray {
