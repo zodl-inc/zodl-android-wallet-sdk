@@ -346,6 +346,9 @@ fn open_handle(
         state: Arc::new(Mutex::new(SyncState::Idle)),
         events: Arc::new(Mutex::new(Vec::new())),
         task: None,
+        // Nothing has been aborted yet. The engine's own bounded stop records here any pass it
+        // could not wait out; this module still settles passes with its own helpers.
+        unfinished_passes: Vec::new(),
         pass_lock: Arc::new(tokio::sync::Mutex::new(())),
         endpoint: Endpoint {
             host: host.to_string(),
@@ -546,6 +549,7 @@ fn start_session(
     cfg.anchor_retention = anchor_retention_floor.map(|floor| {
         AnchorRetention::new(
             BlockHeight::from(floor),
+            zcash_protocol::zip318::BlockSpacing::for_network(&h.network),
             crate::anchor_retention_interval(zcash_protocol::consensus::Parameters::network_type(
                 &h.network,
             )),
