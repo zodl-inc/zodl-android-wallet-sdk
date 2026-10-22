@@ -72,6 +72,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `targetSecondsBetween(network, from, to)`, mirroring `zcash_protocol`. Use it for any conversion between a block
   count and a duration, because one range can span the NU7 activation height.
 
+### Changed
+- The migration block-rate estimate is NU7-aware. `OrchardMigrationSdk.estimatedSecondsPerBlock()` falls back to the
+  height-aware target (75 s before NU7, 25 s from NU7), and a measuring window that spans the NU7 activation
+  height is not measured, because its average fits neither era. `OrchardMigrationSdk.nu7ActivationHeight` exposes
+  the activation height so a height range spanning it can be split by the caller.
+- On the Slipstream path, the estimated time of an expired transaction that has no block time uses `BlockSpacing`
+  instead of a fixed 75 s per block.
+
 ## [5.2.2] - 2026-10-20
 
 ### Security

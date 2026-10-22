@@ -3,6 +3,8 @@ package cash.z.ecc.android.sdk.internal
 import android.content.Context
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.jni.MigrationRustBackend
+import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.BlockSpacing
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import kotlin.time.Clock
 
@@ -11,8 +13,9 @@ internal interface ChainTipEstimator {
 
     /**
      * Measured average seconds per block over the recent scanned window (header timestamps),
-     * clamped to [MIN_SECONDS_PER_BLOCK, MAX_SECONDS_PER_BLOCK]. Falls back to the 75s protocol
-     * target when fewer than two blocks are available. Testnet's minimum-difficulty rule makes
+     * clamped to [MIN_SECONDS_PER_BLOCK, MAX_SECONDS_PER_BLOCK]. Falls back to the height-aware
+     * protocol target (75 s before NU7, 25 s from NU7) when fewer than two blocks are available or the
+     * window spans the NU7 activation height. Testnet's minimum-difficulty rule makes
      * real spacing bursty (seconds-per-block during bursts) — a constant 75s there turns every
      * height-to-time projection into an overestimate.
      */
@@ -69,19 +72,35 @@ internal fun estimateTip(
 /**
  * Pure derivation of the measured rate from a `blockRateSamples` array
  * (`[latestHeight, latestTime, olderHeight, olderTime]`): the clamped average spacing between the
- * two samples, or the protocol fallback when the older sample is absent (array shorter than 4).
+ * two samples, or the target spacing when the older sample is absent (array shorter than 4).
+ *
+ * With a [network], the target spacing is the height-aware one (ZIP 218), and a window that mixes
+ * blocks from before and after NU7 activation is not measured at all: its average is meaningless
+ * for either era, so the target spacing at the latest block is used until the whole window lies after
+ * activation. Without a [network] the pre-NU7 75 s target is used and the window is taken as is.
  */
-internal fun secondsPerBlockFromSamples(samples: LongArray): Long =
-    if (samples.size >= SAMPLE_PAIR_SIZE) {
-        measuredSecondsPerBlock(
-            olderHeight = samples[2],
-            olderTimeEpochSeconds = samples[3],
-            newerHeight = samples[0],
-            newerTimeEpochSeconds = samples[1],
-        )
-    } else {
-        FALLBACK_SECONDS_PER_BLOCK
-    }
+internal fun secondsPerBlockFromSamples(
+    samples: LongArray,
+    network: ZcashNetwork? = null
+): Long {
+    val latestHeight = samples.firstOrNull()
+    val fallback =
+        if (network != null && latestHeight != null) {
+            BlockSpacing.targetSeconds(network, BlockHeight(latestHeight))
+        } else {
+            FALLBACK_SECONDS_PER_BLOCK
+        }
+    if (samples.size < SAMPLE_PAIR_SIZE) return fallback
+    val nu7 = network?.let { BlockSpacing.nu7ActivationHeight(it)?.value }
+    val windowMixesEras = nu7 != null && samples[2] < nu7 && samples[0] >= nu7
+    if (windowMixesEras) return fallback
+    return measuredSecondsPerBlock(
+        olderHeight = samples[2],
+        olderTimeEpochSeconds = samples[3],
+        newerHeight = samples[0],
+        newerTimeEpochSeconds = samples[1],
+    )
+}
 
 /**
  * A [ChainTipEstimator] that reads its block samples through the engine's BUNDLED SQLite (a JNI
@@ -123,7 +142,7 @@ internal class LazyDataDbChainTipEstimator(
                     scannedHeight = s[0],
                     scannedBlockTimeEpochSeconds = s[1],
                     nowEpochSeconds = clock.now().epochSeconds,
-                    secondsPerBlock = secondsPerBlockFromSamples(s),
+                    secondsPerBlock = secondsPerBlockFromSamples(s, network),
                 )
             }
         } catch (e: Exception) {
@@ -136,7 +155,7 @@ internal class LazyDataDbChainTipEstimator(
     @Suppress("TooGenericExceptionCaught")
     override suspend fun estimatedSecondsPerBlock(): Long =
         try {
-            secondsPerBlockFromSamples(samples())
+            secondsPerBlockFromSamples(samples(), network)
         } catch (e: Exception) {
             Twig.warn(e) { "ChainTipEstimator: could not measure block rate — falling back" }
             FALLBACK_SECONDS_PER_BLOCK

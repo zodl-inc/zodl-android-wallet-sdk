@@ -16,3 +16,45 @@ class ChainTipEstimatorTest {
         assertEquals(1000, estimateTip(1000, 500, 400))
     }
 }
+
+class ChainTipEstimatorNu7Test {
+    private val network = cash.z.ecc.android.sdk.model.ZcashNetwork.Mainnet
+    private val nu7 = 3_543_405L
+
+    @Test
+    fun `without a network the window is measured as before and the fallback is 75s`() {
+        assertEquals(75L, secondsPerBlockFromSamples(longArrayOf()))
+        assertEquals(75L, secondsPerBlockFromSamples(longArrayOf(1_000L, 5_000L)))
+        // 100 blocks over 7_400 s => 74 s/block, even across a hypothetical activation height.
+        assertEquals(74L, secondsPerBlockFromSamples(longArrayOf(1_100L, 7_400L, 1_000L, 0L)))
+    }
+
+    @Test
+    fun `before NU7 the fallback is 75s and a measured window is kept`() {
+        assertEquals(75L, secondsPerBlockFromSamples(longArrayOf(nu7 - 1_000), network))
+        assertEquals(74L, secondsPerBlockFromSamples(longArrayOf(nu7 - 900, 7_400L, nu7 - 1_000, 0L), network))
+    }
+
+    @Test
+    fun `from NU7 the fallback is the 25s target`() {
+        assertEquals(25L, secondsPerBlockFromSamples(longArrayOf(nu7 + 10), network))
+    }
+
+    @Test
+    fun `a window that spans NU7 activation is not measured and uses the target at the latest block`() {
+        // 100 blocks, 50 before and 50 after activation, over 4_950 s => a meaningless 49 s average.
+        val samples = longArrayOf(nu7 + 50, 4_950L, nu7 - 50, 0L)
+        assertEquals(25L, secondsPerBlockFromSamples(samples, network))
+    }
+
+    @Test
+    fun `a window entirely after NU7 activation is measured again`() {
+        // 100 blocks over 2_400 s => 24 s/block, fully after activation.
+        assertEquals(24L, secondsPerBlockFromSamples(longArrayOf(nu7 + 200, 2_400L, nu7 + 100, 0L), network))
+    }
+
+    @Test
+    fun `a window that ends exactly before activation is measured`() {
+        assertEquals(74L, secondsPerBlockFromSamples(longArrayOf(nu7 - 1, 7_400L, nu7 - 101, 0L), network))
+    }
+}

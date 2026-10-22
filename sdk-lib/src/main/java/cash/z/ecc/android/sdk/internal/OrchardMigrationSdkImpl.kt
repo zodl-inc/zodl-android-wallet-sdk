@@ -59,6 +59,7 @@ import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferenceKeys
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.BlockSpacing
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
@@ -1011,6 +1012,9 @@ internal class OrchardMigrationSdkImpl(
     override suspend fun estimatedChainTip(): Long = chainTipEstimator.estimatedTip()
 
     override suspend fun estimatedSecondsPerBlock(): Long = chainTipEstimator.estimatedSecondsPerBlock()
+
+    override val nu7ActivationHeight: Long?
+        get() = BlockSpacing.nu7ActivationHeight(network)?.value
 
     override suspend fun hasInvalidTransfers(): Boolean =
         logged("hasInvalidTransfers") {

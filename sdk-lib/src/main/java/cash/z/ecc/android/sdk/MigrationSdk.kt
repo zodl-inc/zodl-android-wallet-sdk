@@ -928,11 +928,20 @@ interface OrchardMigrationSdk {
     suspend fun estimatedChainTip(): Long
 
     /**
-     * Measured average seconds-per-block over the recently scanned window (clamped; 75s fallback).
+     * Measured average seconds-per-block over the recently scanned window (clamped; the height-aware target
+     * spacing is the fallback, 75s before NU7 and 25s from NU7).
      * Use for every height-to-wall-clock projection — testnet's minimum-difficulty bursts make
      * the 75s constant a large overestimate there.
      */
     suspend fun estimatedSecondsPerBlock(): Long
+
+    /**
+     * The NU7 activation height of this wallet's network, or null if it has none. From this height the target
+     * block spacing is 25 s instead of 75 s (ZIP 218), so a height range that spans it must not be converted
+     * to time with a single rate. [estimatedSecondsPerBlock] is the rate of the era the chain tip is in.
+     */
+    val nu7ActivationHeight: Long?
+        get() = null
 
     /**
      * True if any stored transfer is in an invalid state (spent note or expired anchor).
