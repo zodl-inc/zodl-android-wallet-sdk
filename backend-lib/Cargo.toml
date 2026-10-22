@@ -8,7 +8,7 @@ authors = [
 description = "JNI backend for the Android wallet SDK"
 publish = false
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.97"
 
 [features]
 # `android-test-fixtures` stays out of default; it must never be enabled for production
@@ -120,8 +120,8 @@ dlopen2 = "0.8"
 libc = "0.2"
 
 # Tor
-fs-mistrust = "0.12"
-tor-rtcompat = "0.35"
+fs-mistrust = "0.14"
+tor-rtcompat = "0.43"
 rust_decimal = { version = "1", default-features = false, features = ["c-repr"] }
 # - The "static" feature is required for the "compression" default feature of arti-client.
 xz2 = { version = "0.1", features = ["static"] }
@@ -276,8 +276,9 @@ crate-type = ["staticlib", "cdylib"]
 # published `zodl-slipstream` line, the dependency above resolves from crates.io like
 # the rest of the released family — the old git pin was not dropped by accident.
 
-# LOCAL ONLY (MOB-2287): Slipstream on the stable crates, until a zodl-slipstream release exists.
-zodl-slipstream = { path = "../../slipstream/core" }
+# MOB-2287: Slipstream on the stable NU7 crates, pinned by hash to zodl-inc/slipstream#27 (stacked on
+# #26) until a zodl-slipstream release contains them. Swap for the published version then.
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream", rev = "c8c7a12cc6294878b63c9a65b889f3ffaae2292d" }
 
 # DO NOT ALTER THIS COMMENT
 #
