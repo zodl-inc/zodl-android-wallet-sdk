@@ -34,8 +34,12 @@ internal class RelayConnections(
     /**
      * The client for one exchange bounded by [timeoutMs]: the current generation's pool, or a fresh one
      * when the current pool has reached [maxConnectionAgeNanos]. Connecting is capped at the smaller of
-     * [CONNECT_TIMEOUT_MS] and [timeoutMs]; every read at [timeoutMs] (the sender's deadline watchdog
-     * bounds the whole exchange on top).
+     * [CONNECT_TIMEOUT_MS] and [timeoutMs]. Reads and writes time out [SOCKET_TIMEOUT_SLACK_MS] after
+     * [timeoutMs]: the sender's deadline watchdog bounds the whole exchange at [timeoutMs] and must be
+     * the one that fires, because it marks the exchange expired before it cancels the call, so that
+     * what the cancelled call surfaces (an error, or on a closed socket a plain end of the body) is
+     * reported as the timeout; a socket timeout of OkHttp's own at the same instant would surface the
+     * same end of body as a truncated response instead.
      */
     fun client(timeoutMs: Int): OkHttpClient {
         val base =
@@ -51,8 +55,8 @@ internal class RelayConnections(
         return base
             .newBuilder()
             .connectTimeout(minOf(CONNECT_TIMEOUT_MS, timeoutMs).toLong(), TimeUnit.MILLISECONDS)
-            .readTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
-            .writeTimeout(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
+            .readTimeout(timeoutMs.toLong() + SOCKET_TIMEOUT_SLACK_MS, TimeUnit.MILLISECONDS)
+            .writeTimeout(timeoutMs.toLong() + SOCKET_TIMEOUT_SLACK_MS, TimeUnit.MILLISECONDS)
             .build()
     }
 
@@ -100,6 +104,9 @@ internal class RelayConnections(
         private const val MAX_IDLE_CONNECTIONS = 5
 
         private const val CONNECT_TIMEOUT_MS = 15_000
+
+        /** How much later than the sender's deadline watchdog OkHttp's own read/write timeouts fire (see [client]). */
+        private const val SOCKET_TIMEOUT_SLACK_MS = 1_000L
 
         /**
          * Redirects are never followed (a relay answer other than 200 is reported with its status, see
