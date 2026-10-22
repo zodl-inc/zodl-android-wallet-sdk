@@ -183,9 +183,10 @@ class DirectOhttpSender internal constructor(
             )
         try {
             return block(expired)
-        } catch (e: IOException) {
-            if (expired.get() && e !is SocketTimeoutException) throw exchangeTimeout(timeoutMs, e)
+        } catch (e: SocketTimeoutException) {
             throw e
+        } catch (e: IOException) {
+            throw if (expired.get()) exchangeTimeout(timeoutMs, e) else e
         } finally {
             watchdog.cancel(false)
         }
@@ -249,13 +250,16 @@ class DirectOhttpSender internal constructor(
             val n =
                 try {
                     read()
-                } catch (e: IOException) {
-                    if (expired.get() && e !is SocketTimeoutException) throw exchangeTimeout(timeoutMs, e)
+                } catch (e: SocketTimeoutException) {
                     throw e
+                } catch (e: IOException) {
+                    throw if (expired.get()) exchangeTimeout(timeoutMs, e) else e
                 }
-            if (n < 0 && expired.get()) throw exchangeTimeout(timeoutMs, null)
-            return n
+            return endOrTimeout(n)
         }
+
+        /** An end of stream ([n] < 0) after the deadline passed is the timeout; anything else is passed on. */
+        private fun endOrTimeout(n: Int): Int = if (n < 0 && expired.get()) throw exchangeTimeout(timeoutMs, null) else n
     }
 
     companion object {
