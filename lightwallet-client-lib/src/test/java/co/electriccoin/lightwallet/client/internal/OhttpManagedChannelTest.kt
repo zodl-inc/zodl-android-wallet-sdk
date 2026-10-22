@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.assertFailsWith
 
 class OhttpManagedChannelTest {
     private val marshaller =
@@ -126,15 +127,19 @@ class OhttpManagedChannelTest {
 
     @Test
     fun `a 429 on the key fetch closes the call UNAVAILABLE, as one on the post does`() {
+        // Its own relay: a 429 without Retry-After pauses the relay for 30 s, process-wide.
+        val relayUrl = "https://relay-429-key.example/relay"
         val sender = RecordingSender()
         sender.queueGet { throw OhttpException("rate limited", 429) }
         val codec = FakeOhttpCodec(resolvers = arrayOf("https://doh.example/dns-query"))
 
-        val status = closeStatusOf(codec, sender, initialKey = null)
+        val status = closeStatusOf(codec, sender, initialKey = null, relayUrl = relayUrl)
 
         assertEquals(Status.Code.UNAVAILABLE, status.code)
         assertEquals("no DNS query after the 429", 1, sender.getCalls.size)
         assertTrue(sender.postCalls.isEmpty())
+        val paused = assertFailsWith<OhttpException> { RelayBackoff.check(relayUrl) }
+        assertEquals(RelayBackoff.DEFAULT_RETRY_AFTER_SECONDS, paused.retryAfterSeconds)
     }
 
     @Test
@@ -213,10 +218,11 @@ class OhttpManagedChannelTest {
         codec: FakeOhttpCodec,
         sender: RecordingSender,
         initialKey: ByteArray? = FakeOhttpCodec.KEY,
+        relayUrl: String = "https://relay.example/relay",
     ): Status {
         val transport =
             OhttpTransport(
-                relayUrl = "https://relay.example/relay",
+                relayUrl = relayUrl,
                 gatewayHost = "ohttp-gateway.example",
                 codec = codec,
                 sender = sender,
