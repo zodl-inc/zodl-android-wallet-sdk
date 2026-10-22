@@ -83,6 +83,45 @@ class DirectOhttpSenderDeadlineTest {
     }
 
     @Test
+    fun `a 429 is reported with its status before its error page has been read to the end`() {
+        val server = ServerSocket(0)
+        val release = CountDownLatch(1)
+        thread(isDaemon = true) {
+            runCatching {
+                server.accept().use { socket ->
+                    socket.getInputStream().read(ByteArray(BUFFER))
+                    val out = socket.getOutputStream()
+                    // A 1 MiB error page of which only 128 KiB ever arrive: more than the 64 KiB guard,
+                    // so the status does not wait for the rest (nor for the exchange timeout).
+                    out.write(
+                        ("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 42\r\n" + "Content-Length: 1048576\r\n\r\n")
+                            .toByteArray()
+                    )
+                    out.write(ByteArray(128 * 1024) { 'e'.code.toByte() })
+                    out.flush()
+                    release.await(10, TimeUnit.SECONDS)
+                }
+            }
+        }
+
+        val started = System.nanoTime()
+        val thrown =
+            assertFailsWith<OhttpException> {
+                runBlocking {
+                    DirectOhttpSender().post(relayUrl(server), ByteArray(1), emptyList(), 5_000)
+                }
+            }
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+
+        assertEquals(429, thrown.httpStatus)
+        assertEquals(42L, thrown.retryAfterSeconds)
+        assertTrue(thrown.message.orEmpty(), thrown.message.orEmpty().endsWith(": " + "e".repeat(200)))
+        assertTrue("answered in $elapsedMs ms, before the exchange timeout", elapsedMs < 4_000)
+        release.countDown()
+        server.close()
+    }
+
+    @Test
     fun `a gRPC call over a dribbling relay closes at its own sub-second deadline`() {
         val server = ServerSocket(0)
         thread(isDaemon = true) { dribble(server) }

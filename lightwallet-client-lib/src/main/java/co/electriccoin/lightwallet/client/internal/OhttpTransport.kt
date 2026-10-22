@@ -107,6 +107,11 @@ internal class OhttpTransport(
         requireHttps(relayUrl)
         requireHttps(signedConfigUrl)
 
+        // The relay's running pause fails the fetch closed here, before the fetch whose 429 would be
+        // noted below: a refusal `check` produces is never noted again (that moved the pause end
+        // forward by up to a second per attempt), and the DNS fallback is not entered for it.
+        RelayBackoff.check(backoffKey, codec = codec)
+
         val deadline = CallDeadline(minOf(timeoutMs, KEY_FETCH_TIMEOUT_MS))
         val verified =
             runCatching { fetchFromRelay(deadline.remainingMs()) }.getOrElse { relayErr ->
@@ -138,7 +143,6 @@ internal class OhttpTransport(
 
     private suspend fun fetchFromRelay(timeoutMs: Int): OhttpVerifiedKey {
         val headers = profile.keyFetchHeaders + FIXED_GET_HEADERS + traceHeaders(profile.traceOnKeyFetch)
-        RelayBackoff.check(backoffKey, codec = codec)
         val json = sender.get(signedConfigUrl, headers, timeoutMs)
         val verified = codec.verifyKeyConfig(gatewayHost, json, currentSeconds())
         logger("OHTTP key config fetched and verified from relay")
@@ -447,13 +451,18 @@ private class CallDeadline(
 }
 
 /**
- * Relays that answered 429 with a `Retry-After`: nothing is sent through such a relay until that delay,
- * capped at [MAX_RETRY_AFTER_SECONDS], is over; a call in the meantime fails as the 429 did (UNAVAILABLE).
- * Shared by every transport of the process, since they share the relay's view of this client's address,
- * and mirrored into the codec, whose native table the Slipstream engine's transport uses.
+ * Relays that answered 429: nothing is sent through such a relay until its `Retry-After` delay, capped at
+ * [MAX_RETRY_AFTER_SECONDS] (or [DEFAULT_RETRY_AFTER_SECONDS] when the 429 carried none), is over; a
+ * call in the meantime fails as the 429 did (UNAVAILABLE). Shared by every transport of the process,
+ * since they share the relay's view of this client's address, and mirrored into the codec, whose
+ * native table the Slipstream engine's transport uses. The refusal [check] produces is a local one: it
+ * is never passed back to [noteIfRateLimited] (the callers check before the request they would note).
  */
 internal object RelayBackoff {
     const val MAX_RETRY_AFTER_SECONDS = 120L
+
+    /** The pause a 429 without a `Retry-After` starts (the ZIP's reference default; slipstream and Swift: same). */
+    const val DEFAULT_RETRY_AFTER_SECONDS = 30L
     private const val MILLIS_PER_SECOND = 1000L
     private val until = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
@@ -463,7 +472,7 @@ internal object RelayBackoff {
         codec: OhttpCodec? = null,
     ) {
         if (e.httpStatus != HTTP_TOO_MANY_REQUESTS) return
-        val seconds = e.retryAfterSeconds?.coerceAtMost(MAX_RETRY_AFTER_SECONDS) ?: return
+        val seconds = (e.retryAfterSeconds ?: DEFAULT_RETRY_AFTER_SECONDS).coerceAtMost(MAX_RETRY_AFTER_SECONDS)
         note(relayUrl, seconds)
         codec?.noteRelayBackoff(relayUrl, seconds * MILLIS_PER_SECOND)
     }

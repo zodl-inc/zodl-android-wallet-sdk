@@ -650,6 +650,67 @@ class OhttpTransportTest {
     }
 
     @Test
+    fun `a key fetch refused by the relay's own pause does not move the pause end`() {
+        val relay = "https://relay-pause-not-renoted.test/relay"
+        val noted = mutableListOf<Pair<String, Long>>()
+        val native =
+            object : co.electriccoin.lightwallet.client.OhttpCodec by FakeOhttpCodec() {
+                override fun noteRelayBackoff(
+                    relayUrl: String,
+                    delayMs: Long,
+                ) {
+                    noted += relayUrl to delayMs
+                }
+            }
+        // A pause that began half a second ago: its refusal, rounded up to whole seconds and noted
+        // again, would end half a second after it.
+        val began = System.currentTimeMillis() - 500
+        RelayBackoff.note(relay, retryAfterSeconds = 30, nowMillis = began)
+        val transport = OhttpTransport(relay, "ohttp-gateway-testnet.example", native, sender)
+
+        repeat(2) {
+            val thrown = assertFailsWith<OhttpException> { runBlocking { transport.keyConfig() } }
+            assertEquals(429, thrown.httpStatus)
+        }
+
+        // The pause ends when it was noted to, not later.
+        RelayBackoff.check(relay, nowMillis = began + 30_000)
+        assertTrue("the local refusal is not noted in the native table", noted.isEmpty())
+        assertEquals("nothing is fetched while the relay asked to wait", 0, sender.getCalls.size)
+    }
+
+    @Test
+    fun `a 429 without Retry-After pauses the relay for the default 30 s`() {
+        val relay = "https://relay-429-no-header.test/relay"
+        val noted = mutableListOf<Pair<String, Long>>()
+        val native =
+            object : co.electriccoin.lightwallet.client.OhttpCodec by FakeOhttpCodec() {
+                override fun noteRelayBackoff(
+                    relayUrl: String,
+                    delayMs: Long,
+                ) {
+                    noted += relayUrl to delayMs
+                }
+            }
+        val limited = RecordingSender()
+        limited.queuePost { throw OhttpException("rate limited", 429) }
+        val gateway = "ohttp-gateway-testnet.example"
+        val (first, second) =
+            List(2) { OhttpTransport(relay, gateway, native, limited, initialKey = FakeOhttpCodec.KEY) }
+        val before = System.currentTimeMillis()
+
+        val refused = assertFailsWith<OhttpException> { runBlocking { first.roundTrip(request, timeoutMs = 5_000) } }
+        val waiting = assertFailsWith<OhttpException> { runBlocking { second.roundTrip(request, timeoutMs = 5_000) } }
+
+        assertEquals(429, refused.httpStatus)
+        assertEquals(429, waiting.httpStatus)
+        assertEquals("nothing is posted while the relay asked to wait", 1, limited.postCalls.size)
+        assertEquals(listOf(relay to RelayBackoff.DEFAULT_RETRY_AFTER_SECONDS * 1_000), noted)
+        assertFailsWith<OhttpException> { RelayBackoff.check(relay, nowMillis = before + 29_000) }
+        RelayBackoff.check(relay, nowMillis = before + 31_000)
+    }
+
+    @Test
     fun `the relay back-off is capped and ends`() {
         val relay = "https://relay-backoff.test/relay"
         RelayBackoff.note(relay, retryAfterSeconds = 3_600, nowMillis = 0)

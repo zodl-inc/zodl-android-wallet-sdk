@@ -143,13 +143,32 @@ class DirectOhttpSender : OhttpSender {
         return connection
     }
 
+    /**
+     * The start of an error page, for the message of the exception that carries its status. Read within
+     * the fixed [MAX_ERROR_BODY_BYTES] and cut there (a longer page is not read on), and a page that
+     * cannot be read gives nothing: the status is the answer, so neither its length nor a failed read
+     * replaces it.
+     */
     private fun HttpURLConnection.errorDetail(): String =
-        errorStream
-            ?.use { it.readBounded(MAX_ERROR_BODY_BYTES) }
+        runCatching { errorStream?.use { it.readPrefix(MAX_ERROR_BODY_BYTES) } }
+            .getOrNull()
             ?.toString(Charsets.UTF_8)
             ?.take(ERROR_MESSAGE_MAX_LENGTH)
+            ?.takeIf { it.isNotEmpty() }
             ?.let { ": $it" }
             .orEmpty()
+
+    /** The first [maxBytes] of this stream, or all of it when shorter: never an error for a longer one. */
+    private fun InputStream.readPrefix(maxBytes: Int): ByteArray {
+        val buffer = ByteArray(maxBytes)
+        var total = 0
+        while (total < maxBytes) {
+            val n = read(buffer, total, maxBytes - total)
+            if (n < 0) break
+            total += n
+        }
+        return buffer.copyOf(total)
+    }
 
     /**
      * Runs [block] (blocking I/O on [connection]) so that cancelling the calling coroutine closes the
@@ -211,9 +230,10 @@ class DirectOhttpSender : OhttpSender {
         private const val ERROR_MESSAGE_MAX_LENGTH = 200
         private const val RETRY_AFTER_HEADER = "Retry-After"
 
-        // Only the first ERROR_MESSAGE_MAX_LENGTH characters of an error body are quoted, but the
-        // whole stream is drained up to this bound (unchanged from before the shared OHTTP core).
-        private const val MAX_ERROR_BODY_BYTES = 64 * 1024 * 1024
+        // The most read of an error page (a non-200 answer), whatever the caller's cap for a body: enough
+        // for the ERROR_MESSAGE_MAX_LENGTH characters quoted. The same fixed 64 KiB guard as slipstream's
+        // `read_error_body`, so an oversized error page never turns a 429 or 503 into a size error.
+        private const val MAX_ERROR_BODY_BYTES = 64 * 1024
 
         private val deadlines =
             Executors.newSingleThreadScheduledExecutor { runnable ->

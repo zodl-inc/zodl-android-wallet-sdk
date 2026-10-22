@@ -76,7 +76,8 @@ impl RouteHttp for ZodlVotingRoute {
         Box::pin(async move {
             let headers: Vec<(String, String)> = request.headers.to_vec();
             let method = request.method.clone();
-            let max_response_bytes = request.max_response_bytes;
+            // The caller's cap, never above this route's own, as on the OHTTP route below.
+            let max_response_bytes = request.max_response_bytes.min(MAX_RESPONSE_BYTES);
             let url = request
                 .url
                 .try_into()
