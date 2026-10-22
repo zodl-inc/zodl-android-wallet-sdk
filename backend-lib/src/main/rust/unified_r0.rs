@@ -48,7 +48,7 @@ fn assert_revision_0_round_trip(
 
     let ufvk_str = ufvk.encode(network).unwrap();
     let uivk_str = uivk.encode(network).unwrap();
-    let ua_str = ua.encode_receiver_preserving(network);
+    let ua_str = ua.encode(network);
 
     assert!(
         ufvk_str.starts_with(ufvk_prefix),
@@ -73,7 +73,7 @@ fn assert_revision_0_round_trip(
     assert_eq!(decoded_uivk.encode(network).unwrap(), uivk_str);
 
     let decoded_ua = UnifiedAddress::decode(network, &ua_str).unwrap();
-    assert_eq!(decoded_ua.encode_receiver_preserving(network), ua_str);
+    assert_eq!(decoded_ua.encode(network), ua_str);
     assert_eq!(decoded_ua.transparent(), ua.transparent());
     assert!(decoded_ua.transparent().is_some());
 }
@@ -110,7 +110,7 @@ fn upstream_revision_0_vectors_round_trip_byte_for_byte() {
         );
         let ua = UnifiedAddress::decode(&MAIN_NETWORK, vector).unwrap();
         assert_eq!(
-            ua.encode_receiver_preserving(&MAIN_NETWORK),
+            ua.encode(&MAIN_NETWORK),
             vector,
             "must reproduce the upstream vector exactly"
         );
@@ -194,7 +194,7 @@ fn transparent_and_unknown_items_encode_at_revision_0() {
     .unwrap()
     .encode(&MAIN_NETWORK.network_type());
     let decoded_ua = UnifiedAddress::decode(&MAIN_NETWORK, &ua_r2).unwrap();
-    let encoded_ua = decoded_ua.encode_receiver_preserving(&MAIN_NETWORK);
+    let encoded_ua = decoded_ua.encode(&MAIN_NETWORK);
     assert_eq!(ua_revision(&encoded_ua), unified::Revision::R0);
     assert_eq!(
         UnifiedAddress::decode(&MAIN_NETWORK, &encoded_ua).unwrap(),
@@ -292,7 +292,7 @@ fn ua_with_expiry_metadata_encodes_at_revision_2() {
     let ua_with_expiry = UnifiedAddress::decode(&MAIN_NETWORK, &with_expiry_str).unwrap();
 
     assert_eq!(
-        ua_with_expiry.encode_receiver_preserving(&MAIN_NETWORK),
+        ua_with_expiry.encode(&MAIN_NETWORK),
         with_expiry_str,
         "an address with expiry metadata must encode at revision 2 with the metadata"
     );
@@ -402,7 +402,7 @@ fn assert_pre_port_strings(network: zcash_protocol::consensus::Network, expected
             .unwrap(),
         expected.uivk
     );
-    assert_eq!(ua.encode_receiver_preserving(&network), expected.address);
+    assert_eq!(ua.encode(&network), expected.address);
 
     let orchard = ufvk.orchard().unwrap();
     assert_eq!(
