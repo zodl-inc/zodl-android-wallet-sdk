@@ -39,6 +39,7 @@ class EngineMappingTest {
     @Test
     fun an_idle_snapshot_after_the_host_stopped_the_engine_keeps_the_last_status() {
         var status = Status.INITIALIZING
+
         fun tick(
             state: Int,
             running: Boolean
