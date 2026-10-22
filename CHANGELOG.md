@@ -67,6 +67,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ||||||| parent of 54d21e5f ([MOB-2287] Add NU5 through NU7 to ConsensusBranchId)
 - `ConsensusBranchId` now covers NU5, NU6, NU6.1, NU6.2, NU6.3 and NU7, so `fromId`, `fromHex` and `fromName`
   no longer return null for branches after Canopy.
+- `BlockSpacing` gives the height-aware target spacing between blocks (150 s before Blossom, 75 s until NU7,
+  25 s from NU7, ZIP 208 and ZIP 218): `targetSeconds(network, height)` and
+  `targetSecondsBetween(network, from, to)`, mirroring `zcash_protocol`. Use it for any conversion between a block
+  count and a duration, because one range can span the NU7 activation height.
 
 ## [5.2.2] - 2026-10-20
 
