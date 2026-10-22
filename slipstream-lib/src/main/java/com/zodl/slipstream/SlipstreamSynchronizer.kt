@@ -95,6 +95,7 @@ import co.electriccoin.lightwallet.client.model.Response
 import com.zodl.slipstream.internal.DataDbPath
 import com.zodl.slipstream.internal.InstanceGuard
 import com.zodl.slipstream.internal.PrepareInputs
+import com.zodl.slipstream.internal.SlipstreamAnchorSource
 import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.internal.SlipstreamKey
 import com.zodl.slipstream.internal.copyOwningSeed
@@ -1010,27 +1011,96 @@ class SlipstreamSynchronizer internal constructor(
      * fails to quiesce before the import (see [stopEngineForWalletChange]), the import is
      * refused up front - `import_account_ufvk` is transactional, so nothing has been written
      * yet - and [InitializeException.ImportAccountCheckpointsNotReadyException] is thrown
-     * instead of risking a write racing the still-unwinding sync pass.
+     * instead of risking a write racing the still-unwinding sync pass. A `restoreAnchor` failure
+     * is thrown as [InitializeException.ImportAccountAnchorUnavailableException] before the engine
+     * is touched (see [importAccountWithAnchor]).
      */
     override suspend fun importAccountByUfvk(setup: AccountImportSetup): Account {
         awaitReady()
-        val fallbackCheckpoint = newestBundledCheckpointHeight(context, network)
-        val anchor =
-            withContext(Dispatchers.IO) {
+        return importAccountWithAnchor(
+            setup = setup,
+            fallbackCheckpointHeight = { newestBundledCheckpointHeight(context, network) },
+            anchorSource = { intent, birthdayHeight, fallbackCheckpointHeight ->
                 SlipstreamNative.restoreAnchor(
                     serverHost = defaultEndpoint.host,
                     serverPort = defaultEndpoint.port,
                     useTls = defaultEndpoint.isSecure,
                     networkId = network.id,
-                    intent = 1,
-                    birthdayHeight = (setup.birthday?.value) ?: fallbackCheckpoint,
-                    fallbackCheckpointHeight = fallbackCheckpoint,
+                    intent = intent,
+                    birthdayHeight = birthdayHeight,
+                    fallbackCheckpointHeight = fallbackCheckpointHeight,
                     torDir = engineTorDir
                 )
+            },
+            treeState = { CheckpointTool.loadNearest(context, network, setup.birthday).treeState().encoded }
+        )
+    }
+
+    /**
+     * The network and checkpoint half of [importAccountByUfvk], before [importResolvedAccount]:
+     * resolves the restore anchor through [anchorSource] and the tree state through [treeState].
+     * Split out so an anchor failure is testable without the `restoreAnchor` JNI call and the
+     * bundled checkpoints.
+     *
+     * A failure of [anchorSource] - a network call that goes through Tor when Tor is on - is
+     * rethrown as [InitializeException.ImportAccountAnchorUnavailableException], so the host can
+     * tell it apart from a failed import and retry; cancellation propagates unchanged. Each failure
+     * is logged with its step and exception class only, never its message or the key.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    internal suspend fun importAccountWithAnchor(
+        setup: AccountImportSetup,
+        fallbackCheckpointHeight: suspend () -> Long,
+        anchorSource: SlipstreamAnchorSource,
+        treeState: suspend () -> ByteArray
+    ): Account {
+        val fallbackCheckpoint = loggingImportStep("checkpoint") { fallbackCheckpointHeight() }
+        val anchor =
+            try {
+                withContext(Dispatchers.IO) {
+                    anchorSource(
+                        intent = 1,
+                        birthdayHeight = (setup.birthday?.value) ?: fallbackCheckpoint,
+                        fallbackCheckpointHeight = fallbackCheckpoint
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                logImportStepFailure("anchor", e)
+                throw InitializeException.ImportAccountAnchorUnavailableException(e)
             }
-        val treeState =
-            CheckpointTool.loadNearest(context, network, setup.birthday).treeState().encoded
-        return importResolvedAccount(setup, treeState, recoverUntil = anchor.height)
+        val resolvedTreeState = loggingImportStep("checkpoint") { treeState() }
+        return importResolvedAccount(setup, resolvedTreeState, recoverUntil = anchor.height)
+    }
+
+    /**
+     * Runs one step of [importAccountWithAnchor], logging a failure other than cancellation with
+     * [logImportStepFailure] before rethrowing it unchanged.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun <T> loggingImportStep(
+        step: String,
+        block: () -> T
+    ): T =
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            logImportStepFailure(step, e)
+            throw e
+        }
+
+    /**
+     * Logs that the account import failed at [step], naming only the step and the class of
+     * [failure]: its message may echo the key, so it is never logged.
+     */
+    private fun logImportStepFailure(
+        step: String,
+        failure: Throwable
+    ) {
+        Twig.warn { "Account import failed at step $step: ${failure::class.simpleName}" }
     }
 
     /**
@@ -1047,6 +1117,7 @@ class SlipstreamSynchronizer internal constructor(
         val purpose = setup.purpose
 
         stopEngineForWalletChange("account import")?.let {
+            logImportStepFailure("engine-stop", it)
             throw InitializeException.ImportAccountCheckpointsNotReadyException(it)
         }
 
@@ -1065,6 +1136,7 @@ class SlipstreamSynchronizer internal constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                logImportStepFailure("backend-import", e)
                 throw ImportAccountErrors.toImportAccountException(e)
             } finally {
                 restartEngineAfter("account import")

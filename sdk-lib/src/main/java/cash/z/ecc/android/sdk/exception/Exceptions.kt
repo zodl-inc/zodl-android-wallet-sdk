@@ -309,7 +309,8 @@ sealed class InitializeException(
 
     /**
      * Thrown when importing an account from a UFVK fails for a reason other than those of
-     * [ImportAccountCheckpointsNotReadyException] and [ImportAccountCollisionException]. The message
+     * [ImportAccountCheckpointsNotReadyException], [ImportAccountAnchorUnavailableException] and
+     * [ImportAccountCollisionException]. The message
      * is fixed and never contains the key or the cause's message, which may echo key material; the
      * failure is chained as the [cause].
      */
@@ -346,6 +347,20 @@ sealed class InitializeException(
             "Failed to import new account based on UFVK because its checkpoints are not yet " +
                 "in sync across shielded pools. This is usually transient and resolves once " +
                 "more blocks are scanned; retry the import later.",
+            cause
+        )
+
+    /**
+     * Thrown by `Synchronizer.importAccountByUfvk` when the restore anchor the import needs cannot be
+     * fetched from the server, for example because the network or Tor is slow or unreachable. Nothing
+     * has been written to the wallet yet, so callers can treat this as retryable. The message is fixed
+     * and never contains the key or the cause's message; the failure is chained as the [cause].
+     */
+    class ImportAccountAnchorUnavailableException(
+        cause: Throwable?
+    ) : InitializeException(
+            "Failed to import new account based on UFVK because its restore anchor could not be " +
+                "fetched from the server.",
             cause
         )
 
