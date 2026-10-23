@@ -79,6 +79,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the activation height so a height range spanning it can be split by the caller.
 - On the Slipstream path, the estimated time of an expired transaction that has no block time uses `BlockSpacing`
   instead of a fixed 75 s per block.
+- The migration chain-tip estimate converts elapsed time past the NU7 activation height at 25 s per block, and a
+  failed rate read falls back to the target spacing of the last scanned height.
+- A server counts as behind when its served tip lags its own estimate by six hours of target time (it was 288
+  blocks, which is six hours only before NU7).
+- The birthday estimate from a date scales the average checkpoint interval for checkpoints from NU7 on.
+
+### Deprecated
+- `ZcashSdk.EXPIRY_OFFSET`: the Rust backend chooses the expiry delta from the consensus branch (20, 40 or, from
+  NU7, 120 blocks).
+- `ZcashSdk.BLOCK_INTERVAL_MILLIS`: it is only right between Blossom and NU7. Use `BlockSpacing`.
 
 ## [5.2.2] - 2026-10-20
 

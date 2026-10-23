@@ -57,17 +57,34 @@ internal fun measuredSecondsPerBlock(
 }
 
 /**
- * Estimates the current chain tip from the latest scanned block plus elapsed wall-clock time at a
- * 75-second average block interval. Returns -1 when no block has been scanned yet.
+ * Estimates the current chain tip from the latest scanned block plus elapsed wall-clock time at
+ * [secondsPerBlock], the rate that holds at the scanned height. Returns -1 when no block has been
+ * scanned yet.
+ *
+ * With a [network], elapsed time that runs past the NU7 activation height is converted at the 25 s
+ * spacing from there on, so a wallet that last scanned a block before NU7 does not under-estimate the
+ * tip. Without a [network] one rate is used throughout.
  */
 internal fun estimateTip(
     scannedHeight: Long,
     scannedBlockTimeEpochSeconds: Long,
     nowEpochSeconds: Long,
     secondsPerBlock: Long = FALLBACK_SECONDS_PER_BLOCK,
-): Long =
-    scannedHeight +
-        ((nowEpochSeconds - scannedBlockTimeEpochSeconds).coerceAtLeast(0L) / secondsPerBlock.coerceAtLeast(1L))
+    network: ZcashNetwork? = null,
+): Long {
+    val elapsed = (nowEpochSeconds - scannedBlockTimeEpochSeconds).coerceAtLeast(0L)
+    val rate = secondsPerBlock.coerceAtLeast(1L)
+    val nu7 = network?.let { BlockSpacing.nu7ActivationHeight(it)?.value }
+    if (nu7 == null || scannedHeight >= nu7 - 1) return scannedHeight + elapsed / rate
+    // Blocks scanned + 1 .. nu7 - 1 are still produced at the pre-NU7 rate.
+    val blocksBeforeNu7 = nu7 - 1 - scannedHeight
+    val secondsBeforeNu7 = blocksBeforeNu7 * rate
+    return if (elapsed <= secondsBeforeNu7) {
+        scannedHeight + elapsed / rate
+    } else {
+        scannedHeight + blocksBeforeNu7 + (elapsed - secondsBeforeNu7) / BlockSpacing.POST_NU7_SECONDS
+    }
+}
 
 /**
  * Pure derivation of the measured rate from a `blockRateSamples` array
@@ -127,8 +144,15 @@ internal class LazyDataDbChainTipEstimator(
     private suspend fun samples(): LongArray {
         val dbFile = DatabaseCoordinator.getInstance(context).dataDbFile(network, alias)
         // blockRateSamples dispatches its own JNI read onto SdkDispatchers.DATABASE_IO.
-        return rustBackendProvider().blockRateSamples(dbFile.absolutePath, RATE_WINDOW_BLOCKS)
+        return rustBackendProvider()
+            .blockRateSamples(dbFile.absolutePath, RATE_WINDOW_BLOCKS)
+            .also { lastScannedHeight = it.firstOrNull() }
     }
+
+    // The latest scanned height seen by a successful read, so a later failed read can still fall back to the
+    // target spacing of the right era.
+    @Volatile
+    private var lastScannedHeight: Long? = null
 
     // Deliberately broad: the estimate is advisory, and every failure mode of the JNI read (a
     // missing or half-migrated database, a JNI error, an I/O fault) must degrade to the sentinel
@@ -145,6 +169,7 @@ internal class LazyDataDbChainTipEstimator(
                     scannedBlockTimeEpochSeconds = s[1],
                     nowEpochSeconds = clock.now().epochSeconds,
                     secondsPerBlock = secondsPerBlockFromSamples(s, network),
+                    network = network,
                 )
             }
         } catch (e: Exception) {
@@ -160,6 +185,7 @@ internal class LazyDataDbChainTipEstimator(
             secondsPerBlockFromSamples(samples(), network)
         } catch (e: Exception) {
             Twig.warn(e) { "ChainTipEstimator: could not measure block rate — falling back" }
-            FALLBACK_SECONDS_PER_BLOCK
+            lastScannedHeight?.let { BlockSpacing.targetSeconds(network, BlockHeight(it)) }
+                ?: FALLBACK_SECONDS_PER_BLOCK
         }
 }

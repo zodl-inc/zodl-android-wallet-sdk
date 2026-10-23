@@ -57,4 +57,26 @@ class ChainTipEstimatorNu7Test {
     fun `a window that ends exactly before activation is measured`() {
         assertEquals(74L, secondsPerBlockFromSamples(longArrayOf(nu7 - 1, 7_400L, nu7 - 101, 0L), network))
     }
+
+    @Test
+    fun `estimateTip stays at one rate while the elapsed time ends before NU7`() {
+        // 1,000 blocks before NU7 at 75 s: 10 blocks take 750 s.
+        assertEquals(nu7 - 1_000 + 10, estimateTip(nu7 - 1_000, 0L, 750L, 75L, network))
+    }
+
+    @Test
+    fun `estimateTip converts the time past NU7 at 25 s`() {
+        // 10 blocks (nu7 - 11 .. nu7 - 1) take 750 s, then 100 s is 4 blocks at 25 s.
+        assertEquals(nu7 - 1 + 4, estimateTip(nu7 - 11, 0L, 850L, 75L, network))
+    }
+
+    @Test
+    fun `estimateTip after NU7 uses the given rate`() {
+        assertEquals(nu7 + 10 + 4, estimateTip(nu7 + 10, 0L, 100L, 25L, network))
+    }
+
+    @Test
+    fun `estimateTip without a network ignores NU7`() {
+        assertEquals(nu7 - 11 + 11, estimateTip(nu7 - 11, 0L, 850L, 75L))
+    }
 }

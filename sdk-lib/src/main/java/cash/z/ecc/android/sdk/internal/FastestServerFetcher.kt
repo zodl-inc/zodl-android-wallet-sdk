@@ -396,13 +396,7 @@ internal class FastestServerFetcher(
             return null
         }
 
-        val behindSeconds =
-            BlockSpacing.targetSecondsBetween(
-                network,
-                BlockHeight(remoteInfo.blockHeightUnsafe.value),
-                BlockHeight(remoteInfo.estimatedHeight)
-            )
-        if (behindSeconds >= SYNCED_THRESHOLD_SECONDS) {
+        if (isServerBehind(network, remoteInfo.blockHeightUnsafe.value, remoteInfo.estimatedHeight)) {
             logRuledOut("estimatedHeight does not match")
             return null
         }
@@ -512,6 +506,18 @@ private val DISPOSE_TIMEOUT = 5.seconds
  * 75 s spacing, and stays six hours after NU7 shortens the spacing.
  */
 private const val SYNCED_THRESHOLD_SECONDS = 6 * 60 * 60L
+
+/**
+ * Whether a server's served tip lags its own estimated height by [SYNCED_THRESHOLD_SECONDS] of target time or
+ * more.
+ */
+internal fun isServerBehind(
+    network: ZcashNetwork,
+    servedHeight: Long,
+    estimatedHeight: Long
+): Boolean =
+    BlockSpacing.targetSecondsBetween(network, BlockHeight(servedHeight), BlockHeight(estimatedHeight)) >=
+        SYNCED_THRESHOLD_SECONDS
 
 private const val FASTEST_SERVER_LOG_PREFIX = "Fastest Server"
 
