@@ -50,6 +50,7 @@ import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
+import cash.z.ecc.android.sdk.model.AccountKeyOverlap
 import cash.z.ecc.android.sdk.model.AccountPurpose
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -71,6 +72,7 @@ import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionRecipient
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -980,14 +982,32 @@ class SlipstreamSynchronizer internal constructor(
     }
 
     /**
+     * Stops the engine with [SlipstreamEngine.stopForWalletChange] before [operation] changes the
+     * wallet. When the engine could not prove the wallet file quiescent - a pass, possibly one an
+     * earlier stop gave up on, or its wallet commit still running - the engine is restarted and
+     * the failure to throw is returned, so the caller refuses the change instead of writing on top
+     * of a live engine writer; nothing has been written yet. `null` when the change may proceed.
+     * [operation] names the change in the log and in the failure's message (e.g. "account import").
+     */
+    private suspend fun stopEngineForWalletChange(operation: String): IllegalStateException? {
+        if (engine.stopForWalletChange()) return null
+        Twig.warn { "Slipstream engine did not quiesce before $operation; refusing it" }
+        restartEngineAfter("refused $operation")
+        return IllegalStateException(
+            "Slipstream engine did not quiesce before $operation; refusing it to avoid racing the " +
+                "still-unwinding sync pass."
+        )
+    }
+
+    /**
      * Sequence: `restoreAnchor(intent = 1)` for `recoverUntil` (network-only, engine stays live)
-     * -> stop engine -> `RustBackend.importAccountUfvk` -> restart. The restart's `ufvk = null`
-     * is `FFI_JNI_CONTRACT.md` section 3.5's keyless mode - legal here only because the
-     * `importAccountUfvk` call just above it wrote that account row.
+     * -> stop engine for a wallet change -> `RustBackend.importAccountUfvk` -> restart. The
+     * restart's `ufvk = null` is `FFI_JNI_CONTRACT.md` section 3.5's keyless mode - legal here only
+     * because the `importAccountUfvk` call just above it wrote that account row.
      *
      * The engine is ALWAYS restarted once stopped, even when the import fails, so a failed
      * import never leaves the wallet permanently stuck in a non-syncing state. If [engine]
-     * fails to quiesce before the import (see `FFI_JNI_CONTRACT.md` section 3.6), the import is
+     * fails to quiesce before the import (see [stopEngineForWalletChange]), the import is
      * refused up front - `import_account_ufvk` is transactional, so nothing has been written
      * yet - and [InitializeException.ImportAccountCheckpointsNotReadyException] is thrown
      * instead of risking a write racing the still-unwinding sync pass.
@@ -1008,20 +1028,26 @@ class SlipstreamSynchronizer internal constructor(
                     torDir = engineTorDir
                 )
             }
-        val recoverUntil = anchor.height
         val treeState =
             CheckpointTool.loadNearest(context, network, setup.birthday).treeState().encoded
+        return importResolvedAccount(setup, treeState, recoverUntil = anchor.height)
+    }
+
+    /**
+     * The engine-facing half of [importAccountByUfvk], once the anchor and the tree state are
+     * resolved: stop the engine for a wallet change, import, restart. Split out so the stop's
+     * routing and refusal are testable without the `restoreAnchor` JNI call and the bundled
+     * checkpoints.
+     */
+    internal suspend fun importResolvedAccount(
+        setup: AccountImportSetup,
+        treeState: ByteArray,
+        recoverUntil: Long
+    ): Account {
         val purpose = setup.purpose
 
-        val quiescent = engine.stop()
-        if (!quiescent) {
-            engine.start(ufvk = null, birthday = startBirthday.value)
-            throw InitializeException.ImportAccountCheckpointsNotReadyException(
-                IllegalStateException(
-                    "Slipstream engine did not quiesce before account import; refusing to import " +
-                        "to avoid racing the still-unwinding sync pass."
-                )
-            )
+        stopEngineForWalletChange("account import")?.let {
+            throw InitializeException.ImportAccountCheckpointsNotReadyException(it)
         }
 
         val jniAccount =
@@ -1039,16 +1065,24 @@ class SlipstreamSynchronizer internal constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                throw if (ImportAccountErrors.isCheckpointsNotReady(e)) {
-                    InitializeException.ImportAccountCheckpointsNotReadyException(e)
-                } else {
-                    InitializeException.ImportAccountException(e)
-                }
+                throw ImportAccountErrors.toImportAccountException(e)
             } finally {
                 restartEngineAfter("account import")
             }
         accountsVersion.update { it + 1 }
         return Account.new(jniAccount)
+    }
+
+    /**
+     * A read-only lookup, so it waits only for the wallet database ([awaitDbReady]), like [getAccounts]:
+     * a database that never becomes ready fails with [SlipstreamNotReadyException], not with
+     * [InitializeException.FindAccountSharingKeyComponentsException].
+     */
+    override suspend fun findAccountSharingKeyComponents(ufvk: UnifiedFullViewingKey): AccountKeyOverlap? {
+        awaitDbReady()
+        return runCatchingCancellable { backend.findAccountKeyOverlap(ufvk.encoding)?.let(AccountKeyOverlap::new) }
+            .onFailure { Twig.error { "Finding the account sharing key components failed." } }
+            .getOrElse { throw ImportAccountErrors.toFindAccountSharingKeyComponentsException(it) }
     }
 
     override suspend fun getFastestServers(servers: List<LightWalletEndpoint>) =
@@ -1394,10 +1428,14 @@ class SlipstreamSynchronizer internal constructor(
      * reads [latestBirthdayHeight] BEFORE this call suspends on the readiness gate, so during
      * preparation it captures the provisional birthday - rewinding to which would mean a full-chain
      * rescan of a wallet whose real birthday is far higher.
+     *
+     * The engine is stopped for a wallet change; when it cannot prove the wallet file quiescent
+     * (see [stopEngineForWalletChange]), the rewind is refused, nothing is rewound, and `null` -
+     * this call's documented failure result - is returned.
      */
     override suspend fun rewindToNearestHeight(height: BlockHeight): BlockHeight? {
         awaitReady()
-        engine.stop()
+        if (stopEngineForWalletChange("rewind") != null) return null
         return try {
             rewindRetrying(maxOf(height, startBirthday))
         } finally {
@@ -1423,10 +1461,14 @@ class SlipstreamSynchronizer internal constructor(
     /**
      * Same `ufvk = null` keyless-restart contract as [rewindToNearestHeight]
      * (`FFI_JNI_CONTRACT.md` section 3.5), and the same [startBirthday] coercion.
+     *
+     * When the engine cannot prove the wallet file quiescent (see [stopEngineForWalletChange]),
+     * the rewind is refused, nothing is rewound, and an [IllegalStateException] is thrown, as a
+     * failed rewind throws.
      */
     override suspend fun rewindToHeight(height: BlockHeight) {
         awaitReady()
-        engine.stop()
+        stopEngineForWalletChange("rewind")?.let { throw it }
         try {
             backend.rewindToHeight(maxOf(height, startBirthday).value)
         } finally {
@@ -1798,13 +1840,17 @@ class SlipstreamSynchronizer internal constructor(
     }
 
     /**
-     * Sequence: stop engine -> delete -> restart -> bump [accountsVersion]. The restart's
-     * `ufvk = null` is `FFI_JNI_CONTRACT.md` section 3.5's keyless mode - safe here because any
-     * other accounts still exist in `data.db` for the engine to read.
+     * Sequence: stop engine for a wallet change -> delete -> restart -> bump [accountsVersion].
+     * The restart's `ufvk = null` is `FFI_JNI_CONTRACT.md` section 3.5's keyless mode - safe here
+     * because any other accounts still exist in `data.db` for the engine to read.
+     *
+     * When the engine cannot prove the wallet file quiescent (see [stopEngineForWalletChange]),
+     * the deletion is refused, the account is kept, and an [IllegalStateException] is thrown, as a
+     * failed deletion throws.
      */
     override suspend fun deleteAccount(accountUuid: AccountUuid): Boolean {
         awaitReady()
-        engine.stop()
+        stopEngineForWalletChange("account deletion")?.let { throw it }
         val deleted =
             try {
                 backend.deleteAccount(accountUuid.value)
@@ -1814,6 +1860,24 @@ class SlipstreamSynchronizer internal constructor(
         engine.notifyTxChange()
         accountsVersion.update { it + 1 }
         return deleted
+    }
+
+    /**
+     * Only the account's name changes, which the engine never reads, so unlike [deleteAccount] the
+     * engine keeps running across the write. The readiness gate sits inside the wrapper, so an
+     * instance whose preparation failed surfaces as [InitializeException.RenameAccountException]
+     * (caused by [SlipstreamNotReadyException]), the only failure `Synchronizer.renameAccount` declares.
+     */
+    override suspend fun renameAccount(
+        accountUuid: AccountUuid,
+        name: String
+    ) {
+        runCatchingCancellable {
+            awaitReady()
+            backend.setAccountName(accountUuid.value, name)
+        }.onFailure { Twig.error(it) { "Rename account failed." } }
+            .getOrElse { throw InitializeException.RenameAccountException(it) }
+        accountsVersion.update { it + 1 }
     }
 
     override suspend fun getTreeState(height: BlockHeight): ByteArray {
@@ -2196,7 +2260,7 @@ class SlipstreamSynchronizer internal constructor(
                 FastestServerFetcher(typesafeBackend, zcashNetwork, walletClientFactory, sdkFlags)
 
             val transactionReader = SlipstreamTransactionReader(dbFile)
-            val transactionsController = TransactionsController(transactionReader, engine, typesafeBackend)
+            val transactionsController = TransactionsController(transactionReader, engine, typesafeBackend, zcashNetwork)
 
             val spendService =
                 SlipstreamSpendService(

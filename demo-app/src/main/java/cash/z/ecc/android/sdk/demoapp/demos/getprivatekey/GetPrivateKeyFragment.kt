@@ -61,7 +61,7 @@ class GetPrivateKeyFragment : BaseDemoFragment<FragmentGetPrivateKeyBinding>() {
                     )
 
                 // display the keys in the UI
-                binding.textInfo.setText("Spending Key:\n$spendingKey\n\nViewing Key:\n$viewingKey")
+                binding.textInfo.setText("Spending Key:\n$spendingKey\n\nViewing Key:\n${viewingKey.encoding}")
             }
         }
     }

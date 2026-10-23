@@ -61,16 +61,15 @@ use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
 use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jint, jlong, jobject, jstring};
 use prost::Message;
 use tokio::runtime::Builder;
-use tokio::task::AbortHandle;
 
 use slipstream_core::anchor::{AnchorIntent, offline_anchor, restore_anchor};
 use slipstream_core::connector::TorConn;
 use slipstream_core::events::Progress;
 use slipstream_core::ffi_handle::{
-    FfiSlipstreamEvent, SlipstreamHandle as CoreHandle, SyncState, spawn_supervised,
+    FfiSlipstreamEvent, SlipstreamHandle as CoreHandle, StopReport, SyncState, spawn_supervised,
 };
 use slipstream_core::session::{SessionConfig, SessionReporter, TorSessionConfig, run_session};
-use slipstream_core::{AnchorRetention, Endpoint, EngineConfig, Network, ProgressArc};
+use slipstream_core::{AnchorRetention, Endpoint, EngineConfig, Network};
 
 // The engine's `SessionConfig` now takes pre-parsed accounts; parse the host UFVK encoding here.
 use zcash_client_backend::keys::UnifiedFullViewingKey;
@@ -297,43 +296,47 @@ unsafe fn handle_from_jlong<'a>(ptr: jlong) -> anyhow::Result<&'a mut JniSlipstr
 // in behavior from rust/src/lib.rs. Tracked in lockstep with the engine tag.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-/// [quiescence] Bounded wait (≤10 s) for an aborted sync task to finish unwinding.
-/// `abort()` is ASYNCHRONOUS — the task keeps running until its next await point, so a
-/// synchronous in-flight wallet write can land AFTER `abort()` returns. Behavior matches the
-/// iOS/macOS reference wrapper. Returns `true` once the task is confirmed finished, `false`
-/// if the 10 s deadline was hit first (a warning is still logged in that case).
-fn join_aborted_task(task: &AbortHandle) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !task.is_finished() {
-        if Instant::now() >= deadline {
-            tracing::warn!(
-                "slipstream stop/start: aborted pass still unwinding after 10 s — proceeding"
-            );
-            return false;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    true
+/// [MOB-1850] The budget for each of the engine's two bounded stop waits (the aborted passes,
+/// then its detached wallet commit): ten seconds, the value the engine documents for its hosts,
+/// so a stop or start blocks for at most twice this.
+const STOP_BUDGET: Duration = Duration::from_secs(10);
+
+/// Which of the engine's two stops [`stop_engine`] makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopKind {
+    /// [`CoreHandle::stop`]: backgrounding, shutdown, a restart that changes nothing in the
+    /// wallet.
+    Plain,
+    /// [`CoreHandle::stop_for_wallet_change`]: right before the host changes the wallet (an
+    /// account import or deletion, a rewind). The engine asks the running session to end at its
+    /// next block before it aborts it, so the stop can see the pass finish within the budget.
+    ForWalletChange,
 }
 
-/// [drain] Bounded wait (≤10 s) for the engine's detached write-behind commit (a
-/// `spawn_blocking` closure `abort()` cannot cancel). Combined with `join_aborted_task`, a
-/// returned stop/start means the wallet file is QUIESCENT — the host's next write cannot
-/// interleave with an orphan commit. Behavior matches the iOS/macOS reference wrapper. Returns
-/// `true` once no wallet writer is in flight, `false` if the 10 s deadline was hit first (a
-/// warning is still logged in that case).
-fn drain_wallet_writers(progress: &ProgressArc) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while progress.wallet_writers() > 0 {
-        if Instant::now() >= deadline {
-            tracing::warn!(
-                "slipstream stop/start: in-flight wallet commit still running after 10 s — proceeding (busy_timeouts remain the backstop)"
-            );
-            return false;
-        }
-        thread::sleep(Duration::from_millis(10));
+/// The JNI stop: stamps the stop for the 120 s tip-fresh window ([E-2], Android's own extra),
+/// then hands the stop to the engine, which settles every pass on record, drains its wallet
+/// commit, and sets the state Idle. A pass an earlier stop or start could not wait out stays on
+/// the engine's record ([`CoreHandle::unfinished_passes`]), so this stop still answers for it.
+fn stop_engine(handle: &mut JniSlipstreamHandle, kind: StopKind, budget: Duration) -> StopReport {
+    *handle
+        .last_stop_at
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+    match kind {
+        StopKind::Plain => handle.inner.stop(budget),
+        StopKind::ForWalletChange => handle.inner.stop_for_wallet_change(budget),
     }
-    true
+}
+
+/// The start's half: the engine settles the previous pass and drains its wallet commit
+/// ([`CoreHandle::quiesce_before_start`]), then the host sets `Syncing` itself, as the engine
+/// leaves the state to it. A start proceeds whatever the report says (the new session waits for
+/// the engine's pass lock before it touches the wallet); a pass it could not wait out stays on
+/// the engine's record for the next stop.
+fn quiesce_for_start(inner: &mut CoreHandle, budget: Duration) -> StopReport {
+    let report = inner.quiesce_before_start(budget);
+    *inner.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Syncing;
+    report
 }
 
 /// Allocates the handle: a 4-worker tokio runtime, the core handle, and the
@@ -507,13 +510,9 @@ fn start_session(
     let h = &mut handle.inner;
 
     // Cancel any in-flight task, then wait for quiescence (task unwind + detached writer),
-    // so the new pass's first writes never collide with an orphan commit.
-    if let Some(task) = h.task.take() {
-        task.abort();
-        join_aborted_task(&task);
-    }
-    drain_wallet_writers(&h.progress);
-    *h.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Syncing;
+    // so the new pass's first writes never collide with an orphan commit. The start proceeds
+    // whatever the report says; the engine logs a wait that ran out.
+    let _report = quiesce_for_start(h, STOP_BUDGET);
 
     // v0.6.0 engine config. `scaled_for_device_memory` derates fetch/split budgets on
     // <3 GiB devices from the open-time RAM hint (0 = unknown → defaults). The engine's
@@ -766,12 +765,15 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_start<'local>(
     unwrap_exc_or(&mut env, res, JNI_FALSE)
 }
 
-/// `stop`: cancel the sync task and perform the bounded join + writer-drain. Sets state Idle;
-/// stamps the 120 s tip-fresh window. The handle stays usable (snapshot/drain still work).
+/// `stop`: the engine's plain stop ([`CoreHandle::stop`]) — cancels the sync task, waits
+/// (bounded) for every aborted pass on record to finish and for the engine's wallet commit, and
+/// sets state Idle; stamps the 120 s tip-fresh window. The handle stays usable (snapshot/drain
+/// still work).
 ///
-/// Returns `JNI_TRUE` only if BOTH the task join and the writer drain confirmed quiescence
-/// within their 10 s deadlines; `JNI_FALSE` if either timed out, meaning the wallet file may
-/// not actually be quiescent yet (a warning is logged for each timeout that occurs).
+/// Returns `JNI_TRUE` only if the stop proved the wallet file quiescent
+/// ([`StopReport::quiescent`]): both waits finished within their 10 s budgets. `JNI_FALSE` means
+/// a pass (this one, or one an earlier stop or start gave up on) or the wallet commit may still be
+/// running; the engine logs which wait ran out and after how long.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_stop<'local>(
     mut env: JNIEnv<'local>,
@@ -780,17 +782,34 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_stop<'local>(
 ) -> jboolean {
     let res = catch_unwind(&mut env, |_env| {
         let h = unsafe { handle_from_jlong(handle) }?;
-        // [E-2] Stamp the stop: a start() within 120 s keeps tip freshness.
-        *h.last_stop_at.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
-        let inner = &mut h.inner;
-        let mut quiescent = true;
-        if let Some(task) = inner.task.take() {
-            task.abort();
-            quiescent &= join_aborted_task(&task);
-        }
-        quiescent &= drain_wallet_writers(&inner.progress);
-        *inner.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Idle;
-        Ok(if quiescent { JNI_TRUE } else { JNI_FALSE })
+        let report = stop_engine(h, StopKind::Plain, STOP_BUDGET);
+        Ok(if report.quiescent() {
+            JNI_TRUE
+        } else {
+            JNI_FALSE
+        })
+    });
+    unwrap_exc_or(&mut env, res, JNI_FALSE)
+}
+
+/// `stopForWalletChange`: the engine's stop for a host about to change the wallet
+/// ([`CoreHandle::stop_for_wallet_change`]) — asks the running session to end at its next block,
+/// then stops exactly as `stop` does, with the same tip-fresh stamp and the same verdict. The
+/// host refuses the wallet change on `JNI_FALSE`.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_stopForWalletChange<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    handle: jlong,
+) -> jboolean {
+    let res = catch_unwind(&mut env, |_env| {
+        let h = unsafe { handle_from_jlong(handle) }?;
+        let report = stop_engine(h, StopKind::ForWalletChange, STOP_BUDGET);
+        Ok(if report.quiescent() {
+            JNI_TRUE
+        } else {
+            JNI_FALSE
+        })
     });
     unwrap_exc_or(&mut env, res, JNI_FALSE)
 }
@@ -1146,6 +1165,201 @@ mod tests {
     fn any_to_string_non_string_payload() {
         let payload = panic::catch_unwind(|| std::panic::panic_any(42u8)).unwrap_err();
         assert_eq!(any_to_string(&payload), "unknown panic payload");
+    }
+
+    // ── [MOB-1850] the engine's quiescent stop behind the JNI stop and start ──
+
+    /// A JNI handle around a fresh engine handle in `state`, with no pass and no wallet file:
+    /// the stops and the start's quiesce touch neither the network nor the database.
+    fn handle_in(state: SyncState) -> JniSlipstreamHandle {
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        JniSlipstreamHandle {
+            inner: CoreHandle {
+                runtime,
+                progress: Arc::new(Progress::default()),
+                state: Arc::new(Mutex::new(state)),
+                events: Arc::new(Mutex::new(Vec::new())),
+                task: None,
+                unfinished_passes: Vec::new(),
+                pass_lock: Arc::new(tokio::sync::Mutex::new(())),
+                endpoint: Endpoint {
+                    host: "localhost".into(),
+                    port: 9067,
+                    tls: false,
+                },
+                wallet_db_path: PathBuf::from("/nonexistent/slipstream-test.db"),
+                network: Network::TestNetwork,
+                total_memory_bytes: 0,
+            },
+            summary_cache: Arc::new(Mutex::new(None)),
+            summary_refresh_inflight: Arc::new(AtomicBool::new(false)),
+            tip_refreshes_at_run_start: AtomicU64::new(0),
+            tip_fresh: AtomicBool::new(false),
+            last_stop_at: Mutex::new(None),
+        }
+    }
+
+    fn state_of(handle: &JniSlipstreamHandle) -> SyncState {
+        *handle.inner.state.lock().unwrap()
+    }
+
+    fn stop_was_stamped(handle: &JniSlipstreamHandle) -> bool {
+        handle.last_stop_at.lock().unwrap().is_some()
+    }
+
+    /// Releases a [`spawn_gated_pass`] loop when dropped, so a failing assertion cannot leave
+    /// the runtime's only worker parked in it: declared after the handle, the guard is dropped
+    /// first and the handle's runtime can then shut down.
+    struct PassRelease(Arc<AtomicBool>);
+
+    impl PassRelease {
+        fn release(&self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl Drop for PassRelease {
+        fn drop(&mut self) {
+            self.release();
+        }
+    }
+
+    /// Installs a pass parked in a synchronous loop (no await point, so `abort()` cannot take it
+    /// down) as the handle's running task, and returns the guard that releases it.
+    fn spawn_gated_pass(handle: &mut JniSlipstreamHandle) -> PassRelease {
+        let release = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
+        let (held, running) = (release.clone(), started.clone());
+        let pass = handle.inner.runtime.spawn(async move {
+            running.store(true, Ordering::SeqCst);
+            while !held.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        while !started.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(5));
+        }
+        handle.inner.task = Some(pass.abort_handle());
+        PassRelease(release)
+    }
+
+    /// The plain stop (backgrounding, shutdown, a restart) is the engine's `stop`: Idle, the
+    /// tip-fresh stamp, and no request for the scan to end early.
+    #[test]
+    fn a_plain_stop_goes_idle_and_stamps_the_stop_without_asking_the_scan_to_stop() {
+        let mut handle = handle_in(SyncState::Syncing);
+
+        let report = stop_engine(&mut handle, StopKind::Plain, Duration::from_millis(50));
+
+        assert!(report.quiescent(), "nothing was running: {report:?}");
+        assert_eq!(state_of(&handle), SyncState::Idle);
+        assert!(
+            stop_was_stamped(&handle),
+            "the 120 s tip-fresh window starts at the stop"
+        );
+        assert!(
+            !handle.inner.progress.stop_requested(),
+            "a plain stop must not ask the scan to stop early"
+        );
+    }
+
+    /// The stop a host makes right before it changes the wallet is the engine's
+    /// `stop_for_wallet_change`: everything the plain stop does, plus the request that ends a
+    /// running scan at its next block.
+    #[test]
+    fn a_stop_for_a_wallet_change_asks_the_scan_to_stop() {
+        let mut handle = handle_in(SyncState::Syncing);
+
+        let report = stop_engine(
+            &mut handle,
+            StopKind::ForWalletChange,
+            Duration::from_millis(50),
+        );
+
+        assert!(report.quiescent(), "nothing was running: {report:?}");
+        assert_eq!(state_of(&handle), SyncState::Idle);
+        assert!(stop_was_stamped(&handle));
+        assert!(
+            handle.inner.progress.stop_requested(),
+            "a stop for a wallet change must ask the running session to stop at its next block"
+        );
+    }
+
+    /// The flaw the engine's stop fixes: the JNI stop used to take the pass out of the task slot,
+    /// so after one stop gave up on it the next stop found an empty slot and reported a quiescent
+    /// wallet while that pass could still be writing. The pass now stays on the engine's record
+    /// until it has finished.
+    #[test]
+    fn a_stop_keeps_answering_for_a_pass_an_earlier_stop_gave_up_on() {
+        let mut handle = handle_in(SyncState::Syncing);
+        let release = spawn_gated_pass(&mut handle);
+        let budget = Duration::from_millis(50);
+
+        let first = stop_engine(&mut handle, StopKind::Plain, budget);
+        assert!(!first.settled && first.drained, "{first:?}");
+        assert_eq!(
+            state_of(&handle),
+            SyncState::Idle,
+            "a stop goes Idle either way"
+        );
+
+        let second = stop_engine(&mut handle, StopKind::ForWalletChange, budget);
+        assert!(
+            !second.quiescent(),
+            "the next stop must not report quiescence while the first pass still runs: {second:?}"
+        );
+
+        release.release();
+        let settled = stop_engine(&mut handle, StopKind::Plain, Duration::from_secs(5));
+        assert!(settled.quiescent(), "the pass has finished: {settled:?}");
+        assert!(handle.inner.unfinished_passes.is_empty());
+    }
+
+    /// The start's half: the engine settles and drains, then the start sets `Syncing` itself. A
+    /// pass the start could not wait out stays on the engine's record, so the stop a host makes
+    /// before changing the wallet refuses instead of reporting the file quiescent.
+    #[test]
+    fn a_pass_the_start_could_not_wait_out_keeps_the_next_stop_non_quiescent() {
+        let mut handle = handle_in(SyncState::Done);
+        let release = spawn_gated_pass(&mut handle);
+        let budget = Duration::from_millis(50);
+
+        let report = quiesce_for_start(&mut handle.inner, budget);
+        assert!(!report.settled && report.drained, "{report:?}");
+        assert_eq!(
+            state_of(&handle),
+            SyncState::Syncing,
+            "the start owns the state change"
+        );
+        assert!(
+            handle.inner.task.is_none(),
+            "the aborted pass left the slot"
+        );
+        assert!(
+            !stop_was_stamped(&handle),
+            "only a stop stamps the tip-fresh window"
+        );
+
+        let stop = stop_engine(&mut handle, StopKind::ForWalletChange, budget);
+        assert!(
+            !stop.quiescent(),
+            "the stop still answers for the pass the start gave up on: {stop:?}"
+        );
+
+        release.release();
+        let stop = stop_engine(
+            &mut handle,
+            StopKind::ForWalletChange,
+            Duration::from_secs(5),
+        );
+        assert!(
+            stop.quiescent(),
+            "quiescent once the pass has finished: {stop:?}"
+        );
     }
 }
 

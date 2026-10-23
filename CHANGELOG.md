@@ -6,13 +6,95 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `DerivationTool.describeUnifiedFullViewingKey(ufvk, network)` returns the components of a
+  `UnifiedFullViewingKey` as a new `UnifiedFullViewingKeyComponents`, or `null` when the key is not a
+  valid UFVK for the network; an invalid key returns `null` rather than throwing.
+- `Synchronizer.findAccountSharingKeyComponents(ufvk)` returns the existing account that shares a
+  viewing key component with a UFVK as a new `AccountKeyOverlap`, whose `kind` and `importWouldFail`
+  tell what `importAccountByUfvk` would do, or `null` when the import would add a new account. It
+  throws the new `InitializeException.FindAccountSharingKeyComponentsException` when the key is
+  invalid or the lookup fails, and `InitializeException.ImportAccountCollisionException` when the key
+  matches more than one account. `AccountKeyOverlap.Kind` may gain values in a later release.
+- `InitializeException.ImportAccountCollisionException`, thrown by `importAccountByUfvk` when the key
+  collides with existing accounts. Its message is fixed and never contains the key.
+- `Synchronizer.renameAccount(accountUuid, name)` stores a new name for an existing account, leaving
+  its keys and all other state unchanged; `accountsFlow` re-emits with the new name. It throws the
+  new `InitializeException.RenameAccountException` when the name cannot be stored, for example when
+  no account with the given UUID exists. Its message is fixed ("Failed to rename account.") and never
+  contains the cause's message; the failure is chained as `cause`.
+
 ### Changed
+- `Synchronizer` declares `findAccountSharingKeyComponents(ufvk)`: any implementer or test fake must
+  now provide it.
+- `Synchronizer` declares `renameAccount(accountUuid, name)`: any implementer or test fake must now
+  provide it.
+- `DerivationTool` declares `describeUnifiedFullViewingKey(ufvk, network)`: any implementer or test
+  fake must now provide it.
+- `importAccountByUfvk` throws `InitializeException.ImportAccountCollisionException` instead of
+  `InitializeException.ImportAccountException` when the key collides with existing accounts. Code
+  that recognized this case by the text of `ImportAccountException`'s message ("An account
+  corresponding to the data provided already exists...") must catch the new type instead; that
+  text no longer reaches the message.
+- `UnifiedFullViewingKey.toString()` no longer prints the key: it returns
+  `UnifiedFullViewingKey(encoding=***)`. Read `encoding` where the key itself is needed. Equality
+  and hashing are unchanged.
+- The error for a value that does not decode as a UFVK no longer contains the value, so the
+  exception messages of the calls that take a UFVK (e.g. `DerivationTool.deriveUnifiedAddress` with a
+  viewing key, and account import) no longer carry key material into logs.
+- The calls that take a UFVK (account import, looking up the account for a UFVK, and
+  `DerivationTool.deriveUnifiedAddress` with a viewing key) now ignore leading and trailing
+  whitespace around the encoding, as `DerivationTool.describeUnifiedFullViewingKey` does, instead of
+  rejecting it.
+- `InitializeException.CreateAccountException` and `InitializeException.ImportAccountException` have
+  fixed messages ("Failed to create new account." and "Failed to import new account based on UFVK.")
+  instead of appending the cause's message, which could carry key material into error dialogs and
+  logs. The failure is still chained as `cause`; read it there where the detail is needed.
 - The Rust backend moves to the NU7 release crates (`zcash_client_backend` 0.25.0, `zcash_client_sqlite` 0.23.0,
   `zcash_protocol` 0.11.0, `zcash_pool_migration` 0.2.0 and the rest of the family) and `zcash_voting` 5.2.0-rc.2.
   Transactions now expire after 120 blocks from NU7, and the ZIP 318 migration schedule is drawn in 75-second
   reference blocks, so it keeps its length in time across NU7.
 - The Rust toolchain is 1.99.1 (at least 1.97.0 is required by `zcash_voting`).
 - Slipstream's stop-to-start tip freshness window is 1.6 target blocks (120 s before NU7, 40 s from it).
+- The `zodl-slipstream` engine still comes from a git revision (zodl-inc/slipstream#27), because no release of it is
+  built on the NU7 crates yet. No SDK release can be cut until a release replaces that revision.
+- The migration block-rate estimate is NU7-aware. `OrchardMigrationSdk.estimatedSecondsPerBlock()` falls back to the
+  height-aware target (75 s before NU7, 25 s from NU7), and a measuring window that spans the NU7 activation
+  height is not measured, because its average fits neither era. `OrchardMigrationSdk.nu7ActivationHeight` exposes
+  the activation height so a height range spanning it can be split by the caller.
+- On the Slipstream path, the estimated time of an expired transaction that has no block time uses `BlockSpacing`
+  instead of a fixed 75 s per block.
+- The migration chain-tip estimate converts elapsed time past the NU7 activation height at 25 s per block, and a
+  failed rate read falls back to the target spacing of the last scanned height.
+- A server counts as behind when its served tip lags its own estimate by six hours of target time (it was 288
+  blocks, which is six hours only before NU7).
+- The birthday estimate from a date scales the average checkpoint interval for checkpoints from NU7 on.
+- `OrchardMigrationSdk.executeNextPendingTransfer` no longer submits a pre-signed migration transaction whose
+  consensus branch ID does not match the next block (NU7 changes it). The transfer is recorded as expired, so the
+  app asks the user to migrate what is left, instead of the network rejecting it and the migration stalling until
+  the transaction expires.
+
+### Fixed
+- The Slipstream engine's stop no longer reports the wallet quiescent while a sync pass that an
+  earlier stop or start gave up waiting for is still running: stopping and starting the engine now
+  use the engine's own quiescent stop, which keeps such a pass on record until it has finished.
+  Account import and deletion and both rewinds stop the engine for a wallet change, which also
+  asks a running scan to end at its next block. When that stop cannot prove the wallet quiescent
+  within its budget, the change is refused and nothing is written: `importAccountByUfvk` throws
+  `InitializeException.ImportAccountCheckpointsNotReadyException` (retry later), `deleteAccount`
+  and `rewindToHeight` throw `IllegalStateException`, and `rewindToNearestHeight` returns `null`.
+||||||| parent of 54d21e5f ([MOB-2287] Add NU5 through NU7 to ConsensusBranchId)
+- `ConsensusBranchId` now covers NU5, NU6, NU6.1, NU6.2, NU6.3 and NU7, so `fromId`, `fromHex` and `fromName`
+  no longer return null for branches after Canopy.
+- `BlockSpacing` gives the height-aware target spacing between blocks (150 s before Blossom, 75 s until NU7,
+  25 s from NU7, ZIP 208 and ZIP 218): `targetSeconds(network, height)` and
+  `targetSecondsBetween(network, from, to)`, mirroring `zcash_protocol`. Use it for any conversion between a block
+  count and a duration, because one range can span the NU7 activation height.
+
+### Deprecated
+- `ZcashSdk.EXPIRY_OFFSET`: the Rust backend chooses the expiry delta from the consensus branch (20, 40 or, from
+  NU7, 120 blocks).
+- `ZcashSdk.BLOCK_INTERVAL_MILLIS`: it is only right between Blossom and NU7. Use `BlockSpacing`.
 
 ## [5.2.2] - 2026-10-20
 

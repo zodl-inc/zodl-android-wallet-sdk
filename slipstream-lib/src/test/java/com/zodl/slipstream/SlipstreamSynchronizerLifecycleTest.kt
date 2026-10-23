@@ -6,7 +6,9 @@ import cash.z.ecc.android.sdk.WalletInitMode
 import cash.z.ecc.android.sdk.exception.InitializeException
 import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
+import cash.z.ecc.android.sdk.internal.jni.JNI_ACCOUNT_KEY_OVERLAP_CONFLICTING
 import cash.z.ecc.android.sdk.internal.model.JniAccount
+import cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniRewindResult
 import cash.z.ecc.android.sdk.internal.model.LazyTorClient
@@ -17,6 +19,9 @@ import cash.z.ecc.android.sdk.internal.model.WalletSummary
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
+import cash.z.ecc.android.sdk.model.AccountImportSetup
+import cash.z.ecc.android.sdk.model.AccountKeyOverlap
+import cash.z.ecc.android.sdk.model.AccountPurpose
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
@@ -25,6 +30,7 @@ import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionId
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.WalletBalance
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -69,12 +75,15 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Test
 import org.mockito.ArgumentCaptor
+import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.Mockito.after
 import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.inOrder
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.timeout
+import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
@@ -88,6 +97,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -105,9 +115,10 @@ import kotlin.time.Duration.Companion.seconds
  * constructor - `Companion.new`/`newLocked` are skipped entirely, so no test here ever touches
  * `SlipstreamNative`.
  *
- * Deliberately NOT covered: `importAccountByUfvk`. Its `restoreAnchor` anchor resolution is a
+ * Deliberately NOT covered: `importAccountByUfvk`'s anchor resolution. Its `restoreAnchor` is a
  * direct call to the `SlipstreamNative` object (a `object`-scoped native binding, not an injectable
- * collaborator), which would require `mockStatic` - out of scope for this plain-Mockito suite.
+ * collaborator), which would require `mockStatic` - out of scope for this plain-Mockito suite. Its
+ * engine-facing half, `importResolvedAccount`, is covered.
  *
  * The suite's size tracks the lifecycle surface it pins - construction, the readiness gates, the
  * close/prepare races, and the DbReady read phase belong to one state machine, so the class is
@@ -403,6 +414,145 @@ class SlipstreamSynchronizerLifecycleTest {
     }
 
     @Test
+    fun account_import_stops_the_engine_for_a_wallet_change_then_imports_and_restarts() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        runBlocking {
+            `when`(importViewOnlyAccount(backend)).thenReturn(jniAccount(accountUuid))
+        }
+
+        val account =
+            runBlocking { synchronizer.importResolvedAccount(viewOnlyImportSetup(), TREE_STATE, ANCHOR_HEIGHT) }
+
+        assertEquals(accountUuid, account.accountUuid)
+        val order = inOrder(engine, backend)
+        runBlocking {
+            order.verify(engine).stopForWalletChange()
+            importViewOnlyAccount(order.verify(backend))
+            order.verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+            verify(engine, never()).stop()
+        }
+    }
+
+    /**
+     * A stop that could not prove the wallet file quiescent refuses the import with the exception
+     * the SDK already documents for a transient refusal, so the host retries it; nothing is
+     * imported and the engine is restarted. The refusal is looked for along the cause chain:
+     * coroutines' stack trace recovery may wrap the thrown exception in a copy of itself.
+     */
+    @Test
+    fun account_import_is_refused_as_checkpoints_not_ready_when_the_engine_does_not_quiesce() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        runBlocking { `when`(engine.stopForWalletChange()).thenReturn(false) }
+
+        val thrown =
+            assertFailsWith<InitializeException.ImportAccountCheckpointsNotReadyException> {
+                runBlocking { synchronizer.importResolvedAccount(viewOnlyImportSetup(), TREE_STATE, ANCHOR_HEIGHT) }
+            }
+
+        assertTrue(generateSequence(thrown.cause) { it.cause }.any { it is IllegalStateException })
+        runBlocking {
+            importViewOnlyAccount(verify(backend, never()))
+            verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+        }
+    }
+
+    @Test
+    fun delete_account_stops_the_engine_for_a_wallet_change_then_deletes_and_restarts() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        runBlocking { `when`(backend.deleteAccount(accountUuid.value)).thenReturn(true) }
+
+        assertTrue(runBlocking { synchronizer.deleteAccount(accountUuid) })
+
+        val order = inOrder(engine, backend)
+        runBlocking {
+            order.verify(engine).stopForWalletChange()
+            order.verify(backend).deleteAccount(accountUuid.value)
+            order.verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+            verify(engine, never()).stop()
+        }
+    }
+
+    @Test
+    fun delete_account_is_refused_and_keeps_the_account_when_the_engine_does_not_quiesce() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        runBlocking { `when`(engine.stopForWalletChange()).thenReturn(false) }
+
+        assertFailsWith<IllegalStateException> {
+            runBlocking { synchronizer.deleteAccount(accountUuid) }
+        }
+
+        runBlocking {
+            verify(backend, never()).deleteAccount(accountUuid.value)
+            verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+            verify(engine, never()).notifyTxChange()
+        }
+    }
+
+    @Test
+    fun rewind_stops_the_engine_for_a_wallet_change() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val height = BlockHeight.new(3_000_000L)
+        runBlocking {
+            `when`(backend.rewindToHeight(height.value)).thenReturn(JniRewindResult.Success(height.value))
+        }
+
+        runBlocking { synchronizer.rewindToHeight(height) }
+        assertEquals(height, runBlocking { synchronizer.rewindToNearestHeight(height) })
+
+        runBlocking {
+            verify(engine, times(2)).stopForWalletChange()
+            verify(engine, never()).stop()
+        }
+    }
+
+    @Test
+    fun rewind_to_height_is_refused_when_the_engine_does_not_quiesce() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val height = BlockHeight.new(3_000_000L)
+        runBlocking { `when`(engine.stopForWalletChange()).thenReturn(false) }
+
+        assertFailsWith<IllegalStateException> {
+            runBlocking { synchronizer.rewindToHeight(height) }
+        }
+
+        runBlocking {
+            verify(backend, never()).rewindToHeight(height.value)
+            verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+        }
+    }
+
+    @Test
+    fun rewind_to_nearest_height_answers_null_when_the_engine_does_not_quiesce() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+        val height = BlockHeight.new(3_000_000L)
+        runBlocking { `when`(engine.stopForWalletChange()).thenReturn(false) }
+
+        assertNull(runBlocking { synchronizer.rewindToNearestHeight(height) })
+
+        runBlocking {
+            verify(backend, never()).rewindToHeight(height.value)
+            verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
+        }
+    }
+
+    @Test
     fun accounts_flow_wraps_runtime_exception_as_get_accounts_exception() {
         val backend = mock(Backend::class.java)
         val synchronizer = buildSynchronizer(backend = backend)
@@ -424,6 +574,223 @@ class SlipstreamSynchronizerLifecycleTest {
 
         assertFailsWith<CancellationException> {
             runBlocking { synchronizer.accountsFlow.drop(1).first() }
+        }
+    }
+
+    @Test
+    fun find_account_sharing_key_components_passes_the_encoding_and_maps_the_overlap() {
+        val backend = mock(Backend::class.java)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES) { it.toByte() })
+        val jniAccount = jniAccount(accountUuid)
+        runBlocking {
+            `when`(backend.findAccountKeyOverlap(UFVK))
+                .thenReturn(JniAccountKeyOverlap(jniAccount, JNI_ACCOUNT_KEY_OVERLAP_CONFLICTING))
+        }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        val overlap = runBlocking { synchronizer.findAccountSharingKeyComponents(UnifiedFullViewingKey(UFVK)) }
+
+        assertEquals(AccountKeyOverlap(Account.new(jniAccount), AccountKeyOverlap.Kind.CONFLICTING), overlap)
+    }
+
+    @Test
+    fun find_account_sharing_key_components_returns_null_when_no_account_overlaps() {
+        val backend = mock(Backend::class.java)
+        runBlocking { `when`(backend.findAccountKeyOverlap(UFVK)).thenReturn(null) }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        assertNull(runBlocking { synchronizer.findAccountSharingKeyComponents(UnifiedFullViewingKey(UFVK)) })
+    }
+
+    @Test
+    fun find_account_sharing_key_components_wraps_a_failure_without_the_key() {
+        val backend = mock(Backend::class.java)
+        val failure = RuntimeException("Value did not decode as a valid UFVK: $UFVK")
+        runBlocking { `when`(backend.findAccountKeyOverlap(UFVK)).thenThrow(failure) }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        val thrown =
+            assertFailsWith<InitializeException.FindAccountSharingKeyComponentsException> {
+                runBlocking { synchronizer.findAccountSharingKeyComponents(UnifiedFullViewingKey(UFVK)) }
+            }
+        assertSame(failure, thrown.cause)
+        assertFalse(thrown.message.orEmpty().contains(UFVK))
+    }
+
+    @Test
+    fun find_account_sharing_key_components_maps_a_key_matching_several_accounts_to_the_import_collision() {
+        val backend = mock(Backend::class.java)
+        val failure =
+            RuntimeException(
+                "ImportAccountCollision: the provided key shares viewing key components with more than " +
+                    "one account in the wallet"
+            )
+        runBlocking { `when`(backend.findAccountKeyOverlap(UFVK)).thenThrow(failure) }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        val thrown =
+            assertFailsWith<InitializeException.ImportAccountCollisionException> {
+                runBlocking { synchronizer.findAccountSharingKeyComponents(UnifiedFullViewingKey(UFVK)) }
+            }
+        assertSame(failure, thrown.cause)
+    }
+
+    /**
+     * A stored rename bumps `accountsVersion`, so a live [SlipstreamSynchronizer.accountsFlow]
+     * collector re-reads the accounts and sees the new name without any other trigger.
+     */
+    @Test
+    fun rename_account_stores_the_name_and_makes_the_accounts_flow_re_read() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES) { it.toByte() })
+        val storedName = AtomicReference(ACCOUNT_NAME)
+        runBlocking {
+            `when`(backend.getAccounts()).thenAnswer { listOf(jniAccount(accountUuid, storedName.get())) }
+            `when`(backend.setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)).thenAnswer {
+                storedName.set(RENAMED_ACCOUNT_NAME)
+            }
+        }
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+
+        runBlocking {
+            val emissions = Channel<List<Account>>(Channel.UNLIMITED)
+            val collector =
+                launch(Dispatchers.Default) {
+                    synchronizer.accountsFlow.filterNotNull().collect { emissions.send(it) }
+                }
+            try {
+                assertEquals(ACCOUNT_NAME, withTimeout(TIMEOUT_MS) { emissions.receive() }.single().accountName)
+
+                synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME)
+
+                assertEquals(
+                    RENAMED_ACCOUNT_NAME,
+                    withTimeout(TIMEOUT_MS) { emissions.receive() }.single().accountName
+                )
+            } finally {
+                collector.cancel()
+            }
+        }
+        runBlocking<Unit> { verify(engine, never()).stop() }
+    }
+
+    @Test
+    fun rename_account_wraps_a_backend_failure_and_skips_the_accounts_re_read() {
+        val backend = mock(Backend::class.java)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        val failure = RuntimeException("AccountUnknown")
+        runBlocking { `when`(backend.setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)).thenThrow(failure) }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        val thrown =
+            assertFailsWith<InitializeException.RenameAccountException> {
+                runBlocking { synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME) }
+            }
+
+        assertSame(failure, thrown.cause)
+        runBlocking<Unit> { verify(backend, never()).getAccounts() }
+    }
+
+    /**
+     * `Synchronizer.renameAccount` declares only [InitializeException.RenameAccountException], so a
+     * failed preparation must not escape as a bare [SlipstreamNotReadyException]. The failure is
+     * looked for along the cause chain: with assertions on, coroutines' stack trace recovery wraps
+     * the thrown exception in a copy of itself, since its message is fixed.
+     */
+    @Test
+    fun rename_account_on_a_failed_preparation_wraps_the_not_ready_failure() {
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        val failure = RuntimeException("anchor unreachable")
+        stubPrepareBackend(backend, null)
+        val synchronizer =
+            buildSynchronizer(
+                backend = backend,
+                key = key,
+                prepareInputs = prepareInputs(anchorSource = SlipstreamAnchorSource { _, _, _ -> throw failure })
+            )
+        try {
+            val thrown =
+                assertFailsWith<InitializeException.RenameAccountException> {
+                    runBlocking {
+                        withTimeout(TIMEOUT_MS) { synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME) }
+                    }
+                }
+
+            assertTrue(generateSequence(thrown.cause) { it.cause }.any { it is SlipstreamNotReadyException })
+            runBlocking<Unit> { verify(backend, never()).setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME) }
+        } finally {
+            InstanceGuard.release(key)
+        }
+    }
+
+    /**
+     * Unlike [SlipstreamSynchronizer.deleteAccount], which stops the engine, restarts it and
+     * notifies it of a transaction change, a rename touches only the name, which the engine never
+     * reads, so the engine is left as it was.
+     */
+    @Test
+    fun rename_account_leaves_the_engine_running() {
+        val engine = mock(SlipstreamEngine::class.java)
+        val backend = mock(Backend::class.java)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
+
+        runBlocking { synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME) }
+
+        runBlocking {
+            verify(backend).setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)
+            verify(engine, never()).stop()
+            verify(engine, never()).start(any(), anyLong())
+            verify(engine, never()).notifyTxChange()
+        }
+    }
+
+    @Test
+    fun rename_account_propagates_cancellation_unwrapped() {
+        val backend = mock(Backend::class.java)
+        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
+        runBlocking {
+            `when`(backend.setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME))
+                .thenThrow(CancellationException("cancelled"))
+        }
+        val synchronizer = buildSynchronizer(backend = backend)
+
+        assertFailsWith<CancellationException> {
+            runBlocking { synchronizer.renameAccount(accountUuid, RENAMED_ACCOUNT_NAME) }
+        }
+
+        runBlocking<Unit> { verify(backend, never()).getAccounts() }
+    }
+
+    /**
+     * A wallet database that never opens - here one belonging to another seed - fails preparation
+     * before `DbReady`, so the read-only overlap check fails with
+     * [SlipstreamNotReadyException] and never reaches the backend. The seed failure sits further down
+     * the cause chain, under a second [SlipstreamNotReadyException].
+     */
+    @Test
+    fun find_account_sharing_key_components_before_the_db_is_ready_fails_with_not_ready() {
+        val backend = mock(Backend::class.java)
+        val key = newKey()
+        runBlocking { `when`(backend.initDataDb(null)).thenReturn(SEED_NOT_RELEVANT_CODE) }
+        val synchronizer = buildSynchronizer(backend = backend, key = key, prepareInputs = prepareInputs())
+        try {
+            val thrown =
+                assertFailsWith<SlipstreamNotReadyException> {
+                    runBlocking {
+                        withTimeout(TIMEOUT_MS) {
+                            synchronizer.findAccountSharingKeyComponents(UnifiedFullViewingKey(UFVK))
+                        }
+                    }
+                }
+
+            assertCausedBySeedNotRelevant(thrown)
+            runBlocking<Unit> { verify(backend, never()).findAccountKeyOverlap(UFVK) }
+        } finally {
+            InstanceGuard.release(key)
         }
     }
 
@@ -1032,7 +1399,7 @@ class SlipstreamSynchronizerLifecycleTest {
             assertTrue(recorded.get() is InitializeException.SeedNotRelevant)
 
             val thrown = assertFailsWith<SlipstreamNotReadyException> { runBlocking { synchronizer.getAccounts() } }
-            assertTrue(thrown.cause is InitializeException.SeedNotRelevant)
+            assertCausedBySeedNotRelevant(thrown)
         } finally {
             InstanceGuard.release(key)
         }
@@ -2344,6 +2711,12 @@ class SlipstreamSynchronizerLifecycleTest {
         }
     }
 
+    /** Asserts [thrown] or one of its causes is [InitializeException.SeedNotRelevant]. */
+    private fun assertCausedBySeedNotRelevant(thrown: Throwable) {
+        val chain = generateSequence(thrown) { it.cause }.toList()
+        assertTrue(chain.any { it is InitializeException.SeedNotRelevant }, "$chain")
+    }
+
     /**
      * kotlinx's stack-trace recovery hands the preparation job a COPY of any exception that crossed
      * the tail's `withContext(Dispatchers.IO)` boundary, so identity comparison is not available -
@@ -2451,15 +2824,39 @@ class SlipstreamSynchronizerLifecycleTest {
 
     private fun newKey() = SlipstreamKey(ZcashNetwork.Testnet, "alias_${System.nanoTime()}")
 
-    private fun jniAccount(accountUuid: AccountUuid): JniAccount =
+    private fun jniAccount(
+        accountUuid: AccountUuid,
+        accountName: String = ACCOUNT_NAME
+    ): JniAccount =
         JniAccount(
-            accountName = ACCOUNT_NAME,
+            accountName = accountName,
             accountUuid = accountUuid.value,
             hdAccountIndex = NULL_HD_ACCOUNT_INDEX,
             keySource = KEY_SOURCE,
             seedFingerprint = null,
             ufvk = UFVK,
             uivk = null
+        )
+
+    private fun viewOnlyImportSetup() =
+        AccountImportSetup(
+            accountName = ACCOUNT_NAME,
+            keySource = KEY_SOURCE,
+            purpose = AccountPurpose.ViewOnly,
+            ufvk = UnifiedFullViewingKey(UFVK)
+        )
+
+    /** The backend import [viewOnlyImportSetup] leads to, on [backend] (a mock, or a verification). */
+    private suspend fun importViewOnlyAccount(backend: Backend) =
+        backend.importAccountUfvk(
+            accountName = ACCOUNT_NAME,
+            keySource = KEY_SOURCE,
+            ufvk = UFVK,
+            treeState = TREE_STATE,
+            recoverUntil = ANCHOR_HEIGHT,
+            purpose = AccountPurpose.ViewOnly.value,
+            seedFingerprint = null,
+            zip32AccountIndex = null
         )
 
     /**
@@ -2500,7 +2897,9 @@ class SlipstreamSynchronizerLifecycleTest {
      * Builds a [SlipstreamSynchronizer] with every collaborator mocked out, bypassing
      * [SlipstreamSynchronizer.Companion.new]/`newLocked` (and therefore `SlipstreamNative`)
      * entirely. [engine]'s flow-typed properties are stubbed with real [MutableStateFlow]s
-     * because they are read once, eagerly, as field initializers when the constructor runs.
+     * because they are read once, eagerly, as field initializers when the constructor runs, and
+     * its [SlipstreamEngine.stopForWalletChange] reports a quiescent stop unless a test stubs it
+     * again after building.
      */
     @Suppress("LongParameterList")
     private fun buildSynchronizer(
@@ -2526,6 +2925,7 @@ class SlipstreamSynchronizerLifecycleTest {
             .thenReturn(walletBalancesOverride ?: MutableStateFlow<Map<AccountUuid, AccountBalance>?>(null))
         `when`(engine.lastSnapshot).thenReturn(lastSnapshotOverride ?: MutableStateFlow<SlipstreamSnapshot?>(null))
         `when`(transactionsController.allTransactions).thenReturn(flowOf(emptyList()))
+        runBlocking { `when`(engine.stopForWalletChange()).thenReturn(true) }
 
         return SlipstreamSynchronizer(
             context = mock(Context::class.java),
@@ -2652,6 +3052,7 @@ class SlipstreamSynchronizerLifecycleTest {
         private const val TOTAL_MEMORY_BYTES = 4_000_000_000L
         private const val UFVK = "uview1testkey"
         private const val ACCOUNT_NAME = "test account"
+        private const val RENAMED_ACCOUNT_NAME = "renamed account"
         private const val KEY_SOURCE = "test key source"
         private const val SEED_BYTES = 32
         private const val BELOW_BIRTHDAY_VALUE = 1_000_000L

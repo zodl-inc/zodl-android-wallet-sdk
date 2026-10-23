@@ -2,10 +2,17 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.ext.clearContents
 import cash.z.ecc.android.sdk.internal.ext.useAndClear
+import cash.z.ecc.android.sdk.internal.jni.JNI_UFVK_COMPONENT_ORCHARD
+import cash.z.ecc.android.sdk.internal.jni.JNI_UFVK_COMPONENT_P2PKH
+import cash.z.ecc.android.sdk.internal.jni.JNI_UFVK_COMPONENT_P2SH
+import cash.z.ecc.android.sdk.internal.jni.JNI_UFVK_COMPONENT_SAPLING
+import cash.z.ecc.android.sdk.internal.jni.JNI_UFVK_COMPONENT_UNKNOWN
+import cash.z.ecc.android.sdk.internal.jni.JNI_UFVK_DESCRIPTION_INVALID
 import cash.z.ecc.android.sdk.internal.model.JniMetadataKey
 import cash.z.ecc.android.sdk.internal.model.JniUnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.AccountMetadataKey
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKeyComponents
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zip32AccountIndex
@@ -20,6 +27,26 @@ fun Derivation.deriveUnifiedAddress(
     viewingKey: String,
     network: ZcashNetwork,
 ): String = deriveUnifiedAddress(viewingKey, network.id)
+
+/**
+ * Decodes the JNI component bitmask; [JNI_UFVK_DESCRIPTION_INVALID] yields `null`.
+ */
+internal fun Derivation.describeUnifiedFullViewingKeyTypesafe(
+    ufvk: UnifiedFullViewingKey,
+    network: ZcashNetwork
+): UnifiedFullViewingKeyComponents? {
+    val bits = describeUnifiedFullViewingKey(ufvk.encoding, network.id)
+    if (bits == JNI_UFVK_DESCRIPTION_INVALID) {
+        return null
+    }
+    return UnifiedFullViewingKeyComponents(
+        hasP2pkh = (bits and JNI_UFVK_COMPONENT_P2PKH) != 0,
+        hasP2sh = (bits and JNI_UFVK_COMPONENT_P2SH) != 0,
+        hasSapling = (bits and JNI_UFVK_COMPONENT_SAPLING) != 0,
+        hasOrchard = (bits and JNI_UFVK_COMPONENT_ORCHARD) != 0,
+        hasUnknownItems = (bits and JNI_UFVK_COMPONENT_UNKNOWN) != 0
+    )
+}
 
 fun Derivation.deriveUnifiedSpendingKey(
     seed: ByteArray,

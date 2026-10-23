@@ -59,6 +59,8 @@ import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferenceKeys
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.BlockSpacing
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
@@ -883,6 +885,29 @@ internal class OrchardMigrationSdkImpl(
         }
 
         val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
+        // A schedule signed before NU7 and still running at activation holds transactions with the
+        // old consensus branch ID, which the network rejects. Do not submit them (it only leaks the
+        // transaction): record the transfer as expired so the app asks the user to migrate what is left.
+        val tipForEraCheck = chainTipEstimator.estimatedTip()
+        if (tipForEraCheck > 0 &&
+            isBuiltForOtherConsensusEra(rawTx, network, BlockHeight.new(tipForEraCheck + 1))
+        ) {
+            Twig.warn {
+                "MIGRATION_DIAG OrchardMigrationSdk: transfer ${prepared.id} was signed for another consensus " +
+                    "era than the next block (${tipForEraCheck + 1}) — not submitting"
+            }
+            migrationBackend.recordTransferResult(
+                dbDataPath,
+                network,
+                account,
+                prepared.id,
+                RESULT_TAG_EXPIRED,
+                false,
+                ByteArray(0),
+                -1L,
+            )
+            return BroadcastPreparation.Settled(TransferAttemptOutcome.Executed(TransferResult.Expired))
+        }
         // Mark the broadcast as in-flight before attempting the network call so the sync engine
         // is gated for the duration. A stale mark from a crash self-expires in
         // BROADCAST_IN_FLIGHT_WINDOW_SECONDS.
@@ -1011,6 +1036,9 @@ internal class OrchardMigrationSdkImpl(
     override suspend fun estimatedChainTip(): Long = chainTipEstimator.estimatedTip()
 
     override suspend fun estimatedSecondsPerBlock(): Long = chainTipEstimator.estimatedSecondsPerBlock()
+
+    override val nu7ActivationHeight: Long?
+        get() = BlockSpacing.nu7ActivationHeight(network)?.value
 
     override suspend fun hasInvalidTransfers(): Boolean =
         logged("hasInvalidTransfers") {
@@ -1526,6 +1554,9 @@ internal fun recordedResultTag(mappedTag: Int): Int =
 // report_broadcast_failure/AwaitingReevaluation).
 private const val RESULT_TAG_INVALID_NOTE = 2
 private const val RESULT_TAG_AWAITING_REEVALUATION = 4
+
+// `record_transfer_result`'s Expired input tag: terminal failure with the "transfer_expired" reason.
+private const val RESULT_TAG_EXPIRED = 3
 
 /**
  * Maps a raw submission outcome to the engine's [TransferResult], both as the public value and
