@@ -271,18 +271,21 @@ internal class OhttpTransport(
             // decoder's or the sink's, not the relay's refusal, whatever status it may carry.
             var reading = false
             try {
-                sender.postStreaming(
-                    relayUrl,
-                    sealed.body,
-                    profile.postHeaders + USER_AGENT_HEADER + trace,
-                    timeoutMs,
-                ) { body ->
-                    reading = true
-                    phases?.mark("sender handed the body over")
-                    opener.openStream(HTTP_OK, null, attempt).use { decoder ->
-                        pump(body, decoder, sink, retryStale)
+                val delivered =
+                    sender.postStreaming(
+                        relayUrl,
+                        sealed.body,
+                        profile.postHeaders + USER_AGENT_HEADER + trace,
+                        timeoutMs,
+                    ) { body ->
+                        reading = true
+                        phases?.mark("sender handed the body over")
+                        opener.openStream(HTTP_OK, null, attempt).use { decoder ->
+                            pump(body, decoder, sink, retryStale)
+                        }
                     }
-                }.also { phases?.mark("body read to its end") }
+                phases?.mark("body read to its end")
+                delivered
             } catch (e: OhttpException) {
                 if (reading) throw e
                 phases?.mark("sender refused HTTP ${e.httpStatus}")
