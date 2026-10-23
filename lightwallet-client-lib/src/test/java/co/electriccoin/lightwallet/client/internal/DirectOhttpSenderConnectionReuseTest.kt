@@ -101,6 +101,41 @@ class DirectOhttpSenderConnectionReuseTest {
         assertEquals(1, relay.takeRequest().sequenceNumber)
     }
 
+    /** A connection last used before the age does not sit idle past it waiting for the next exchange. */
+    @Test
+    fun `idle connections are closed at the maximum lifetime without another exchange`() {
+        val shortLived = RelayConnections(maxConnectionAgeNanos = TimeUnit.MILLISECONDS.toNanos(SHORT_LIFETIME_MS))
+        val shortLivedSender = DirectOhttpSender(shortLived)
+        relay.enqueue(MockResponse().setBody("ok"))
+        try {
+            val url = relay.url("/relay").toString()
+            runBlocking { shortLivedSender.post(url, byteArrayOf(1), emptyList(), TIMEOUT_MS) }
+            assertEquals("pooled after the exchange", 1, shortLived.idleConnections())
+
+            val giveUpAt = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+            while (shortLived.idleConnections() > 0 && System.nanoTime() < giveUpAt) Thread.sleep(POLL_MS)
+            assertEquals("closed at the lifetime, no exchange needed", 0, shortLived.idleConnections())
+        } finally {
+            shortLived.evictAll()
+        }
+    }
+
+    /** A deadline longer than the lifetime is bounded by the watchdog alone; it does not rotate the pool per call. */
+    @Test
+    fun `an exchange whose deadline exceeds the lifetime still shares the pool`() {
+        repeat(TWO) { relay.enqueue(MockResponse().setBody("ok")) }
+        val overLong = TimeUnit.NANOSECONDS.toMillis(RelayConnections.MAX_CONNECTION_AGE_NANOS).toInt() + 1
+
+        runBlocking {
+            sender.post(relay.url("/relay").toString(), byteArrayOf(1), emptyList(), overLong)
+            nowNanos += TimeUnit.MINUTES.toNanos(1)
+            sender.post(relay.url("/relay").toString(), byteArrayOf(2), emptyList(), overLong)
+        }
+
+        assertEquals(0, relay.takeRequest().sequenceNumber)
+        assertEquals(1, relay.takeRequest().sequenceNumber)
+    }
+
     @Test
     fun `the maximum lifetime is slipstream's ten minutes`() =
         assertEquals(TimeUnit.MINUTES.toNanos(TEN), RelayConnections.MAX_CONNECTION_AGE_NANOS)
@@ -211,5 +246,8 @@ class DirectOhttpSenderConnectionReuseTest {
         private const val TWO = 2
         private const val THREE = 3
         private const val TEN = 10L
+        private const val SHORT_LIFETIME_MS = 300L
+        private const val WAIT_SECONDS = 5L
+        private const val POLL_MS = 20L
     }
 }

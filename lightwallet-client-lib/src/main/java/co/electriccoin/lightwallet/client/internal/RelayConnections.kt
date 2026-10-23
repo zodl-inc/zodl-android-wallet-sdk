@@ -6,6 +6,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -17,15 +18,17 @@ import java.util.concurrent.atomic.AtomicBoolean
  * queued for seconds (2026-10-22 device evidence: a NEAR GET left the phone 11.6 s before it reached
  * the gateway).
  *
- * No exchange runs on a pooled connection past [MAX_CONNECTION_AGE_MINUTES] after the pool opened: an
- * exchange starts on the current pool only when its own deadline ([client]'s `timeoutMs`, the sender's
- * watchdog) ends before that age, otherwise the pool is rotated whole first and the exchange opens on
- * the fresh one, so no connection is used, in flight or idle, past the age. The retired pool's idle
- * connections are closed at once and on every later call until none is left. Same constant and
- * meaning as slipstream's `H2_MAX_CONNECTION_AGE` (`core/src/ohttp.rs`): "connection lifetime is
- * linkable metadata the relay sees, so a long-lived wallet process moves to a fresh connection now
- * and then. In-flight requests finish on the old one." The ZIP's reference figure for Tor-off mode
- * is "a new connection at least every 10 minutes".
+ * No pooled connection outlives [MAX_CONNECTION_AGE_MINUTES] after its pool opened: an exchange starts
+ * on the current pool only when its own deadline ([client]'s `timeoutMs`, the sender's watchdog) ends
+ * before that age, otherwise the pool is rotated whole first and the exchange opens on the fresh one;
+ * and the pool's idle connections are closed at that age by a timer, whether or not another exchange
+ * comes. The retired pool's idle connections are closed at once and on every later call until none is
+ * left. The one exception is an exchange whose own deadline is longer than the lifetime (none of the
+ * transport's: the ZIP's reference is 100 s per exchange): it is bounded by that deadline alone. Same
+ * constant and meaning as slipstream's `H2_MAX_CONNECTION_AGE` (`core/src/ohttp.rs`): "connection
+ * lifetime is linkable metadata the relay sees, so a long-lived wallet process moves to a fresh
+ * connection now and then. In-flight requests finish on the old one." The ZIP's reference figure for
+ * Tor-off mode is "a new connection at least every 10 minutes".
  *
  * OkHttp behaviour relied on here (follow-ups, the bridge headers, cancel on HTTP/1.1 and HTTP/2,
  * pool eviction) was checked against the OkHttp 5.1.0 source, the version `OKHTTP_VERSION` pins and
@@ -41,8 +44,8 @@ internal class RelayConnections(
     private val configureClient: OkHttpClient.Builder.() -> Unit = {},
 ) {
     private val lock = Any()
-    private var generation = Generation(newClient(), clock())
     private val retired = ArrayDeque<ConnectionPool>()
+    private var generation = newGeneration(clock())
 
     /**
      * The client for one exchange bounded by [timeoutMs]: the current generation's pool, or a fresh one
@@ -58,10 +61,13 @@ internal class RelayConnections(
         val base =
             synchronized(lock) {
                 val now = clock()
-                val endsAtNanos = now + TimeUnit.MILLISECONDS.toNanos(timeoutMs.toLong())
-                if (endsAtNanos - generation.openedAtNanos >= maxConnectionAgeNanos) {
+                val deadlineNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMs.toLong())
+                // The exchange's deadline counts towards the age, unless it is longer than the lifetime itself
+                // (then it is bounded by its watchdog alone and shares the pool like any other).
+                val span = if (deadlineNanos >= maxConnectionAgeNanos) 0L else deadlineNanos
+                if (now + span - generation.openedAtNanos >= maxConnectionAgeNanos) {
                     retired.addLast(generation.client.connectionPool)
-                    generation = Generation(newClient(), now)
+                    generation = newGeneration(now)
                 }
                 reapRetiredLocked()
                 generation.client
@@ -88,12 +94,32 @@ internal class RelayConnections(
             reapRetiredLocked()
         }
 
+    /** Idle connections of the current pool (tests). */
+    fun idleConnections(): Int = synchronized(lock) { generation.client.connectionPool.idleConnectionCount() }
+
     private fun reapRetiredLocked() {
         retired.removeAll { pool ->
             pool.evictAll()
             pool.connectionCount() == 0
         }
     }
+
+    /**
+     * A fresh pool opened at [now], with its idle connections scheduled to close at the lifetime: a
+     * connection last used shortly before the age would otherwise sit open until the keep-alive, or
+     * until the next exchange rotated the pool.
+     */
+    private fun newGeneration(now: Long): Generation {
+        val fresh = Generation(newClient(), now)
+        retirements.schedule({ closeIdleOf(fresh) }, maxConnectionAgeNanos, TimeUnit.NANOSECONDS)
+        return fresh
+    }
+
+    private fun closeIdleOf(aged: Generation) =
+        synchronized(lock) {
+            aged.client.connectionPool.evictAll()
+            reapRetiredLocked()
+        }
 
     /**
      * Redirects are never followed (a relay answer other than 200 is reported with its status, see
@@ -186,5 +212,11 @@ internal class RelayConnections(
 
         /** How much later than the sender's deadline watchdog OkHttp's own read/write timeouts fire (see [client]). */
         private const val SOCKET_TIMEOUT_SLACK_MS = 1_000L
+
+        /** Closes a pool's idle connections at its lifetime (see [newGeneration]). */
+        private val retirements =
+            Executors.newSingleThreadScheduledExecutor { runnable ->
+                Thread(runnable, "ohttp-relay-rotation").apply { isDaemon = true }
+            }
     }
 }
