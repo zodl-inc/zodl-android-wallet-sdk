@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.Synchronizer.Status
 import cash.z.ecc.android.sdk.model.AccountUuid
 import com.zodl.slipstream.model.SlipstreamAccountBalance
 import com.zodl.slipstream.model.SlipstreamPoolBalance
+import com.zodl.slipstream.model.SlipstreamSnapshot
 import com.zodl.slipstream.model.SlipstreamWalletSummary
 import org.junit.Test
 import kotlin.test.assertEquals
@@ -16,17 +17,35 @@ class EngineMappingTest {
     @Test
     fun engine_states_map_to_the_four_steady_statuses_while_running() {
         // idle while running = the engine itself went idle between retries (section 2.3)
-        assertEquals(Status.DISCONNECTED, nextStatus(Status.SYNCED, ENGINE_STATE_IDLE, running = true))
-        assertEquals(Status.SYNCING, nextStatus(Status.DISCONNECTED, ENGINE_STATE_SYNCING, running = true))
+        assertEquals(
+            Status.DISCONNECTED,
+            nextStatus(Status.SYNCED, ENGINE_STATE_IDLE, hostWantsRunning = true, serverReached = false)
+        )
+        assertEquals(
+            Status.SYNCING,
+            nextStatus(Status.SYNCED, ENGINE_STATE_SYNCING, hostWantsRunning = true, serverReached = false)
+        )
         // error => "offer retry" (their enum has no ERROR)
-        assertEquals(Status.DISCONNECTED, nextStatus(Status.SYNCED, ENGINE_STATE_ERROR, running = true))
-        assertEquals(Status.SYNCED, nextStatus(Status.SYNCING, ENGINE_STATE_DONE, running = true))
+        assertEquals(
+            Status.DISCONNECTED,
+            nextStatus(Status.SYNCED, ENGINE_STATE_ERROR, hostWantsRunning = true, serverReached = false)
+        )
+        assertEquals(
+            Status.SYNCED,
+            nextStatus(Status.SYNCING, ENGINE_STATE_DONE, hostWantsRunning = true, serverReached = true)
+        )
     }
 
     @Test
     fun unknown_engine_state_degrades_to_disconnected_never_throws() {
-        assertEquals(Status.DISCONNECTED, nextStatus(Status.SYNCED, 99, running = true))
-        assertEquals(Status.DISCONNECTED, nextStatus(Status.SYNCED, 99, running = false))
+        assertEquals(
+            Status.DISCONNECTED,
+            nextStatus(Status.SYNCED, 99, hostWantsRunning = true, serverReached = false)
+        )
+        assertEquals(
+            Status.DISCONNECTED,
+            nextStatus(Status.SYNCED, 99, hostWantsRunning = false, serverReached = false)
+        )
     }
 
     /**
@@ -42,32 +61,57 @@ class EngineMappingTest {
 
         fun tick(
             state: Int,
-            running: Boolean
+            hostWantsRunning: Boolean,
+            serverReached: Boolean = false
         ) {
-            status = nextStatus(status, state, running)
+            status = nextStatus(status, state, hostWantsRunning, serverReached)
         }
 
-        tick(ENGINE_STATE_SYNCING, running = true)
-        tick(ENGINE_STATE_DONE, running = true)
+        tick(ENGINE_STATE_SYNCING, hostWantsRunning = true)
+        tick(ENGINE_STATE_DONE, hostWantsRunning = true, serverReached = true)
         assertEquals(Status.SYNCED, status)
 
-        // onBackground: stop() clears `running`, the native stop leaves the engine idle, a tick reads it.
-        tick(ENGINE_STATE_IDLE, running = false)
+        // onBackground: stop() clears the host's wish, the native stop leaves the engine idle, a tick reads it.
+        tick(ENGINE_STATE_IDLE, hostWantsRunning = false)
         assertEquals(Status.SYNCED, status, "a host-stopped engine is not a disconnected one")
-        tick(ENGINE_STATE_IDLE, running = false)
+        tick(ENGINE_STATE_IDLE, hostWantsRunning = false)
         assertEquals(Status.SYNCED, status)
 
         // onForeground: start() sets state 1 synchronously; the first tick recovers without any grace.
-        tick(ENGINE_STATE_SYNCING, running = true)
+        tick(ENGINE_STATE_SYNCING, hostWantsRunning = true)
         assertEquals(Status.SYNCING, status)
-        tick(ENGINE_STATE_DONE, running = true)
+        tick(ENGINE_STATE_DONE, hostWantsRunning = true, serverReached = true)
+        assertEquals(Status.SYNCED, status)
+    }
+
+    /**
+     * A restart that throws (`restartEngineAfter` in the synchronizer catches and logs it, polling goes on)
+     * leaves an idle engine the host wanted running: DISCONNECTED on the next tick, not the last healthy
+     * status forever. The host's wish is set before the native start, so it survives the throw.
+     */
+    @Test
+    fun an_idle_snapshot_after_a_failed_restart_is_disconnected() {
+        var status = Status.SYNCED
+        // stop(): the host no longer wants it running, idle keeps SYNCED
+        status = nextStatus(status, ENGINE_STATE_IDLE, hostWantsRunning = false, serverReached = false)
+        assertEquals(Status.SYNCED, status)
+        // start() threw: the host wants it running, the engine stayed idle
+        status = nextStatus(status, ENGINE_STATE_IDLE, hostWantsRunning = true, serverReached = false)
+        assertEquals(Status.DISCONNECTED, status)
+        status = nextStatus(status, ENGINE_STATE_IDLE, hostWantsRunning = true, serverReached = false)
+        assertEquals(Status.DISCONNECTED, status)
+        // a later start that succeeds: state 1, then Done
+        status = nextStatus(status, ENGINE_STATE_DONE, hostWantsRunning = true, serverReached = true)
         assertEquals(Status.SYNCED, status)
     }
 
     /** `open()` ticks once before `start()`: an engine that has not been started is initializing, not disconnected. */
     @Test
     fun the_first_snapshot_of_an_opened_but_not_started_engine_stays_initializing() =
-        assertEquals(Status.INITIALIZING, nextStatus(Status.INITIALIZING, ENGINE_STATE_IDLE, running = false))
+        assertEquals(
+            Status.INITIALIZING,
+            nextStatus(Status.INITIALIZING, ENGINE_STATE_IDLE, hostWantsRunning = false, serverReached = false)
+        )
 
     /**
      * The engine reports its own trouble through state 2 (error episode, `Error(3)` = endpoint unreachable after
@@ -77,22 +121,87 @@ class EngineMappingTest {
     @Test
     fun an_error_episode_and_its_recovery_are_reflected_within_one_tick() {
         var status = Status.SYNCED
-        status = nextStatus(status, ENGINE_STATE_ERROR, running = true)
+        status = nextStatus(status, ENGINE_STATE_ERROR, hostWantsRunning = true, serverReached = false)
         assertEquals(Status.DISCONNECTED, status)
-        status = nextStatus(status, ENGINE_STATE_DONE, running = true)
+        status = nextStatus(status, ENGINE_STATE_DONE, hostWantsRunning = true, serverReached = true)
         assertEquals(Status.SYNCED, status)
     }
 
-    /** A failed initial pass (the engine idles between retries while running) is reported as disconnected. */
+    /**
+     * A failed initial pass: the engine idles between attempts (`sync_retry_backoff` 3, 6, 12 s ... - under the
+     * host's 20 s grace) and is in state 1 during each. The status stays DISCONNECTED across the attempts, so
+     * the outage is one steady episode the host can act on, and ends as soon as a snapshot shows the server
+     * was reached.
+     */
     @Test
-    fun an_engine_that_idles_on_its_own_while_running_is_disconnected() {
+    fun an_engine_retrying_a_failed_pass_stays_disconnected_until_the_server_is_reached() {
         var status = Status.INITIALIZING
-        status = nextStatus(status, ENGINE_STATE_SYNCING, running = true)
-        status = nextStatus(status, ENGINE_STATE_IDLE, running = true)
+        status = nextStatus(status, ENGINE_STATE_SYNCING, hostWantsRunning = true, serverReached = false)
+        assertEquals(Status.SYNCING, status, "the first attempt of a session is syncing, nothing failed yet")
+        status = nextStatus(status, ENGINE_STATE_IDLE, hostWantsRunning = true, serverReached = false)
         assertEquals(Status.DISCONNECTED, status)
-        status = nextStatus(status, ENGINE_STATE_SYNCING, running = true)
-        assertEquals(Status.SYNCING, status)
+        status = nextStatus(status, ENGINE_STATE_SYNCING, hostWantsRunning = true, serverReached = false)
+        assertEquals(Status.DISCONNECTED, status, "a retry that has not reached the server is still the outage")
+        status = nextStatus(status, ENGINE_STATE_IDLE, hostWantsRunning = true, serverReached = false)
+        assertEquals(Status.DISCONNECTED, status)
+        status = nextStatus(status, ENGINE_STATE_SYNCING, hostWantsRunning = true, serverReached = true)
+        assertEquals(Status.SYNCING, status, "the server answered: syncing again")
+        status = nextStatus(status, ENGINE_STATE_SYNCING, hostWantsRunning = true, serverReached = false)
+        assertEquals(Status.SYNCING, status, "a quiet tick within a healthy pass is not an outage")
     }
+
+    @Test
+    fun the_server_is_reached_when_a_pass_completes_or_the_tip_latches_fresh_or_a_network_counter_advances() {
+        val quiet =
+            snapshot(
+                state = ENGINE_STATE_SYNCING,
+                chainTip = 100,
+                fetched = 10,
+                scanned = 5,
+                enhanced = 1,
+                permille = 400
+            )
+
+        assertFalse(serverReached(previous = quiet, snap = quiet), "nothing moved")
+        assertFalse(serverReached(previous = null, snap = quiet), "no previous snapshot to compare with")
+        assertTrue(serverReached(previous = quiet, snap = quiet.copy(state = ENGINE_STATE_DONE)))
+        assertTrue(serverReached(previous = null, snap = quiet.copy(state = ENGINE_STATE_DONE)))
+        assertTrue(serverReached(previous = quiet, snap = quiet.copy(tipFresh = true)))
+        val fresh = quiet.copy(tipFresh = true)
+        assertFalse(serverReached(previous = fresh, snap = fresh), "already fresh")
+        assertTrue(serverReached(previous = quiet, snap = quiet.copy(chainTip = 101)))
+        assertTrue(serverReached(previous = quiet, snap = quiet.copy(fetchedBlocks = 11)))
+        assertTrue(serverReached(previous = quiet, snap = quiet.copy(scannedBlocks = 6)))
+        assertTrue(serverReached(previous = quiet, snap = quiet.copy(enhancedTxs = 2)))
+        assertTrue(serverReached(previous = quiet, snap = quiet.copy(progressPermille = 401)))
+        val newPass = quiet.copy(fetchedBlocks = 0, scannedBlocks = 0)
+        assertFalse(serverReached(previous = quiet, snap = newPass), "a new pass resetting its counters")
+        assertFalse(serverReached(previous = quiet, snap = quiet.copy(stalledSeconds = 30, state = ENGINE_STATE_IDLE)))
+    }
+
+    private fun snapshot(
+        state: Int,
+        chainTip: Long,
+        fetched: Long,
+        scanned: Long,
+        enhanced: Long,
+        permille: Int
+    ) = SlipstreamSnapshot(
+        chainTip = chainTip,
+        fetchedBlocks = fetched,
+        scannedBlocks = scanned,
+        enhancedTxs = enhanced,
+        currentRangeEnd = 0,
+        state = state,
+        passTotalBlocks = 0,
+        spendableHint = false,
+        rangesCompleted = 0,
+        isRecovering = false,
+        progressPermille = permille,
+        stalledSeconds = 0,
+        tipFresh = false,
+        txSetVersion = 0
+    )
 
     @Test
     fun permille_endpoints_and_midpoint() {
