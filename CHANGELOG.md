@@ -84,6 +84,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A server counts as behind when its served tip lags its own estimate by six hours of target time (it was 288
   blocks, which is six hours only before NU7).
 - The birthday estimate from a date scales the average checkpoint interval for checkpoints from NU7 on.
+- `OrchardMigrationSdk.executeNextPendingTransfer` no longer submits a pre-signed migration transaction whose
+  consensus branch ID does not match the next block (NU7 changes it). The transfer is recorded as expired, so the
+  app asks the user to migrate what is left, instead of the network rejecting it and the migration stalling until
+  the transaction expires.
 
 ### Deprecated
 - `ZcashSdk.EXPIRY_OFFSET`: the Rust backend chooses the expiry delta from the consensus branch (20, 40 or, from
