@@ -223,8 +223,6 @@ interface Synchronizer {
      * detects this before importing
      * @throws [InitializeException.ImportAccountCheckpointsNotReadyException] when the wallet's
      * checkpoints are transiently out of sync across shielded pools; retry later
-     * @throws [InitializeException.ImportAccountAnchorUnavailableException] when the restore anchor
-     * cannot be fetched from the server (Slipstream synchronizer only); retry later
      * @throws [InitializeException.ImportAccountException] in case of any other operation failure
      */
     suspend fun importAccountByUfvk(setup: AccountImportSetup): Account

@@ -115,10 +115,10 @@ import kotlin.time.Duration.Companion.seconds
  * constructor - `Companion.new`/`newLocked` are skipped entirely, so no test here ever touches
  * `SlipstreamNative`.
  *
- * `importAccountByUfvk` itself is not called: its `restoreAnchor` is a direct call to the
- * `SlipstreamNative` object, which would require `mockStatic` - out of scope for this plain-Mockito
- * suite. Its two halves are covered instead: `importAccountWithAnchor`, with the anchor behind a
- * [SlipstreamAnchorSource] stub, and the engine-facing `importResolvedAccount`.
+ * Deliberately NOT covered: `importAccountByUfvk`'s anchor resolution. Its `restoreAnchor` is a
+ * direct call to the `SlipstreamNative` object (a `object`-scoped native binding, not an injectable
+ * collaborator), which would require `mockStatic` - out of scope for this plain-Mockito suite. Its
+ * engine-facing half, `importResolvedAccount`, is covered.
  *
  * The suite's size tracks the lifecycle surface it pins - construction, the readiness gates, the
  * close/prepare races, and the DbReady read phase belong to one state machine, so the class is
@@ -459,90 +459,6 @@ class SlipstreamSynchronizerLifecycleTest {
             importViewOnlyAccount(verify(backend, never()))
             verify(engine).start(null, STARTING_BIRTHDAY_VALUE)
         }
-    }
-
-    /**
-     * A `restoreAnchor` failure - a slow or unreachable network or Tor - surfaces as the dedicated
-     * anchor exception with the failure chained, so the host can retry it; the engine is never
-     * stopped and nothing is imported. The cause is looked for along the chain because coroutines'
-     * stack trace recovery may wrap the thrown exception in a copy of itself.
-     */
-    @Test
-    fun account_import_surfaces_an_anchor_failure_as_anchor_unavailable_without_touching_the_engine() {
-        val engine = mock(SlipstreamEngine::class.java)
-        val backend = mock(Backend::class.java)
-        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
-        val failure = IllegalStateException("tor circuit build timed out")
-
-        val thrown =
-            assertFailsWith<InitializeException.ImportAccountAnchorUnavailableException> {
-                runBlocking {
-                    synchronizer.importAccountWithAnchor(
-                        setup = viewOnlyImportSetup(),
-                        fallbackCheckpointHeight = { FALLBACK_CHECKPOINT },
-                        anchorSource = SlipstreamAnchorSource { _, _, _ -> throw failure },
-                        treeState = { TREE_STATE }
-                    )
-                }
-            }
-
-        assertTrue(generateSequence(thrown.cause) { it.cause }.any { it === failure })
-        assertFalse(thrown.message.orEmpty().contains(failure.message.orEmpty()))
-        assertFalse(thrown.message.orEmpty().contains(UFVK))
-        runBlocking {
-            verify(engine, never()).stopForWalletChange()
-            importViewOnlyAccount(verify(backend, never()))
-        }
-    }
-
-    @Test
-    fun account_import_propagates_cancellation_of_the_anchor_unchanged() {
-        val engine = mock(SlipstreamEngine::class.java)
-        val backend = mock(Backend::class.java)
-        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
-
-        assertFailsWith<CancellationException> {
-            runBlocking {
-                synchronizer.importAccountWithAnchor(
-                    setup = viewOnlyImportSetup(),
-                    fallbackCheckpointHeight = { FALLBACK_CHECKPOINT },
-                    anchorSource = SlipstreamAnchorSource { _, _, _ -> throw CancellationException("cancelled") },
-                    treeState = { TREE_STATE }
-                )
-            }
-        }
-
-        runBlocking { verify(engine, never()).stopForWalletChange() }
-    }
-
-    @Test
-    fun account_import_resolves_the_anchor_for_the_birthday_then_imports_until_it() {
-        val engine = mock(SlipstreamEngine::class.java)
-        val backend = mock(Backend::class.java)
-        val synchronizer = buildSynchronizer(engine = engine, backend = backend)
-        val accountUuid = AccountUuid.new(ByteArray(ACCOUNT_UUID_BYTES))
-        val anchorArguments = AtomicReference<Triple<Int, Long, Long>>()
-        runBlocking {
-            `when`(importViewOnlyAccount(backend)).thenReturn(jniAccount(accountUuid))
-        }
-
-        val account =
-            runBlocking {
-                synchronizer.importAccountWithAnchor(
-                    setup = viewOnlyImportSetup(),
-                    fallbackCheckpointHeight = { FALLBACK_CHECKPOINT },
-                    anchorSource =
-                        SlipstreamAnchorSource { intent, birthdayHeight, fallbackCheckpointHeight ->
-                            anchorArguments.set(Triple(intent, birthdayHeight, fallbackCheckpointHeight))
-                            SlipstreamRestoreAnchor(ANCHOR_HEIGHT, null)
-                        },
-                    treeState = { TREE_STATE }
-                )
-            }
-
-        assertEquals(accountUuid, account.accountUuid)
-        assertEquals(Triple(1, FALLBACK_CHECKPOINT, FALLBACK_CHECKPOINT), anchorArguments.get())
-        runBlocking { importViewOnlyAccount(verify(backend)) }
     }
 
     @Test

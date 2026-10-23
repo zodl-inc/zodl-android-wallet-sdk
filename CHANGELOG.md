@@ -23,13 +23,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new `InitializeException.RenameAccountException` when the name cannot be stored, for example when
   no account with the given UUID exists. Its message is fixed ("Failed to rename account.") and never
   contains the cause's message; the failure is chained as `cause`.
-- `InitializeException.ImportAccountAnchorUnavailableException`, thrown by the Slipstream
-  synchronizer's `importAccountByUfvk` when the restore anchor cannot be fetched from the server,
-  for example over a slow or unreachable Tor connection. Nothing has been written to the wallet, so
-  the import can be retried. Its message is fixed and never contains the key or the cause's message;
-  the failure is chained as `cause`. The Slipstream synchronizer now logs the step at which an
-  account import failed (anchor, checkpoint, engine stop or backend import) and the exception's
-  class, never its message.
 
 ### Changed
 - `Synchronizer` declares `findAccountSharingKeyComponents(ufvk)`: any implementer or test fake must
