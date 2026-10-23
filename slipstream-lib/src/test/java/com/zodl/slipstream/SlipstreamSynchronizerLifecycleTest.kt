@@ -2472,6 +2472,7 @@ class SlipstreamSynchronizerLifecycleTest {
      * Closing an exact-birthday restore during its data DB step cancels the anchor and the fetch already in flight,
      * never opens the engine, and still reports that the account does not start at its birthday.
      */
+    @Suppress("LongMethod")
     @Test
     fun close_during_the_data_db_step_of_an_exact_birthday_restore_cancels_the_anchor_in_flight() {
         val engine = mock(SlipstreamEngine::class.java)
@@ -2479,6 +2480,8 @@ class SlipstreamSynchronizerLifecycleTest {
         val key = newKey()
         val initEntered = CountDownLatch(1)
         val initProceed = CountDownLatch(1)
+        val anchorStarted = CountDownLatch(1)
+        val fetchStarted = CountDownLatch(1)
         val anchorCancelled = CompletableDeferred<Unit>()
         val fetchCancelled = CompletableDeferred<Unit>()
         val birthdayResolved = CompletableDeferred<Boolean>()
@@ -2501,6 +2504,7 @@ class SlipstreamSynchronizerLifecycleTest {
                         anchorSource =
                             SlipstreamAnchorSource { _, _, _ ->
                                 try {
+                                    anchorStarted.countDown()
                                     awaitCancellation()
                                 } finally {
                                     anchorCancelled.complete(Unit)
@@ -2508,6 +2512,7 @@ class SlipstreamSynchronizerLifecycleTest {
                             },
                         exactBirthdayTreeState = {
                             try {
+                                fetchStarted.countDown()
                                 awaitCancellation()
                             } finally {
                                 fetchCancelled.complete(Unit)
@@ -2517,6 +2522,8 @@ class SlipstreamSynchronizerLifecycleTest {
                     )
             )
         assertTrue(initEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        assertTrue(anchorStarted.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        assertTrue(fetchStarted.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
 
         synchronizer.close()
         initProceed.countDown()
