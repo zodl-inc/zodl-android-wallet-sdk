@@ -86,10 +86,22 @@ internal object SlipstreamNative {
         torDir: String?
     ): Boolean
 
-    /** `stop`: cancels the sync task and performs the bounded join + writer-drain. */
+    /**
+     * `stop`: the engine's stop - cancels the sync task and waits, bounded, for every aborted pass
+     * on record and for the engine's wallet commit. `true` only when the wallet file was proved
+     * quiescent.
+     */
     @JvmStatic
     @Throws(RuntimeException::class)
     external fun stop(handle: Long): Boolean
+
+    /**
+     * `stopForWalletChange`: [stop] for a host about to change the wallet - the engine first asks
+     * the running session to end at its next block. The host refuses the change on `false`.
+     */
+    @JvmStatic
+    @Throws(RuntimeException::class)
+    external fun stopForWalletChange(handle: Long): Boolean
 
     /** `snapshot` (`HOSTING.md` section 5): the poll read - cheap, non-blocking, call every tick. */
     @JvmStatic

@@ -65,6 +65,7 @@ import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
+import cash.z.ecc.android.sdk.model.AccountKeyOverlap
 import cash.z.ecc.android.sdk.model.AccountUsk
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -87,6 +88,7 @@ import cash.z.ecc.android.sdk.model.TransactionPool
 import cash.z.ecc.android.sdk.model.TransactionRecipient
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -846,6 +848,22 @@ class SdkSynchronizer private constructor(
             refreshAccountsBus.emit(Unit)
         }
 
+    @Suppress("TooGenericExceptionCaught")
+    override suspend fun renameAccount(
+        accountUuid: AccountUuid,
+        name: String
+    ) {
+        try {
+            backend.setAccountName(accountUuid, name)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Twig.error(e) { "Rename account failed." }
+            throw InitializeException.RenameAccountException(e)
+        }
+        refreshAccountsBus.emit(Unit)
+    }
+
     override suspend fun getTreeState(height: BlockHeight): ByteArray =
         when (
             val response =
@@ -1117,16 +1135,22 @@ class SdkSynchronizer private constructor(
                     refreshAccountsBus.emit(Unit)
                 }
         }.onFailure {
-            Twig.error(it) { "Import account failed." }
+            Twig.error { "Import account failed." }
         }.getOrElse { cause ->
             if (cause is CancellationException) throw cause
-            throw if (ImportAccountErrors.isCheckpointsNotReady(cause)) {
-                InitializeException.ImportAccountCheckpointsNotReadyException(cause)
-            } else {
-                InitializeException.ImportAccountException(cause)
-            }
+            throw ImportAccountErrors.toImportAccountException(cause)
         }
     }
+
+    override suspend fun findAccountSharingKeyComponents(ufvk: UnifiedFullViewingKey): AccountKeyOverlap? =
+        runCatching {
+            backend.findAccountSharingKeyComponents(ufvk)
+        }.onFailure {
+            Twig.error { "Finding the account sharing key components failed." }
+        }.getOrElse { cause ->
+            if (cause is CancellationException) throw cause
+            throw ImportAccountErrors.toFindAccountSharingKeyComponentsException(cause)
+        }
 
     override suspend fun getAccounts(): List<Account> =
         runCatching {

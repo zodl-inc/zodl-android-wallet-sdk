@@ -41,6 +41,11 @@ class RustDerivationTool private constructor() : Derivation {
         networkId: Int
     ): String = deriveUnifiedAddressFromViewingKey(viewingKey, networkId = networkId)
 
+    override fun describeUnifiedFullViewingKey(
+        viewingKey: String,
+        networkId: Int
+    ): Int = describeUnifiedFullViewingKeyFromString(viewingKey, networkId = networkId)
+
     override fun deriveAccountMetadataKey(
         seed: ByteArray,
         networkId: Int,
@@ -79,6 +84,7 @@ class RustDerivationTool private constructor() : Derivation {
             networkId = networkId
         )
 
+    @Suppress("TooManyFunctions")
     companion object {
         suspend fun new(): Derivation {
             RustBackend.loadLibrary()
@@ -112,6 +118,12 @@ class RustDerivationTool private constructor() : Derivation {
             key: String,
             networkId: Int
         ): String
+
+        @JvmStatic
+        private external fun describeUnifiedFullViewingKeyFromString(
+            key: String,
+            networkId: Int
+        ): Int
 
         @JvmStatic
         private external fun deriveUnifiedFullViewingKey(
