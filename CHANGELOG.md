@@ -54,6 +54,21 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `zcash_client_sqlite` 0.23.0-pre.1 generation that adds `WalletWrite::set_account_name`
   (zcash/librustzcash#3139), and the `zodl-slipstream` 0.4.0-pre.2 engine from a git revision
   built on it. No release carries these yet, so no SDK release can be cut from this state.
+- The migration block-rate estimate is NU7-aware. `OrchardMigrationSdk.estimatedSecondsPerBlock()` falls back to the
+  height-aware target (75 s before NU7, 25 s from NU7), and a measuring window that spans the NU7 activation
+  height is not measured, because its average fits neither era. `OrchardMigrationSdk.nu7ActivationHeight` exposes
+  the activation height so a height range spanning it can be split by the caller.
+- On the Slipstream path, the estimated time of an expired transaction that has no block time uses `BlockSpacing`
+  instead of a fixed 75 s per block.
+- The migration chain-tip estimate converts elapsed time past the NU7 activation height at 25 s per block, and a
+  failed rate read falls back to the target spacing of the last scanned height.
+- A server counts as behind when its served tip lags its own estimate by six hours of target time (it was 288
+  blocks, which is six hours only before NU7).
+- The birthday estimate from a date scales the average checkpoint interval for checkpoints from NU7 on.
+- `OrchardMigrationSdk.executeNextPendingTransfer` no longer submits a pre-signed migration transaction whose
+  consensus branch ID does not match the next block (NU7 changes it). The transfer is recorded as expired, so the
+  app asks the user to migrate what is left, instead of the network rejecting it and the migration stalling until
+  the transaction expires.
 
 ### Fixed
 - The Slipstream engine's stop no longer reports the wallet quiescent while a sync pass that an
@@ -71,23 +86,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   25 s from NU7, ZIP 208 and ZIP 218): `targetSeconds(network, height)` and
   `targetSecondsBetween(network, from, to)`, mirroring `zcash_protocol`. Use it for any conversion between a block
   count and a duration, because one range can span the NU7 activation height.
-
-### Changed
-- The migration block-rate estimate is NU7-aware. `OrchardMigrationSdk.estimatedSecondsPerBlock()` falls back to the
-  height-aware target (75 s before NU7, 25 s from NU7), and a measuring window that spans the NU7 activation
-  height is not measured, because its average fits neither era. `OrchardMigrationSdk.nu7ActivationHeight` exposes
-  the activation height so a height range spanning it can be split by the caller.
-- On the Slipstream path, the estimated time of an expired transaction that has no block time uses `BlockSpacing`
-  instead of a fixed 75 s per block.
-- The migration chain-tip estimate converts elapsed time past the NU7 activation height at 25 s per block, and a
-  failed rate read falls back to the target spacing of the last scanned height.
-- A server counts as behind when its served tip lags its own estimate by six hours of target time (it was 288
-  blocks, which is six hours only before NU7).
-- The birthday estimate from a date scales the average checkpoint interval for checkpoints from NU7 on.
-- `OrchardMigrationSdk.executeNextPendingTransfer` no longer submits a pre-signed migration transaction whose
-  consensus branch ID does not match the next block (NU7 changes it). The transfer is recorded as expired, so the
-  app asks the user to migrate what is left, instead of the network rejecting it and the migration stalling until
-  the transaction expires.
 
 ### Deprecated
 - `ZcashSdk.EXPIRY_OFFSET`: the Rust backend chooses the expiry delta from the consensus branch (20, 40 or, from
