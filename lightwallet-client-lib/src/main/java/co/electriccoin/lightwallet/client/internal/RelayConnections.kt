@@ -104,7 +104,8 @@ internal class RelayConnections(
      * failed-connection retries and the 408 follow-up; the sealed body being one-shot
      * ([SealedRequestBody]) covers every follow-up with a body, 503 + `Retry-After: 0` and 421
      * included; [OneRequestPerExchange] refuses a second network request of any exchange, GETs
-     * included. The retry policy lives in the transport, which re-seals.
+     * included. The retry policy lives in the transport, which re-seals. Debug builds log each call's
+     * DNS/connect/TLS/pool/request/response timings ([OhttpTiming]).
      */
     private fun newClient(): OkHttpClient =
         OkHttpClient
@@ -114,6 +115,7 @@ internal class RelayConnections(
             .followSslRedirects(false)
             .retryOnConnectionFailure(false)
             .addNetworkInterceptor(OneRequestPerExchange)
+            .apply { if (OhttpTiming.enabled) eventListenerFactory(OhttpTiming.listenerFactory) }
             .apply(configureClient)
             .build()
 

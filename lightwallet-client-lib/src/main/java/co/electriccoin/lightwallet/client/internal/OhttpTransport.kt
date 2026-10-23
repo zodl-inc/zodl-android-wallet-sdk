@@ -234,12 +234,15 @@ internal class OhttpTransport(
         sink: OhttpResponseSink,
         retryStale: Boolean,
     ): Boolean {
+        val phases = OhttpTiming.phases("stream")
         val first = keyConfig(timeoutMs = deadline.remainingMs())
-        exchangeStreaming(first, request, deadline.remainingMs(), FIRST_ATTEMPT, sink, retryStale)
+        phases?.mark("keyConfig")
+        exchangeStreaming(first, request, deadline.remainingMs(), FIRST_ATTEMPT, sink, retryStale, phases)
             ?.let { return it }
         logger("OHTTP gateway rejected the request; refreshing the key config and retrying")
         val key = keyConfig(forceRefresh = true, timeoutMs = deadline.remainingMs())
-        return exchangeStreaming(key, request, deadline.remainingMs(), RETRY_ATTEMPT, sink, retryStale)
+        phases?.mark("keyConfig refreshed")
+        return exchangeStreaming(key, request, deadline.remainingMs(), RETRY_ATTEMPT, sink, retryStale, phases)
             ?: throw OhttpException("OHTTP gateway rejected the request again after a key config refresh")
     }
 
@@ -256,9 +259,13 @@ internal class OhttpTransport(
         attempt: Int,
         sink: OhttpResponseSink,
         retryStale: Boolean,
+        phases: OhttpTiming.Phases? = null,
     ): Boolean? {
         RelayBackoff.check(backoffKey, codec = codec)
+        phases?.mark("backoffCheck")
         val sealed = codec.encapsulate(key, request)
+        val trace = traceHeaders(true)
+        phases?.mark("encapsulate ${sealed.body.size} bytes${trace.traceSuffix()}")
         return sealed.opener.use { opener ->
             // Set once the sender has handed the body of a 200 over: from then on a failure is the
             // decoder's or the sink's, not the relay's refusal, whatever status it may carry.
@@ -267,16 +274,18 @@ internal class OhttpTransport(
                 sender.postStreaming(
                     relayUrl,
                     sealed.body,
-                    profile.postHeaders + USER_AGENT_HEADER + traceHeaders(true),
+                    profile.postHeaders + USER_AGENT_HEADER + trace,
                     timeoutMs,
                 ) { body ->
                     reading = true
+                    phases?.mark("sender handed the body over")
                     opener.openStream(HTTP_OK, null, attempt).use { decoder ->
                         pump(body, decoder, sink, retryStale)
                     }
-                }
+                }.also { phases?.mark("body read to its end") }
             } catch (e: OhttpException) {
                 if (reading) throw e
+                phases?.mark("sender refused HTTP ${e.httpStatus}")
                 RelayBackoff.noteIfRateLimited(backoffKey, e, codec)
                 // Only the sender's refusal of a non-200 carries a status; the opener is unspent then.
                 val status = e.httpStatus ?: throw e
@@ -330,11 +339,15 @@ internal class OhttpTransport(
         request: OhttpCodecRequest,
         deadline: CallDeadline,
     ): OhttpCodecResponse {
-        exchange(keyConfig(timeoutMs = deadline.remainingMs()), request, deadline.remainingMs(), FIRST_ATTEMPT)
+        val phases = OhttpTiming.phases("roundTrip")
+        val first = keyConfig(timeoutMs = deadline.remainingMs())
+        phases?.mark("keyConfig")
+        exchange(first, request, deadline.remainingMs(), FIRST_ATTEMPT, phases)
             ?.let { return it }
         logger("OHTTP gateway rejected the request; refreshing the key config and retrying")
         val key = keyConfig(forceRefresh = true, timeoutMs = deadline.remainingMs())
-        return exchange(key, request, deadline.remainingMs(), RETRY_ATTEMPT)
+        phases?.mark("keyConfig refreshed")
+        return exchange(key, request, deadline.remainingMs(), RETRY_ATTEMPT, phases)
             ?: throw OhttpException("OHTTP gateway rejected the request again after a key config refresh")
     }
 
@@ -348,25 +361,31 @@ internal class OhttpTransport(
         request: OhttpCodecRequest,
         timeoutMs: Int,
         attempt: Int,
+        phases: OhttpTiming.Phases? = null,
     ): OhttpCodecResponse? {
         RelayBackoff.check(backoffKey, codec = codec)
+        phases?.mark("backoffCheck")
         val sealed = codec.encapsulate(key, request)
+        val trace = traceHeaders(true)
+        phases?.mark("encapsulate ${sealed.body.size} bytes${trace.traceSuffix()}")
         return sealed.opener.use { opener ->
             val answer =
                 try {
                     sender.post(
                         relayUrl,
                         sealed.body,
-                        profile.postHeaders + USER_AGENT_HEADER + traceHeaders(true),
+                        profile.postHeaders + USER_AGENT_HEADER + trace,
                         timeoutMs,
                     )
                 } catch (e: OhttpException) {
+                    phases?.mark("sender refused HTTP ${e.httpStatus}")
                     RelayBackoff.noteIfRateLimited(backoffKey, e, codec)
                     // The senders only return the body of a 200, and throw the relay's other
                     // statuses: let the opener decide whether this one asks for a new key.
                     val status = e.httpStatus ?: throw e
                     return@use refusal(opener.open(status, null, ByteArray(0), attempt), e)
                 }
+            phases?.mark("sender returned ${answer.size} bytes")
             interpret(opener.open(HTTP_OK, null, answer, attempt))
         }
     }
@@ -405,6 +424,10 @@ internal class OhttpTransport(
     /** The trace id header, if a trace prefix is set and [wanted]. */
     private fun traceHeaders(wanted: Boolean): List<Pair<String, String>> =
         clientTrace?.takeIf { wanted }?.let { listOf(TRACE_HEADER to it.next()) } ?: emptyList()
+
+    /** ` trace=<id>` for the timing log, so its lines pair with the sender's (`OhttpTiming`); empty without a trace. */
+    private fun List<Pair<String, String>>.traceSuffix(): String =
+        firstOrNull { it.first == TRACE_HEADER }?.let { " trace=${it.second}" }.orEmpty()
 
     companion object {
         const val RESPONSE_MEDIA_TYPE = "message/ohttp-chunked-res"

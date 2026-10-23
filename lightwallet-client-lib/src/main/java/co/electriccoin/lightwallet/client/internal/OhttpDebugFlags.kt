@@ -12,4 +12,10 @@ internal object OhttpDebugFlags {
      * sends a trace id even if the app passes a prefix.
      */
     val allowTracePrefix: Boolean = BuildConfig.DEBUG
+
+    /**
+     * When true, the Tor-off OHTTP path logs per-call timings under the tag `OhttpTiming` (see
+     * [OhttpTiming]): debug builds only, a release SDK installs no listener and logs nothing.
+     */
+    val logTiming: Boolean = BuildConfig.DEBUG
 }
