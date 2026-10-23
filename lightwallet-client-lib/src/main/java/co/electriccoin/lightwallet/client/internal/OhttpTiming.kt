@@ -42,7 +42,8 @@ internal object OhttpTiming {
     private val callSequence = AtomicLong(0)
 
     /** When each pooled connection was first seen by any call: a stand-in for its age. */
-    private val firstSeenNanos: MutableMap<Connection, Long> = Collections.synchronizedMap(WeakHashMap<Connection, Long>())
+    private val firstSeenNanos: MutableMap<Connection, Long> =
+        Collections.synchronizedMap(WeakHashMap<Connection, Long>())
 
     /** The transport's clock for one call, or null when timing is off. */
     fun phases(label: String): Phases? = if (enabled) Phases("$label#${callSequence.incrementAndGet()}") else null
