@@ -37,6 +37,7 @@ import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountBalance
 import cash.z.ecc.android.sdk.model.AccountCreateSetup
 import cash.z.ecc.android.sdk.model.AccountImportSetup
+import cash.z.ecc.android.sdk.model.AccountKeyOverlap
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.CreatedTransaction
@@ -57,6 +58,7 @@ import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionRecipient
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -216,9 +218,50 @@ interface Synchronizer {
      * @return Account containing details about the imported account, including the unique account identifier for the
      * newly-created wallet database entry
      *
-     * @throws [InitializeException.ImportAccountException] in case of the operation failure
+     * @throws [InitializeException.ImportAccountCollisionException] when the key shares a viewing key
+     * component with an existing account without upgrading it; [findAccountSharingKeyComponents]
+     * detects this before importing
+     * @throws [InitializeException.ImportAccountCheckpointsNotReadyException] when the wallet's
+     * checkpoints are transiently out of sync across shielded pools; retry later
+     * @throws [InitializeException.ImportAccountException] in case of any other operation failure
      */
     suspend fun importAccountByUfvk(setup: AccountImportSetup): Account
+
+    /**
+     * Finds the account in this wallet that shares a viewing key component with [ufvk], and tells what
+     * [importAccountByUfvk] would do with [ufvk] because of it.
+     *
+     * Two keys share a component when their Orchard, Sapling or transparent P2PKH incoming viewing
+     * keys are equal; this is the comparison [importAccountByUfvk] makes before adding an account, so
+     * a Sapling component that differs only in its outgoing viewing key is still shared. Use it before
+     * importing to tell the user that a key is already in the wallet
+     * ([AccountKeyOverlap.Kind.ALREADY_IMPORTED]), would widen an existing account instead of adding
+     * one ([AccountKeyOverlap.Kind.WOULD_UPGRADE]), or conflicts with one
+     * ([AccountKeyOverlap.Kind.CONFLICTING]).
+     *
+     * The key is never logged or put in an error message. Leading and trailing whitespace around its
+     * encoding is ignored, as [importAccountByUfvk] ignores it.
+     *
+     * The answer is a snapshot: this lookup and [importAccountByUfvk] run in separate database
+     * transactions, and the import checks the wallet again atomically, so its outcome can differ when
+     * the wallet's accounts change in between.
+     *
+     * On the Slipstream synchronizer, this waits for the wallet database to be ready, like
+     * [getAccounts], and throws `SlipstreamNotReadyException` instead of
+     * [InitializeException.FindAccountSharingKeyComponentsException] when it never becomes ready.
+     *
+     * @param ufvk the key to look up.
+     *
+     * @return the overlapping account and what importing [ufvk] would do to it, or `null` when importing
+     * [ufvk] would add a new account.
+     *
+     * @throws [InitializeException.ImportAccountCollisionException] when [ufvk] shares components with
+     * more than one account; importing it would fail with the same exception, so treat it as a key not
+     * to import
+     * @throws [InitializeException.FindAccountSharingKeyComponentsException] when [ufvk] is not a valid
+     * UFVK for this wallet's network, or when the wallet database cannot be read
+     */
+    suspend fun findAccountSharingKeyComponents(ufvk: UnifiedFullViewingKey): AccountKeyOverlap?
 
     /*
      * Not ready to be a public API; internal for testing only
@@ -1089,6 +1132,22 @@ interface Synchronizer {
     suspend fun debugQuery(query: String): String
 
     suspend fun deleteAccount(accountUuid: AccountUuid): Boolean
+
+    /**
+     * Sets the human-readable name of the given account, replacing any existing name. The account's
+     * keys and all other state are left unchanged, and [accountsFlow] re-emits with the new name.
+     *
+     * @param accountUuid the account to rename
+     * @param name the new name, stored as given
+     *
+     * @throws InitializeException.RenameAccountException if the name cannot be stored, for example
+     * because no account with [accountUuid] exists in the wallet
+     */
+    @Throws(InitializeException.RenameAccountException::class)
+    suspend fun renameAccount(
+        accountUuid: AccountUuid,
+        name: String
+    )
 
     /**
      * Returns the commitment tree state at the given block height, encoded as a protobuf [ByteArray].

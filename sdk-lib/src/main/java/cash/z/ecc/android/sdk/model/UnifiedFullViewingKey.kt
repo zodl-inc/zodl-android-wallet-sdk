@@ -7,8 +7,10 @@ package cash.z.ecc.android.sdk.model
  * does not have spend authority. It can be used to derive a [UnifiedAddress] for the
  * account.
  *
- * @param[encoding] The string encoding of the UFVK.
+ * @param[encoding] The string encoding of the UFVK. [toString] does not print it.
  */
 data class UnifiedFullViewingKey(
     val encoding: String = ""
-)
+) {
+    override fun toString() = "UnifiedFullViewingKey(encoding=***)"
+}

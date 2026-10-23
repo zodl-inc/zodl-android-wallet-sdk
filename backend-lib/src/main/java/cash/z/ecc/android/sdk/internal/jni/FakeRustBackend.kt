@@ -4,6 +4,7 @@ import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.ext.requireNonNegative
 import cash.z.ecc.android.sdk.internal.ext.requireValidHeight
 import cash.z.ecc.android.sdk.internal.model.JniAccount
+import cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.JniRewindResult
@@ -209,6 +210,10 @@ class FakeRustBackend(
         error("Intentionally not implemented yet.")
     }
 
+    override suspend fun findAccountKeyOverlap(ufvk: String): JniAccountKeyOverlap? {
+        error("Intentionally not implemented yet.")
+    }
+
     override suspend fun createAccount(
         accountName: String,
         keySource: String?,
@@ -237,6 +242,11 @@ class FakeRustBackend(
 
     override suspend fun deleteAccount(accountUuid: ByteArray): Boolean =
         error("Intentionally not implemented in mocked FakeRustBackend implementation.")
+
+    override suspend fun setAccountName(
+        accountUuid: ByteArray,
+        name: String
+    ): Unit = error("Intentionally not implemented in mocked FakeRustBackend implementation.")
 
     override fun isValidSaplingAddr(addr: String): Boolean =
         error("Intentionally not implemented in mocked FakeRustBackend implementation.")

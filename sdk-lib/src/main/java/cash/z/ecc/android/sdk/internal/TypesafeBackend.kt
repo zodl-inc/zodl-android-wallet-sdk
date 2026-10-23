@@ -17,6 +17,7 @@ import cash.z.ecc.android.sdk.internal.model.WalletSummary
 import cash.z.ecc.android.sdk.internal.model.ZcashProtocol
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountImportSetup
+import cash.z.ecc.android.sdk.model.AccountKeyOverlap
 import cash.z.ecc.android.sdk.model.AccountUsk
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -56,6 +57,8 @@ internal interface TypesafeBackend {
     ): Account
 
     suspend fun getAccountForUfvk(ufvk: UnifiedFullViewingKey): Account?
+
+    suspend fun findAccountSharingKeyComponents(ufvk: UnifiedFullViewingKey): AccountKeyOverlap?
 
     suspend fun proposeTransferFromUri(
         account: Account,
@@ -351,4 +354,9 @@ internal interface TypesafeBackend {
     fun isValidTexAddr(addr: String): Boolean
 
     suspend fun deleteAccount(accountUuid: AccountUuid): Boolean
+
+    suspend fun setAccountName(
+        accountUuid: AccountUuid,
+        name: String
+    )
 }
