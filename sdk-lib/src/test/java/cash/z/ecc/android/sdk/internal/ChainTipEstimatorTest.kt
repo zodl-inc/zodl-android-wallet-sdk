@@ -79,4 +79,17 @@ class ChainTipEstimatorNu7Test {
     fun `estimateTip without a network ignores NU7`() {
         assertEquals(nu7 - 11 + 11, estimateTip(nu7 - 11, 0L, 850L, 75L))
     }
+
+    @Test
+    fun `the rate at the estimated tip is the 25s target once the estimated tip is past NU7`() {
+        // Last scanned block nu7 - 11 at t = 0, window not measurable (one sample pair), 850 s elapsed.
+        val samples = longArrayOf(nu7 - 11, 0L)
+        assertEquals(25L, secondsPerBlockAtEstimatedTip(samples, network, 850L))
+    }
+
+    @Test
+    fun `the rate at the estimated tip stays at the scanned rate while the tip is before NU7`() {
+        val samples = longArrayOf(nu7 - 11, 0L)
+        assertEquals(75L, secondsPerBlockAtEstimatedTip(samples, network, 600L))
+    }
 }

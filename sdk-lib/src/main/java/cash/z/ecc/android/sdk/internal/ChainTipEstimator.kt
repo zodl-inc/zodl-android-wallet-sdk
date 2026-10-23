@@ -122,6 +122,29 @@ internal fun secondsPerBlockFromSamples(
 }
 
 /**
+ * The rate that holds at the estimated tip. [secondsPerBlockFromSamples] gives the rate at the latest scanned
+ * block, but a wallet that last scanned a block before NU7 can already have an estimated tip past it, and a
+ * caller that prices a height range with this rate expects the rate of the tip's era. In that case the 25 s
+ * target is returned.
+ */
+internal fun secondsPerBlockAtEstimatedTip(
+    samples: LongArray,
+    network: ZcashNetwork,
+    nowEpochSeconds: Long
+): Long {
+    val rate = secondsPerBlockFromSamples(samples, network)
+    val nu7 = BlockSpacing.nu7ActivationHeight(network)?.value
+    val scannedBeforeNu7 = nu7 != null && samples.size >= 2 && samples[0] < nu7
+    return if (nu7 != null && scannedBeforeNu7 &&
+        estimateTip(samples[0], samples[1], nowEpochSeconds, rate, network) >= nu7
+    ) {
+        BlockSpacing.POST_NU7_SECONDS
+    } else {
+        rate
+    }
+}
+
+/**
  * A [ChainTipEstimator] that reads its block samples through the engine's BUNDLED SQLite (a JNI
  * call), never through a second Android-framework SQLite instance on the engine-owned
  * `data.sqlite3`.
@@ -182,7 +205,7 @@ internal class LazyDataDbChainTipEstimator(
     @Suppress("TooGenericExceptionCaught")
     override suspend fun estimatedSecondsPerBlock(): Long =
         try {
-            secondsPerBlockFromSamples(samples(), network)
+            secondsPerBlockAtEstimatedTip(samples(), network, clock.now().epochSeconds)
         } catch (e: Exception) {
             Twig.warn(e) { "ChainTipEstimator: could not measure block rate — falling back" }
             lastScannedHeight?.let { BlockSpacing.targetSeconds(network, BlockHeight(it)) }
