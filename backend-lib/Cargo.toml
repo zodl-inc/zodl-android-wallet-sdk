@@ -26,9 +26,11 @@ slipstream = ["dep:slipstream-core", "dep:tokio", "dep:tracing-android", "tracin
 [dependencies]
 # Zcash dependencies
 
-# The NU7 pre-release generation: orchard 0.16 with the `=`-pinned librustzcash pre-releases
-# below, the same generation `slipstream-core` 0.4.0-pre.1 and the pinned `zcash_voting` are
-# built against. Everything here resolves from crates.io; no orchard [patch] entry is needed.
+# The NU7 generation: orchard 0.16 with the `=`-pinned stable librustzcash releases below
+# (2026-10-21), the first to set the NU7 mainnet activation height (3543405); the pre-releases
+# leave it unset, so mainnet would keep selecting the NU6.3 branch ID after activation. The
+# `slipstream-core` and `zcash_voting` revisions in [patch.crates-io] are built against the same
+# releases. Everything here resolves from crates.io; no orchard [patch] entry is needed.
 #
 # `unstable-voting-circuits` is not requested here, but it IS enabled in the built graph:
 # re-enabling shielded voting brings it back transitively, because `zcash_voting` and its
@@ -37,16 +39,16 @@ slipstream = ["dep:slipstream-core", "dep:tokio", "dep:tracing-android", "tracin
 # way to keep the share-reveal circuit out of the shipped library is to drop voting itself,
 # not to drop this feature.
 orchard = "0.16"
-zcash_pool_migration = { version = "=0.2.0-pre.1", features = ["wallet"] }
+zcash_pool_migration = { version = "=0.2.0", features = ["wallet"] }
 # `signer` is this branch's addition, for the Keystone batch-signing recipe below
 # (`pczt::roles::signer::batch`).
-pczt = { version = "=0.10.0-pre.1", features = ["prover", "orchard", "sapling", "signer"] }
+pczt = { version = "=0.10.0", features = ["prover", "orchard", "sapling", "signer"] }
 sapling = { package = "sapling-crypto", version = "0.9", default-features = false }
 bls12_381 = "0.9"
 jubjub = "0.11"
-transparent = { package = "zcash_transparent", version = "=0.11.0-pre.1", default-features = false }
-zcash_address = "=0.14.0-pre.1"
-zcash_client_backend = { version = "=0.25.0-pre.1", features = [
+transparent = { package = "zcash_transparent", version = "=0.11.0", default-features = false }
+zcash_address = "=0.14.0"
+zcash_client_backend = { version = "=0.25.0", features = [
     "orchard",
     "lightwalletd-tonic-tls-webpki-roots",
     "tor",
@@ -54,19 +56,20 @@ zcash_client_backend = { version = "=0.25.0-pre.1", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "=0.23.0-pre.1", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
-zcash_keys = "=0.17.0-pre.1"
+zcash_client_sqlite = { version = "=0.23.0", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_keys = "=0.17.0"
 zcash_note_encryption = "0.5.1"
-zcash_primitives = "=0.31.0-pre.1"
-zcash_proofs = "=0.31.0-pre.1"
-zcash_protocol = "=0.11.0-pre.0"
+zcash_primitives = "=0.31.0"
+zcash_proofs = "=0.31.0"
+zcash_protocol = "=0.11.0"
 zcash_script = "0.6"
 zip32 = "0.3"
 # TODO: temporary git-rev pin -- switch to a published crates.io release once payment_uri ships
-# one. Pinned to the zcash/librustzcash#2989 merge commit specifically (not main's moving tip),
-# so this doesn't pick up unrelated later changes; that merge commit is a permanent part of
-# main's history now, so it stays reachable even as main moves on.
-payment_uri = { git = "https://github.com/zcash/librustzcash.git", rev = "330e4c0aa9e25199acdb93a56bf70126d0d3f2b9", features = ["json"] }
+# one. Pinned to the librustzcash `main` merge of the stable releases above
+# (zcash/librustzcash#3188) specifically, not main's moving tip, so this doesn't pick up unrelated
+# later changes. It contains the zcash/librustzcash#2989 merge (330e4c0a) this was first pinned
+# to. payment_uri depends on no `zcash_*` crate, so this pin adds no second copy of the family.
+payment_uri = { git = "https://github.com/zcash/librustzcash.git", rev = "d0f78998c91f1659d48f39c82ed3c16bd319bb31", features = ["json"] }
 # Used by migration_finalize.rs to read `ShardTreeError`/`QueryError` variants when checking
 # note-witness availability at a migration transaction's anchor boundary.
 shardtree = "0.8"
@@ -120,8 +123,8 @@ dlopen2 = "0.8"
 libc = "0.2"
 
 # Tor
-fs-mistrust = "0.12"
-tor-rtcompat = "0.35"
+fs-mistrust = "0.14"
+tor-rtcompat = "0.43"
 rust_decimal = { version = "1", default-features = false, features = ["c-repr"] }
 # - The "static" feature is required for the "compression" default feature of arti-client.
 xz2 = { version = "0.1", features = ["static"] }
@@ -176,8 +179,8 @@ xz2 = { version = "0.1", features = ["static"] }
 # and a network-triggerable vote-tree-sync panic fix. See this crate's own CHANGELOG for
 # the full 4.0.0-through-5.1.0 history if re-pinning again later.
 #
-# `[patch.crates-io]` below takes 5.1.1-rc.3 from the head of valargroup/zcash_voting#373, which
-# moves the `lrz` backend to the NU7 pre-release crates. crates.io also has a zcash_voting
+# `[patch.crates-io]` below takes 5.1.1-rc.3 from a fork revision that moves the `lrz` backend
+# to the stable NU7 librustzcash releases. crates.io also has a zcash_voting
 # 5.1.1-rc.3 (published 2026-09-28), but that one is built on the Ironwood generation
 # (zcash_protocol ^0.10.4); the fork reuses its version number. So `=5.1.1-rc.3` resolves to the
 # NU7 code only while the patch entry is present: remove it and cargo silently takes the
@@ -202,8 +205,9 @@ ff = { version = "0.14" }
 # instance in the SAME process, or closing one connection drops the other's fcntl locks out
 # from under it (the dual-instance SIGBUS/disk-I/O hazard; see
 # docs/slipstream/android/worklog/ARCHIVE-phases-0-9.md for the full writeup). The engine is
-# the published `zodl-slipstream` crate from crates.io, built against the same librustzcash
-# generation as the rest of this graph — verify with `cargo tree -d` after any bump.
+# the `zodl-slipstream` crate, patched to a git revision in [patch.crates-io] below and built
+# against the same librustzcash releases as the rest of this graph — verify with `cargo tree -d`
+# after any bump.
 slipstream-core = { package = "zodl-slipstream", version = "=0.4.0-pre.1", optional = true }
 # The module's owned engine runtime (HOSTING.md §3.1) and the logcat logging layer it wires up.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
@@ -229,8 +233,8 @@ ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", package
 # device identity, UFVK export, address display), BLE framing, and the PCZT signing session. The
 # Kotlin layer moves its bytes over BLE; nothing here touches a device.
 #
-# Published on crates.io from the public zodl-inc/pczt-ledger repository; 0.1.0-pre.0 is built
-# against the NU7 pre-release crates, the same generation as the rest of this graph.
+# Published on crates.io from the public zodl-inc/pczt-ledger repository; 0.1.0-pre.0 takes the
+# NU7 crates by caret requirement, so it resolves to the same stable releases as this graph.
 #
 # Default features only (`std`, which adds nothing this crate uses beyond the error `source`s):
 # neither `transport-hid` nor `transport-speculos`, since Android has no USB path to the device and
@@ -260,7 +264,7 @@ secp256k1 = "0.29"
 # transaction through `zcash_client_sqlite`'s internal pool-migration truncation wiring. Cargo
 # unions this feature set with the `[dependencies]` entry above only for test/bench/example
 # builds, so the release library never links tempfile/rand_chacha/ambassador.
-zcash_client_sqlite = { version = "=0.23.0-pre.1", features = ["orchard", "transparent-inputs", "unstable", "serde", "test-dependencies"] }
+zcash_client_sqlite = { version = "=0.23.0", features = ["orchard", "transparent-inputs", "unstable", "serde", "test-dependencies"] }
 
 [lib]
 name = "zcashwalletsdk"
@@ -272,19 +276,23 @@ crate-type = ["staticlib", "cdylib"]
 [workspace]
 
 [patch.crates-io]
-# `slipstream-core` is deliberately absent here: since the engine's history rewrite to the
-# published `zodl-slipstream` line, the dependency above resolves from crates.io like
-# the rest of the released family — the old git pin was not dropped by accident.
-#
-# Shielded voting on the NU7 pre-release crates.
+# zodl-slipstream: the published 0.4.0-pre.1 release with its librustzcash pins moved to the
+# stable releases and the `WalletWrite::set_account_name` impls that zcash_client_sqlite 0.23.0
+# requires; on branch feature/0.4.0-pre.1-librustzcash-stable. This entry goes once slipstream
+# publishes a release built on the stable librustzcash releases.
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream", rev = "8adfeadadfeb6b5e62173387bc1d53fbff42a8b4" }
+
+# Shielded voting on the stable NU7 librustzcash releases.
 #
 # No `zcash_voting` release is built on the NU7 crates yet, and the crate is not ours to publish,
-# so it and the crates under it come from the heads of the pull requests that move them there.
+# so it and the crates under it come from fork revisions that move them there: the pull requests
+# noted below, plus a commit on each that moves their `=` pins from the librustzcash
+# pre-releases to the stable releases.
 # A `[patch]` table in a dependency's own workspace does not reach its consumers, so this repeats
 # the entries of the table valargroup/zcash_voting#373 carries that this package's graph uses, at
-# the same revisions. That table also patches the Zakura crates (zakura-core/common#538); they
-# are optional dependencies only the `zakura` backend enables, so with `lrz` they never enter
-# this lockfile and need no entry here.
+# the stable-release revisions of the same forks. That table also patches the Zakura crates
+# (zakura-core/common#538); they are optional dependencies only the `zakura` backend enables, so
+# with `lrz` they never enter this lockfile and need no entry here.
 #
 # crates.io already has releases with these exact version numbers, built on the Ironwood
 # generation (orchard 0.15, zcash_protocol 0.10): zcash_voting 5.1.1-rc.3, voting-circuits
@@ -296,16 +304,16 @@ crate-type = ["staticlib", "cdylib"]
 # then check `cargo tree -d` for duplicated `zcash_*`/`orchard` crates.
 #
 # valargroup/zcash_voting#373
-zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting", rev = "9bb376295431a3c73a260ed6bbbcc870284f2db3" }
+zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting", rev = "34bd429860347686ce2178b27679daa64888b24c" }
 # valargroup/voting-circuits#135
-voting-circuits = { git = "https://github.com/zodl-inc/voting-circuits", rev = "6a399f9260ebbb278cc180a23c89dc73323ee5f5" }
-voting-crypto-deps = { git = "https://github.com/zodl-inc/voting-circuits", rev = "6a399f9260ebbb278cc180a23c89dc73323ee5f5" }
-imt-tree = { git = "https://github.com/zodl-inc/voting-circuits", rev = "6a399f9260ebbb278cc180a23c89dc73323ee5f5" }
+voting-circuits = { git = "https://github.com/zodl-inc/voting-circuits", rev = "19fcf8d155d00f33f10af7d41fd0f3e2fba3322c" }
+voting-crypto-deps = { git = "https://github.com/zodl-inc/voting-circuits", rev = "19fcf8d155d00f33f10af7d41fd0f3e2fba3322c" }
+imt-tree = { git = "https://github.com/zodl-inc/voting-circuits", rev = "19fcf8d155d00f33f10af7d41fd0f3e2fba3322c" }
 # valargroup/vote-nullifier-pir#173
-pir-types = { git = "https://github.com/zodl-inc/vote-nullifier-pir", rev = "74327f9073e310b2b915d30f2a3c4d7918db7778" }
-pir-client = { git = "https://github.com/zodl-inc/vote-nullifier-pir", rev = "74327f9073e310b2b915d30f2a3c4d7918db7778" }
+pir-types = { git = "https://github.com/zodl-inc/vote-nullifier-pir", rev = "e25ccf96f0311e6eb64c2d4ddd4e06a4ac4114dc" }
+pir-client = { git = "https://github.com/zodl-inc/vote-nullifier-pir", rev = "e25ccf96f0311e6eb64c2d4ddd4e06a4ac4114dc" }
 # zakura-core/wallet-libraries#83
-zakura-wallet-lib = { git = "https://github.com/zodl-inc/zakura-wallet-libraries", rev = "29fa15e0ca839d8a6807721ea7275f0994f09b72" }
+zakura-wallet-lib = { git = "https://github.com/zodl-inc/zakura-wallet-libraries", rev = "765bbf1db250c9c16a110177e8022aa78e339a02" }
 
 # DO NOT ALTER THIS COMMENT
 #

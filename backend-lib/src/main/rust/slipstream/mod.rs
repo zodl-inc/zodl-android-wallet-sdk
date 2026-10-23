@@ -75,6 +75,7 @@ use slipstream_core::{AnchorRetention, Endpoint, EngineConfig, Network, Progress
 // The engine's `SessionConfig` now takes pre-parsed accounts; parse the host UFVK encoding here.
 use zcash_client_backend::keys::UnifiedFullViewingKey;
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::zip318::BlockSpacing;
 
 // Migration anchor retention floor — delegated to typed migration.rs implementation.
 use crate::migration::min_pending_anchor_boundary;
@@ -546,6 +547,7 @@ fn start_session(
     cfg.anchor_retention = anchor_retention_floor.map(|floor| {
         AnchorRetention::new(
             BlockHeight::from(floor),
+            BlockSpacing::for_network(&h.network),
             crate::anchor_retention_interval(zcash_protocol::consensus::Parameters::network_type(
                 &h.network,
             )),

@@ -6,6 +6,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Mainnet now activates NU7 at height 3,543,405. The SDK is built on the stable librustzcash releases (`zcash_protocol`
+  0.11.0, `zcash_client_backend` 0.25.0, `zcash_client_sqlite` 0.23.0 and their siblings), the first to set that
+  height. 5.2.2 was built on pre-releases that define the NU7 consensus branch ID (`0x77190AD9`) but no mainnet
+  activation height, so on mainnet it keeps building transactions for the NU6.3 branch after NU7 activates.
+
 ## [5.2.2] - 2026-10-20
 
 ### Security
