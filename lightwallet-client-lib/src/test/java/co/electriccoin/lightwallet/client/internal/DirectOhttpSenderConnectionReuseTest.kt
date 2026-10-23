@@ -1,12 +1,13 @@
 package co.electriccoin.lightwallet.client.internal
 
 import co.electriccoin.lightwallet.client.OhttpException
+import co.electriccoin.lightwallet.client.OhttpSender
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.util.concurrent.TimeUnit
@@ -14,8 +15,9 @@ import kotlin.test.assertFailsWith
 
 /**
  * [DirectOhttpSender] reuses its relay connection across exchanges (`RecordedRequest.sequenceNumber` is
- * the request's index on its connection: 0 = a fresh connection) and never past
- * [RelayConnections.MAX_CONNECTION_AGE_NANOS], driven here by a fake clock.
+ * the request's index on its connection: 0 = a fresh connection) and never uses one past
+ * [RelayConnections.MAX_CONNECTION_AGE_NANOS], driven here by a fake clock; and the relay sees the
+ * caller's headers plus the sender's fixed defaults, nothing of OkHttp's own choosing.
  */
 class DirectOhttpSenderConnectionReuseTest {
     private val relay = MockWebServer()
@@ -53,17 +55,32 @@ class DirectOhttpSenderConnectionReuseTest {
     }
 
     @Test
-    fun `a connection just under the maximum lifetime is still reused`() {
+    fun `an exchange that ends just under the maximum lifetime still reuses the connection`() {
         repeat(TWO) { relay.enqueue(MockResponse().setBody("ok")) }
 
         runBlocking {
             sender.post(relay.url("/relay").toString(), byteArrayOf(1), emptyList(), TIMEOUT_MS)
-            nowNanos += RelayConnections.MAX_CONNECTION_AGE_NANOS - 1
+            nowNanos += RelayConnections.MAX_CONNECTION_AGE_NANOS - TIMEOUT_NANOS - 1
             sender.post(relay.url("/relay").toString(), byteArrayOf(2), emptyList(), TIMEOUT_MS)
         }
 
         assertEquals(0, relay.takeRequest().sequenceNumber)
         assertEquals(1, relay.takeRequest().sequenceNumber)
+    }
+
+    /** The deadline of an exchange, not only its start, stays within the lifetime: nothing runs on an old one. */
+    @Test
+    fun `an exchange that could still be running at the maximum lifetime opens a new connection`() {
+        repeat(TWO) { relay.enqueue(MockResponse().setBody("ok")) }
+
+        runBlocking {
+            sender.post(relay.url("/relay").toString(), byteArrayOf(1), emptyList(), TIMEOUT_MS)
+            nowNanos += RelayConnections.MAX_CONNECTION_AGE_NANOS - TIMEOUT_NANOS
+            sender.post(relay.url("/relay").toString(), byteArrayOf(2), emptyList(), TIMEOUT_MS)
+        }
+
+        assertEquals(0, relay.takeRequest().sequenceNumber)
+        assertEquals("a new connection for an exchange ending at the lifetime", 0, relay.takeRequest().sequenceNumber)
     }
 
     @Test
@@ -87,6 +104,14 @@ class DirectOhttpSenderConnectionReuseTest {
     fun `the maximum lifetime is slipstream's ten minutes`() =
         assertEquals(TimeUnit.MINUTES.toNanos(TEN), RelayConnections.MAX_CONNECTION_AGE_NANOS)
 
+    /** An idle connection is dropped before the relay drops it, and well within the lifetime. */
+    @Test
+    fun `the keep-alive is below the measured relay idle timeout and the maximum lifetime`() {
+        assertTrue(RelayConnections.KEEP_ALIVE_SECONDS < RelayConnections.MEASURED_RELAY_IDLE_TIMEOUT_SECONDS)
+        val keepAliveNanos = TimeUnit.SECONDS.toNanos(RelayConnections.KEEP_ALIVE_SECONDS)
+        assertTrue(keepAliveNanos < RelayConnections.MAX_CONNECTION_AGE_NANOS)
+    }
+
     @Test
     fun `a redirect is reported with its status and not followed`() {
         relay.enqueue(MockResponse().setResponseCode(FOUND).setHeader("Location", relay.url("/elsewhere")))
@@ -101,28 +126,83 @@ class DirectOhttpSenderConnectionReuseTest {
         assertEquals(1, relay.requestCount)
     }
 
+    /**
+     * The exact header set on the wire (HTTP/1.1): the caller's two, the sender's `Accept-Encoding: identity`
+     * and fixed `User-Agent` (so OkHttp adds neither its transparent `gzip` nor `okhttp/x.y.z`), and the HTTP
+     * layer's `Host`, `Content-Length`, `Connection: Keep-Alive`.
+     */
     @Test
-    fun `only the caller's headers are sent and the body arrives intact`() {
+    fun `the relay sees the caller's headers, identity encoding, the fixed user agent and nothing else`() {
         relay.enqueue(MockResponse().setBody("ok"))
 
         runBlocking {
             sender.post(
                 relay.url("/relay").toString(),
                 byteArrayOf(1, 2, 3),
-                listOf("Content-Type" to "message/ohttp-chunked-req", "User-Agent" to "ZODL-OHTTP/1.0"),
+                listOf("Content-Type" to "message/ohttp-chunked-req", "Accept" to "message/ohttp-chunked-res"),
                 TIMEOUT_MS,
             )
         }
 
         val request = relay.takeRequest()
+        assertEquals(
+            setOf("content-type", "accept", "accept-encoding", "user-agent", "host", "content-length", "connection"),
+            request.headers.names().map { it.lowercase() }.toSet(),
+        )
         assertEquals("message/ohttp-chunked-req", request.getHeader("Content-Type"))
-        assertEquals("ZODL-OHTTP/1.0", request.getHeader("User-Agent"))
-        assertNotEquals("close", request.getHeader("Connection")?.lowercase())
+        assertEquals("message/ohttp-chunked-res", request.getHeader("Accept"))
+        assertEquals("identity", request.getHeader("Accept-Encoding"))
+        assertEquals(OhttpSender.FIXED_USER_AGENT, request.getHeader("User-Agent"))
+        assertEquals("keep-alive", request.getHeader("Connection")?.lowercase())
         assertEquals(listOf<Byte>(1, 2, 3), request.body.readByteArray().toList())
+    }
+
+    /** The transport passes its own encoding and agent: sent once each, as given, nothing added. */
+    @Test
+    fun `a caller's own encoding and user agent are sent once, as given`() {
+        relay.enqueue(MockResponse().setBody("ok"))
+
+        runBlocking {
+            sender.post(
+                relay.url("/relay").toString(),
+                byteArrayOf(1),
+                listOf(
+                    "Content-Type" to "message/ohttp-chunked-req",
+                    "Accept" to "message/ohttp-chunked-res",
+                    "Accept-Encoding" to "identity",
+                    "User-Agent" to "ZODL-OHTTP/1.0",
+                ),
+                TIMEOUT_MS,
+            )
+        }
+
+        val request = relay.takeRequest()
+        assertEquals(listOf("identity"), request.headers.values("Accept-Encoding"))
+        assertEquals(listOf("ZODL-OHTTP/1.0"), request.headers.values("User-Agent"))
+        assertEquals(
+            setOf("content-type", "accept", "accept-encoding", "user-agent", "host", "content-length", "connection"),
+            request.headers.names().map { it.lowercase() }.toSet(),
+        )
+    }
+
+    @Test
+    fun `a GET carries the same fixed defaults`() {
+        relay.enqueue(MockResponse().setBody("keys"))
+
+        runBlocking { sender.get(relay.url("/ohttp-keys").toString(), emptyList(), TIMEOUT_MS) }
+
+        val request = relay.takeRequest()
+        assertEquals(
+            setOf("accept-encoding", "user-agent", "host", "connection"),
+            request.headers.names().map { it.lowercase() }.toSet(),
+        )
+        assertEquals("identity", request.getHeader("Accept-Encoding"))
+        assertEquals(OhttpSender.FIXED_USER_AGENT, request.getHeader("User-Agent"))
     }
 
     companion object {
         private const val TIMEOUT_MS = 5_000
+        private val TIMEOUT_NANOS = TimeUnit.MILLISECONDS.toNanos(TIMEOUT_MS.toLong())
         private const val FOUND = 302
         private const val TWO = 2
         private const val THREE = 3

@@ -214,6 +214,7 @@ dependencyResolutionManagement {
             library("mockito-android", "org.mockito:mockito-android:$mockitoVersion")
             library("mockito-junit", "org.mockito:mockito-junit-jupiter:$mockitoVersion")
             library("okhttp-mockwebserver", "com.squareup.okhttp3:mockwebserver:$okhttpVersion")
+            library("okhttp-tls", "com.squareup.okhttp3:okhttp-tls:$okhttpVersion")
 
             // Bundles
             bundle(

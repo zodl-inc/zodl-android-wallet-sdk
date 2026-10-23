@@ -79,6 +79,14 @@ interface OhttpSender : Disposable {
          */
         const val MAX_KEY_CONFIG_BYTES: Int = 64 * 1024
 
+        /**
+         * The `User-Agent` sent to the relay and to a resolver: fixed, the same for every installation, so a
+         * platform default naming the device model or OS build never reaches them (ZIP "Outer request to the
+         * Relay"). The transport sends it on every request; `DirectOhttpSender` also fills it in for a caller
+         * that passes none, so the HTTP layer's own agent string is never sent.
+         */
+        const val FIXED_USER_AGENT: String = "ZODL-OHTTP/1.0"
+
         /** A `Retry-After` value in the delay-seconds form, or null (absent, an HTTP date, malformed). */
         fun retryAfterSeconds(value: String?): Long? = value?.trim()?.toLongOrNull()?.takeIf { it >= 0 }
     }

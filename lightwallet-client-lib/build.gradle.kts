@@ -138,6 +138,7 @@ dependencies {
     testImplementation(libs.kotlin.test)
     testImplementation(libs.grpc.testing)
     testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.okhttp.tls)
 
     androidTestImplementation(libs.androidx.multidex)
     androidTestImplementation(libs.androidx.test.runner)

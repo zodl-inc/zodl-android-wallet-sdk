@@ -8,9 +8,11 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import okhttp3.Call
+import okhttp3.MediaType
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody
 import okhttp3.Response
+import okio.BufferedSink
 import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
@@ -25,8 +27,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Relay connections are pooled and reused across requests and across senders ([RelayConnections]: one
  * HTTP/2 connection multiplexes concurrent exchanges when the relay negotiates it), and never reused
  * past [RelayConnections.MAX_CONNECTION_AGE_MINUTES], the ZIP's reference rotation for Tor-off mode and
- * slipstream's `H2_MAX_CONNECTION_AGE`. Only the headers the caller passes are sent (plus what OkHttp
- * adds for a transparent response encoding); redirects are not followed.
+ * slipstream's `H2_MAX_CONNECTION_AGE`. The relay sees the caller's headers, `Accept-Encoding: identity`
+ * and the fixed `User-Agent` when the caller sets none of its own (so OkHttp never adds its transparent
+ * gzip or its own agent string), and the HTTP layer's `Host`, `Content-Length` and `Connection:
+ * Keep-Alive`; redirects are not followed, and the HTTP layer never sends a request twice (the sealed
+ * body is one-shot, [SealedRequestBody]; a second network request of one exchange is refused,
+ * [RelayConnections]; an answer that OkHttp obtained by a follow-up would not be opened, [exchange]).
  *
  * `timeoutMs` bounds each read and, through a watchdog that cancels the call, the whole exchange: a
  * relay that keeps dribbling bytes cannot hold a call open past it. Cancelling the caller cancels the
@@ -110,20 +116,34 @@ class DirectOhttpSender internal constructor(
 
     /**
      * One exchange on a pooled connection: [read] gets the answer, whose response is closed afterwards (a
-     * body [read] did not finish is discarded with its connection). Whatever the outcome, the pools
-     * retired by a rotation are swept, so a connection that outlived its generation in flight is closed
-     * now.
+     * body [read] did not finish is discarded with its connection). An answer with a `priorResponse` was
+     * obtained by a follow-up, i.e. the HTTP layer sent a request twice; it is not opened but reported
+     * as a protocol failure (the two guards in [RelayConnections] make this unreachable, it is the last
+     * line). Whatever the outcome, the pools retired by a rotation are swept, so a connection that
+     * outlived its generation in flight is closed now.
      */
     private suspend fun <T> exchange(
         timeoutMs: Int,
         request: Request.Builder,
         read: (Answer) -> T,
     ): T {
-        val call = connections.client(timeoutMs).newCall(request.build())
+        val ticket = RelayConnections.ExchangeTicket()
+        val call =
+            connections
+                .client(timeoutMs)
+                .newCall(request.tag(RelayConnections.ExchangeTicket::class.java, ticket).build())
         try {
             return closingOnCancel(call) {
                 withDeadline(call, timeoutMs) { expired ->
-                    call.execute().use { response -> read(Answer(response, timeoutMs, expired)) }
+                    call.execute().use { response ->
+                        response.priorResponse?.let { prior ->
+                            throw OhttpException(
+                                "The HTTP layer sent the request again after HTTP ${prior.code}; " +
+                                    "its second answer (HTTP ${response.code}) is not opened",
+                            )
+                        }
+                        read(Answer(response, timeoutMs, expired))
+                    }
                 }
             }
         } finally {
@@ -300,11 +320,63 @@ private fun postRequest(
     Request
         .Builder()
         .url(url)
-        .post(body.toRequestBody())
+        .post(SealedRequestBody(body))
         .withHeaders(headers)
 
+/**
+ * The caller's headers, then the sender's fixed values for the two the HTTP layer would otherwise fill
+ * in itself when absent: `Accept-Encoding: identity` (OkHttp's `BridgeInterceptor` would send `gzip` and
+ * decode transparently, hiding the body's length from the read caps and leaving the relay a choice) and
+ * [OhttpSender.FIXED_USER_AGENT] (OkHttp's names its own version). The ZIP's outer request carries
+ * exactly `Content-Type`, `Accept` and `Accept-Encoding: identity`, and "a fixed `User-Agent` that is the
+ * same for every installation of the application, or none"; the transport passes all four, so these
+ * defaults only matter for other callers of the public sender. OkHttp's own `Host`, `Content-Length` and
+ * `Connection: Keep-Alive` carry nothing identifying.
+ */
 private fun Request.Builder.withHeaders(headers: List<Pair<String, String>>): Request.Builder =
-    apply { headers.forEach { (key, value) -> addHeader(key, value) } }
+    apply {
+        headers.forEach { (key, value) -> addHeader(key, value) }
+        if (headers.none { it.first.equals(ACCEPT_ENCODING_HEADER, ignoreCase = true) }) {
+            header(ACCEPT_ENCODING_HEADER, IDENTITY_ENCODING)
+        }
+        if (headers.none { it.first.equals(USER_AGENT_HEADER, ignoreCase = true) }) {
+            header(USER_AGENT_HEADER, OhttpSender.FIXED_USER_AGENT)
+        }
+    }
+
+private const val ACCEPT_ENCODING_HEADER = "Accept-Encoding"
+private const val IDENTITY_ENCODING = "identity"
+private const val USER_AGENT_HEADER = "User-Agent"
+
+/**
+ * The sealed request as a body the HTTP layer writes once. [isOneShot] is what makes OkHttp return the
+ * answer it has instead of following it up with a second post: `RetryAndFollowUpInterceptor.intercept`
+ * (checked at OkHttp 5.1.0 and 4.12.0) drops a follow-up whose body is one-shot before any of its
+ * status rules - 503 with `Retry-After: 0`, 408, 421 on a coalesced HTTP/2 connection - send again,
+ * and `recover` never retries a one-shot body on a failed connection. Should any HTTP layer still ask
+ * for the bytes twice, the second [writeTo] fails instead of repeating them: an Encapsulated Request
+ * sent byte-for-byte again is indistinguishable from a replay (ZIP "One call, one exchange").
+ *
+ * No content type of its own: the caller's `Content-Type` header is the one sent.
+ */
+internal class SealedRequestBody(
+    private val bytes: ByteArray,
+) : RequestBody() {
+    private val written = AtomicBoolean(false)
+
+    override fun contentType(): MediaType? = null
+
+    override fun contentLength(): Long = bytes.size.toLong()
+
+    override fun isOneShot(): Boolean = true
+
+    override fun writeTo(sink: BufferedSink) {
+        if (!written.compareAndSet(false, true)) {
+            throw IOException("The sealed request was already sent and must not be sent again")
+        }
+        sink.write(bytes)
+    }
+}
 
 /** The exchange timeout as reported to the caller, [cause] being the I/O error the cancelled call produced. */
 private fun exchangeTimeout(

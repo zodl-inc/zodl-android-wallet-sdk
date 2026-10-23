@@ -420,7 +420,7 @@ internal class OhttpTransport(
         private const val READ_BUFFER_BYTES = 64 * 1024
 
         /** Fixed, so the relay never sees the platform's default (device model, OS build). */
-        private val USER_AGENT_HEADER = listOf("User-Agent" to "ZODL-OHTTP/1.0")
+        private val USER_AGENT_HEADER = listOf("User-Agent" to OhttpSender.FIXED_USER_AGENT)
 
         /**
          * On every GET, to the relay and to a resolver: identity encoding, so that the platform does not
