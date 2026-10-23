@@ -272,9 +272,9 @@ crate-type = ["staticlib", "cdylib"]
 [workspace]
 
 [patch.crates-io]
-# `slipstream-core` is deliberately absent here: since the engine's history rewrite to the
-# published `zodl-slipstream` line, the dependency above resolves from crates.io like
-# the rest of the released family — the old git pin was not dropped by accident.
+# The engine is patched to a git revision below until a `zodl-slipstream` release that builds on the NU7
+# release crates exists; the dependency above otherwise resolves from crates.io. The old `slipstream-core`
+# git pin is gone on purpose.
 
 # MOB-2287: Slipstream on the stable NU7 crates, pinned by hash to zodl-inc/slipstream#27 (stacked on
 # #26) until a zodl-slipstream release contains them. Swap for the published version then.

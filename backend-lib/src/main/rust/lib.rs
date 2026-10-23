@@ -4084,8 +4084,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_che
         let lwd_conn = unsafe { lwd_conn.as_mut() }
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
-        // one day's worth of blocks.
-        let max_exposure_depth = (24 * 60 * 60) / 75;
+        let cur_height = db_data
+            .chain_height()?
+            .ok_or(SqliteClientError::ChainHeightUnknown)?;
+        // The target spacing of the next block: 75 s before NU7 and 25 s from NU7 (ZIP 218).
+        let block_spacing_secs =
+            zcash_protocol::consensus::pow_target_spacing(&network, cur_height + 1).as_secs();
+
+        // one day's worth of blocks at the current target spacing: 1,152 before NU7, 3,456 from it.
+        let max_exposure_depth = u32::try_from((24 * 60 * 60) / block_spacing_secs)?;
         let addrs =
             db_data.get_ephemeral_transparent_receivers(account_uuid, max_exposure_depth, true)?;
 
@@ -4099,10 +4106,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_che
                     && matches!(meta.exposure(), Exposure::Exposed { .. })
             })
             .min_by_key(|(_, meta)| meta.next_check_time());
-
-        let cur_height = db_data
-            .chain_height()?
-            .ok_or(SqliteClientError::ChainHeightUnknown)?;
 
         let mut found = None;
         if let Some((addr, meta)) = selected_addr_meta {
@@ -4142,7 +4145,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_che
                 let offset_blocks = blocks_since_exposure.log2();
                 // Convert the offset in blocks to an offset in seconds; this will always fit in a
                 // u32.
-                let offset_seconds = (offset_blocks * 75.0).round() as u32;
+                let offset_seconds = (offset_blocks * block_spacing_secs as f64).round() as u32;
                 db_data.schedule_next_check(&addr, offset_seconds)?;
             }
         }
