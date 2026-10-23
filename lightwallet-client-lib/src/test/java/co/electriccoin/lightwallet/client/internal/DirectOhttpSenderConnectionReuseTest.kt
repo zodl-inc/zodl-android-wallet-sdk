@@ -5,6 +5,7 @@ import co.electriccoin.lightwallet.client.OhttpSender
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -147,7 +148,7 @@ class DirectOhttpSenderConnectionReuseTest {
         val request = relay.takeRequest()
         assertEquals(
             setOf("content-type", "accept", "accept-encoding", "user-agent", "host", "content-length", "connection"),
-            request.headers.names().map { it.lowercase() }.toSet(),
+            request.headerNames(),
         )
         assertEquals("message/ohttp-chunked-req", request.getHeader("Content-Type"))
         assertEquals("message/ohttp-chunked-res", request.getHeader("Accept"))
@@ -181,7 +182,7 @@ class DirectOhttpSenderConnectionReuseTest {
         assertEquals(listOf("ZODL-OHTTP/1.0"), request.headers.values("User-Agent"))
         assertEquals(
             setOf("content-type", "accept", "accept-encoding", "user-agent", "host", "content-length", "connection"),
-            request.headers.names().map { it.lowercase() }.toSet(),
+            request.headerNames(),
         )
     }
 
@@ -194,11 +195,14 @@ class DirectOhttpSenderConnectionReuseTest {
         val request = relay.takeRequest()
         assertEquals(
             setOf("accept-encoding", "user-agent", "host", "connection"),
-            request.headers.names().map { it.lowercase() }.toSet(),
+            request.headerNames(),
         )
         assertEquals("identity", request.getHeader("Accept-Encoding"))
         assertEquals(OhttpSender.FIXED_USER_AGENT, request.getHeader("User-Agent"))
     }
+
+    /** The header names the relay saw, lower-cased (OkHttp and the caller may differ in case). */
+    private fun RecordedRequest.headerNames(): Set<String> = headers.names().mapTo(mutableSetOf()) { it.lowercase() }
 
     companion object {
         private const val TIMEOUT_MS = 5_000

@@ -72,7 +72,8 @@ class DirectOhttpSenderOneRequestTest {
         assertEquals(status, thrown.httpStatus)
         if (header != null) assertEquals(0L, thrown.retryAfterSeconds)
         assertEquals("the relay saw exactly one request", 1, relay.requestCount)
-        assertEquals(listOf<Byte>(1, 2, 3), relay.takeRequest().body.readByteArray().toList())
+        val body = relay.takeRequest().body
+        assertEquals(listOf<Byte>(1, 2, 3), body.readByteArray().toList())
     }
 
     /** A GET has no body to make one-shot; the per-exchange guard refuses the follow-up before it is sent. */

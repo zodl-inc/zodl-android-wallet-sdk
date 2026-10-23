@@ -48,14 +48,15 @@ internal fun nextStatus(
     state: Int,
     hostWantsRunning: Boolean,
     serverReached: Boolean
-): Status =
-    when (state) {
+): Status {
+    val retryingAfterOutage = previous == Status.DISCONNECTED && !serverReached
+    return when (state) {
         ENGINE_STATE_IDLE -> if (hostWantsRunning) Status.DISCONNECTED else previous
-        ENGINE_STATE_SYNCING ->
-            if (previous == Status.DISCONNECTED && !serverReached) Status.DISCONNECTED else Status.SYNCING
+        ENGINE_STATE_SYNCING -> if (retryingAfterOutage) Status.DISCONNECTED else Status.SYNCING
         ENGINE_STATE_DONE -> Status.SYNCED
         else -> Status.DISCONNECTED // 2 error (offer retry), and any unknown value
     }
+}
 
 /**
  * Whether [snap] shows the engine reached the server since [previous] (the previous tick's snapshot,
@@ -68,16 +69,16 @@ internal fun nextStatus(
 internal fun serverReached(
     previous: SlipstreamSnapshot?,
     snap: SlipstreamSnapshot
-): Boolean {
-    if (snap.state == ENGINE_STATE_DONE) return true
-    if (previous == null) return false
-    return (snap.tipFresh && !previous.tipFresh) ||
-        snap.chainTip > previous.chainTip ||
-        snap.fetchedBlocks > previous.fetchedBlocks ||
-        snap.scannedBlocks > previous.scannedBlocks ||
-        snap.enhancedTxs > previous.enhancedTxs ||
-        snap.progressPermille > previous.progressPermille
-}
+): Boolean = snap.state == ENGINE_STATE_DONE || (previous != null && snap.advancedFrom(previous))
+
+/** Whether a network-fed fact of this snapshot moved forward since [previous] (see [serverReached]). */
+private fun SlipstreamSnapshot.advancedFrom(previous: SlipstreamSnapshot): Boolean =
+    (tipFresh && !previous.tipFresh) ||
+        chainTip > previous.chainTip ||
+        fetchedBlocks > previous.fetchedBlocks ||
+        scannedBlocks > previous.scannedBlocks ||
+        enhancedTxs > previous.enhancedTxs ||
+        progressPermille > previous.progressPermille
 
 /** `SlipstreamSnapshot.state` values (`FFI_JNI_CONTRACT.md`: 0 idle, 1 syncing, 2 error, 3 done). */
 internal const val ENGINE_STATE_IDLE = 0

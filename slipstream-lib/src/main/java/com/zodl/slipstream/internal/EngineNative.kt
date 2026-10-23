@@ -1,3 +1,5 @@
+@file:Suppress("LongParameterList")
+
 package com.zodl.slipstream.internal
 
 import com.zodl.slipstream.SlipstreamNative

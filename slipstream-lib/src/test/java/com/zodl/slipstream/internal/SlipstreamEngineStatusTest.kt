@@ -53,7 +53,7 @@ class SlipstreamEngineStatusTest {
             torDir: String?
         ): Boolean {
             starts.incrementAndGet()
-            if (startThrows) throw IllegalStateException("slipstream start failed")
+            check(!startThrows) { "slipstream start failed" }
             return true
         }
 
