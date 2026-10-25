@@ -351,7 +351,6 @@ fn open_handle(
         task: None,
         unfinished_passes: Vec::new(),
         pass_lock: Arc::new(tokio::sync::Mutex::new(())),
-        unfinished_passes: Vec::new(),
         endpoint: Endpoint {
             host: host.to_string(),
             port,
