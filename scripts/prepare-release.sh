@@ -226,7 +226,7 @@ relative to the previous release.
 EOF
     if ! gh pr create --repo "$GH_REPO" --draft \
         --base "$RELEASE_BRANCH" --head "$CANDIDATE_BRANCH" \
-        --title "Release zcash-android-wallet-sdk ${VERSION}" \
+        --title "Release zodl-android-wallet-sdk ${VERSION}" \
         --body-file "$PR_BODY_FILE"; then
         die "gh pr create failed." \
             "${RELEASE_BRANCH} and ${CANDIDATE_BRANCH} are already pushed." \

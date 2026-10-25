@@ -9,11 +9,6 @@ package com.zodl.slipstream
  * `KOTLIN_ROSETTA.md` row C1) - callers never construct this type directly.
  */
 internal sealed interface SlipstreamWalletSetup {
-    /** Keys stay host-side (`FFI_JNI_CONTRACT.md` section 1): hand the engine a UFVK only (view-only import on first pass). */
-    data class FromUfvk(
-        val ufvk: String
-    ) : SlipstreamWalletSetup
-
     /** Seed never crosses the boundary - it is used ONCE, host-side, to derive the UFVK. */
     data class FromSeed(
         val seed: ByteArray

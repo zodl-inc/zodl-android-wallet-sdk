@@ -149,17 +149,17 @@ all the way to the Rust backend before failing.
 ### Key material in errors and logs (MUST)
 
 - Rust side: NEVER interpolate caller-supplied input into `anyhow!` /
-  exception messages. Counterexample not to repeat: `parse_ufvk`
-  (`backend-lib/src/main/rust/lib.rs`) embeds the full input in
-  `Value "{ufvk_string}" did not decode as a valid UFVK`. The correct
-  pattern, used elsewhere in `lib.rs`, embeds only the error (`{:?}` on
-  `e`), never the input.
+  exception messages. `decode_ufvk` (`backend-lib/src/main/rust/lib.rs`)
+  once embedded the full input in its "did not decode as a valid UFVK"
+  error; it now embeds only the error (`{e}`), never the input, and a unit
+  test asserts that. Follow the same pattern everywhere.
 - Kotlin side: exception messages must not splice `cause?.message` from JNI
   `RuntimeException`s — those messages originate in Rust and may echo key
-  material. Counterexample: `InitializeException.ImportAccountException`
-  (`sdk-lib/.../exception/Exceptions.kt`) builds
-  `"... due to: ${cause?.message}"`. Keep the cause as the chained
-  throwable; keep the message fixed and generic.
+  material. Keep the cause as the chained throwable; keep the message
+  fixed and generic, as `ImportAccountException`,
+  `CreateAccountException`, `ImportAccountCollisionException` and
+  `FindAccountSharingKeyComponentsException`
+  (`sdk-lib/.../exception/Exceptions.kt`) do.
 - Do not pass backend throwables to `Twig` whole (e.g.
   `Twig.error(it) { ... }` on a JNI failure) — log a fixed message instead.
   Users copy logs and error dialogs into support emails without knowing

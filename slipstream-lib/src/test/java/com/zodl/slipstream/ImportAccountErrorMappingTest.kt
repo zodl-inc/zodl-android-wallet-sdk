@@ -60,4 +60,27 @@ class ImportAccountErrorMappingTest {
 
         assertFalse(exception is InitializeException.ImportAccountException)
     }
+
+    @Test
+    fun collision_marker_maps_to_the_collision_exception() {
+        val t =
+            RuntimeException(
+                "ImportAccountCollision: an account sharing a viewing key component with the provided key " +
+                    "already exists in the wallet"
+            )
+
+        val exception = ImportAccountErrors.toImportAccountException(t)
+
+        assertTrue(ImportAccountErrors.isAccountCollision(t))
+        assertTrue(exception is InitializeException.ImportAccountCollisionException)
+        assertEquals(t, exception.cause)
+    }
+
+    @Test
+    fun collision_marker_is_not_mistaken_for_checkpoints_not_ready() {
+        val t = RuntimeException("ImportAccountCollision: collides")
+
+        assertFalse(ImportAccountErrors.isCheckpointsNotReady(t))
+        assertFalse(ImportAccountErrors.toImportAccountException(t) is InitializeException.ImportAccountException)
+    }
 }

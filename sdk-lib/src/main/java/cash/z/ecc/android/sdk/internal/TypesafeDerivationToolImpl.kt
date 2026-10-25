@@ -3,6 +3,7 @@ package cash.z.ecc.android.sdk.internal
 import cash.z.ecc.android.sdk.internal.ext.clearContents
 import cash.z.ecc.android.sdk.model.AccountMetadataKey
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKeyComponents
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zip32AccountIndex
@@ -38,6 +39,11 @@ internal class TypesafeDerivationToolImpl(
         viewingKey: String,
         network: ZcashNetwork,
     ): String = derivation.deriveUnifiedAddress(viewingKey, network)
+
+    override suspend fun describeUnifiedFullViewingKey(
+        ufvk: UnifiedFullViewingKey,
+        network: ZcashNetwork
+    ): UnifiedFullViewingKeyComponents? = derivation.describeUnifiedFullViewingKeyTypesafe(ufvk, network)
 
     override suspend fun deriveAccountMetadataKey(
         seed: ByteArray,

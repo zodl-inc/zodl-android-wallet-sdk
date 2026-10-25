@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.ext.deleteSuspend
 import cash.z.ecc.android.sdk.internal.ext.requireNonNegative
 import cash.z.ecc.android.sdk.internal.ext.requireValidHeight
 import cash.z.ecc.android.sdk.internal.model.JniAccount
+import cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap
 import cash.z.ecc.android.sdk.internal.model.JniAccountUsk
 import cash.z.ecc.android.sdk.internal.model.JniBlockMeta
 import cash.z.ecc.android.sdk.internal.model.JniRewindResult
@@ -101,6 +102,15 @@ class RustBackend private constructor(
             )
         }
 
+    override suspend fun findAccountKeyOverlap(ufvk: String): JniAccountKeyOverlap? =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            findAccountKeyOverlap(
+                dbDataPath = dataDbFile.absolutePath,
+                networkId = networkId,
+                ufvk = ufvk,
+            )
+        }
+
     override suspend fun createAccount(
         accountName: String,
         keySource: String?,
@@ -162,6 +172,18 @@ class RustBackend private constructor(
                 networkId = networkId
             )
         }
+
+    override suspend fun setAccountName(
+        accountUuid: ByteArray,
+        name: String
+    ) = withContext(SdkDispatchers.DATABASE_IO) {
+        setAccountName(
+            dataDbFile.absolutePath,
+            accountUuid,
+            name,
+            networkId = networkId
+        )
+    }
 
     override suspend fun getCurrentAddress(accountUuid: ByteArray) =
         withContext(SdkDispatchers.DATABASE_IO) {
@@ -702,6 +724,13 @@ class RustBackend private constructor(
         ): JniAccount?
 
         @JvmStatic
+        private external fun findAccountKeyOverlap(
+            dbDataPath: String,
+            networkId: Int,
+            ufvk: String,
+        ): JniAccountKeyOverlap?
+
+        @JvmStatic
         @Suppress("LongParameterList")
         private external fun createAccount(
             dbDataPath: String,
@@ -741,6 +770,14 @@ class RustBackend private constructor(
             accountUuid: ByteArray,
             networkId: Int
         ): Boolean
+
+        @JvmStatic
+        private external fun setAccountName(
+            dbDataPath: String,
+            accountUuid: ByteArray,
+            name: String,
+            networkId: Int
+        )
 
         @JvmStatic
         private external fun getCurrentAddress(

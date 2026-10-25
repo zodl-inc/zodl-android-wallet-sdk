@@ -219,21 +219,6 @@ ff = { version = "0.14" }
 # from under it (the dual-instance SIGBUS/disk-I/O hazard; see
 # docs/slipstream/android/worklog/ARCHIVE-phases-0-9.md for the full writeup). The engine is
 # the `zodl-slipstream` crate, currently from a git patch (see [patch.crates-io] below), built
-# against the same librustzcash generation as the rest of this graph — verify with `cargo tree -d`
-# after any bump.
-slipstream-core = { package = "zodl-slipstream", version = "=0.4.0-pre.2", optional = true }
-# The module's owned engine runtime (HOSTING.md §3.1) and the logcat logging layer it wires up.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
-
-# Keystone hardware-wallet batch signing for the Orchard migration flow.
-#
-# The compiled `keystone-sdk-android` AAR this project's Kotlin layer otherwise depends on
-# (co.electriccoin.zcash ui-lib) is stale (last release Oct 2025) and has no batch-signing API —
-# only single-PCZT `generatePczt`/`parsePczt`. Batch signing for Zcash (firmware + these UR
-# envelope types) was added to the Keystone ecosystem within the last month, but hasn't reached a
-# new Android SDK release yet. Another open-source Zcash wallet (run by the same contributors
-# behind the Keystone firmware/core PRs) bypasses the compiled AAR entirely by
-# depending on `keystone-sdk-rust`'s `ur-registry` crate and `ur-rs` directly from git — this
 # mirrors that exact, verified-working pattern instead of waiting on an Android SDK release.
 # The actual batching primitive is `pczt::roles::signer::batch` (see the `signer` feature above),
 # not Keystone-specific; these crates only provide the outer UR/QR envelope.
@@ -279,28 +264,6 @@ secp256k1 = "0.29"
 # builds, so the release library never links tempfile/rand_chacha/ambassador.
 zcash_client_sqlite = { version = "=0.23.0-pre.1", features = ["orchard", "transparent-inputs", "unstable", "serde", "test-dependencies"] }
 
-# Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
-# which needs a real UnifiedSpendingKey to exercise the in-process-signing path
-# (`commit_preparation`) against a real wallet DB fixture — the app itself never uses this crate
-# (Kotlin does the mnemonic-to-seed conversion, Rust always receives already-derived seed bytes).
-bip0039 = "0.12"
-
-# Test-only: the gateway side of an OHTTP exchange and a signed key-configuration envelope, so
-# the JNI glue in `ohttp.rs` is tested against real HPKE and Ed25519 (the versions the core
-# already links). `ohttp-gateway` itself does pull second copies of several crates into the lock
-# (its own tonic, prost, axum and bincode among them); they are built for tests only and never
-# reach the release library.
-base64 = "0.22"
-ed25519-dalek = "2"
-sha2 = "0.10"
-ohttp-gateway = { git = "https://github.com/zodl-inc/ohttp.git", rev = "3778974d72c916b05a866588fd3eba20666fe320" }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
-# Driving the gateway's streaming response encoder (`chunked_stream::encode_response_stream`,
-# whose upstream items are `anyhow::Result<UpFrame>` over `Bytes`) in the `ohttp.rs` tests,
-# so the JNI `complete` path is checked against what the gateway really sends.
-futures-util = "0.3"
-bytes = "1"
-
 [lib]
 name = "zcashwalletsdk"
 path = "src/main/rust/lib.rs"
@@ -311,15 +274,6 @@ crate-type = ["staticlib", "cdylib"]
 [workspace]
 
 [patch.crates-io]
-# The slipstream engine's OHTTP transport lives in the private slipstream-internal repository
-# until a published zodl-slipstream release contains the OHTTP transport. This
-# patch makes the 0.4.0-pre.2 dependency line above resolve from the private git repository
-# instead of crates.io. Once slipstream-internal PR #16 merges, the rev below must move to
-# the resulting slipstream-internal `main` commit; after that, this entry can be removed once
-# a published zodl-slipstream version containing the OHTTP transport exists on crates.io.
-# Pins slipstream-internal PR #26 (head 719076cb5a407893f88704156cc0b34071d7b918, crate 0.4.0-pre.2): PR #16 (frozen at f3e1f765) plus measured per-chunk scan CPU (rayon per-thread CPU, persist tree/rows) for the spam range, enhancement fetches capped at 8 with a per-txid retry that no longer fails the pass, one h2 dial per relay at a time, mempool monitoring re-armed after an outage, first-put stall timings. DNS fallback for signed key configuration, a key-fetch 429 or relay pause rate limited without the DNS fallback, DoH queries with the relay fetch headers, dispatch hook at the real send and a per-request response ceiling enforced while reading and decoding (slipstream-internal #25 + follow-up), outer error pages read within a fixed 64 KiB guard and keeping their status, a 429 without Retry-After pausing 30 s, slipstream main merged (0.4.0-pre.2), zodl-ohttp-client b0b2087c.
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "719076cb5a407893f88704156cc0b34071d7b918" }
-#
 # Shielded voting on the NU7 pre-release crates.
 #
 # No `zcash_voting` release is built on the NU7 crates yet, and the crate is not ours to publish,
@@ -328,7 +282,8 @@ zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git",
 # the entries of the table valargroup/zcash_voting#373 carries that this package's graph uses, at
 # the same revisions. That table also patches the Zakura crates (zakura-core/common#538); they
 # are optional dependencies only the `zakura` backend enables, so with `lrz` they never enter
-# this lockfile and need no entry here.
+# this lockfile and need no entry here. These forks are unchanged by the librustzcash pin below:
+# they take the family by version, on the 0.23.0-pre.1 generation, so they resolve to it.
 #
 # crates.io already has releases with these exact version numbers, built on the Ironwood
 # generation (orchard 0.15, zcash_protocol 0.10): zcash_voting 5.1.1-rc.3, voting-circuits
@@ -362,6 +317,16 @@ zakura-wallet-lib = { git = "https://github.com/zodl-inc/zakura-wallet-libraries
 #pczt = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 #zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 #zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+[patch.crates-io]
+# The slipstream engine's OHTTP transport lives in the private slipstream-internal repository
+# until a published zodl-slipstream release contains the OHTTP transport. This
+# patch makes the 0.4.0-pre.2 dependency line above resolve from the private git repository
+# instead of crates.io. Once slipstream-internal PR #16 merges, the rev below must move to
+# the resulting slipstream-internal `main` commit; after that, this entry can be removed once
+# a published zodl-slipstream version containing the OHTTP transport exists on crates.io.
+# Pins slipstream-internal PR #26 (head 719076cb5a407893f88704156cc0b34071d7b918, crate 0.4.0-pre.2): PR #16 (frozen at f3e1f765) plus measured per-chunk scan CPU (rayon per-thread CPU, persist tree/rows) for the spam range, enhancement fetches capped at 8 with a per-txid retry that no longer fails the pass, one h2 dial per relay at a time, mempool monitoring re-armed after an outage, first-put stall timings. DNS fallback for signed key configuration, a key-fetch 429 or relay pause rate limited without the DNS fallback, DoH queries with the relay fetch headers, dispatch hook at the real send and a per-request response ceiling enforced while reading and decoding (slipstream-internal #25 + follow-up), outer error pages read within a fixed 64 KiB guard and keeping their status, a 429 without Retry-After pausing 30 s, slipstream main merged (0.4.0-pre.2), zodl-ohttp-client b0b2087c.
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "719076cb5a407893f88704156cc0b34071d7b918" }
+#
 #zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 #zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 #zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
@@ -370,6 +335,30 @@ zakura-wallet-lib = { git = "https://github.com/zodl-inc/zakura-wallet-libraries
 #zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 #zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
 #zip321 = { git = "https://github.com/zcash/librustzcash", rev = "REPLACE_ME" }
+#
+# librustzcash: the zcash_client_sqlite-0.23.0-pre.1 tag plus an exact backport of
+# zcash/librustzcash#3139 (`WalletWrite::set_account_name`), on branch
+# feature/account-rename-trait-0.23.0-pre.1.
+# zodl-slipstream: slipstream main with zodl-inc/slipstream#28 and #30, plus the
+# `WalletWrite::set_account_name` impls for its wallet facades, built on the same librustzcash
+# revision; on branch feature/set-account-name-0.23.0-pre.1.
+# These entries go once librustzcash and slipstream publish releases carrying these changes. No
+# SDK release may be cut while this block exists.
+equihash = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+f4jumble = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "68b2cf1f22d03a82271e0a3072350cfce9761532" }
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream", rev = "586479698acade5b15cd8baaf937e660f564185a" }
 
 # The Ledger tests build the Orchard proving key once, to extract and verify a proof-bearing
 # transaction a device signed. Key generation synthesizes the Orchard circuit, which takes minutes

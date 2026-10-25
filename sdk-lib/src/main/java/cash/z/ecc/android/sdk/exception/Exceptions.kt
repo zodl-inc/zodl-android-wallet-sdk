@@ -296,17 +296,39 @@ sealed class InitializeException(
             cause
         )
 
+    /**
+     * Thrown when creating a new account fails. The message is fixed and never contains the cause's
+     * message, which may echo key material; the failure is chained as the [cause].
+     */
     class CreateAccountException(
         cause: Throwable?
     ) : InitializeException(
-            "Failed to create new account due to: ${cause?.message}",
+            "Failed to create new account.",
             cause
         )
 
+    /**
+     * Thrown when importing an account from a UFVK fails for a reason other than those of
+     * [ImportAccountCheckpointsNotReadyException] and [ImportAccountCollisionException]. The message
+     * is fixed and never contains the key or the cause's message, which may echo key material; the
+     * failure is chained as the [cause].
+     */
     class ImportAccountException(
         cause: Throwable?
     ) : InitializeException(
-            "Failed to import new account based on UFVK due to: ${cause?.message}",
+            "Failed to import new account based on UFVK.",
+            cause
+        )
+
+    /**
+     * Thrown by `Synchronizer.renameAccount` when the account's name cannot be stored, for example
+     * because no account with the given UUID exists in the wallet. The message is fixed and never
+     * contains the cause's message, which may echo wallet data; the failure is chained as the [cause].
+     */
+    class RenameAccountException(
+        cause: Throwable?
+    ) : InitializeException(
+            "Failed to rename account.",
             cause
         )
 
@@ -324,6 +346,33 @@ sealed class InitializeException(
             "Failed to import new account based on UFVK because its checkpoints are not yet " +
                 "in sync across shielded pools. This is usually transient and resolves once " +
                 "more blocks are scanned; retry the import later.",
+            cause
+        )
+
+    /**
+     * Thrown by `Synchronizer.importAccountByUfvk` instead of [ImportAccountException] when the key
+     * shares a viewing key component with one or more existing accounts and does not upgrade one of
+     * them, so the wallet already tracks (part of) it. `Synchronizer.findAccountSharingKeyComponents`
+     * finds the account before importing, and throws this exception itself when the key shares
+     * components with more than one account. The message is fixed and never contains the key.
+     */
+    class ImportAccountCollisionException(
+        cause: Throwable?
+    ) : InitializeException(
+            "Failed to import new account based on UFVK because an account sharing a viewing key " +
+                "component with it already exists in the wallet.",
+            cause
+        )
+
+    /**
+     * Thrown by `Synchronizer.findAccountSharingKeyComponents` when the lookup fails: the key is not a
+     * valid UFVK for the wallet's network, or the wallet database cannot be read. The message is fixed
+     * and never contains the key.
+     */
+    class FindAccountSharingKeyComponentsException(
+        cause: Throwable?
+    ) : InitializeException(
+            "Failed to look up the account sharing a viewing key component with a UFVK.",
             cause
         )
 

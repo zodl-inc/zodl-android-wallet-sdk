@@ -1,15 +1,25 @@
 package cash.z.ecc.android.sdk.internal
 
+import cash.z.ecc.android.sdk.fixture.AccountFixture
+import cash.z.ecc.android.sdk.internal.jni.JNI_ACCOUNT_KEY_OVERLAP_WOULD_UPGRADE
+import cash.z.ecc.android.sdk.internal.model.JniAccount
+import cash.z.ecc.android.sdk.internal.model.JniAccountKeyOverlap
 import cash.z.ecc.android.sdk.internal.model.JniUnifiedSpendingKey
+import cash.z.ecc.android.sdk.model.Account
+import cash.z.ecc.android.sdk.model.AccountKeyOverlap
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import kotlinx.coroutines.runBlocking
 import org.mockito.ArgumentMatchers
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 class TypesafeBackendImplTest {
     @Test
@@ -33,6 +43,52 @@ class TypesafeBackendImplTest {
 
             val wipedBytes = assertNotNull(capturedUskBytes)
             assertContentEquals(ByteArray(32), wipedBytes, "the transient usk copy must be wiped after use")
+        }
+
+    @Test
+    fun findAccountSharingKeyComponents_passes_the_encoding_and_maps_the_overlap() =
+        runBlocking {
+            val ufvk = UnifiedFullViewingKey(OVERLAP_UFVK)
+            val jniAccount =
+                JniAccount(
+                    accountName = "Existing",
+                    accountUuid = ByteArray(OVERLAP_ACCOUNT_UUID_SIZE) { it.toByte() },
+                    hdAccountIndex = -1L,
+                    keySource = null,
+                    seedFingerprint = null,
+                    ufvk = OVERLAP_UFVK,
+                    uivk = null
+                )
+            val backend = mock(Backend::class.java)
+            `when`(backend.findAccountKeyOverlap(OVERLAP_UFVK))
+                .thenReturn(JniAccountKeyOverlap(jniAccount, JNI_ACCOUNT_KEY_OVERLAP_WOULD_UPGRADE))
+
+            val overlap = assertNotNull(TypesafeBackendImpl(backend).findAccountSharingKeyComponents(ufvk))
+
+            assertEquals(AccountKeyOverlap.Kind.WOULD_UPGRADE, overlap.kind)
+            assertEquals(Account.new(jniAccount), overlap.account)
+        }
+
+    @Test
+    fun findAccountSharingKeyComponents_returns_null_when_no_account_overlaps() =
+        runBlocking {
+            val backend = mock(Backend::class.java)
+            `when`(backend.findAccountKeyOverlap(OVERLAP_UFVK)).thenReturn(null)
+
+            val ufvk = UnifiedFullViewingKey(OVERLAP_UFVK)
+            val overlap = TypesafeBackendImpl(backend).findAccountSharingKeyComponents(ufvk)
+
+            assertNull(overlap)
+        }
+
+    @Test
+    fun setAccountName_forwards_the_uuid_bytes_and_name() =
+        runBlocking<Unit> {
+            val accountUuid = AccountFixture.new().accountUuid
+            val backend = mock(Backend::class.java)
+
+            TypesafeBackendImpl(backend).setAccountName(accountUuid, RENAMED_ACCOUNT_NAME)
+            verify(backend).setAccountName(accountUuid.value, RENAMED_ACCOUNT_NAME)
         }
 
     /**
@@ -60,5 +116,11 @@ class TypesafeBackendImplTest {
     private fun <T> any(): T {
         @Suppress("UNCHECKED_CAST")
         return ArgumentMatchers.any<T>() ?: (null as T)
+    }
+
+    companion object {
+        private const val OVERLAP_UFVK = "uviewtest1overlapfixture"
+        private const val OVERLAP_ACCOUNT_UUID_SIZE = 16
+        private const val RENAMED_ACCOUNT_NAME = "Renamed account"
     }
 }
