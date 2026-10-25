@@ -36,6 +36,8 @@ internal interface EngineNative {
 
     fun stop(handle: Long): Boolean
 
+    fun stopForWalletChange(handle: Long): Boolean
+
     fun snapshot(handle: Long): SlipstreamSnapshot
 
     fun drainEvents(handle: Long): Array<SlipstreamEvent>
@@ -72,6 +74,8 @@ internal interface EngineNative {
         ): Boolean = SlipstreamNative.start(handle, ufvk, birthdayHeight, torDir)
 
         override fun stop(handle: Long): Boolean = SlipstreamNative.stop(handle)
+
+        override fun stopForWalletChange(handle: Long): Boolean = SlipstreamNative.stopForWalletChange(handle)
 
         override fun snapshot(handle: Long): SlipstreamSnapshot = SlipstreamNative.snapshot(handle)
 

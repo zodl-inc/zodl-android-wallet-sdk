@@ -54,14 +54,14 @@ class TorOhttpSender internal constructor(
                     // that limit, so the native stream is not pulled beyond it.
                     val errorBody =
                         runCatching { input.readBytes() }.getOrElse { e ->
-                        // A size error (maxBytes exceeded) means the input stopped at exactly the cap;
-                        // report the HTTP status, not the size error. Other errors rethrown.
-                        if (e is OhttpException && e.message?.contains("exceeded") == true) {
-                            ByteArray(0)
-                        } else {
-                            throw e
+                            // A size error (maxBytes exceeded) means the input stopped at exactly the cap;
+                            // report the HTTP status, not the size error. Other errors rethrown.
+                            if (e is OhttpException && e.message?.contains("exceeded") == true) {
+                                ByteArray(0)
+                            } else {
+                                throw e
+                            }
                         }
-                    }
                     val retryAfter =
                         responseHeaders.firstOrNull { it.key.equals(RETRY_AFTER_HEADER, ignoreCase = true) }?.value
                     throw OhttpException(
@@ -165,8 +165,6 @@ class TorOhttpSender internal constructor(
     private fun JniHttpResponseBytes.header(name: String): String? =
         headers.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
 
-    private fun JniHttpResponseBytes.errorDetail(): String = body.asDetail()
-
     private fun ByteArray.asDetail(): String =
         toString(Charsets.UTF_8).take(ERROR_MESSAGE_MAX_LENGTH).let { if (it.isEmpty()) "" else ": $it" }
 
@@ -187,6 +185,7 @@ class TorOhttpSender internal constructor(
     private companion object {
         const val ERROR_MESSAGE_MAX_LENGTH = 200
         const val RETRY_AFTER_HEADER = "Retry-After"
+
         // ZIP #10: outer error responses (non-2xx status) are bounded to 64 KiB, independently
         // of any caller-chosen response ceiling. The same guard as DirectOhttpSender.
         private const val MAX_ERROR_BODY_BYTES = 64 * 1024

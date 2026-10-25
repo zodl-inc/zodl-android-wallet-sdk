@@ -176,7 +176,7 @@ internal class SlipstreamEngine(
      */
     suspend fun stopForWalletChange(): Boolean =
         withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
-            val quiescent = if (handle != 0L) SlipstreamNative.stopForWalletChange(handle) else true
+            val quiescent = if (handle != 0L) native.stopForWalletChange(handle) else true
             running = false
             quiescent
         }

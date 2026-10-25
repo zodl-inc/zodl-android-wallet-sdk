@@ -318,10 +318,10 @@ class TorOhttpSenderTest {
                 FakeTransport(
                     chunks =
                         listOf(
-                        { chunk1 },
-                        { chunk2 },
-                        { chunk3.also { chunk3Pulled = true } }
-                    )
+                            { chunk1 },
+                            { chunk2 },
+                            { chunk3.also { chunk3Pulled = true } }
+                        )
                 ) { jniResponse(503, ByteArray(0)) }
 
             val thrown =
