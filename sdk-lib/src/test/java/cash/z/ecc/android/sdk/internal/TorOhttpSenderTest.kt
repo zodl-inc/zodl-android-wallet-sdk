@@ -306,11 +306,22 @@ class TorOhttpSenderTest {
         }
 
     @Test
-    fun `buffered POST error body exceeding 64 KiB is truncated to 64 KiB and reports the status`(): Unit =
+    fun `buffered POST error body exceeding 64 KiB is not fully pulled from the native stream`(): Unit =
         runBlocking {
-            // ZIP #10: outer error responses are bounded to 64 KiB
-            val oversizedError = ByteArray(64 * 1024 + 1) { 'X'.code.toByte() }
-            val transport = FakeTransport { jniResponse(503, oversizedError) }
+            // ZIP #10: The native stream must not be pulled past 64 KiB for non-2xx responses.
+            // This proves the implementation bounds the READ, not only truncates after.
+            val chunk1 = ByteArray(32 * 1024) { 'X'.code.toByte() }
+            val chunk2 = ByteArray(32 * 1024) { 'Y'.code.toByte() }
+            val chunk3 = ByteArray(1) { 'Z'.code.toByte() } // Exceeds 64 KiB
+            var chunk3Pulled = false
+            val transport =
+                FakeTransport(
+                    chunks = listOf(
+                        { chunk1 },
+                        { chunk2 },
+                        { chunk3.also { chunk3Pulled = true } }
+                    )
+                ) { jniResponse(503, ByteArray(0)) }
 
             val thrown =
                 assertFailsWith<OhttpException> {
@@ -319,8 +330,9 @@ class TorOhttpSenderTest {
 
             // The status is reported, not a size error
             assertEquals(503, thrown.httpStatus)
-            // The message includes the truncated error body (first 64 KiB)
             assertTrue(assertNotNull(thrown.message).contains("HTTP 503"))
+            // Crucially: chunk3 was never pulled, proving the read stopped at the 64 KiB cap
+            assertEquals(false, chunk3Pulled, "The native stream was pulled past the 64 KiB error-body cap")
         }
 
     @Test

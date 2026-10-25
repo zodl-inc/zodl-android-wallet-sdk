@@ -36,22 +36,42 @@ class TorOhttpSender internal constructor(
         headers: List<Pair<String, String>>,
         timeoutMs: Int
     ): ByteArray {
+        // ZIP #10: Implemented on top of postStreaming() so the status is known before reading
+        // the body, allowing us to bound non-2xx responses to 64 KiB while reading (not after).
         val jniHeaders = headers.map { (key, value) -> JniHttpHeader(key, value) }
-        // ZIP #10: error responses (non-2xx) are bounded to 64 KiB while reading. We don't know
-        // the status before the native call completes, so we read with the sealed-response limit
-        // and then apply the 64 KiB guard here if the status is not 200.
-        val response = asTransportFailure { transport.post(url, jniHeaders, body, timeoutMs.toLong()) }
-        if (response.status != HttpURLConnection.HTTP_OK) {
-            // The native layer already read the body with MAX_SEALED_RESPONSE_BYTES, so if it
-            // exceeds 64 KiB, truncate it here and report the status, not a size error.
-            val errorBody = response.body.take(MAX_ERROR_BODY_BYTES)
-            throw OhttpException(
-                "Relay/gateway returned HTTP ${response.status} (Tor path)${errorBody.asDetail()}",
-                response.status,
-                retryAfterSeconds = OhttpSender.retryAfterSeconds(response.header(RETRY_AFTER_HEADER))
-            )
+        return asTransportFailure {
+            transport.postStreaming(url, jniHeaders, body, timeoutMs.toLong()) { status, responseHeaders, next ->
+                // Status is known before any body bytes are pulled: choose the read limit now.
+                val maxBytes = if (status == HttpURLConnection.HTTP_OK) {
+                    OhttpSender.MAX_SEALED_RESPONSE_BYTES
+                } else {
+                    MAX_ERROR_BODY_BYTES
+                }
+                val input = ChunkInputStream(next, maxBytes)
+                if (status != HttpURLConnection.HTTP_OK) {
+                    // Read at most 64 KiB of the error body. The ChunkInputStream refuses past
+                    // that limit, so the native stream is not pulled beyond it.
+                    val errorBody = runCatching { input.readBytes() }.getOrElse { e ->
+                        // A size error (maxBytes exceeded) means the input stopped at exactly the cap;
+                        // report the HTTP status, not the size error. Other errors rethrown.
+                        if (e is OhttpException && e.message?.contains("exceeded") == true) {
+                            ByteArray(0)
+                        } else {
+                            throw e
+                        }
+                    }
+                    val retryAfter =
+                        responseHeaders.firstOrNull { it.key.equals(RETRY_AFTER_HEADER, ignoreCase = true) }?.value
+                    throw OhttpException(
+                        "Relay/gateway returned HTTP $status (Tor path)${errorBody.asDetail()}",
+                        status,
+                        retryAfterSeconds = OhttpSender.retryAfterSeconds(retryAfter)
+                    )
+                }
+                // 200: read the sealed response, up to MAX_SEALED_RESPONSE_BYTES.
+                input.readBytes()
+            }
         }
-        return response.body.requireWithinSizeLimit(OhttpSender.MAX_SEALED_RESPONSE_BYTES)
     }
 
     /** The body of a 200 reaches [read] as Tor delivers it. */
