@@ -252,9 +252,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_initOnLoa
                 tracing::level_filters::LevelFilter::DEBUG
             });
 
+        // The HTTP/2, TLS and tower internals log every frame at debug: thousands of lines a second
+        // during a sync, so logcat drops the wallet's own lines. Cap them at info.
+        let noisy = std::cmp::min(log_filter, tracing::level_filters::LevelFilter::INFO);
+        let targets = tracing_subscriber::filter::Targets::new()
+            .with_default(log_filter)
+            .with_targets(
+                ["h2", "hyper", "hyper_util", "rustls", "tokio_rustls", "tower"].map(|t| (t, noisy)),
+            );
+
         paranoid_android::layer("cash.z.rust.logs")
             .with_ansi(false)
-            .with_filter(log_filter)
+            .with_filter(targets)
     };
 
     // Generate Android trace events from `tracing` spans.
