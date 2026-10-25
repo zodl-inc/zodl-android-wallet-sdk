@@ -37,10 +37,16 @@ class TorOhttpSender internal constructor(
         timeoutMs: Int
     ): ByteArray {
         val jniHeaders = headers.map { (key, value) -> JniHttpHeader(key, value) }
+        // ZIP #10: error responses (non-2xx) are bounded to 64 KiB while reading. We don't know
+        // the status before the native call completes, so we read with the sealed-response limit
+        // and then apply the 64 KiB guard here if the status is not 200.
         val response = asTransportFailure { transport.post(url, jniHeaders, body, timeoutMs.toLong()) }
         if (response.status != HttpURLConnection.HTTP_OK) {
+            // The native layer already read the body with MAX_SEALED_RESPONSE_BYTES, so if it
+            // exceeds 64 KiB, truncate it here and report the status, not a size error.
+            val errorBody = response.body.take(MAX_ERROR_BODY_BYTES)
             throw OhttpException(
-                "Relay/gateway returned HTTP ${response.status} (Tor path)${response.errorDetail()}",
+                "Relay/gateway returned HTTP ${response.status} (Tor path)${errorBody.asDetail()}",
                 response.status,
                 retryAfterSeconds = OhttpSender.retryAfterSeconds(response.header(RETRY_AFTER_HEADER))
             )
@@ -59,10 +65,17 @@ class TorOhttpSender internal constructor(
         val jniHeaders = headers.map { (key, value) -> JniHttpHeader(key, value) }
         return asTransportFailure {
             transport.postStreaming(url, jniHeaders, body, timeoutMs.toLong()) { status, responseHeaders, next ->
-                val input = ChunkInputStream(next, OhttpSender.MAX_SEALED_RESPONSE_BYTES)
+                // ZIP #10: error responses (non-2xx) are bounded to 64 KiB as they are read.
+                val maxBytes = if (status == HttpURLConnection.HTTP_OK) {
+                    OhttpSender.MAX_SEALED_RESPONSE_BYTES
+                } else {
+                    MAX_ERROR_BODY_BYTES
+                }
+                val input = ChunkInputStream(next, maxBytes)
                 if (status != HttpURLConnection.HTTP_OK) {
                     // The status and Retry-After are known from the head; the diagnostic body is read
-                    // best-effort, so one that stalls or breaks off does not lose them.
+                    // best-effort, so one that stalls or breaks off does not lose them. The input is
+                    // already bounded to 64 KiB by the ChunkInputStream maxBytes above.
                     val retryAfter =
                         responseHeaders.firstOrNull { it.key.equals(RETRY_AFTER_HEADER, ignoreCase = true) }?.value
                     val detail = runCatching { input.readUpTo(ERROR_MESSAGE_MAX_LENGTH) }.getOrDefault(ByteArray(0))
@@ -85,8 +98,10 @@ class TorOhttpSender internal constructor(
         val jniHeaders = headers.map { (key, value) -> JniHttpHeader(key, value) }
         val response = asTransportFailure { transport.get(url, jniHeaders, timeoutMs.toLong()) }
         if (response.status != HttpURLConnection.HTTP_OK) {
+            // ZIP #10: error responses bounded to 64 KiB, same as POST.
+            val errorBody = response.body.take(MAX_ERROR_BODY_BYTES)
             throw OhttpException(
-                "GET request failed: HTTP ${response.status} (Tor path)${response.errorDetail()}",
+                "GET request failed: HTTP ${response.status} (Tor path)${errorBody.asDetail()}",
                 response.status,
                 retryAfterSeconds = OhttpSender.retryAfterSeconds(response.header(RETRY_AFTER_HEADER))
             )
@@ -149,6 +164,9 @@ class TorOhttpSender internal constructor(
     private companion object {
         const val ERROR_MESSAGE_MAX_LENGTH = 200
         const val RETRY_AFTER_HEADER = "Retry-After"
+        // ZIP #10: outer error responses (non-2xx status) are bounded to 64 KiB, independently
+        // of any caller-chosen response ceiling. The same guard as DirectOhttpSender.
+        private const val MAX_ERROR_BODY_BYTES = 64 * 1024
     }
 }
 

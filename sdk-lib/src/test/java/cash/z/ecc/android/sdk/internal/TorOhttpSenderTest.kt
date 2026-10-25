@@ -305,6 +305,64 @@ class TorOhttpSenderTest {
             assertEquals(null, thrown.httpStatus)
         }
 
+    @Test
+    fun `buffered POST error body exceeding 64 KiB is truncated to 64 KiB and reports the status`(): Unit =
+        runBlocking {
+            // ZIP #10: outer error responses are bounded to 64 KiB
+            val oversizedError = ByteArray(64 * 1024 + 1) { 'X'.code.toByte() }
+            val transport = FakeTransport { jniResponse(503, oversizedError) }
+
+            val thrown =
+                assertFailsWith<OhttpException> {
+                    TorOhttpSender(transport).post(RELAY, byteArrayOf(), emptyList(), 1_000)
+                }
+
+            // The status is reported, not a size error
+            assertEquals(503, thrown.httpStatus)
+            // The message includes the truncated error body (first 64 KiB)
+            assertTrue(assertNotNull(thrown.message).contains("HTTP 503"))
+        }
+
+    @Test
+    fun `buffered GET error body exceeding 64 KiB is truncated to 64 KiB and reports the status`(): Unit =
+        runBlocking {
+            // ZIP #10: outer error responses are bounded to 64 KiB
+            val oversizedError = ByteArray(64 * 1024 + 1) { 'Y'.code.toByte() }
+            val transport = FakeTransport { jniResponse(422, oversizedError) }
+
+            val thrown =
+                assertFailsWith<OhttpException> {
+                    TorOhttpSender(transport).get("https://relay.example/ohttp-configs", emptyList(), 1_000)
+                }
+
+            // The status is reported, not a size error
+            assertEquals(422, thrown.httpStatus)
+            assertTrue(assertNotNull(thrown.message).contains("HTTP 422"))
+        }
+
+    @Test
+    fun `streamed error body exceeding 64 KiB is bounded at 64 KiB and reports the status`(): Unit =
+        runBlocking {
+            // ZIP #10: streamed error responses are bounded to 64 KiB while reading
+            val chunk1 = ByteArray(32 * 1024) { 'Z'.code.toByte() }
+            val chunk2 = ByteArray(32 * 1024) { 'W'.code.toByte() }
+            val chunk3 = ByteArray(1) { 'V'.code.toByte() } // This chunk exceeds the 64 KiB limit
+            val transport =
+                FakeTransport(chunks = listOf({ chunk1 }, { chunk2 }, { chunk3 })) {
+                    jniResponse(503, ByteArray(0))
+                }
+
+            val thrown =
+                assertFailsWith<OhttpException> {
+                    TorOhttpSender(transport).postStreaming(RELAY, byteArrayOf(), emptyList(), 1_000) {
+                        error("the reader must not run for non-200")
+                    }
+                }
+
+            // The status is reported, not a size error
+            assertEquals(503, thrown.httpStatus)
+        }
+
     private companion object {
         const val RELAY = "https://relay.example/relay"
     }
