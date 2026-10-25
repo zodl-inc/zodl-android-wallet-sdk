@@ -258,7 +258,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_initOnLoa
         let targets = tracing_subscriber::filter::Targets::new()
             .with_default(log_filter)
             .with_targets(
-                ["h2", "hyper", "hyper_util", "rustls", "tokio_rustls", "tower"].map(|t| (t, noisy)),
+                [
+                    "h2",
+                    "hyper",
+                    "hyper_util",
+                    "rustls",
+                    "tokio_rustls",
+                    "tower",
+                ]
+                .map(|t| (t, noisy)),
             );
 
         paranoid_android::layer("cash.z.rust.logs")

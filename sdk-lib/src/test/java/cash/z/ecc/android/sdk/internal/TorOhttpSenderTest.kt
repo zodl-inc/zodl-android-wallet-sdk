@@ -316,7 +316,8 @@ class TorOhttpSenderTest {
             var chunk3Pulled = false
             val transport =
                 FakeTransport(
-                    chunks = listOf(
+                    chunks =
+                        listOf(
                         { chunk1 },
                         { chunk2 },
                         { chunk3.also { chunk3Pulled = true } }
