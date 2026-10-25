@@ -337,6 +337,28 @@ class TorOhttpSenderTest {
         }
 
     @Test
+    fun `buffered POST 400 error body exceeding 64 KiB is bounded and reports the status for key refetch`(): Unit =
+        runBlocking {
+            // ZIP #10: 400 (key-config refetch trigger) must surface as HTTP 400, not a size error
+            val chunk1 = ByteArray(32 * 1024) { 'A'.code.toByte() }
+            val chunk2 = ByteArray(32 * 1024) { 'B'.code.toByte() }
+            val chunk3 = ByteArray(1) { 'C'.code.toByte() } // Exceeds 64 KiB
+            val transport =
+                FakeTransport(chunks = listOf({ chunk1 }, { chunk2 }, { chunk3 })) {
+                    jniResponse(400, ByteArray(0))
+                }
+
+            val thrown =
+                assertFailsWith<OhttpException> {
+                    TorOhttpSender(transport).post(RELAY, byteArrayOf(), emptyList(), 1_000)
+                }
+
+            // The 400 status is preserved so the OHTTP client can trigger key-config refetch
+            assertEquals(400, thrown.httpStatus)
+            assertTrue(assertNotNull(thrown.message).contains("HTTP 400"))
+        }
+
+    @Test
     fun `buffered GET error body exceeding 64 KiB is truncated to 64 KiB and reports the status`(): Unit =
         runBlocking {
             // ZIP #10: outer error responses are bounded to 64 KiB
@@ -374,6 +396,30 @@ class TorOhttpSenderTest {
 
             // The status is reported, not a size error
             assertEquals(503, thrown.httpStatus)
+        }
+
+    @Test
+    fun `streamed 422 error body exceeding 64 KiB is bounded and reports the status for key refetch`(): Unit =
+        runBlocking {
+            // ZIP #10: 422 (key-config refetch trigger) must surface as HTTP 422, not a size error
+            val chunk1 = ByteArray(32 * 1024) { 'X'.code.toByte() }
+            val chunk2 = ByteArray(32 * 1024) { 'Y'.code.toByte() }
+            val chunk3 = ByteArray(1) { 'Z'.code.toByte() } // Exceeds 64 KiB
+            val transport =
+                FakeTransport(chunks = listOf({ chunk1 }, { chunk2 }, { chunk3 })) {
+                    jniResponse(422, ByteArray(0))
+                }
+
+            val thrown =
+                assertFailsWith<OhttpException> {
+                    TorOhttpSender(transport).postStreaming(RELAY, byteArrayOf(), emptyList(), 1_000) {
+                        error("the reader must not run for non-200")
+                    }
+                }
+
+            // The 422 status is preserved so the OHTTP client can trigger key-config refetch
+            assertEquals(422, thrown.httpStatus)
+            assertTrue(assertNotNull(thrown.message).contains("HTTP 422"))
         }
 
     private companion object {
