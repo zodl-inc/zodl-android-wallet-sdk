@@ -354,6 +354,15 @@ sealed class MigrationAdvanceStep {
     data class PausedForNetworkUpgrade(
         val activationHeight: Long
     ) : MigrationAdvanceStep()
+
+    /**
+     * NU7 is active ([activationHeight]) and the run still holds a transaction built for the consensus branch
+     * before it, which no block accepts. The run cannot finish. Call [OrchardMigrationSdk.cancelMigrationRun],
+     * which releases its note reservations, then offer the user a new migration of what remains.
+     */
+    data class InterruptedByNetworkUpgrade(
+        val activationHeight: Long
+    ) : MigrationAdvanceStep()
 }
 
 /**
@@ -1138,6 +1147,13 @@ interface OrchardMigrationSdk {
      * proposal with a shorter test schedule without waiting out or resuming the previous one).
      */
     suspend fun clearMigration()
+
+    /**
+     * Ends this account's run that the NU7 upgrade interrupted ([MigrationAdvanceStep.InterruptedByNetworkUpgrade])
+     * and releases the note reservations of its unsent transactions, so a new migration can be planned over the
+     * full balance. Transactions already sent or mined are left alone. Does nothing without a run.
+     */
+    suspend fun cancelMigrationRun() = Unit
 
     companion object {
         /**

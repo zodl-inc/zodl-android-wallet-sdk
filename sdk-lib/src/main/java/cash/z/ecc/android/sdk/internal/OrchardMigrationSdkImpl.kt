@@ -1119,6 +1119,7 @@ internal class OrchardMigrationSdkImpl(
             // Broadcast timing uses the estimated (real) chain tip so a proved, due transfer
             // returns Broadcast directly; proving stays on the scanned tip inside the backend.
             val est = chainTipEstimator.estimatedTip()
+            upgradeStepFor(dbDataPath, account, est)?.let { return@logged MigrationAdvanceResult(step = it, next = null) }
             migrationBackend.nextStep(dbDataPath, network, account, est)?.let { arr ->
                 val id = arr.getOrElse(1) { -1L }
                 val rawKind = arr.getOrElse(0) { STEP_WAITING }
@@ -1131,6 +1132,41 @@ internal class OrchardMigrationSdkImpl(
                 MigrationAdvanceResult(step = step, next = parsePeek(arr))
             }
         }
+
+    /**
+     * The step the NU7 upgrade forces once the wallet's next height has reached the activation, or null to
+     * leave the engine's answer alone. A run holding a transaction built for the branch before NU7 is
+     * [MigrationAdvanceStep.InterruptedByNetworkUpgrade]; one whose such transaction may already have been sent
+     * waits ([MigrationAdvanceStep.Reevaluate]) until the wallet has scanned up to the activation. Not asked
+     * before the activation, on a network without NU7, or with the testing bypass on.
+     */
+    private suspend fun upgradeStepFor(
+        dbDataPath: String,
+        account: AccountUuid,
+        estimatedTip: Long
+    ): MigrationAdvanceStep? {
+        val nextHeight = estimatedTip + 1
+        val activation =
+            BlockSpacing
+                .nu7ActivationHeight(network)
+                ?.value
+                ?.takeIf { estimatedTip > 0 && nextHeight >= it && !gateBypass.get() }
+        return activation?.let {
+            when (migrationBackend.migrationUpgradeVerdict(dbDataPath, network, account, nextHeight)) {
+                VERDICT_INTERRUPTED -> {
+                    MigrationAdvanceStep.InterruptedByNetworkUpgrade(it)
+                }
+
+                VERDICT_AWAIT_SCAN -> {
+                    MigrationAdvanceStep.Reevaluate
+                }
+
+                else -> {
+                    null
+                }
+            }
+        }
+    }
 
     /**
      * The step the NU7 gate substitutes for the engine's [rawKind], or null to leave it alone. Before the
@@ -1279,6 +1315,14 @@ internal class OrchardMigrationSdkImpl(
         }
 
     // ── Debug ─────────────────────────────────────────────────────────────────
+
+    override suspend fun cancelMigrationRun() {
+        logged("cancelMigrationRun") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@logged
+            migrationBackend.clearMigration(dbDataPath, network, account)
+        }
+    }
 
     override suspend fun clearMigration() =
         logged("clearMigration") {
@@ -1738,6 +1782,8 @@ private const val DUE_AWAITING_PROOF = 2
 
 // The `nextStep` step codes, mirroring the `STEP_*` constants that own the contract in
 // `migration.rs`. Kept in the same order so the two lists can be diffed by eye.
+private const val VERDICT_INTERRUPTED = 1
+private const val VERDICT_AWAIT_SCAN = 2
 private const val STEP_WAITING = 0L
 private const val STEP_PROVE = 1L
 private const val STEP_BROADCAST = 2L

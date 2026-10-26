@@ -32,6 +32,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sign, store, note split and restart) until NU7 activates. `MigrationAdvanceStep.PausedForNetworkUpgrade`,
   answered by `nextStep()` in place of a rebuild or re-plan before NU7, and for every send in the cutoff
   window.
+- `MigrationAdvanceStep.InterruptedByNetworkUpgrade`, answered by `nextStep()` once NU7 is active when the run
+  still holds a transaction built for the consensus branch before it, which no block accepts. A transaction
+  that may already have been sent makes `nextStep()` answer `Reevaluate` until the wallet has scanned up to
+  the activation. `OrchardMigrationSdk.cancelMigrationRun()` ends such a run and releases its note
+  reservations, so a new migration can be planned over the full balance.
 - `OrchardMigrationSdk.setMigrationNetworkUpgradeGateBypass(enabled)`, for internal testing only: it lifts
   the pause and the cutoff so a scheduled run can be tried before NU7. Off by default.
 

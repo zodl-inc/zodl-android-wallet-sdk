@@ -117,6 +117,23 @@ class MigrationRustBackend private constructor() {
             clearMigrationNative(dbDataPath, networkId, accountUuidBytes)
         }
 
+    /**
+     * What the run's stored transactions say about the NU7 upgrade, for a wallet whose next height is
+     * [nextHeight]: `0` clear (or no migration), `1` a transaction built for the consensus branch before NU7
+     * can no longer be mined, `2` such a transaction may already have been sent, so wait until the wallet has
+     * scanned the block before the activation.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationUpgradeVerdict(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        nextHeight: Long
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationUpgradeVerdictNative(dbDataPath, networkId, accountUuidBytes, nextHeight)
+        }
+
     @Throws(RuntimeException::class)
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
@@ -751,6 +768,15 @@ class MigrationRustBackend private constructor() {
             dbDataPath: String,
             networkId: Int,
             accountUuidBytes: ByteArray
+        ): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun migrationUpgradeVerdictNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            nextHeight: Long
         ): Int
 
         @JvmStatic

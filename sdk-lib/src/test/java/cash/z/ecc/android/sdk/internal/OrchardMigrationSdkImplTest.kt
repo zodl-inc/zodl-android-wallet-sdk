@@ -1318,6 +1318,32 @@ class OrchardMigrationSdkImplTest {
         }
 
     @Test
+    fun nextStep_reports_a_run_the_upgrade_interrupted_and_waits_while_a_sent_one_may_be_unscanned() =
+        runBlocking {
+            val interrupted = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(3L, 4L))
+            interrupted.upgradeVerdictResult = 1
+            assertEquals(
+                MigrationAdvanceStep.InterruptedByNetworkUpgrade(4_465_026L),
+                gatedSdk(POST_NU7_TIP, interrupted).nextStep()?.step
+            )
+            val awaiting = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(3L, 4L))
+            awaiting.upgradeVerdictResult = 2
+            assertEquals(MigrationAdvanceStep.Reevaluate, gatedSdk(POST_NU7_TIP, awaiting).nextStep()?.step)
+            val clear = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(4L, -1L))
+            assertEquals(MigrationAdvanceStep.Complete, gatedSdk(POST_NU7_TIP, clear).nextStep()?.step)
+        }
+
+    @Test
+    fun nextStep_does_not_ask_for_the_upgrade_verdict_before_the_activation() =
+        runBlocking {
+            val backend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(4L, -1L))
+            backend.upgradeVerdictResult = 1
+            gatedSdk(PAUSED_TIP, backend).nextStep()
+            gatedSdk(-1L, backend).nextStep()
+            assertEquals(0, backend.upgradeVerdictCallCount)
+        }
+
+    @Test
     fun nextStep_holds_every_send_in_the_cutoff_window() =
         runBlocking {
             for (kind in listOf(1L, 2L, 3L, 5L)) {
@@ -1584,6 +1610,19 @@ class OrchardMigrationSdkImplTest {
             network: ZcashNetwork,
             account: AccountUuid
         ): Int = error("Unused")
+
+        var upgradeVerdictResult = 0
+        var upgradeVerdictCallCount = 0
+
+        override suspend fun migrationUpgradeVerdict(
+            dbDataPath: String,
+            network: ZcashNetwork,
+            account: AccountUuid,
+            nextHeight: Long
+        ): Int {
+            upgradeVerdictCallCount++
+            return upgradeVerdictResult
+        }
 
         override suspend fun hasOverdueTransfers(
             dbDataPath: String,
