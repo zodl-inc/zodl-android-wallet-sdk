@@ -2522,7 +2522,9 @@ class SlipstreamSynchronizerLifecycleTest {
      * Builds a [SlipstreamSynchronizer] with every collaborator mocked out, bypassing
      * [SlipstreamSynchronizer.Companion.new]/`newLocked` (and therefore `SlipstreamNative`)
      * entirely. [engine]'s flow-typed properties are stubbed with real [MutableStateFlow]s
-     * because they are read once, eagerly, as field initializers when the constructor runs.
+     * because they are read once, eagerly, as field initializers when the constructor runs, and
+     * its [SlipstreamEngine.stopForWalletChange] reports a quiescent stop unless a test stubs it
+     * again after building.
      */
     @Suppress("LongParameterList")
     private fun buildSynchronizer(
@@ -2549,6 +2551,7 @@ class SlipstreamSynchronizerLifecycleTest {
             .thenReturn(walletBalancesOverride ?: MutableStateFlow<Map<AccountUuid, AccountBalance>?>(null))
         `when`(engine.lastSnapshot).thenReturn(lastSnapshotOverride ?: MutableStateFlow<SlipstreamSnapshot?>(null))
         `when`(transactionsController.allTransactions).thenReturn(flowOf(emptyList()))
+        runBlocking { `when`(engine.stopForWalletChange()).thenReturn(true) }
 
         return SlipstreamSynchronizer(
             context = mock(Context::class.java),
