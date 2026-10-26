@@ -1550,12 +1550,14 @@ interface Synchronizer {
                         walletClient = walletClientDeferred.await()
 
                         val downloader = downloaderDeferred.await()
-                        val txManager = DefaultSynchronizerFactory.defaultTxManager(encoder, walletClient, sdkFlags)
+                        val txManager =
+                            DefaultSynchronizerFactory.defaultTxManager(encoder, walletClient, sdkFlags, zcashNetwork)
                         val (preferenceProvider, pendingSubmitPlanStore) = prefsDeferred.await()
                         val transactionSubmitter =
                             EndpointTransactionSubmitter(
                                 walletClientFactory = walletClientFactory,
-                                sdkFlags = sdkFlags
+                                sdkFlags = sdkFlags,
+                                network = zcashNetwork
                             )
                         val submitPlanExecutor = SubmitPlanExecutor(transactionSubmitter)
                         val processor =

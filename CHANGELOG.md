@@ -41,6 +41,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pause and the cutoff so a scheduled run can be tried before NU7. Off by default.
 
 ### Changed
+- Every transaction submission (a send, `Broadcaster`, a background resubmit) now reads the latest height
+  of the server the transaction is about to go to, on the same connection, and does not submit a
+  transaction built for another consensus branch than the next block's (local code `-9101`) or one that
+  has expired by then (`-9102`). When the height cannot be read nothing is submitted and the submission
+  fails as a network failure. NU7 changes the consensus branch, so a transaction signed just before the
+  activation and submitted just after it can no longer be mined. Each submission makes one extra request.
 - `Synchronizer` declares `findAccountSharingKeyComponents(ufvk)`: any implementer or test fake must
   now provide it.
 - `Synchronizer` declares `renameAccount(accountUuid, name)`: any implementer or test fake must now

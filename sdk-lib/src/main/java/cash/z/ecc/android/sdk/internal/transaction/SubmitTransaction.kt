@@ -1,14 +1,93 @@
 package cash.z.ecc.android.sdk.internal.transaction
 
+import cash.z.ecc.android.sdk.internal.SubmissionRefusal
 import cash.z.ecc.android.sdk.internal.Twig
+import cash.z.ecc.android.sdk.internal.checkSubmittable
 import cash.z.ecc.android.sdk.internal.ext.toHexReversed
+import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
+
+/** Local result codes for a transaction the SDK refuses to submit. Nothing is sent. */
+internal const val SUBMIT_REFUSED_WRONG_BRANCH = -9101
+internal const val SUBMIT_REFUSED_EXPIRED = -9102
+
+/**
+ * Submits [rawTransaction] unless the network would reject it. With a [network], the height of the
+ * server the transaction is about to go to is read first, on this same client, and a transaction built
+ * for another consensus branch than the next block's, or one that has expired by then, is refused
+ * locally: submitting it can only leak it. NU7 changes the consensus branch, so a transaction signed
+ * just before the activation and submitted just after it is such a case. When the height cannot be
+ * read nothing is submitted.
+ */
+internal suspend fun CombinedWalletClient.submitTransaction(
+    rawTransaction: FirstClassByteArray,
+    txId: FirstClassByteArray,
+    sdkFlags: SdkFlags,
+    network: ZcashNetwork?
+): TransactionSubmitResult {
+    val refusal =
+        network?.let {
+            val serverHeight =
+                getLatestBlockHeight(
+                    serviceMode = sdkFlags ifTor ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
+                )
+            submissionRefusal(rawTransaction, txId, it, serverHeight)
+        }
+    return refusal ?: submitTransaction(rawTransaction, txId, sdkFlags)
+}
+
+/**
+ * The failure to return instead of submitting, or null when the transaction may be submitted. Judged at
+ * the height after the server's latest block.
+ */
+internal fun submissionRefusal(
+    rawTransaction: FirstClassByteArray,
+    txId: FirstClassByteArray,
+    network: ZcashNetwork,
+    serverHeight: Response<BlockHeightUnsafe>
+): TransactionSubmitResult.Failure? =
+    when (serverHeight) {
+        is Response.Success -> {
+            val next = BlockHeight.new(serverHeight.result.value + 1)
+            when (checkSubmittable(rawTransaction.byteArray, network, next)) {
+                SubmissionRefusal.WRONG_BRANCH -> {
+                    refused(txId, SUBMIT_REFUSED_WRONG_BRANCH, "Built for another consensus branch than block $next")
+                }
+
+                SubmissionRefusal.EXPIRED -> {
+                    refused(txId, SUBMIT_REFUSED_EXPIRED, "Expired before block $next")
+                }
+
+                else -> {
+                    null
+                }
+            }
+        }
+
+        is Response.Failure -> {
+            TransactionSubmitResult.Failure(
+                txId = txId,
+                grpcError = true,
+                code = serverHeight.code,
+                description = "Could not read the server height before submitting: ${serverHeight.description}",
+                isTorFailure = serverHeight is Response.Failure.OverTor,
+            )
+        }
+    }
+
+private fun refused(
+    txId: FirstClassByteArray,
+    code: Int,
+    description: String
+) = TransactionSubmitResult.Failure(txId = txId, grpcError = false, code = code, description = description)
 
 internal suspend fun CombinedWalletClient.submitTransaction(
     rawTransaction: FirstClassByteArray,

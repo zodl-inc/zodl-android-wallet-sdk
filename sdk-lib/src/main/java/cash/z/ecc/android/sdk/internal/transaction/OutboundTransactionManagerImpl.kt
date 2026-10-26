@@ -12,13 +12,15 @@ import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 
 @Suppress("TooManyFunctions")
 internal class OutboundTransactionManagerImpl(
     internal val encoder: TransactionEncoder,
     private val walletClient: CombinedWalletClient,
-    private val sdkFlags: SdkFlags
+    private val sdkFlags: SdkFlags,
+    private val network: ZcashNetwork? = null
 ) : OutboundTransactionManager {
     /**
      * Creates a proposal for transferring funds from a ZIP-321 compliant payment URI
@@ -79,7 +81,7 @@ internal class OutboundTransactionManagerImpl(
     ): List<EncodedTransaction> = encoder.createProposedTransactions(proposal, usk, ovkPolicy)
 
     override suspend fun submit(encodedTransaction: EncodedTransaction): TransactionSubmitResult =
-        walletClient.submitTransaction(encodedTransaction.raw, encodedTransaction.txId, sdkFlags)
+        walletClient.submitTransaction(encodedTransaction.raw, encodedTransaction.txId, sdkFlags, network)
 
     override suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
@@ -113,12 +115,14 @@ internal class OutboundTransactionManagerImpl(
         fun new(
             encoder: TransactionEncoder,
             lightWalletClient: CombinedWalletClient,
-            sdkFlags: SdkFlags
+            sdkFlags: SdkFlags,
+            network: ZcashNetwork? = null
         ): OutboundTransactionManager =
             OutboundTransactionManagerImpl(
                 encoder,
                 lightWalletClient,
-                sdkFlags
+                sdkFlags,
+                network
             )
     }
 }

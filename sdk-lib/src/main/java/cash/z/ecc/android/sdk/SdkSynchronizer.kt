@@ -356,7 +356,8 @@ class SdkSynchronizer private constructor(
             transactionSubmitter =
                 EndpointTransactionSubmitter(
                     walletClientFactory = walletClientFactory,
-                    sdkFlags = sdkFlags
+                    sdkFlags = sdkFlags,
+                    network = network
                 ),
             pendingSubmitPlanStore = pendingSubmitPlanStore
         )
@@ -1614,8 +1615,9 @@ internal object DefaultSynchronizerFactory {
     internal fun defaultTxManager(
         encoder: TransactionEncoder,
         service: CombinedWalletClient,
-        sdkFlags: SdkFlags
-    ): OutboundTransactionManager = OutboundTransactionManagerImpl.new(encoder, service, sdkFlags)
+        sdkFlags: SdkFlags,
+        network: ZcashNetwork? = null
+    ): OutboundTransactionManager = OutboundTransactionManagerImpl.new(encoder, service, sdkFlags, network)
 
     @Suppress("LongParameterList")
     internal fun defaultProcessor(
