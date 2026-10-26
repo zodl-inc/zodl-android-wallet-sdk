@@ -270,7 +270,7 @@ private class ChunkInputStream(
             // This chunk would exceed the limit. Take only what fits.
             val available = (maxBytes - total).toInt()
             chunk = more.copyOf(available)
-            total = maxBytes
+            total = maxBytes.toLong()
             ended = true
         } else {
             chunk = more
