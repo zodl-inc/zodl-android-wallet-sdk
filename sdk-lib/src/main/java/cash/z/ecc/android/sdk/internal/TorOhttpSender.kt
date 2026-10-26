@@ -50,18 +50,9 @@ class TorOhttpSender internal constructor(
                     }
                 val input = ChunkInputStream(next, maxBytes)
                 if (status != HttpURLConnection.HTTP_OK) {
-                    // Read at most 64 KiB of the error body. The ChunkInputStream refuses past
-                    // that limit, so the native stream is not pulled beyond it.
-                    val errorBody =
-                        runCatching { input.readBytes() }.getOrElse { e ->
-                            // A size error (maxBytes exceeded) means the input stopped at exactly the cap;
-                            // report the HTTP status, not the size error. Other errors rethrown.
-                            if (e is OhttpException && e.message?.contains("exceeded") == true) {
-                                ByteArray(0)
-                            } else {
-                                throw e
-                            }
-                        }
+                    // Read at most 64 KiB of the error body. The ChunkInputStream ends at the cap
+                    // without pulling another chunk from the native stream.
+                    val errorBody = input.readBytes()
                     val retryAfter =
                         responseHeaders.firstOrNull { it.key.equals(RETRY_AFTER_HEADER, ignoreCase = true) }?.value
                     throw OhttpException(
@@ -263,14 +254,28 @@ private class ChunkInputStream(
     }
 
     private fun fill() {
+        // ZIP #10: end the stream at maxBytes without pulling another chunk.
+        // This prevents the native stream from being read past the cap.
+        if (total >= maxBytes) {
+            ended = true
+            return
+        }
         val more = next()
         if (more == null) {
             ended = true
             return
         }
-        total += more.size
-        if (total > maxBytes) throw OhttpException("Response exceeded the $maxBytes byte limit (Tor path)")
-        chunk = more
+        val newTotal = total + more.size
+        if (newTotal > maxBytes) {
+            // This chunk would exceed the limit. Take only what fits.
+            val available = (maxBytes - total).toInt()
+            chunk = more.copyOf(available)
+            total = maxBytes
+            ended = true
+        } else {
+            chunk = more
+            total = newTotal
+        }
         pos = 0
     }
 

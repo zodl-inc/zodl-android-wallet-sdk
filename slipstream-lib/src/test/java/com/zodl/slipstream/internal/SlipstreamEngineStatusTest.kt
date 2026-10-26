@@ -59,6 +59,8 @@ class SlipstreamEngineStatusTest {
 
         override fun stop(handle: Long): Boolean = true
 
+        override fun stopForWalletChange(handle: Long): Boolean = true
+
         override fun snapshot(handle: Long): SlipstreamSnapshot = snapshot
 
         override fun drainEvents(handle: Long): Array<SlipstreamEvent> = emptyArray()
