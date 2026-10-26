@@ -23,6 +23,7 @@ import cash.z.ecc.android.sdk.MigrationNextAction
 import cash.z.ecc.android.sdk.MigrationPausedUntilNetworkUpgradeException
 import cash.z.ecc.android.sdk.MigrationPeek
 import cash.z.ecc.android.sdk.MigrationProgress
+import cash.z.ecc.android.sdk.MigrationRestartOutcome
 import cash.z.ecc.android.sdk.MigrationSchedule
 import cash.z.ecc.android.sdk.MigrationState
 import cash.z.ecc.android.sdk.MigrationStepKind
@@ -1094,11 +1095,26 @@ internal class OrchardMigrationSdkImpl(
 
     // ── Invalidity recovery ──────────────────────────────────────────────────
 
-    override suspend fun restartCurrentMigrationStep(includeResidual: Boolean): MigrationSchedule =
-        gatedLogged("restartCurrentMigrationStep") {
+    override suspend fun restartCurrentMigrationStep(includeResidual: Boolean): MigrationRestartOutcome =
+        logged("restartCurrentMigrationStep") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            migrationBackend.restartCurrentMigrationStep(dbDataPath, network, account, includeResidual).toPublic()
+            when (val phase = currentGatePhase()) {
+                MigrationGatePhase.Open -> {
+                    val schedule =
+                        migrationBackend
+                            .restartCurrentMigrationStep(dbDataPath, network, account, includeResidual)
+                            .toPublic()
+                    MigrationRestartOutcome.Replanned(schedule)
+                }
+
+                // A scheduled run planned now would be built for the branch the upgrade ends: end the run and
+                // plan nothing.
+                is MigrationGatePhase.PausedUntil -> {
+                    migrationBackend.clearMigration(dbDataPath, network, account)
+                    MigrationRestartOutcome.CancelledUntilNetworkUpgrade(phase.activation.value)
+                }
+            }
         }
 
     override suspend fun getMigrationTransferStates(): MigrationTransferStates? =

@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.MigrationAdvanceStep
 import cash.z.ecc.android.sdk.MigrationAvailability
 import cash.z.ecc.android.sdk.MigrationPausedUntilNetworkUpgradeException
 import cash.z.ecc.android.sdk.MigrationPeek
+import cash.z.ecc.android.sdk.MigrationRestartOutcome
 import cash.z.ecc.android.sdk.MigrationStepKind
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.NoteSplitProposal
@@ -1279,7 +1280,6 @@ class OrchardMigrationSdkImplTest {
             val thrown =
                 assertFailsWith<MigrationPausedUntilNetworkUpgradeException> { sdk.proposeMigrationTransfers() }
             assertEquals(4_465_026L, thrown.activationHeight)
-            assertFailsWith<MigrationPausedUntilNetworkUpgradeException> { sdk.restartCurrentMigrationStep() }
             assertFailsWith<MigrationPausedUntilNetworkUpgradeException> {
                 sdk.storeSignedSchedulePczts(emptyList())
             }
@@ -1287,6 +1287,15 @@ class OrchardMigrationSdkImplTest {
                 gatedSdk(NEAR_ACTIVATION_TIP, backend).proposeMigrationTransfers()
             }
             Unit
+        }
+
+    @Test
+    fun restart_before_the_upgrade_cancels_the_run_and_plans_nothing() =
+        runBlocking {
+            val backend = FakeTypesafeMigrationBackend()
+            val outcome = gatedSdk(PAUSED_TIP, backend).restartCurrentMigrationStep()
+            assertEquals(MigrationRestartOutcome.CancelledUntilNetworkUpgrade(4_465_026L), outcome)
+            assertEquals(1, backend.clearMigrationCallCount)
         }
 
     @Test
@@ -1608,11 +1617,16 @@ class OrchardMigrationSdkImplTest {
             account: AccountUuid
         ): Int = error("Unused")
 
+        var clearMigrationCallCount = 0
+
         override suspend fun clearMigration(
             dbDataPath: String,
             network: ZcashNetwork,
             account: AccountUuid
-        ): Int = error("Unused")
+        ): Int {
+            clearMigrationCallCount++
+            return 0
+        }
 
         var upgradeVerdictResult = 0
         var upgradeVerdictCallCount = 0

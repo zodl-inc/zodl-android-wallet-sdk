@@ -393,6 +393,23 @@ sealed class MigrationAvailability {
     }
 }
 
+/** What [OrchardMigrationSdk.restartCurrentMigrationStep] did. */
+sealed class MigrationRestartOutcome {
+    /** The run was cancelled and this schedule was planned for the remainder; confirm it with the user. */
+    data class Replanned(
+        val schedule: MigrationSchedule
+    ) : MigrationRestartOutcome()
+
+    /**
+     * The run was cancelled and nothing was planned, because NU7 has not activated ([activationHeight]) yet. Offer
+     * a new scheduled migration once [OrchardMigrationSdk.migrationAvailability] reports its lane open; the
+     * immediate migration is available now.
+     */
+    data class CancelledUntilNetworkUpgrade(
+        val activationHeight: Long
+    ) : MigrationRestartOutcome()
+}
+
 /**
  * A scheduled-migration call was made before NU7 activation ([activationHeight]). Its transactions
  * would be built for the consensus branch before NU7, which the network stops accepting at the
@@ -1027,14 +1044,16 @@ interface OrchardMigrationSdk {
      * re-evaluates the remaining unspent Orchard notes, and returns a new schedule
      * for the remainder of the balance.
      *
-     * The returned MigrationSchedule must go through the normal user confirmation
-     * flow → signAndStoreMigrationSchedule() — same as the first time.
+     * A [MigrationRestartOutcome.Replanned] schedule must go through the normal user confirmation
+     * flow → signAndStoreMigrationSchedule() — same as the first time. Before NU7 activates no new scheduled
+     * run is planned, because it would be built for the consensus branch the upgrade ends: the run is still
+     * cancelled and the outcome is [MigrationRestartOutcome.CancelledUntilNetworkUpgrade].
      *
      * [includeResidual] — should match whatever choice the user made for
      * [proposeMigrationTransfers] on the schedule being recovered (**pass `false`** until the
      * opt-in UI for that exists — see [proposeMigrationTransfers]'s doc).
      */
-    suspend fun restartCurrentMigrationStep(includeResidual: Boolean = false): MigrationSchedule
+    suspend fun restartCurrentMigrationStep(includeResidual: Boolean = false): MigrationRestartOutcome
 
     /**
      * The live, persisted status of EVERY committed migration transaction — transfers AND

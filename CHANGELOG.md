@@ -40,6 +40,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pause on new scheduled work so a scheduled run can be tried before NU7. Off by default.
 
 ### Changed
+- `OrchardMigrationSdk.restartCurrentMigrationStep()` returns a `MigrationRestartOutcome` instead of a
+  `MigrationSchedule`: `Replanned(schedule)` is what it returned before. While the wallet's next block is before
+  the NU7 activation it cancels the run, plans nothing (a scheduled run planned now would be built for the
+  branch the upgrade ends) and answers `CancelledUntilNetworkUpgrade(activationHeight)` instead of throwing.
 - Every transaction submission (a send, `Broadcaster`, a background resubmit) now reads the latest height
   of the server the transaction is about to go to, on the same connection, and does not submit a
   transaction built for another consensus branch than the next block's (local code `-9101`), judged at the
