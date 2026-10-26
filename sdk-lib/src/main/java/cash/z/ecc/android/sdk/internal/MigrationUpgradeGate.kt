@@ -64,17 +64,17 @@ internal enum class SubmissionRefusal {
 
 /**
  * Whether a raw transaction can still be mined at [nextHeight]: it was built for the consensus
- * era of that height and has not expired by then. An unreadable branch ID does not refuse, so a
- * transaction this check cannot judge is never blocked by it. A zero expiry height means the
- * transaction does not expire.
+ * era of that height and has not expired by then. Both are read from the transaction's fixed prefix.
+ * An unreadable transaction does not refuse, so one this check cannot judge is never blocked by it. A
+ * zero expiry height means the transaction does not expire.
  */
 internal fun checkSubmittable(
     rawTx: ByteArray,
-    expiryHeight: Long?,
     network: ZcashNetwork,
     nextHeight: BlockHeight
-): SubmissionRefusal? =
-    when {
+): SubmissionRefusal? {
+    val expiryHeight = rawTransactionExpiryHeight(rawTx)
+    return when {
         isBuiltForOtherConsensusEra(rawTx, network, nextHeight) -> {
             SubmissionRefusal.WRONG_BRANCH
         }
@@ -87,3 +87,4 @@ internal fun checkSubmittable(
             null
         }
     }
+}

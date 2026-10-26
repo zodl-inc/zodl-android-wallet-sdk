@@ -18,9 +18,12 @@ class MigrationUpgradeGateTest {
         network: ZcashNetwork = ZcashNetwork.Mainnet
     ) = migrationGatePhase(network, BlockHeight.new(next), bypass)
 
-    private fun rawTx(branchId: Long): ByteArray {
+    private fun rawTx(
+        branchId: Long,
+        expiry: Long = 0L
+    ): ByteArray {
         fun le(value: Long) = ByteArray(4) { i -> ((value shr (8 * i)) and 0xFF).toByte() }
-        return le(0x8000_0005L) + le(0x26A7_270AL) + le(branchId) + ByteArray(16)
+        return le(0x8000_0005L) + le(0x26A7_270AL) + le(branchId) + le(0L) + le(expiry) + ByteArray(16)
     }
 
     @Test
@@ -58,21 +61,20 @@ class MigrationUpgradeGateTest {
 
     @Test
     fun accepts_the_next_heights_branch_unexpired() {
-        val tx = rawTx(ConsensusBranchId.NU6_3.id)
-        assertNull(checkSubmittable(tx, nu7 + 100, ZcashNetwork.Mainnet, BlockHeight.new(nu7 - 2)))
+        val tx = rawTx(ConsensusBranchId.NU6_3.id, expiry = nu7 + 100)
+        assertNull(checkSubmittable(tx, ZcashNetwork.Mainnet, BlockHeight.new(nu7 - 2)))
     }
 
     @Test
     fun refuses_a_branch_other_than_the_next_heights() {
         assertEquals(
             SubmissionRefusal.WRONG_BRANCH,
-            checkSubmittable(rawTx(ConsensusBranchId.NU6_3.id), nu7 + 100, ZcashNetwork.Mainnet, BlockHeight.new(nu7))
+            checkSubmittable(rawTx(ConsensusBranchId.NU6_3.id, nu7 + 100), ZcashNetwork.Mainnet, BlockHeight.new(nu7))
         )
         assertEquals(
             SubmissionRefusal.WRONG_BRANCH,
             checkSubmittable(
-                rawTx(ConsensusBranchId.NU7.id),
-                nu7 + 100,
+                rawTx(ConsensusBranchId.NU7.id, nu7 + 100),
                 ZcashNetwork.Mainnet,
                 BlockHeight.new(nu7 - 1)
             )
@@ -81,14 +83,18 @@ class MigrationUpgradeGateTest {
 
     @Test
     fun refuses_an_expired_transaction_and_ignores_a_zero_expiry() {
-        val tx = rawTx(ConsensusBranchId.NU6_3.id)
         val next = BlockHeight.new(nu7 - 100)
         assertEquals(
             SubmissionRefusal.EXPIRED,
-            checkSubmittable(tx, next.value - 1, ZcashNetwork.Mainnet, next)
+            checkSubmittable(rawTx(ConsensusBranchId.NU6_3.id, next.value - 1), ZcashNetwork.Mainnet, next)
         )
-        assertNull(checkSubmittable(tx, next.value, ZcashNetwork.Mainnet, next))
-        assertNull(checkSubmittable(tx, 0L, ZcashNetwork.Mainnet, next))
-        assertNull(checkSubmittable(tx, null, ZcashNetwork.Mainnet, next))
+        assertNull(checkSubmittable(rawTx(ConsensusBranchId.NU6_3.id, next.value), ZcashNetwork.Mainnet, next))
+        assertNull(checkSubmittable(rawTx(ConsensusBranchId.NU6_3.id, 0L), ZcashNetwork.Mainnet, next))
+    }
+
+    @Test
+    fun reads_the_expiry_height_from_the_fixed_prefix() {
+        assertEquals(123_456L, rawTransactionExpiryHeight(rawTx(ConsensusBranchId.NU7.id, 123_456L)))
+        assertNull(rawTransactionExpiryHeight(ByteArray(19)))
     }
 }

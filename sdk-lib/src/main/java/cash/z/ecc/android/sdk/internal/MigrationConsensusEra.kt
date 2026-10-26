@@ -10,6 +10,9 @@ private const val RAW_TX_VERSION_GROUP_BYTES = 4
 private const val RAW_TX_BRANCH_ID_BYTES = 4
 private const val RAW_TX_BRANCH_ID_OFFSET = RAW_TX_HEADER_BYTES + RAW_TX_VERSION_GROUP_BYTES
 private const val RAW_TX_PREFIX_BYTES = RAW_TX_BRANCH_ID_OFFSET + RAW_TX_BRANCH_ID_BYTES
+private const val RAW_TX_LOCK_TIME_BYTES = 4
+private const val RAW_TX_EXPIRY_OFFSET = RAW_TX_PREFIX_BYTES + RAW_TX_LOCK_TIME_BYTES
+private const val RAW_TX_EXPIRY_END = RAW_TX_EXPIRY_OFFSET + 4
 private const val OVERWINTERED_FLAG = 0x8000_0000L
 private const val BYTE_MASK = 0xFFL
 private const val BITS_PER_BYTE = 8
@@ -22,6 +25,16 @@ private const val BITS_PER_BYTE = 8
 internal fun rawTransactionBranchId(rawTx: ByteArray): Long? {
     val isOverwintered = rawTx.size >= RAW_TX_PREFIX_BYTES && littleEndianUInt(rawTx, 0) and OVERWINTERED_FLAG != 0L
     return if (isOverwintered) littleEndianUInt(rawTx, RAW_TX_BRANCH_ID_OFFSET) else null
+}
+
+/**
+ * The expiry height of a serialized v5+ transaction (zero means it does not expire), or null when
+ * [rawTx] is too short or is not an Overwinter-or-later transaction. It follows the branch ID and
+ * the lock time in the fixed prefix (ZIP 225).
+ */
+internal fun rawTransactionExpiryHeight(rawTx: ByteArray): Long? {
+    val isReadable = rawTransactionBranchId(rawTx) != null && rawTx.size >= RAW_TX_EXPIRY_END
+    return if (isReadable) littleEndianUInt(rawTx, RAW_TX_EXPIRY_OFFSET) else null
 }
 
 private fun littleEndianUInt(
