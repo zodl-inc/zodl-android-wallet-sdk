@@ -347,9 +347,9 @@ sealed class MigrationAdvanceStep {
     }
 
     /**
-     * The run's transactions are built for the consensus branch before NU7, and the chain has not
-     * reached NU7 activation ([activationHeight]) yet, or is in the final blocks before it. Nothing
-     * is proved or broadcast now. Transfers due before the cutoff window are still sent.
+     * New scheduled work is paused until NU7 activates ([activationHeight]): the engine's next step
+     * would rebuild or re-plan, and what it built would be for the consensus branch the upgrade ends.
+     * Valid committed transfers are still proved and broadcast before the activation.
      */
     data class PausedForNetworkUpgrade(
         val activationHeight: Long
@@ -373,7 +373,7 @@ sealed class MigrationAvailability {
     /** The scheduled lane waits for NU7, because its transactions are built for the branch before it. */
     abstract val isScheduledLaneAvailable: Boolean
 
-    /** The immediate (single transaction) lane is a normal send: closed only in the final blocks before NU7. */
+    /** The immediate (single transaction) lane is a normal send: open at every height. */
     abstract val isImmediateLaneAvailable: Boolean
 
     /** NU7 is active, unknown for this network, or the internal bypass is on. */
@@ -384,20 +384,12 @@ sealed class MigrationAvailability {
         override fun toString() = "Available"
     }
 
-    /** Before the cutoff window: a scheduled migration cannot start until [activationHeight]. */
+    /** Before NU7: a scheduled migration cannot start until [activationHeight]. */
     data class PausedUntilNetworkUpgrade(
         val activationHeight: Long
     ) : MigrationAvailability() {
         override val isScheduledLaneAvailable = false
         override val isImmediateLaneAvailable = true
-    }
-
-    /** The last blocks before [activationHeight]: no migration lane is open. */
-    data class NetworkUpgradeCutoff(
-        val activationHeight: Long
-    ) : MigrationAvailability() {
-        override val isScheduledLaneAvailable = false
-        override val isImmediateLaneAvailable = false
     }
 }
 
@@ -1013,8 +1005,9 @@ interface OrchardMigrationSdk {
     suspend fun migrationAvailability(): MigrationAvailability = MigrationAvailability.Available
 
     /**
-     * Internal testing only: lifts the NU7 pause and cutoff so a scheduled run can be tried on mainnet before the
-     * activation. It never disables the submission check. Off by default; production builds must never turn it on.
+     * Internal testing only: lifts the NU7 pause on new scheduled work so a scheduled run can be tried on mainnet
+     * before the activation. It never disables the submission check. Off by default; production builds must never
+     * turn it on.
      */
     fun setMigrationNetworkUpgradeGateBypass(enabled: Boolean) = Unit
 

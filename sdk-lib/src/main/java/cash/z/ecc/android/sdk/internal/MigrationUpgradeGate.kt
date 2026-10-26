@@ -5,27 +5,17 @@ import cash.z.ecc.android.sdk.model.BlockSpacing
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 
 /**
- * Number of blocks (about an hour at the 25 s NU7 spacing, or 1 h 15 min at 75 s) before the NU7
- * activation in which no migration work is started or submitted.
- */
-internal const val NETWORK_UPGRADE_CUTOFF_BLOCKS = 48L
-
-/**
- * What a migration may do at the wallet's next height, relative to the NU7 activation. A migration
+ * What a migration may start at the wallet's next height, relative to the NU7 activation. A migration
  * transaction is built for the consensus branch of the height it was planned at, and no block
- * accepts one built for the branch before NU7 once NU7 is active.
+ * accepts one built for the branch before NU7 once NU7 is active. Only new scheduled work waits:
+ * there is no cutoff window, and valid committed transactions keep being proved and broadcast.
  */
 internal sealed interface MigrationGatePhase {
     /** No restriction: NU7 is active, unknown for the network, or the gate is bypassed. */
     data object Open : MigrationGatePhase
 
-    /** Scheduled migration waits for NU7. The immediate (single transaction) lane stays available. */
+    /** New scheduled work waits for NU7. The immediate (single transaction) lane stays available. */
     data class PausedUntil(
-        val activation: BlockHeight
-    ) : MigrationGatePhase
-
-    /** The last [NETWORK_UPGRADE_CUTOFF_BLOCKS] blocks before NU7: every migration lane is closed. */
-    data class Cutoff(
         val activation: BlockHeight
     ) : MigrationGatePhase
 }
@@ -45,10 +35,6 @@ internal fun migrationGatePhase(
             MigrationGatePhase.Open
         }
 
-        nextHeight.value >= activation.value - NETWORK_UPGRADE_CUTOFF_BLOCKS -> {
-            MigrationGatePhase.Cutoff(activation)
-        }
-
         else -> {
             MigrationGatePhase.PausedUntil(activation)
         }
@@ -58,8 +44,7 @@ internal fun migrationGatePhase(
 /** Why a transaction must not be submitted. */
 internal enum class SubmissionRefusal {
     WRONG_BRANCH,
-    EXPIRED,
-    CUTOFF
+    EXPIRED
 }
 
 /**

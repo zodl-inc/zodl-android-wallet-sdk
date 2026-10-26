@@ -25,25 +25,25 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contains the cause's message; the failure is chained as `cause`.
 - `OrchardMigrationSdk.migrationAvailability()` says what a migration may start at the wallet's next height,
   as a `MigrationAvailability`, without a network request: `Available`, `PausedUntilNetworkUpgrade` (the
-  scheduled lane waits for NU7, the immediate lane stays open) or `NetworkUpgradeCutoff` (the last 48 blocks
-  before NU7, every lane closed). A migration transaction is built for the consensus branch of the height it
+  scheduled lane waits for NU7, the immediate lane stays open at every height). A migration transaction is built for the consensus branch of the height it
   was planned at, and no block accepts one built for the branch before NU7 once NU7 is active.
 - `MigrationPausedUntilNetworkUpgradeException`, thrown by the scheduled-migration calls (propose, build,
   sign, store, note split and restart) until NU7 activates. `MigrationAdvanceStep.PausedForNetworkUpgrade`,
-  answered by `nextStep()` in place of a rebuild or re-plan before NU7, and for every send in the cutoff
-  window.
+  answered by `nextStep()` in place of a rebuild or re-plan before NU7. There is no cutoff window: valid
+  transfers that were signed before the activation keep being proved and broadcast until it.
 - `MigrationAdvanceStep.InterruptedByNetworkUpgrade`, answered by `nextStep()` once NU7 is active when the run
   still holds a transaction built for the consensus branch before it, which no block accepts. A transaction
   that may already have been sent makes `nextStep()` answer `Reevaluate` until the wallet has scanned up to
   the activation. `OrchardMigrationSdk.cancelMigrationRun()` ends such a run and releases its note
   reservations, so a new migration can be planned over the full balance.
 - `OrchardMigrationSdk.setMigrationNetworkUpgradeGateBypass(enabled)`, for internal testing only: it lifts
-  the pause and the cutoff so a scheduled run can be tried before NU7. Off by default.
+  the pause on new scheduled work so a scheduled run can be tried before NU7. Off by default.
 
 ### Changed
 - Every transaction submission (a send, `Broadcaster`, a background resubmit) now reads the latest height
   of the server the transaction is about to go to, on the same connection, and does not submit a
-  transaction built for another consensus branch than the next block's (local code `-9101`) or one that
+  transaction built for another consensus branch than the next block's (local code `-9101`), judged at the
+  higher of that server's height and the wallet's own tip, or one that
   has expired by then (`-9102`). When the height cannot be read nothing is submitted and the submission
   fails as a network failure. NU7 changes the consensus branch, so a transaction signed just before the
   activation and submitted just after it can no longer be mined. Each submission makes one extra request.

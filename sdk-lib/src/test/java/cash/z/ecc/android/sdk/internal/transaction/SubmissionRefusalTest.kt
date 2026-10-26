@@ -61,4 +61,15 @@ class SubmissionRefusalTest {
         assertNotNull(refusal)
         assertTrue(refusal.grpcError)
     }
+
+    @Test
+    fun judges_the_higher_of_the_server_and_the_wallet_height() {
+        val tx = rawTx(ConsensusBranchId.NU6_3.id, nu7 + 40)
+        // The server lags, but the wallet has already scanned up to the activation's previous block.
+        val refusal = submissionRefusal(tx, txId, ZcashNetwork.Mainnet, height(nu7 - 10), walletTip = nu7 - 1)
+        assertNotNull(refusal)
+        assertEquals(SUBMIT_REFUSED_WRONG_BRANCH, refusal.code)
+        // A wallet behind the server changes nothing.
+        assertNull(submissionRefusal(tx, txId, ZcashNetwork.Mainnet, height(nu7 - 10), walletTip = nu7 - 500))
+    }
 }

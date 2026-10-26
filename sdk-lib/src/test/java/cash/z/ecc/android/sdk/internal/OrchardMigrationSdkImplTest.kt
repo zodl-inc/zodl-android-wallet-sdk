@@ -70,11 +70,11 @@ class OrchardMigrationSdkImplTest {
         /** A chain tip past the testnet NU7 activation (4,465,026): the migration gate is open. */
         const val POST_NU7_TIP = 4_500_000L
 
-        /** Well before the cutoff window: scheduled migration is paused, the immediate lane is open. */
+        /** Well before the activation: scheduled migration is paused, the immediate lane is open. */
         const val PAUSED_TIP = 4_400_000L
 
-        /** Inside the 48 block cutoff window before the testnet activation. */
-        const val CUTOFF_TIP = 4_465_000L
+        /** A few dozen blocks before the testnet activation: the pause holds, and no cutoff window applies. */
+        const val NEAR_ACTIVATION_TIP = 4_465_000L
 
         /**
          * How long the read-liveness test waits for a pure read while a broadcast is parked. Long
@@ -1250,9 +1250,9 @@ class OrchardMigrationSdkImplTest {
             assertEquals(MigrationAvailability.PausedUntilNetworkUpgrade(nu7), paused)
             assertTrue(paused.isImmediateLaneAvailable)
             assertFalse(paused.isScheduledLaneAvailable)
-            val cutoff = gatedSdk(CUTOFF_TIP).migrationAvailability()
-            assertEquals(MigrationAvailability.NetworkUpgradeCutoff(nu7), cutoff)
-            assertFalse(cutoff.isImmediateLaneAvailable)
+            val near = gatedSdk(NEAR_ACTIVATION_TIP).migrationAvailability()
+            assertEquals(MigrationAvailability.PausedUntilNetworkUpgrade(nu7), near)
+            assertTrue(near.isImmediateLaneAvailable)
         }
 
     @Test
@@ -1261,7 +1261,7 @@ class OrchardMigrationSdkImplTest {
             val sdk = gatedSdk(PAUSED_TIP)
             try {
                 sdk.setMigrationNetworkUpgradeGateBypass(true)
-                assertEquals(MigrationAvailability.Available, gatedSdk(CUTOFF_TIP).migrationAvailability())
+                assertEquals(MigrationAvailability.Available, gatedSdk(NEAR_ACTIVATION_TIP).migrationAvailability())
             } finally {
                 sdk.setMigrationNetworkUpgradeGateBypass(false)
             }
@@ -1272,7 +1272,7 @@ class OrchardMigrationSdkImplTest {
         }
 
     @Test
-    fun scheduled_migration_calls_throw_before_the_upgrade_and_in_the_cutoff_window() =
+    fun scheduled_migration_calls_throw_before_the_upgrade() =
         runBlocking {
             val backend = FakeTypesafeMigrationBackend()
             val sdk = gatedSdk(PAUSED_TIP, backend)
@@ -1284,7 +1284,7 @@ class OrchardMigrationSdkImplTest {
                 sdk.storeSignedSchedulePczts(emptyList())
             }
             assertFailsWith<MigrationPausedUntilNetworkUpgradeException> {
-                gatedSdk(CUTOFF_TIP, backend).proposeMigrationTransfers()
+                gatedSdk(NEAR_ACTIVATION_TIP, backend).proposeMigrationTransfers()
             }
             Unit
         }
@@ -1344,43 +1344,46 @@ class OrchardMigrationSdkImplTest {
         }
 
     @Test
-    fun nextStep_holds_every_send_in_the_cutoff_window() =
+    fun nextStep_keeps_sending_valid_transfers_until_the_activation_and_holds_only_new_work() =
         runBlocking {
-            for (kind in listOf(1L, 2L, 3L, 5L)) {
+            for (kind in listOf(1L, 2L)) {
+                val backend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(kind, 4L))
+                val step = gatedSdk(NEAR_ACTIVATION_TIP, backend).nextStep()?.step
+                assertFalse(step is MigrationAdvanceStep.PausedForNetworkUpgrade, "step kind $kind: $step")
+            }
+            for (kind in listOf(3L, 5L)) {
                 val backend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(kind, 4L))
                 assertEquals(
                     MigrationAdvanceStep.PausedForNetworkUpgrade(4_465_026L),
-                    gatedSdk(CUTOFF_TIP, backend).nextStep()?.step,
+                    gatedSdk(NEAR_ACTIVATION_TIP, backend).nextStep()?.step,
                     "step kind $kind"
                 )
             }
             val waiting = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(0L, -1L))
-            assertEquals(MigrationAdvanceStep.Waiting, gatedSdk(CUTOFF_TIP, waiting).nextStep()?.step)
+            assertEquals(MigrationAdvanceStep.Waiting, gatedSdk(NEAR_ACTIVATION_TIP, waiting).nextStep()?.step)
         }
 
     @Test
-    fun a_due_transfer_is_held_back_in_the_cutoff_window_and_when_the_tip_is_unknown() =
+    fun a_due_transfer_is_held_back_when_the_tip_is_unknown() =
         runBlocking {
-            for (tip in listOf(CUTOFF_TIP, -1L)) {
-                val backend =
-                    FakeTypesafeMigrationBackend(
-                        dueTransferResult =
-                            JniDueTransferResult(
-                                status = 1,
-                                awaitingProofTransferId = null,
-                                prepared = preparedTransfer()
-                            ),
-                    )
-                val broadcaster = GatedBroadcaster()
-                val sdk = sdkWith(AccountUuid.new(ByteArray(16) { it.toByte() }), backend, broadcaster, tip = tip)
-                val outcome =
-                    sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
-                assertEquals(TransferAttemptOutcome.NothingDue, outcome, "tip $tip")
-                assertEquals(0, broadcaster.callCount, "tip $tip")
-            }
+            val backend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                )
+            val broadcaster = GatedBroadcaster()
+            val sdk = sdkWith(AccountUuid.new(ByteArray(16) { it.toByte() }), backend, broadcaster, tip = -1L)
+            val outcome =
+                sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+            assertEquals(TransferAttemptOutcome.NothingDue, outcome)
+            assertEquals(0, broadcaster.callCount)
         }
 
-    /** A chain tip below the NU7 cutoff window, so broadcasts are neither held back nor judged stale. */
+    /** A chain tip well before the NU7 activation, so broadcasts are neither held back nor judged stale. */
     private class FixedChainTipEstimator(
         private val tip: Long
     ) : ChainTipEstimator {

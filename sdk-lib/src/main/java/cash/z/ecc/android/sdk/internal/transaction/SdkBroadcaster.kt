@@ -112,7 +112,8 @@ internal interface TransactionSubmitter {
 internal class EndpointTransactionSubmitter(
     private val walletClientFactory: WalletClientFactory,
     private val sdkFlags: SdkFlags,
-    private val network: ZcashNetwork? = null
+    private val network: ZcashNetwork? = null,
+    private val walletTip: suspend () -> Long? = { null }
 ) : TransactionSubmitter {
     override suspend fun submit(
         transaction: CreatedTransaction,
@@ -120,7 +121,7 @@ internal class EndpointTransactionSubmitter(
     ): TransactionSubmitResult {
         val walletClient = walletClientFactory.create(endpoint)
         try {
-            return walletClient.submitTransaction(transaction.raw, transaction.txId, sdkFlags, network)
+            return walletClient.submitTransaction(transaction.raw, transaction.txId, sdkFlags, network, walletTip)
         } finally {
             withContext(NonCancellable) {
                 walletClient.dispose()

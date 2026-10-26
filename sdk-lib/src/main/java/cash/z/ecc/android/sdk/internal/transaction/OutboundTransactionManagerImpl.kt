@@ -20,7 +20,8 @@ internal class OutboundTransactionManagerImpl(
     internal val encoder: TransactionEncoder,
     private val walletClient: CombinedWalletClient,
     private val sdkFlags: SdkFlags,
-    private val network: ZcashNetwork? = null
+    private val network: ZcashNetwork? = null,
+    private val walletTip: suspend () -> Long? = { null }
 ) : OutboundTransactionManager {
     /**
      * Creates a proposal for transferring funds from a ZIP-321 compliant payment URI
@@ -81,7 +82,7 @@ internal class OutboundTransactionManagerImpl(
     ): List<EncodedTransaction> = encoder.createProposedTransactions(proposal, usk, ovkPolicy)
 
     override suspend fun submit(encodedTransaction: EncodedTransaction): TransactionSubmitResult =
-        walletClient.submitTransaction(encodedTransaction.raw, encodedTransaction.txId, sdkFlags, network)
+        walletClient.submitTransaction(encodedTransaction.raw, encodedTransaction.txId, sdkFlags, network, walletTip)
 
     override suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
@@ -116,13 +117,15 @@ internal class OutboundTransactionManagerImpl(
             encoder: TransactionEncoder,
             lightWalletClient: CombinedWalletClient,
             sdkFlags: SdkFlags,
-            network: ZcashNetwork? = null
+            network: ZcashNetwork? = null,
+            walletTip: suspend () -> Long? = { null }
         ): OutboundTransactionManager =
             OutboundTransactionManagerImpl(
                 encoder,
                 lightWalletClient,
                 sdkFlags,
-                network
+                network,
+                walletTip
             )
     }
 }

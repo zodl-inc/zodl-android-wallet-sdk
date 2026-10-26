@@ -27,14 +27,10 @@ class MigrationUpgradeGateTest {
     }
 
     @Test
-    fun pauses_below_the_cutoff_window() {
-        assertEquals(MigrationGatePhase.PausedUntil(activation), phase(nu7 - NETWORK_UPGRADE_CUTOFF_BLOCKS - 1))
-    }
-
-    @Test
-    fun enters_the_cutoff_window_48_blocks_before_activation() {
-        assertEquals(MigrationGatePhase.Cutoff(activation), phase(nu7 - NETWORK_UPGRADE_CUTOFF_BLOCKS))
-        assertEquals(MigrationGatePhase.Cutoff(activation), phase(nu7 - 1))
+    fun pauses_until_activation_with_no_cutoff_window() {
+        assertEquals(MigrationGatePhase.PausedUntil(activation), phase(nu7 - 1_000))
+        assertEquals(MigrationGatePhase.PausedUntil(activation), phase(nu7 - 48))
+        assertEquals(MigrationGatePhase.PausedUntil(activation), phase(nu7 - 1))
     }
 
     @Test
@@ -54,7 +50,7 @@ class MigrationUpgradeGateTest {
         val testnetNu7 = BlockSpacing.nu7ActivationHeight(ZcashNetwork.Testnet)!!
         assertEquals(MigrationGatePhase.Open, phase(testnetNu7.value, network = ZcashNetwork.Testnet))
         assertEquals(
-            MigrationGatePhase.Cutoff(testnetNu7),
+            MigrationGatePhase.PausedUntil(testnetNu7),
             phase(testnetNu7.value - 1, network = ZcashNetwork.Testnet)
         )
     }

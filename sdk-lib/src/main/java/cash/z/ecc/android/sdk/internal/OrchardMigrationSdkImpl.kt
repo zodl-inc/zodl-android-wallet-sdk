@@ -185,7 +185,6 @@ internal class OrchardMigrationSdkImpl(
         when (val phase = currentGatePhase()) {
             MigrationGatePhase.Open -> Unit
             is MigrationGatePhase.PausedUntil -> throw MigrationPausedUntilNetworkUpgradeException(phase.activation.value)
-            is MigrationGatePhase.Cutoff -> throw MigrationPausedUntilNetworkUpgradeException(phase.activation.value)
         }
     }
 
@@ -203,7 +202,6 @@ internal class OrchardMigrationSdkImpl(
         when (val phase = currentGatePhase()) {
             MigrationGatePhase.Open -> MigrationAvailability.Available
             is MigrationGatePhase.PausedUntil -> MigrationAvailability.PausedUntilNetworkUpgrade(phase.activation.value)
-            is MigrationGatePhase.Cutoff -> MigrationAvailability.NetworkUpgradeCutoff(phase.activation.value)
         }
 
     override fun setMigrationNetworkUpgradeGateBypass(enabled: Boolean) {
@@ -930,12 +928,10 @@ internal class OrchardMigrationSdkImpl(
         val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
         // Never submit what the network would reject: it can only leak the transaction. A transfer signed
         // before NU7 and still pending at activation, or one that has expired, is recorded as expired so the
-        // app asks the user to migrate what is left. When the chain height is unknown nothing is submitted, and
-        // in the cutoff window before NU7 nothing is submitted either.
+        // app asks the user to migrate what is left. When the chain height is unknown nothing is submitted.
         val tipForCheck = chainTipEstimator.estimatedTip()
         val nextHeight = BlockHeight.new(tipForCheck.coerceAtLeast(0L) + 1)
-        val inCutoff = migrationGatePhase(network, nextHeight, gateBypass.get()) is MigrationGatePhase.Cutoff
-        if (tipForCheck <= 0 || inCutoff) {
+        if (tipForCheck <= 0) {
             Twig.warn { "MIGRATION_DIAG OrchardMigrationSdk: holding back transfer ${prepared.id} (height $tipForCheck)" }
             return BroadcastPreparation.Settled(TransferAttemptOutcome.NothingDue)
         }
@@ -1169,13 +1165,12 @@ internal class OrchardMigrationSdkImpl(
     }
 
     /**
-     * The step the NU7 gate substitutes for the engine's [rawKind], or null to leave it alone. Before the
-     * cutoff window only the work that would build new transactions (rebuild, re-plan) waits for NU7;
-     * already signed transfers still prove and broadcast. In the cutoff window nothing is sent.
+     * The step the NU7 gate substitutes for the engine's [rawKind], or null to leave it alone. Before NU7
+     * only the work that would build new transactions (rebuild, re-plan) waits; already signed
+     * transfers still prove and broadcast.
      */
     private suspend fun gatePausedStep(rawKind: Long): MigrationAdvanceStep? {
         val isBuild = rawKind == STEP_REBUILD || rawKind == STEP_REPLAN
-        val isSend = rawKind == STEP_PROVE || rawKind == STEP_BROADCAST
         return when (val phase = currentGatePhase()) {
             MigrationGatePhase.Open -> {
                 null
@@ -1183,10 +1178,6 @@ internal class OrchardMigrationSdkImpl(
 
             is MigrationGatePhase.PausedUntil -> {
                 MigrationAdvanceStep.PausedForNetworkUpgrade(phase.activation.value).takeIf { isBuild }
-            }
-
-            is MigrationGatePhase.Cutoff -> {
-                MigrationAdvanceStep.PausedForNetworkUpgrade(phase.activation.value).takeIf { isBuild || isSend }
             }
         }
     }
