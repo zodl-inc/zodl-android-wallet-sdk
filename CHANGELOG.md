@@ -23,6 +23,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new `InitializeException.RenameAccountException` when the name cannot be stored, for example when
   no account with the given UUID exists. Its message is fixed ("Failed to rename account.") and never
   contains the cause's message; the failure is chained as `cause`.
+- `OrchardMigrationSdk.migrationAvailability()` says what a migration may start at the wallet's next height,
+  as a `MigrationAvailability`, without a network request: `Available`, `PausedUntilNetworkUpgrade` (the
+  scheduled lane waits for NU7, the immediate lane stays open) or `NetworkUpgradeCutoff` (the last 48 blocks
+  before NU7, every lane closed). A migration transaction is built for the consensus branch of the height it
+  was planned at, and no block accepts one built for the branch before NU7 once NU7 is active.
+- `MigrationPausedUntilNetworkUpgradeException`, thrown by the scheduled-migration calls (propose, build,
+  sign, store, note split and restart) until NU7 activates. `MigrationAdvanceStep.PausedForNetworkUpgrade`,
+  answered by `nextStep()` in place of a rebuild or re-plan before NU7, and for every send in the cutoff
+  window.
+- `OrchardMigrationSdk.setMigrationNetworkUpgradeGateBypass(enabled)`, for internal testing only: it lifts
+  the pause and the cutoff so a scheduled run can be tried before NU7. Off by default.
 
 ### Changed
 - `Synchronizer` declares `findAccountSharingKeyComponents(ufvk)`: any implementer or test fake must

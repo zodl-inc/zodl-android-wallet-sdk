@@ -2,6 +2,8 @@ package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
 import cash.z.ecc.android.sdk.MigrationAdvanceStep
+import cash.z.ecc.android.sdk.MigrationAvailability
+import cash.z.ecc.android.sdk.MigrationPausedUntilNetworkUpgradeException
 import cash.z.ecc.android.sdk.MigrationPeek
 import cash.z.ecc.android.sdk.MigrationStepKind
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
@@ -51,6 +53,7 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import java.io.File
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -64,6 +67,15 @@ import kotlin.time.Duration.Companion.seconds
 @Suppress("LargeClass")
 class OrchardMigrationSdkImplTest {
     private companion object {
+        /** A chain tip past the testnet NU7 activation (4,465,026): the migration gate is open. */
+        const val POST_NU7_TIP = 4_500_000L
+
+        /** Well before the cutoff window: scheduled migration is paused, the immediate lane is open. */
+        const val PAUSED_TIP = 4_400_000L
+
+        /** Inside the 48 block cutoff window before the testnet activation. */
+        const val CUTOFF_TIP = 4_465_000L
+
         /**
          * How long the read-liveness test waits for a pure read while a broadcast is parked. Long
          * enough that a slow machine cannot fail it, short enough to fail fast if the read is once
@@ -178,6 +190,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = EncryptedPreferenceProvider(fakeAndroidContext()),
                 )
 
@@ -210,6 +223,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = EncryptedPreferenceProvider(fakeAndroidContext()),
                 )
 
@@ -240,6 +254,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = EncryptedPreferenceProvider(fakeAndroidContext()),
                 )
 
@@ -270,6 +285,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = EncryptedPreferenceProvider(fakeAndroidContext()),
                 )
 
@@ -532,6 +548,7 @@ class OrchardMigrationSdkImplTest {
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
                     // No in-flight mark: the entry guard must fall through to a real send.
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider(emptyMap())),
                 )
 
@@ -584,6 +601,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
                 )
 
@@ -621,6 +639,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
                 )
 
@@ -652,6 +671,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
                 )
 
@@ -738,6 +758,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(prefs),
                 )
 
@@ -831,6 +852,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(prefs),
                 )
 
@@ -860,6 +882,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = FakeTypesafeMigrationBackend(),
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(prefs),
                 )
 
@@ -897,6 +920,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(2L, 5L)),
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(prefs),
                 )
 
@@ -929,6 +953,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
                 )
 
@@ -963,6 +988,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
                 )
 
@@ -989,6 +1015,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
                 )
 
@@ -1012,6 +1039,7 @@ class OrchardMigrationSdkImplTest {
                     account = account,
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+                    chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
                     preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
                 )
 
@@ -1186,6 +1214,7 @@ class OrchardMigrationSdkImplTest {
         account: AccountUuid,
         fakeBackend: FakeTypesafeMigrationBackend,
         broadcaster: MigrationTransactionBroadcaster,
+        tip: Long = POST_NU7_TIP,
     ): OrchardMigrationSdkImpl =
         OrchardMigrationSdkImpl(
             context = fakeAndroidContext(),
@@ -1194,9 +1223,145 @@ class OrchardMigrationSdkImplTest {
             account = account,
             migrationBackend = fakeBackend,
             defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
+            chainTipEstimator = FixedChainTipEstimator(tip),
             preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider(emptyMap())),
             broadcaster = broadcaster,
         )
+
+    // ── NU7 migration gate ────────────────────────────────────────────────────
+
+    private fun gatedSdk(
+        tip: Long,
+        fakeBackend: FakeTypesafeMigrationBackend = FakeTypesafeMigrationBackend(),
+    ): OrchardMigrationSdkImpl =
+        sdkWith(
+            AccountUuid.new(ByteArray(16) { it.toByte() }),
+            fakeBackend,
+            GatedBroadcaster(),
+            tip = tip,
+        )
+
+    @Test
+    fun migrationAvailability_follows_the_gate_phase() =
+        runBlocking {
+            val nu7 = 4_465_026L
+            assertEquals(MigrationAvailability.Available, gatedSdk(POST_NU7_TIP).migrationAvailability())
+            val paused = gatedSdk(PAUSED_TIP).migrationAvailability()
+            assertEquals(MigrationAvailability.PausedUntilNetworkUpgrade(nu7), paused)
+            assertTrue(paused.isImmediateLaneAvailable)
+            assertFalse(paused.isScheduledLaneAvailable)
+            val cutoff = gatedSdk(CUTOFF_TIP).migrationAvailability()
+            assertEquals(MigrationAvailability.NetworkUpgradeCutoff(nu7), cutoff)
+            assertFalse(cutoff.isImmediateLaneAvailable)
+        }
+
+    @Test
+    fun the_bypass_opens_the_gate_for_every_instance() =
+        runBlocking {
+            val sdk = gatedSdk(PAUSED_TIP)
+            try {
+                sdk.setMigrationNetworkUpgradeGateBypass(true)
+                assertEquals(MigrationAvailability.Available, gatedSdk(CUTOFF_TIP).migrationAvailability())
+            } finally {
+                sdk.setMigrationNetworkUpgradeGateBypass(false)
+            }
+            assertEquals(
+                MigrationAvailability.PausedUntilNetworkUpgrade(4_465_026L),
+                sdk.migrationAvailability()
+            )
+        }
+
+    @Test
+    fun scheduled_migration_calls_throw_before_the_upgrade_and_in_the_cutoff_window() =
+        runBlocking {
+            val backend = FakeTypesafeMigrationBackend()
+            val sdk = gatedSdk(PAUSED_TIP, backend)
+            val thrown =
+                assertFailsWith<MigrationPausedUntilNetworkUpgradeException> { sdk.proposeMigrationTransfers() }
+            assertEquals(4_465_026L, thrown.activationHeight)
+            assertFailsWith<MigrationPausedUntilNetworkUpgradeException> { sdk.restartCurrentMigrationStep() }
+            assertFailsWith<MigrationPausedUntilNetworkUpgradeException> {
+                sdk.storeSignedSchedulePczts(emptyList())
+            }
+            assertFailsWith<MigrationPausedUntilNetworkUpgradeException> {
+                gatedSdk(CUTOFF_TIP, backend).proposeMigrationTransfers()
+            }
+            Unit
+        }
+
+    @Test
+    fun an_unknown_chain_tip_keeps_the_scheduled_lane_closed_on_a_network_with_nu7() =
+        runBlocking {
+            val sdk = gatedSdk(tip = -1L)
+            assertFailsWith<MigrationPausedUntilNetworkUpgradeException> { sdk.proposeMigrationTransfers() }
+            Unit
+        }
+
+    @Test
+    fun nextStep_pauses_a_rebuild_before_the_upgrade_but_lets_a_broadcast_through() =
+        runBlocking {
+            val rebuild = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(3L, 4L))
+            val paused = gatedSdk(PAUSED_TIP, rebuild).nextStep()
+            assertEquals(MigrationAdvanceStep.PausedForNetworkUpgrade(4_465_026L), paused?.step)
+
+            val broadcast = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(2L, 4L))
+            assertEquals(MigrationAdvanceStep.Broadcast(4L), gatedSdk(PAUSED_TIP, broadcast).nextStep()?.step)
+        }
+
+    @Test
+    fun nextStep_does_not_supersede_a_replan_that_the_gate_holds() =
+        runBlocking {
+            val backend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(5L, -1L))
+            val result = gatedSdk(PAUSED_TIP, backend).nextStep()
+            assertEquals(MigrationAdvanceStep.PausedForNetworkUpgrade(4_465_026L), result?.step)
+            assertFalse(backend.markMigrationSupersededCalled)
+        }
+
+    @Test
+    fun nextStep_holds_every_send_in_the_cutoff_window() =
+        runBlocking {
+            for (kind in listOf(1L, 2L, 3L, 5L)) {
+                val backend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(kind, 4L))
+                assertEquals(
+                    MigrationAdvanceStep.PausedForNetworkUpgrade(4_465_026L),
+                    gatedSdk(CUTOFF_TIP, backend).nextStep()?.step,
+                    "step kind $kind"
+                )
+            }
+            val waiting = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(0L, -1L))
+            assertEquals(MigrationAdvanceStep.Waiting, gatedSdk(CUTOFF_TIP, waiting).nextStep()?.step)
+        }
+
+    @Test
+    fun a_due_transfer_is_held_back_in_the_cutoff_window_and_when_the_tip_is_unknown() =
+        runBlocking {
+            for (tip in listOf(CUTOFF_TIP, -1L)) {
+                val backend =
+                    FakeTypesafeMigrationBackend(
+                        dueTransferResult =
+                            JniDueTransferResult(
+                                status = 1,
+                                awaitingProofTransferId = null,
+                                prepared = preparedTransfer()
+                            ),
+                    )
+                val broadcaster = GatedBroadcaster()
+                val sdk = sdkWith(AccountUuid.new(ByteArray(16) { it.toByte() }), backend, broadcaster, tip = tip)
+                val outcome =
+                    sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+                assertEquals(TransferAttemptOutcome.NothingDue, outcome, "tip $tip")
+                assertEquals(0, broadcaster.callCount, "tip $tip")
+            }
+        }
+
+    /** A chain tip below the NU7 cutoff window, so broadcasts are neither held back nor judged stale. */
+    private class FixedChainTipEstimator(
+        private val tip: Long
+    ) : ChainTipEstimator {
+        override suspend fun estimatedTip(): Long = tip
+
+        override suspend fun estimatedSecondsPerBlock(): Long = 75L
+    }
 
     /**
      * Stands in for the whole network phase (see [OrchardMigrationSdkImpl]'s `broadcaster`

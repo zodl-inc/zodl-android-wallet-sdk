@@ -345,7 +345,61 @@ sealed class MigrationAdvanceStep {
     object Reevaluate : MigrationAdvanceStep() {
         override fun toString() = "Reevaluate"
     }
+
+    /**
+     * The run's transactions are built for the consensus branch before NU7, and the chain has not
+     * reached NU7 activation ([activationHeight]) yet, or is in the final blocks before it. Nothing
+     * is proved or broadcast now. Transfers due before the cutoff window are still sent.
+     */
+    data class PausedForNetworkUpgrade(
+        val activationHeight: Long
+    ) : MigrationAdvanceStep()
 }
+
+/**
+ * What a migration may start at the wallet's next height, relative to the NU7 activation. See
+ * [OrchardMigrationSdk.migrationAvailability].
+ */
+sealed class MigrationAvailability {
+    /** The scheduled lane waits for NU7, because its transactions are built for the branch before it. */
+    abstract val isScheduledLaneAvailable: Boolean
+
+    /** The immediate (single transaction) lane is a normal send: closed only in the final blocks before NU7. */
+    abstract val isImmediateLaneAvailable: Boolean
+
+    /** NU7 is active, unknown for this network, or the internal bypass is on. */
+    object Available : MigrationAvailability() {
+        override val isScheduledLaneAvailable = true
+        override val isImmediateLaneAvailable = true
+
+        override fun toString() = "Available"
+    }
+
+    /** Before the cutoff window: a scheduled migration cannot start until [activationHeight]. */
+    data class PausedUntilNetworkUpgrade(
+        val activationHeight: Long
+    ) : MigrationAvailability() {
+        override val isScheduledLaneAvailable = false
+        override val isImmediateLaneAvailable = true
+    }
+
+    /** The last blocks before [activationHeight]: no migration lane is open. */
+    data class NetworkUpgradeCutoff(
+        val activationHeight: Long
+    ) : MigrationAvailability() {
+        override val isScheduledLaneAvailable = false
+        override val isImmediateLaneAvailable = false
+    }
+}
+
+/**
+ * A scheduled-migration call was made before NU7 activation ([activationHeight]). Its transactions
+ * would be built for the consensus branch before NU7, which the network stops accepting at the
+ * activation, so nothing is planned, built, signed or stored until then.
+ */
+class MigrationPausedUntilNetworkUpgradeException(
+    val activationHeight: Long
+) : IllegalStateException("Scheduled migration is paused until the NU7 activation at height $activationHeight")
 
 /** The kind of step [MigrationPeek] predicts — [MigrationAdvanceStep]'s variants without a transaction id. */
 enum class MigrationStepKind {
@@ -942,6 +996,18 @@ interface OrchardMigrationSdk {
      */
     val nu7ActivationHeight: Long?
         get() = null
+
+    /**
+     * What a migration may start at the wallet's next height. Reads no network: it uses the estimated chain tip.
+     * Call it before offering a migration, then still handle [MigrationPausedUntilNetworkUpgradeException].
+     */
+    suspend fun migrationAvailability(): MigrationAvailability = MigrationAvailability.Available
+
+    /**
+     * Internal testing only: lifts the NU7 pause and cutoff so a scheduled run can be tried on mainnet before the
+     * activation. It never disables the submission check. Off by default; production builds must never turn it on.
+     */
+    fun setMigrationNetworkUpgradeGateBypass(enabled: Boolean) = Unit
 
     /**
      * True if any stored transfer is in an invalid state (spent note or expired anchor).
