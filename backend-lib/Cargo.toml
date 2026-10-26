@@ -318,8 +318,8 @@ crate-type = ["staticlib", "cdylib"]
 # instead of crates.io. Once slipstream-internal PR #16 merges, the rev below must move to
 # the resulting slipstream-internal `main` commit; after that, this entry can be removed once
 # a published zodl-slipstream version containing the OHTTP transport exists on crates.io.
-# Pins slipstream-internal PR #26 (head 1218755d0440597e749f9f401ad90e8663240873, crate 0.4.0-pre.2): PR #16 (frozen at f3e1f765) plus round 3 (bounded enhancement fetches with per-txid retry, h2 single-flight, mempool re-arm, measured per-chunk scan CPU), merged with zodl-inc/slipstream 58647969 (the `WalletWrite::set_account_name` facades on the librustzcash pre.1 backport below), so it replaces the public zodl-slipstream entry of that block.
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "1218755d0440597e749f9f401ad90e8663240873" }
+# Pins slipstream-internal PR #26 (head 51cd5ef60ff049b0958efd788527f9271052f62b, crate 0.4.0-pre.2): PR #16 (frozen at f3e1f765) plus round 3 (bounded enhancement fetches with per-txid retry, h2 single-flight, mempool re-arm, measured per-chunk scan CPU) and round 4 (one pooled relay connection per process, Tor: shared session connection for public sync metadata, engine Tor client reused across sessions, no circuits for skipped address requests), merged with zodl-inc/slipstream 58647969 (the `WalletWrite::set_account_name` facades on the librustzcash pre.1 backport below), so it replaces the public zodl-slipstream entry of that block.
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "51cd5ef60ff049b0958efd788527f9271052f62b" }
 #
 # Shielded voting on the NU7 pre-release crates.
 #

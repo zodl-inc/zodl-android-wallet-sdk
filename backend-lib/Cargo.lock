@@ -9161,7 +9161,7 @@ dependencies = [
 [[package]]
 name = "zodl-slipstream"
 version = "0.4.0-pre.2"
-source = "git+https://github.com/zodl-inc/slipstream-internal.git?rev=1218755d0440597e749f9f401ad90e8663240873#1218755d0440597e749f9f401ad90e8663240873"
+source = "git+https://github.com/zodl-inc/slipstream-internal.git?rev=51cd5ef60ff049b0958efd788527f9271052f62b#51cd5ef60ff049b0958efd788527f9271052f62b"
 dependencies = [
  "arti-client",
  "bytes",
