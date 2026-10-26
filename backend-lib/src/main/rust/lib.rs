@@ -118,6 +118,7 @@ mod gift_card;
 mod ledger;
 mod migration;
 mod migration_engine;
+mod migration_gate;
 mod migration_keystone;
 mod migration_plan_cache;
 mod migration_send_max;

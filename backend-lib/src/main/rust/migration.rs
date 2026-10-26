@@ -3548,6 +3548,47 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, 0)
 }
 
+/// What the run's stored transactions say about the NU7 upgrade, for a wallet whose next height is
+/// `next_height`: `0` clear (or no migration), `1` a transaction built for the old consensus branch
+/// can no longer be mined, `2` such a transaction may already have been sent, so wait until the
+/// wallet has scanned the block before the activation. See [`crate::migration_gate`].
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_migrationUpgradeVerdictNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+    account_uuid: JByteArray<'local>,
+    next_height: jlong,
+) -> jint {
+    let res = catch_unwind(&mut env, |env| {
+        let (_network, wallet, mut store_conn) = open(system_rng(), env, db_data, network_id)?;
+        let account = crate::account_id_from_jni(env, account_uuid)?;
+        let next_height = decode_tip_height(next_height)?;
+        let mut backend = Backend::new(&wallet, account, &mut store_conn, *wallet.params())?;
+        let Some(state) = read_reconciled(&wallet, &mut backend)? else {
+            return Ok(0);
+        };
+        let fully_scanned = wallet
+            .block_fully_scanned()
+            .map_err(|e| anyhow!("fully scanned height lookup failed: {}", e))?
+            .map(|metadata| metadata.block_height());
+        let verdict = crate::migration_gate::upgrade_verdict(
+            wallet.params(),
+            state
+                .transactions()
+                .iter()
+                .map(|t| (t.state().clone(), &t.pczt()[..])),
+            next_height,
+            fully_scanned,
+        );
+        Ok(verdict.code())
+    });
+    unwrap_exc_or(&mut env, res, 0)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_pendingTransferProposalNative<
     'local,
