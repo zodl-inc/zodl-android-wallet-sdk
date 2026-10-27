@@ -1023,8 +1023,13 @@ interface OrchardMigrationSdk {
         get() = null
 
     /**
-     * What a migration may start at the wallet's next height. Reads no network: it uses the estimated chain tip.
+     * What a migration may start at the wallet's next height, judged at the wallet's own chain tip (the end of its
+     * scan queue, or its highest scanned block if that is higher), never at a projection from the clock. Reads no
+     * network. The tip never goes down while this instance lives, which only matters after a rescan.
      * Call it before offering a migration, then still handle [MigrationPausedUntilNetworkUpgradeException].
+     *
+     * @throws MigrationWalletTipUnavailableException when the wallet has no chain tip yet, so whether the upgrade has
+     * happened is not known. Syncing fixes that.
      */
     suspend fun migrationAvailability(): MigrationAvailability = MigrationAvailability.Available
 
@@ -1033,6 +1038,7 @@ interface OrchardMigrationSdk {
      * before the activation. It never disables the submission check. Off by default; production builds must never
      * turn it on.
      */
+    @InternalTestingApi
     fun setMigrationNetworkUpgradeGateBypass(enabled: Boolean) = Unit
 
     /**

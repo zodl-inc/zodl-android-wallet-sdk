@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import android.content.Context
+import cash.z.ecc.android.sdk.InternalTestingApi
 import cash.z.ecc.android.sdk.MigrationAdvanceStep
 import cash.z.ecc.android.sdk.MigrationAvailability
 import cash.z.ecc.android.sdk.MigrationPausedUntilNetworkUpgradeException
@@ -68,6 +69,7 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 @Suppress("LargeClass")
+@OptIn(InternalTestingApi::class)
 class OrchardMigrationSdkImplTest {
     private companion object {
         /** A chain tip past the testnet NU7 activation (4,465,026): the migration gate is open. */
@@ -1305,12 +1307,30 @@ class OrchardMigrationSdkImplTest {
     fun an_unknown_chain_tip_keeps_the_scheduled_lane_closed_on_a_network_with_nu7() =
         runBlocking {
             val sdk = gatedSdk(tip = -1L)
-            assertEquals(
-                MigrationAvailability.PausedUntilNetworkUpgrade(4_465_026L),
-                sdk.migrationAvailability()
-            )
+            assertFailsWith<MigrationWalletTipUnavailableException> { sdk.migrationAvailability() }
             assertFailsWith<MigrationWalletTipUnavailableException> { sdk.proposeMigrationTransfers() }
             Unit
+        }
+
+    @Test
+    fun an_unknown_chain_tip_does_not_cancel_a_run_on_restart() =
+        runBlocking {
+            val backend = FakeTypesafeMigrationBackend()
+            assertFailsWith<MigrationWalletTipUnavailableException> {
+                gatedSdk(tip = -1L, fakeBackend = backend).restartCurrentMigrationStep()
+            }
+            assertEquals(0, backend.clearMigrationCallCount, "the run must be left alone")
+        }
+
+    @Test
+    fun an_unknown_chain_tip_holds_a_rebuild_without_claiming_the_upgrade_is_pending() =
+        runBlocking {
+            val rebuild = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(3L, 4L))
+            assertEquals(MigrationAdvanceStep.Reevaluate, gatedSdk(tip = -1L, fakeBackend = rebuild).nextStep()?.step)
+
+            val broadcast = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(2L, 4L))
+            val broadcastStep = gatedSdk(tip = -1L, fakeBackend = broadcast).nextStep()?.step
+            assertEquals(MigrationAdvanceStep.Broadcast(4L), broadcastStep)
         }
 
     @Test

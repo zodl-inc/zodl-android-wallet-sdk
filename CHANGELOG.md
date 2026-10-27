@@ -91,8 +91,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reference blocks, so it keeps its length in time across NU7.
 - The Rust toolchain is 1.99.1 (at least 1.97.0 is required by `zcash_voting`).
 - Slipstream's stop-to-start tip freshness window is 1.6 target blocks (120 s before NU7, 40 s from it).
-- The `zodl-slipstream` engine still comes from a git revision (zodl-inc/slipstream#27), because no release of it is
-  built on the NU7 crates yet. No SDK release can be cut until a release replaces that revision.
+- The `zodl-slipstream` 0.4.0 engine still comes from the git commit of its release tag (`zodl_slipstream-0.4.0`), because it is not
+  published on crates.io yet. No SDK release can be cut until the published release replaces that revision.
 - The migration block-rate estimate is NU7-aware. `OrchardMigrationSdk.estimatedSecondsPerBlock()` falls back to the
   height-aware target (75 s before NU7, 25 s from NU7), and a measuring window that spans the NU7 activation
   height is not measured, because its average fits neither era. `OrchardMigrationSdk.nu7ActivationHeight` exposes

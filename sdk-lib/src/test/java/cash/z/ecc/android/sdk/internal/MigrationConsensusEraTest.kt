@@ -34,6 +34,19 @@ class MigrationConsensusEraTest {
     }
 
     @Test
+    fun a_v4_transaction_has_no_branch_id_in_its_prefix() {
+        assertNull(rawTransactionBranchId(rawTx(ConsensusBranchId.NU7.id, header = 0x8000_0004L)))
+    }
+
+    @Test
+    fun a_v6_transaction_has_its_branch_id_in_the_same_place() {
+        assertEquals(
+            ConsensusBranchId.NU7.id,
+            rawTransactionBranchId(rawTx(ConsensusBranchId.NU7.id, header = 0x8000_0006L))
+        )
+    }
+
+    @Test
     fun pre_nu7_transaction_is_stale_from_the_activation_height() {
         val tx = rawTx(ConsensusBranchId.NU6_3.id)
         assertFalse(isBuiltForOtherConsensusEra(tx, ZcashNetwork.Mainnet, BlockHeight.new(nu7 - 1)))

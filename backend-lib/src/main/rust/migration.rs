@@ -3658,7 +3658,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
             state
                 .transactions()
                 .iter()
-                .map(|t| (t.state().clone(), &t.pczt()[..])),
+                .map(|t| (t.state(), &t.pczt()[..])),
             next_height,
             fully_scanned,
         );

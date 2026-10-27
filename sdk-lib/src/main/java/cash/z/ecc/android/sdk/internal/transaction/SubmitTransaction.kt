@@ -17,8 +17,8 @@ import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
 
 /** Local result codes for a transaction the SDK refuses to submit. Nothing is sent. */
-internal const val SUBMIT_REFUSED_WRONG_BRANCH = -9101
-internal const val SUBMIT_REFUSED_EXPIRED = -9102
+internal const val SUBMIT_REFUSED_WRONG_BRANCH = TransactionSubmitResult.Failure.CODE_WRONG_CONSENSUS_BRANCH
+internal const val SUBMIT_REFUSED_EXPIRED = TransactionSubmitResult.Failure.CODE_EXPIRED
 
 /**
  * Submits [rawTransaction] unless the network would reject it. The height of the
@@ -40,8 +40,26 @@ internal suspend fun CombinedWalletClient.submitTransaction(
         getLatestBlockHeight(
             serviceMode = sdkFlags ifTor ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
         )
-    return submissionRefusal(rawTransaction, txId, network, serverHeight, walletTip())
-        ?: submitUnchecked(rawTransaction, txId, sdkFlags)
+    val refusal = submissionRefusal(rawTransaction, txId, network, serverHeight, walletTip())
+    return when {
+        refusal == null -> {
+            submitUnchecked(rawTransaction, txId, sdkFlags)
+        }
+
+        // A transaction that was mined but not scanned yet looks expired from here, and the server already has it.
+        // As everywhere else, the network is trusted over the local view: that send landed, so it is not a failure.
+        isTransactionKnownToServer(txId, sdkFlags) -> {
+            Twig.info {
+                "SUCCESS (verified known to server): refused locally but already submitted: " +
+                    txId.byteArray.toHexReversed()
+            }
+            TransactionSubmitResult.Success(txId)
+        }
+
+        else -> {
+            refusal
+        }
+    }
 }
 
 /**
@@ -106,8 +124,7 @@ private inline fun readWalletHeight(what: String, read: () -> Long?): Long? =
     }
 
 /** Whether this failure is the SDK's own refusal to submit, as opposed to an answer from the network. */
-internal fun TransactionSubmitResult.Failure.isLocalRefusal(): Boolean =
-    !grpcError && (code == SUBMIT_REFUSED_WRONG_BRANCH || code == SUBMIT_REFUSED_EXPIRED)
+internal fun TransactionSubmitResult.Failure.isLocalRefusal(): Boolean = isWrongConsensusBranch || isExpired
 
 private fun refused(
     txId: FirstClassByteArray,

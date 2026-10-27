@@ -12,6 +12,7 @@ package cash.z.ecc.android.sdk.internal
 import android.content.Context
 import android.os.SystemClock
 import cash.z.ecc.android.sdk.AttentionReason
+import cash.z.ecc.android.sdk.InternalTestingApi
 import cash.z.ecc.android.sdk.KeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.KeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.KeystoneSigningRoundBudget
@@ -175,30 +176,25 @@ internal class OrchardMigrationSdkImpl(
 
     /**
      * The gate phase at the wallet's next height, judged at the wallet's own chain tip: the engine plans and builds
-     * there, never at a projection from the clock. The tip is read without a network request; before any block is
-     * known the next height is 1, which keeps a mainnet gate closed rather than guessing that NU7 has activated.
+     * there, never at a projection from the clock. The tip is read without a network request.
+     *
+     * A wallet whose tip is unknown (nothing synced yet, or the read failed) never gets a phase that says the upgrade is
+     * pending: the gate is closed all the same, but that would be the wrong reason to give once the upgrade has
+     * happened. It throws [MigrationWalletTipUnavailableException] instead. A gate that is open (no NU7 height on the
+     * network, or the bypass) needs no tip.
      */
     private suspend fun currentGatePhase(): MigrationGatePhase {
-        val tip = chainTipEstimator.walletTip().coerceAtLeast(0L)
-        return migrationGatePhase(network, BlockHeight.new(tip + 1), gateBypass.get())
+        val tip = chainTipEstimator.walletTip()
+        val phase = migrationGatePhase(network, BlockHeight.new(tip.coerceAtLeast(0L) + 1), gateBypass.get())
+        if (phase is MigrationGatePhase.PausedUntil && tip <= 0L) throw MigrationWalletTipUnavailableException()
+        return phase
     }
 
-    /**
-     * Throws [MigrationPausedUntilNetworkUpgradeException] unless the scheduled lane is open. A wallet whose tip cannot
-     * be read yet is refused with [MigrationWalletTipUnavailableException] instead: its gate is closed all the same,
-     * but "paused until the upgrade" would be the wrong reason to give once the upgrade has happened.
-     */
+    /** Throws [MigrationPausedUntilNetworkUpgradeException] unless the scheduled lane is open. */
     private suspend fun requireScheduledLaneOpen() {
-        val tip = chainTipEstimator.walletTip()
-        when (val phase = migrationGatePhase(network, BlockHeight.new(tip.coerceAtLeast(0L) + 1), gateBypass.get())) {
-            MigrationGatePhase.Open -> {
-                Unit
-            }
-
-            is MigrationGatePhase.PausedUntil -> {
-                if (tip <= 0L) throw MigrationWalletTipUnavailableException()
-                throw MigrationPausedUntilNetworkUpgradeException(phase.activation.value)
-            }
+        when (val phase = currentGatePhase()) {
+            MigrationGatePhase.Open -> Unit
+            is MigrationGatePhase.PausedUntil -> throw MigrationPausedUntilNetworkUpgradeException(phase.activation.value)
         }
     }
 
@@ -218,6 +214,7 @@ internal class OrchardMigrationSdkImpl(
             is MigrationGatePhase.PausedUntil -> MigrationAvailability.PausedUntilNetworkUpgrade(phase.activation.value)
         }
 
+    @InternalTestingApi
     override fun setMigrationNetworkUpgradeGateBypass(enabled: Boolean) {
         gateBypass.set(enabled)
     }
@@ -1208,7 +1205,15 @@ internal class OrchardMigrationSdkImpl(
      */
     private suspend fun gatePausedStep(rawKind: Long): MigrationAdvanceStep? {
         val isBuild = rawKind == STEP_REBUILD || rawKind == STEP_REPLAN
-        return when (val phase = currentGatePhase()) {
+        val phase =
+            try {
+                currentGatePhase()
+            } catch (e: MigrationWalletTipUnavailableException) {
+                // Nothing is built until the wallet knows its tip; crank again once it does.
+                Twig.warn(e) { "OrchardMigrationSdk: wallet tip unknown, holding back a rebuild or re-plan" }
+                return MigrationAdvanceStep.Reevaluate.takeIf { isBuild }
+            }
+        return when (phase) {
             MigrationGatePhase.Open -> {
                 null
             }

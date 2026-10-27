@@ -176,7 +176,11 @@ mod tests {
     #[test]
     fn unreadable_pczt_is_ignored() {
         assert_eq!(
-            verdict(&[(MigrationTxState::Signed, &[0u8, 1, 2])], MAINNET_NU7, None),
+            verdict(
+                &[(MigrationTxState::Signed, &[0u8, 1, 2])],
+                MAINNET_NU7,
+                None
+            ),
             UpgradeVerdict::Clear
         );
     }

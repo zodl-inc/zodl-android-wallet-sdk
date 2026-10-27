@@ -14,17 +14,22 @@ private const val RAW_TX_LOCK_TIME_BYTES = 4
 private const val RAW_TX_EXPIRY_OFFSET = RAW_TX_PREFIX_BYTES + RAW_TX_LOCK_TIME_BYTES
 private const val RAW_TX_EXPIRY_END = RAW_TX_EXPIRY_OFFSET + 4
 private const val OVERWINTERED_FLAG = 0x8000_0000L
+private const val VERSION_MASK = 0x7FFF_FFFFL
+private const val FIRST_VERSION_WITH_BRANCH_ID_IN_PREFIX = 5L
 private const val BYTE_MASK = 0xFFL
 private const val BITS_PER_BYTE = 8
 
 /**
  * The consensus branch ID a serialized v5+ transaction was built for, or null when [rawTx] is too
- * short or is not an Overwinter-or-later transaction. The header, version group ID and branch ID
- * are the first twelve bytes (ZIP 225, ZIP 230), all little-endian.
+ * short or is not a v5 or later transaction. The header, version group ID and branch ID are the
+ * first twelve bytes (ZIP 225, ZIP 230), all little-endian. In an earlier version those bytes are
+ * something else (a v4 transaction has its inputs there), so they are not read as a branch ID.
  */
 internal fun rawTransactionBranchId(rawTx: ByteArray): Long? {
-    val isOverwintered = rawTx.size >= RAW_TX_PREFIX_BYTES && littleEndianUInt(rawTx, 0) and OVERWINTERED_FLAG != 0L
-    return if (isOverwintered) littleEndianUInt(rawTx, RAW_TX_BRANCH_ID_OFFSET) else null
+    val header = if (rawTx.size >= RAW_TX_PREFIX_BYTES) littleEndianUInt(rawTx, 0) else 0L
+    val isV5OrLater =
+        header and OVERWINTERED_FLAG != 0L && (header and VERSION_MASK) >= FIRST_VERSION_WITH_BRANCH_ID_IN_PREFIX
+    return if (isV5OrLater) littleEndianUInt(rawTx, RAW_TX_BRANCH_ID_OFFSET) else null
 }
 
 /**

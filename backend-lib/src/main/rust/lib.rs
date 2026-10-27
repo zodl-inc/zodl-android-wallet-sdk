@@ -4809,7 +4809,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOr
 #[cfg(test)]
 mod tests {
     use zcash_client_backend::data_api::{
-        Account as _, MaxSpendMode,
+        MaxSpendMode,
         testing::{AddressType, TestBuilder, TestState},
         wallet::{
             ConfirmationsPolicy, SpendingKeys, create_proposed_transactions,
