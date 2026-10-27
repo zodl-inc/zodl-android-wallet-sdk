@@ -204,7 +204,7 @@ ff = { version = "0.14" }
 # docs/slipstream/android/worklog/ARCHIVE-phases-0-9.md for the full writeup). The engine is
 # the published `zodl-slipstream` crate from crates.io, built against the same librustzcash
 # generation as the rest of this graph — verify with `cargo tree -d` after any bump.
-slipstream-core = { package = "zodl-slipstream", version = "=0.4.0-pre.2", optional = true }
+slipstream-core = { package = "zodl-slipstream", version = "=0.4.0", optional = true }
 # The module's owned engine runtime (HOSTING.md §3.1) and the logcat logging layer it wires up.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 
@@ -276,9 +276,9 @@ crate-type = ["staticlib", "cdylib"]
 # release crates exists; the dependency above otherwise resolves from crates.io. The old `slipstream-core`
 # git pin is gone on purpose.
 
-# MOB-2287: Slipstream on the stable NU7 crates, pinned by hash to zodl-inc/slipstream#27 (stacked on
-# #26) until a zodl-slipstream release contains them. Swap for the published version then.
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream", rev = "ca5298548cdf30d84cd7ea64d38aaf46629f4e64" }
+# MOB-2287: Slipstream on the stable NU7 crates, pinned by hash to the zodl_slipstream-0.4.0 release tag until
+# 0.4.0 is published on crates.io. Drop this patch then.
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream", rev = "8591b758ca0919058035a2453b41e035f84b2402" }
 
 # DO NOT ALTER THIS COMMENT
 #
