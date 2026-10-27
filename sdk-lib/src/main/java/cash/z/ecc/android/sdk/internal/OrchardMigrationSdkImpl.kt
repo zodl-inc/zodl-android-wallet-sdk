@@ -60,6 +60,7 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
 import cash.z.ecc.android.sdk.internal.storage.preference.PreferenceHolder
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferenceKeys
+import cash.z.ecc.android.sdk.internal.transaction.isLocalRefusal
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
@@ -172,12 +173,12 @@ internal class OrchardMigrationSdkImpl(
         }
 
     /**
-     * The gate phase at the wallet's next height. The estimated tip is read without a network
-     * request; before any block is known the next height is 1, which keeps a mainnet gate closed
-     * rather than guessing that NU7 has activated.
+     * The gate phase at the wallet's next height, judged at the wallet's own scanned tip: the engine plans and builds
+     * there, never at a projection from the clock. The tip is read without a network request; before any block is
+     * known the next height is 1, which keeps a mainnet gate closed rather than guessing that NU7 has activated.
      */
     private suspend fun currentGatePhase(): MigrationGatePhase {
-        val tip = chainTipEstimator.estimatedTip().coerceAtLeast(0L)
+        val tip = chainTipEstimator.scannedTip().coerceAtLeast(0L)
         return migrationGatePhase(network, BlockHeight.new(tip + 1), gateBypass.get())
     }
 
@@ -695,7 +696,7 @@ internal class OrchardMigrationSdkImpl(
         plan: PreparedBroadcast,
         submitResult: TransactionSubmitResult,
     ): Long =
-        if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError) {
+        if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError && !submitResult.isLocalRefusal()) {
             loggedRead("$operation.minedHeightProbe") {
                 migrationBackend.transactionMinedHeight(plan.dbDataPath, network, plan.prepared.txid)
             }
@@ -927,15 +928,17 @@ internal class OrchardMigrationSdkImpl(
         }
 
         val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
-        // Never submit what the network would reject: it can only leak the transaction. A transfer signed
-        // before NU7 and still pending at activation, or one that has expired, is recorded as expired so the
-        // app asks the user to migrate what is left. When the chain height is unknown nothing is submitted.
-        val tipForCheck = chainTipEstimator.estimatedTip()
-        val nextHeight = BlockHeight.new(tipForCheck.coerceAtLeast(0L) + 1)
-        if (tipForCheck <= 0) {
-            Twig.warn { "MIGRATION_DIAG OrchardMigrationSdk: holding back transfer ${prepared.id} (height $tipForCheck)" }
+        // Never submit what the network would reject: it can only leak the transaction. The wallet's own scanned
+        // tip is judged here, with no network request; the send then judges the higher of that and the server's
+        // height. A refusal is not terminal: the transfer waits for the wallet to scan up to the height it was
+        // judged at, and then the engine decides whether it is interrupted, rebuilt or sent. When the wallet has
+        // scanned nothing yet nothing is sent.
+        val walletTip = chainTipEstimator.scannedTip()
+        if (walletTip <= 0) {
+            Twig.warn { "MIGRATION_DIAG OrchardMigrationSdk: holding back transfer ${prepared.id} (height $walletTip)" }
             return BroadcastPreparation.Settled(TransferAttemptOutcome.NothingDue)
         }
+        val nextHeight = BlockHeight.new(walletTip + 1)
         val refusal = checkSubmittable(rawTx, network, nextHeight)
         if (refusal != null) {
             Twig.warn {
@@ -947,12 +950,12 @@ internal class OrchardMigrationSdkImpl(
                 network,
                 account,
                 prepared.id,
-                RESULT_TAG_EXPIRED,
+                RESULT_TAG_AWAITING_REEVALUATION,
                 false,
                 ByteArray(0),
-                -1L,
+                walletTip,
             )
-            return BroadcastPreparation.Settled(TransferAttemptOutcome.Executed(TransferResult.Expired))
+            return BroadcastPreparation.Settled(TransferAttemptOutcome.Executed(TransferResult.InvalidNote))
         }
         // Mark the broadcast as in-flight before attempting the network call so the sync engine
         // is gated for the duration. A stale mark from a crash self-expires in
@@ -1025,7 +1028,10 @@ internal class OrchardMigrationSdkImpl(
         // kill a hung follow-up call.
         val observedTip =
             if (recordedResultTag(mapped.tag) == RESULT_TAG_AWAITING_REEVALUATION) {
-                fetchObservedTipAfterRejection(options.useTor, ready.plan.endpoint)
+                maxOf(
+                    fetchObservedTipAfterRejection(options.useTor, ready.plan.endpoint),
+                    chainTipEstimator.scannedTip(),
+                )
             } else {
                 -1L
             }
@@ -1131,7 +1137,8 @@ internal class OrchardMigrationSdkImpl(
             // Broadcast timing uses the estimated (real) chain tip so a proved, due transfer
             // returns Broadcast directly; proving stays on the scanned tip inside the backend.
             val est = chainTipEstimator.estimatedTip()
-            upgradeStepFor(dbDataPath, account, est)?.let { return@logged MigrationAdvanceResult(step = it, next = null) }
+            upgradeStepFor(dbDataPath, account, chainTipEstimator.scannedTip())
+                ?.let { return@logged MigrationAdvanceResult(step = it, next = null) }
             migrationBackend.nextStep(dbDataPath, network, account, est)?.let { arr ->
                 val id = arr.getOrElse(1) { -1L }
                 val rawKind = arr.getOrElse(0) { STEP_WAITING }
@@ -1149,20 +1156,22 @@ internal class OrchardMigrationSdkImpl(
      * The step the NU7 upgrade forces once the wallet's next height has reached the activation, or null to
      * leave the engine's answer alone. A run holding a transaction built for the branch before NU7 is
      * [MigrationAdvanceStep.InterruptedByNetworkUpgrade]; one whose such transaction may already have been sent
-     * waits ([MigrationAdvanceStep.Reevaluate]) until the wallet has scanned up to the activation. Not asked
-     * before the activation, on a network without NU7, or with the testing bypass on.
+     * waits ([MigrationAdvanceStep.Reevaluate]) until the wallet has scanned up to the activation. Judged at the
+     * wallet's own scanned tip ([walletTip]), never at the clock's estimate, so a wallet that is behind the chain
+     * is not told the upgrade has arrived before it has scanned it. Not asked before the activation or on a
+     * network without NU7. The testing bypass does not lift it: it only lifts the planning pause.
      */
     private suspend fun upgradeStepFor(
         dbDataPath: String,
         account: AccountUuid,
-        estimatedTip: Long
+        walletTip: Long
     ): MigrationAdvanceStep? {
-        val nextHeight = estimatedTip + 1
+        val nextHeight = walletTip + 1
         val activation =
             BlockSpacing
                 .nu7ActivationHeight(network)
                 ?.value
-                ?.takeIf { estimatedTip > 0 && nextHeight >= it && !gateBypass.get() }
+                ?.takeIf { walletTip > 0 && nextHeight >= it }
         return activation?.let {
             when (migrationBackend.migrationUpgradeVerdict(dbDataPath, network, account, nextHeight)) {
                 VERDICT_INTERRUPTED -> {
@@ -1496,7 +1505,8 @@ internal class OrchardMigrationSdkImpl(
                     FirstClassByteArray(rawTx),
                     FirstClassByteArray(txId),
                     SdkFlags(isTorEnabled = useTor && torClient != null, isExchangeRateEnabled = false),
-                )
+                    network,
+                ) { chainTipEstimator.scannedTip().takeIf { it > 0 } }
             }
         } finally {
             withContext(NonCancellable) { client.dispose() }
@@ -1690,9 +1700,6 @@ internal fun recordedResultTag(mappedTag: Int): Int =
 // report_broadcast_failure/AwaitingReevaluation).
 private const val RESULT_TAG_INVALID_NOTE = 2
 private const val RESULT_TAG_AWAITING_REEVALUATION = 4
-
-// `record_transfer_result`'s Expired input tag: terminal failure with the "transfer_expired" reason.
-private const val RESULT_TAG_EXPIRED = 3
 
 /**
  * Maps a raw submission outcome to the engine's [TransferResult], both as the public value and

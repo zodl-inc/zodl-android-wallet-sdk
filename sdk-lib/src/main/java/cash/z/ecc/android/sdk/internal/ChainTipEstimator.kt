@@ -20,6 +20,14 @@ internal interface ChainTipEstimator {
      * height-to-time projection into an overestimate.
      */
     suspend fun estimatedSecondsPerBlock(): Long
+
+    /**
+     * The highest block the wallet has scanned, or -1 when none is known. Unlike [estimatedTip] this is a fact about
+     * the wallet, not a projection from the clock: the NU7 gate and the activation verdict are judged at it, because
+     * the engine plans and builds at the wallet's own tip. A failed read answers the last height seen, as a tip never
+     * goes down.
+     */
+    suspend fun scannedTip(): Long = -1L
 }
 
 internal const val FALLBACK_SECONDS_PER_BLOCK = 75L
@@ -169,7 +177,7 @@ internal class LazyDataDbChainTipEstimator(
         // blockRateSamples dispatches its own JNI read onto SdkDispatchers.DATABASE_IO.
         return rustBackendProvider()
             .blockRateSamples(dbFile.absolutePath, RATE_WINDOW_BLOCKS)
-            .also { lastScannedHeight = it.firstOrNull() }
+            .also { sample -> sample.firstOrNull()?.let { lastScannedHeight = it } }
     }
 
     // The latest scanned height seen by a successful read, so a later failed read can still fall back to the
@@ -198,6 +206,15 @@ internal class LazyDataDbChainTipEstimator(
         } catch (e: Exception) {
             Twig.warn(e) { "ChainTipEstimator: could not read latest block — returning -1" }
             -1L
+        }
+
+    @Suppress("TooGenericExceptionCaught")
+    override suspend fun scannedTip(): Long =
+        try {
+            maxOf(samples().firstOrNull() ?: -1L, lastScannedHeight ?: -1L)
+        } catch (e: Exception) {
+            Twig.warn(e) { "ChainTipEstimator: could not read the scanned tip — using the last one seen" }
+            lastScannedHeight ?: -1L
         }
 
     // Deliberately broad, for the same reason as [estimatedTip]: an unmeasurable rate falls back to

@@ -21,7 +21,7 @@ internal const val SUBMIT_REFUSED_WRONG_BRANCH = -9101
 internal const val SUBMIT_REFUSED_EXPIRED = -9102
 
 /**
- * Submits [rawTransaction] unless the network would reject it. With a [network], the height of the
+ * Submits [rawTransaction] unless the network would reject it. The height of the
  * server the transaction is about to go to is read first, on this same client, and a transaction built
  * for another consensus branch than the next block's, or one that has expired by then, is refused
  * locally: submitting it can only leak it. The next block is the one after the higher of that height
@@ -33,18 +33,15 @@ internal suspend fun CombinedWalletClient.submitTransaction(
     rawTransaction: FirstClassByteArray,
     txId: FirstClassByteArray,
     sdkFlags: SdkFlags,
-    network: ZcashNetwork?,
-    walletTip: suspend () -> Long? = { null }
+    network: ZcashNetwork,
+    walletTip: suspend () -> Long?
 ): TransactionSubmitResult {
-    val refusal =
-        network?.let {
-            val serverHeight =
-                getLatestBlockHeight(
-                    serviceMode = sdkFlags ifTor ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
-                )
-            submissionRefusal(rawTransaction, txId, it, serverHeight, walletTip())
-        }
-    return refusal ?: submitTransaction(rawTransaction, txId, sdkFlags)
+    val serverHeight =
+        getLatestBlockHeight(
+            serviceMode = sdkFlags ifTor ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
+        )
+    return submissionRefusal(rawTransaction, txId, network, serverHeight, walletTip())
+        ?: submitUnchecked(rawTransaction, txId, sdkFlags)
 }
 
 /**
@@ -101,13 +98,17 @@ internal suspend fun walletTipForSubmission(backend: TypesafeBackend): Long? =
         null
     }
 
+/** Whether this failure is the SDK's own refusal to submit, as opposed to an answer from the network. */
+internal fun TransactionSubmitResult.Failure.isLocalRefusal(): Boolean =
+    !grpcError && (code == SUBMIT_REFUSED_WRONG_BRANCH || code == SUBMIT_REFUSED_EXPIRED)
+
 private fun refused(
     txId: FirstClassByteArray,
     code: Int,
     description: String
 ) = TransactionSubmitResult.Failure(txId = txId, grpcError = false, code = code, description = description)
 
-internal suspend fun CombinedWalletClient.submitTransaction(
+private suspend fun CombinedWalletClient.submitUnchecked(
     rawTransaction: FirstClassByteArray,
     txId: FirstClassByteArray,
     sdkFlags: SdkFlags

@@ -10,6 +10,7 @@ import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import com.zodl.slipstream.internal.SlipstreamEngine
 import kotlinx.coroutines.CancellationException
@@ -210,6 +211,8 @@ class SlipstreamSpendServiceErrorMappingTest {
             walletClient = mock(CombinedWalletClient::class.java),
             engine = mock(SlipstreamEngine::class.java),
             sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false),
+            network = ZcashNetwork.Mainnet,
+            walletTip = { null },
             ensureSaplingParams = { },
             readRawTransaction = { FirstClassByteArray(byteArrayOf()) }
         )

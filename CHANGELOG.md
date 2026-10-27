@@ -38,13 +38,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reservations, so a new migration can be planned over the full balance.
 - `OrchardMigrationSdk.setMigrationNetworkUpgradeGateBypass(enabled)`, for internal testing only: it lifts
   the pause on new scheduled work so a scheduled run can be tried before NU7. Off by default.
+- `ConsensusBranchId` now covers NU5, NU6, NU6.1, NU6.2, NU6.3 and NU7, so `fromId`, `fromHex` and `fromName`
+  no longer return null for branches after Canopy.
+- `BlockSpacing` gives the height-aware target spacing between blocks (150 s before Blossom, 75 s until NU7,
+  25 s from NU7, ZIP 208 and ZIP 218): `targetSeconds(network, height)` and
+  `targetSecondsBetween(network, from, to)`, mirroring `zcash_protocol`. Use it for any conversion between a block
+  count and a duration, because one range can span the NU7 activation height.
 
 ### Changed
 - `OrchardMigrationSdk.restartCurrentMigrationStep()` returns a `MigrationRestartOutcome` instead of a
   `MigrationSchedule`: `Replanned(schedule)` is what it returned before. While the wallet's next block is before
   the NU7 activation it cancels the run, plans nothing (a scheduled run planned now would be built for the
   branch the upgrade ends) and answers `CancelledUntilNetworkUpgrade(activationHeight)` instead of throwing.
-- Every transaction submission (a send, `Broadcaster`, a background resubmit) now reads the latest height
+- Every transaction submission (a send, `Broadcaster`, a background resubmit, the Slipstream sends and resubmits,
+  a scheduled migration transfer) now reads the latest height
   of the server the transaction is about to go to, on the same connection, and does not submit a
   transaction built for another consensus branch than the next block's (local code `-9101`), judged at the
   higher of that server's height and the wallet's own tip, or one that
@@ -96,9 +103,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blocks, which is six hours only before NU7).
 - The birthday estimate from a date scales the average checkpoint interval for checkpoints from NU7 on.
 - `OrchardMigrationSdk.executeNextPendingTransfer` no longer submits a pre-signed migration transaction whose
-  consensus branch ID does not match the next block (NU7 changes it). The transfer is recorded as expired, so the
-  app asks the user to migrate what is left, instead of the network rejecting it and the migration stalling until
-  the transaction expires.
+  consensus branch ID does not match the next block (NU7 changes it), or one that has expired by then. It is judged
+  at the higher of the wallet's own scanned tip and the server's latest height, read on the connection the
+  transaction would go out on; when that height cannot be read nothing is sent. A refused transfer is not failed:
+  the engine is told the height it was refused at, `nextStep()` answers `Reevaluate` until the wallet has scanned
+  up to it, and then the run is interrupted or rebuilt as usual.
+
+### Deprecated
+- `ZcashSdk.EXPIRY_OFFSET`: the Rust backend chooses the expiry delta from the consensus branch (20, 40 or, from
+  NU7, 120 blocks).
+- `ZcashSdk.BLOCK_INTERVAL_MILLIS`: it is only right between Blossom and NU7. Use `BlockSpacing`.
 
 ### Fixed
 - The Slipstream engine's stop no longer reports the wallet quiescent while a sync pass that an
@@ -109,18 +123,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   within its budget, the change is refused and nothing is written: `importAccountByUfvk` throws
   `InitializeException.ImportAccountCheckpointsNotReadyException` (retry later), `deleteAccount`
   and `rewindToHeight` throw `IllegalStateException`, and `rewindToNearestHeight` returns `null`.
-||||||| parent of 54d21e5f ([MOB-2287] Add NU5 through NU7 to ConsensusBranchId)
-- `ConsensusBranchId` now covers NU5, NU6, NU6.1, NU6.2, NU6.3 and NU7, so `fromId`, `fromHex` and `fromName`
-  no longer return null for branches after Canopy.
-- `BlockSpacing` gives the height-aware target spacing between blocks (150 s before Blossom, 75 s until NU7,
-  25 s from NU7, ZIP 208 and ZIP 218): `targetSeconds(network, height)` and
-  `targetSecondsBetween(network, from, to)`, mirroring `zcash_protocol`. Use it for any conversion between a block
-  count and a duration, because one range can span the NU7 activation height.
-
-### Deprecated
-- `ZcashSdk.EXPIRY_OFFSET`: the Rust backend chooses the expiry delta from the consensus branch (20, 40 or, from
-  NU7, 120 blocks).
-- `ZcashSdk.BLOCK_INTERVAL_MILLIS`: it is only right between Blossom and NU7. Use `BlockSpacing`.
 
 ## [5.2.2] - 2026-10-20
 

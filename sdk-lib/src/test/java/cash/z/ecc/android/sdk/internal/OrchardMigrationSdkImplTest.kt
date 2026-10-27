@@ -12,6 +12,7 @@ import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.PreparationStep
 import cash.z.ecc.android.sdk.TransferAttemptOutcome
 import cash.z.ecc.android.sdk.TransferResult
+import cash.z.ecc.android.sdk.ext.ConsensusBranchId
 import cash.z.ecc.android.sdk.internal.ext.toHexReversed
 import cash.z.ecc.android.sdk.internal.model.JniUnifiedSpendingKey
 import cash.z.ecc.android.sdk.internal.model.migration.JniDueTransferResult
@@ -1216,6 +1217,7 @@ class OrchardMigrationSdkImplTest {
         fakeBackend: FakeTypesafeMigrationBackend,
         broadcaster: MigrationTransactionBroadcaster,
         tip: Long = POST_NU7_TIP,
+        scannedTip: Long = tip,
     ): OrchardMigrationSdkImpl =
         OrchardMigrationSdkImpl(
             context = fakeAndroidContext(),
@@ -1224,7 +1226,7 @@ class OrchardMigrationSdkImplTest {
             account = account,
             migrationBackend = fakeBackend,
             defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
-            chainTipEstimator = FixedChainTipEstimator(tip),
+            chainTipEstimator = FixedChainTipEstimator(tip, scannedTip),
             preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider(emptyMap())),
             broadcaster = broadcaster,
         )
@@ -1372,6 +1374,111 @@ class OrchardMigrationSdkImplTest {
             assertEquals(MigrationAdvanceStep.Waiting, gatedSdk(NEAR_ACTIVATION_TIP, waiting).nextStep()?.step)
         }
 
+    private fun rawTransaction(branchId: Long): ByteArray {
+        fun le(value: Long) = ByteArray(4) { i -> ((value shr (8 * i)) and 0xFF).toByte() }
+        return le(0x8000_0005L) + le(0x26A7_270AL) + le(branchId) + le(0L) + le(0L) + ByteArray(16)
+    }
+
+    @Test
+    fun the_gate_is_judged_at_the_wallets_own_tip_and_not_at_the_clock() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val behind =
+                sdkWith(
+                    account,
+                    FakeTypesafeMigrationBackend(),
+                    GatedBroadcaster(),
+                    tip = POST_NU7_TIP,
+                    scannedTip = PAUSED_TIP,
+                )
+            assertEquals(MigrationAvailability.PausedUntilNetworkUpgrade(4_465_026L), behind.migrationAvailability())
+            val caughtUp =
+                sdkWith(
+                    account,
+                    FakeTypesafeMigrationBackend(),
+                    GatedBroadcaster(),
+                    tip = PAUSED_TIP,
+                    scannedTip = POST_NU7_TIP,
+                )
+            assertEquals(MigrationAvailability.Available, caughtUp.migrationAvailability())
+        }
+
+    @Test
+    fun the_upgrade_verdict_is_asked_at_the_wallets_tip_and_not_at_the_clock() =
+        runBlocking {
+            val account = AccountUuid.new(ByteArray(16) { it.toByte() })
+            val backend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(4L, -1L))
+            backend.upgradeVerdictResult = 1
+            val behind = sdkWith(account, backend, GatedBroadcaster(), tip = POST_NU7_TIP, scannedTip = PAUSED_TIP)
+            assertEquals(MigrationAdvanceStep.Complete, behind.nextStep()?.step)
+            assertEquals(0, backend.upgradeVerdictCallCount)
+        }
+
+    @Test
+    fun the_bypass_does_not_hide_a_run_the_upgrade_interrupted() =
+        runBlocking {
+            val backend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(3L, 4L))
+            backend.upgradeVerdictResult = 1
+            val sdk = gatedSdk(POST_NU7_TIP, backend)
+            try {
+                sdk.setMigrationNetworkUpgradeGateBypass(true)
+                assertEquals(
+                    MigrationAdvanceStep.InterruptedByNetworkUpgrade(4_465_026L),
+                    sdk.nextStep()?.step
+                )
+            } finally {
+                sdk.setMigrationNetworkUpgradeGateBypass(false)
+            }
+        }
+
+    @Test
+    fun a_transfer_the_wallets_tip_refuses_waits_for_the_scan_instead_of_failing() =
+        runBlocking {
+            val backend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                    rawTransaction = rawTransaction(ConsensusBranchId.NU6_3.id),
+                )
+            val broadcaster = GatedBroadcaster()
+            val sdk = sdkWith(AccountUuid.new(ByteArray(16) { it.toByte() }), backend, broadcaster, tip = POST_NU7_TIP)
+            val outcome = sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+            assertEquals(TransferAttemptOutcome.Executed(TransferResult.InvalidNote), outcome)
+            assertEquals(0, broadcaster.callCount, "a refused transaction must not be sent")
+            assertEquals(4, backend.lastResultTag, "recorded for re-evaluation, not as a terminal expiry")
+            assertEquals(POST_NU7_TIP, backend.lastObservedTip)
+        }
+
+    @Test
+    fun a_transfer_is_sent_when_the_wallets_tip_still_accepts_it() =
+        runBlocking {
+            val backend =
+                FakeTypesafeMigrationBackend(
+                    dueTransferResult =
+                        JniDueTransferResult(
+                            status = 1,
+                            awaitingProofTransferId = null,
+                            prepared = preparedTransfer()
+                        ),
+                    rawTransaction = rawTransaction(ConsensusBranchId.NU6_3.id),
+                )
+            val broadcaster = GatedBroadcaster()
+            val sdk =
+                sdkWith(
+                    AccountUuid.new(ByteArray(16) { it.toByte() }),
+                    backend,
+                    broadcaster,
+                    tip = POST_NU7_TIP,
+                    scannedTip = NEAR_ACTIVATION_TIP,
+                )
+            sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
+            assertEquals(1, broadcaster.callCount)
+        }
+
     @Test
     fun a_due_transfer_is_held_back_when_the_tip_is_unknown() =
         runBlocking {
@@ -1394,9 +1501,12 @@ class OrchardMigrationSdkImplTest {
 
     /** A chain tip well before the NU7 activation, so broadcasts are neither held back nor judged stale. */
     private class FixedChainTipEstimator(
-        private val tip: Long
+        private val tip: Long,
+        private val scanned: Long = tip
     ) : ChainTipEstimator {
         override suspend fun estimatedTip(): Long = tip
+
+        override suspend fun scannedTip(): Long = scanned
 
         override suspend fun estimatedSecondsPerBlock(): Long = 75L
     }
@@ -1545,7 +1655,10 @@ class OrchardMigrationSdkImplTest {
         // mid-flight and assert it still ran to completion (see
         // executeNextPendingTransfer_entry_guard_record_survives_caller_cancellation).
         private val onRecordTransferResultEntered: CompletableDeferred<Unit>? = null,
-        private val recordTransferResultGate: CompletableDeferred<Unit>? = null
+        private val recordTransferResultGate: CompletableDeferred<Unit>? = null,
+        // The raw transaction extractBroadcastTx hands back. The default is too short to read, so the
+        // submission check cannot judge it and lets it through.
+        private val rawTransaction: ByteArray = ByteArray(4) { it.toByte() }
     ) : TypesafeMigrationBackend {
         var proposeImmediateSendMaxCalled = false
         var lastAccount: AccountUuid? = null
@@ -1690,7 +1803,7 @@ class OrchardMigrationSdkImplTest {
             pcztBytes: ByteArray
         ): ByteArray {
             broadcastCallCount++
-            return ByteArray(4) { it.toByte() }
+            return rawTransaction
         }
 
         override suspend fun recordTransferResult(

@@ -20,8 +20,8 @@ internal class OutboundTransactionManagerImpl(
     internal val encoder: TransactionEncoder,
     private val walletClient: CombinedWalletClient,
     private val sdkFlags: SdkFlags,
-    private val network: ZcashNetwork? = null,
-    private val walletTip: suspend () -> Long? = { null }
+    private val network: ZcashNetwork,
+    private val walletTip: suspend () -> Long?
 ) : OutboundTransactionManager {
     /**
      * Creates a proposal for transferring funds from a ZIP-321 compliant payment URI
@@ -117,8 +117,8 @@ internal class OutboundTransactionManagerImpl(
             encoder: TransactionEncoder,
             lightWalletClient: CombinedWalletClient,
             sdkFlags: SdkFlags,
-            network: ZcashNetwork? = null,
-            walletTip: suspend () -> Long? = { null }
+            network: ZcashNetwork,
+            walletTip: suspend () -> Long?
         ): OutboundTransactionManager =
             OutboundTransactionManagerImpl(
                 encoder,

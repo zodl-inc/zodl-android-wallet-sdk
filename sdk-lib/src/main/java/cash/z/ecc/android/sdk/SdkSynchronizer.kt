@@ -1618,8 +1618,8 @@ internal object DefaultSynchronizerFactory {
         encoder: TransactionEncoder,
         service: CombinedWalletClient,
         sdkFlags: SdkFlags,
-        network: ZcashNetwork? = null,
-        walletTip: suspend () -> Long? = { null }
+        network: ZcashNetwork,
+        walletTip: suspend () -> Long?
     ): OutboundTransactionManager = OutboundTransactionManagerImpl.new(encoder, service, sdkFlags, network, walletTip)
 
     @Suppress("LongParameterList")
