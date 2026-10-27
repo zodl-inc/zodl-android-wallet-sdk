@@ -278,7 +278,7 @@ crate-type = ["staticlib", "cdylib"]
 
 # MOB-2287: Slipstream on the stable NU7 crates, pinned by hash to zodl-inc/slipstream#27 (stacked on
 # #26) until a zodl-slipstream release contains them. Swap for the published version then.
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream", rev = "c8c7a12cc6294878b63c9a65b889f3ffaae2292d" }
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream", rev = "ca5298548cdf30d84cd7ea64d38aaf46629f4e64" }
 
 # DO NOT ALTER THIS COMMENT
 #
