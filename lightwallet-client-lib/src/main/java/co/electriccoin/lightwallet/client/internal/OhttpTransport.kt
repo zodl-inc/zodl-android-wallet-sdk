@@ -465,10 +465,16 @@ private class CallDeadline(
 
     fun remainingMs(): Int = remainingMsOrNull() ?: throw SocketTimeoutException("OHTTP call deadline exceeded")
 
-    /** What is left, or null once the time is up. */
+    /**
+     * What is left, rounded up to the next millisecond, or null once the time is up. Rounded up so a
+     * watchdog armed with it never fires before [endNanos]: the end of this deadline is never earlier
+     * than the gRPC call deadline it was derived from (see `OhttpClientCall.exchangeBudget`).
+     */
     fun remainingMsOrNull(): Int? {
-        val left = (endNanos - System.nanoTime()) / NANOS_PER_MILLI
-        return if (left <= 0) null else left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val leftNanos = endNanos - System.nanoTime()
+        if (leftNanos <= 0) return null
+        val left = Math.floorDiv(leftNanos + NANOS_PER_MILLI - 1, NANOS_PER_MILLI)
+        return left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
     private companion object {

@@ -509,10 +509,21 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         val boundByDeadline: Boolean,
     )
 
-    /** The time the OHTTP call gets: the call's own deadline, if it has one and it is shorter, bounds it. */
+    /**
+     * The time the OHTTP call gets: the call's own deadline, if it has one and it is shorter, bounds it.
+     *
+     * A deadline-bound budget is the time remaining rounded UP to the next millisecond, so the sender's
+     * watchdog never fires before the call's deadline has passed: the disconnect it makes surfaces as an
+     * I/O error or an early end of the body, which [fail] reports as DEADLINE_EXCEEDED only once
+     * `deadline.isExpired`. A budget rounded down let the watchdog win by under a millisecond and the
+     * call closed as UNAVAILABLE.
+     */
     private fun exchangeBudget(grpcTimeoutMs: Int): ExchangeBudget {
         val full = grpcTimeoutMs + if (grpcTimeoutMs >= DEFAULT_TIMEOUT_MS) FULL_LENGTH_SLACK_MS else 0
-        val deadlineMs = callOptions.deadline?.timeRemaining(TimeUnit.MILLISECONDS)
+        val deadlineMs =
+            callOptions.deadline?.timeRemaining(TimeUnit.NANOSECONDS)?.let { nanos ->
+                Math.floorDiv(nanos + NANOS_PER_MS - 1, NANOS_PER_MS)
+            }
         return if (deadlineMs != null && deadlineMs < full) {
             ExchangeBudget(deadlineMs.coerceAtLeast(1).toInt(), boundByDeadline = true)
         } else {
@@ -579,6 +590,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
         private const val GRPC_UNCOMPRESSED_FLAG = 0
         private const val GRPC_LENGTH_FIELD_SIZE = 4
         private const val DEFAULT_TIMEOUT_MS = 75_000
+        private const val NANOS_PER_MS = 1_000_000L
         private const val MIN_TIMEOUT_MS = 1_000
 
         // A call at the grpc-timeout cap may be held by the gateway for its whole upstream timeout
