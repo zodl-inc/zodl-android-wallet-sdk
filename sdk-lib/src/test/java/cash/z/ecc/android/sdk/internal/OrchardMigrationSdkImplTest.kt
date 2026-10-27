@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.MigrationPausedUntilNetworkUpgradeException
 import cash.z.ecc.android.sdk.MigrationPeek
 import cash.z.ecc.android.sdk.MigrationRestartOutcome
 import cash.z.ecc.android.sdk.MigrationStepKind
+import cash.z.ecc.android.sdk.MigrationWalletTipUnavailableException
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.PreparationStep
@@ -1217,7 +1218,7 @@ class OrchardMigrationSdkImplTest {
         fakeBackend: FakeTypesafeMigrationBackend,
         broadcaster: MigrationTransactionBroadcaster,
         tip: Long = POST_NU7_TIP,
-        scannedTip: Long = tip,
+        walletTip: Long = tip,
     ): OrchardMigrationSdkImpl =
         OrchardMigrationSdkImpl(
             context = fakeAndroidContext(),
@@ -1226,7 +1227,7 @@ class OrchardMigrationSdkImplTest {
             account = account,
             migrationBackend = fakeBackend,
             defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
-            chainTipEstimator = FixedChainTipEstimator(tip, scannedTip),
+            chainTipEstimator = FixedChainTipEstimator(tip, walletTip),
             preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider(emptyMap())),
             broadcaster = broadcaster,
         )
@@ -1304,8 +1305,32 @@ class OrchardMigrationSdkImplTest {
     fun an_unknown_chain_tip_keeps_the_scheduled_lane_closed_on_a_network_with_nu7() =
         runBlocking {
             val sdk = gatedSdk(tip = -1L)
-            assertFailsWith<MigrationPausedUntilNetworkUpgradeException> { sdk.proposeMigrationTransfers() }
+            assertEquals(
+                MigrationAvailability.PausedUntilNetworkUpgrade(4_465_026L),
+                sdk.migrationAvailability()
+            )
+            assertFailsWith<MigrationWalletTipUnavailableException> { sdk.proposeMigrationTransfers() }
             Unit
+        }
+
+    @Test
+    fun an_unknown_chain_tip_is_not_reported_as_a_pause_for_the_upgrade() =
+        runBlocking {
+            val sdk = gatedSdk(tip = POST_NU7_TIP)
+            val unreadable =
+                sdkWith(
+                    AccountUuid.new(ByteArray(16) { it.toByte() }),
+                    FakeTypesafeMigrationBackend(),
+                    GatedBroadcaster(),
+                    tip = POST_NU7_TIP,
+                    walletTip = -1L
+                )
+            // The clock says the upgrade has happened, but the wallet's tip is unreadable: the lane is closed for that
+            // reason, not for a pause that would be wrong to explain after activation.
+            val thrown = runCatching { unreadable.proposeMigrationTransfers() }.exceptionOrNull()
+            assertTrue(thrown is MigrationWalletTipUnavailableException, "got $thrown")
+            // A wallet that knows its tip, past activation, is open and reaches the backend.
+            assertEquals(MigrationAvailability.Available, sdk.migrationAvailability())
         }
 
     @Test
@@ -1389,7 +1414,7 @@ class OrchardMigrationSdkImplTest {
                     FakeTypesafeMigrationBackend(),
                     GatedBroadcaster(),
                     tip = POST_NU7_TIP,
-                    scannedTip = PAUSED_TIP,
+                    walletTip = PAUSED_TIP,
                 )
             assertEquals(MigrationAvailability.PausedUntilNetworkUpgrade(4_465_026L), behind.migrationAvailability())
             val caughtUp =
@@ -1398,7 +1423,7 @@ class OrchardMigrationSdkImplTest {
                     FakeTypesafeMigrationBackend(),
                     GatedBroadcaster(),
                     tip = PAUSED_TIP,
-                    scannedTip = POST_NU7_TIP,
+                    walletTip = POST_NU7_TIP,
                 )
             assertEquals(MigrationAvailability.Available, caughtUp.migrationAvailability())
         }
@@ -1409,7 +1434,7 @@ class OrchardMigrationSdkImplTest {
             val account = AccountUuid.new(ByteArray(16) { it.toByte() })
             val backend = FakeTypesafeMigrationBackend(nextStepResult = longArrayOf(4L, -1L))
             backend.upgradeVerdictResult = 1
-            val behind = sdkWith(account, backend, GatedBroadcaster(), tip = POST_NU7_TIP, scannedTip = PAUSED_TIP)
+            val behind = sdkWith(account, backend, GatedBroadcaster(), tip = POST_NU7_TIP, walletTip = PAUSED_TIP)
             assertEquals(MigrationAdvanceStep.Complete, behind.nextStep()?.step)
             assertEquals(0, backend.upgradeVerdictCallCount)
         }
@@ -1473,7 +1498,7 @@ class OrchardMigrationSdkImplTest {
                     backend,
                     broadcaster,
                     tip = POST_NU7_TIP,
-                    scannedTip = NEAR_ACTIVATION_TIP,
+                    walletTip = NEAR_ACTIVATION_TIP,
                 )
             sdk.executeNextPendingTransfer(NetworkPrivacyOptions(useTor = false), useEstimatedTip = false)
             assertEquals(1, broadcaster.callCount)
@@ -1506,7 +1531,7 @@ class OrchardMigrationSdkImplTest {
     ) : ChainTipEstimator {
         override suspend fun estimatedTip(): Long = tip
 
-        override suspend fun scannedTip(): Long = scanned
+        override suspend fun walletTip(): Long = scanned
 
         override suspend fun estimatedSecondsPerBlock(): Long = 75L
     }

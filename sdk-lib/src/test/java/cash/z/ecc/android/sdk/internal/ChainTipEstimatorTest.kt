@@ -71,6 +71,13 @@ class ChainTipEstimatorNu7Test {
     }
 
     @Test
+    fun `estimateTip from the last block before NU7 converts the time at 25 s`() {
+        // The block after nu7 - 1 is the first 25 s block, whatever rate the sample at nu7 - 1 measured.
+        assertEquals(nu7 - 1 + 4, estimateTip(nu7 - 1, 0L, 100L, 75L, network))
+        assertEquals(nu7 - 1, estimateTip(nu7 - 1, 0L, 24L, 75L, network))
+    }
+
+    @Test
     fun `estimateTip after NU7 uses the given rate`() {
         assertEquals(nu7 + 10 + 4, estimateTip(nu7 + 10, 0L, 100L, 25L, network))
     }

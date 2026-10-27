@@ -28,7 +28,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scheduled lane waits for NU7, the immediate lane stays open at every height). A migration transaction is built for the consensus branch of the height it
   was planned at, and no block accepts one built for the branch before NU7 once NU7 is active.
 - `MigrationPausedUntilNetworkUpgradeException`, thrown by the scheduled-migration calls (propose, build,
-  sign, store, note split and restart) until NU7 activates. `MigrationAdvanceStep.PausedForNetworkUpgrade`,
+  sign, store, note split and restart) until NU7 activates, judged at the wallet's own chain tip (the end of its scan
+  queue, which can be ahead of what it has scanned). `MigrationWalletTipUnavailableException` is thrown instead while
+  the wallet has no chain tip yet, so a wallet that has not synced is not told the network upgrade is pending. `MigrationAdvanceStep.PausedForNetworkUpgrade`,
   answered by `nextStep()` in place of a rebuild or re-plan before NU7. There is no cutoff window: valid
   transfers that were signed before the activation keep being proved and broadcast until it.
 - `MigrationAdvanceStep.InterruptedByNetworkUpgrade`, answered by `nextStep()` once NU7 is active when the run
@@ -54,7 +56,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a scheduled migration transfer) now reads the latest height
   of the server the transaction is about to go to, on the same connection, and does not submit a
   transaction built for another consensus branch than the next block's (local code `-9101`), judged at the
-  higher of that server's height and the wallet's own tip, or one that
+  higher of that server's height and the wallet's own chain tip, or one that
   has expired by then (`-9102`). When the height cannot be read nothing is submitted and the submission
   fails as a network failure. NU7 changes the consensus branch, so a transaction signed just before the
   activation and submitted just after it can no longer be mined. Each submission makes one extra request.
@@ -104,7 +106,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The birthday estimate from a date scales the average checkpoint interval for checkpoints from NU7 on.
 - `OrchardMigrationSdk.executeNextPendingTransfer` no longer submits a pre-signed migration transaction whose
   consensus branch ID does not match the next block (NU7 changes it), or one that has expired by then. It is judged
-  at the higher of the wallet's own scanned tip and the server's latest height, read on the connection the
+  at the higher of the wallet's own chain tip and the server's latest height, read on the connection the
   transaction would go out on; when that height cannot be read nothing is sent. A refused transfer is not failed:
   the engine is told the height it was refused at, `nextStep()` answers `Reevaluate` until the wallet has scanned
   up to it, and then the run is interrupted or rebuilt as usual.

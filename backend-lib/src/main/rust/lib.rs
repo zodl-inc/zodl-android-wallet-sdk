@@ -1928,6 +1928,33 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getMaxSca
     unwrap_exc_or(&mut env, res, -1)
 }
 
+/// The chain tip the wallet itself knows (`WalletRead::chain_height`): the end of its scan queue, which the
+/// synchronizer updates from the server it syncs with. It can be ahead of the highest scanned block. Returns -1 to
+/// signal "no chain tip known yet" across the FFI.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getChainTipHeight<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+) -> jlong {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.getChainTipHeight").entered();
+        let network = parse_network(network_id)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
+
+        match db_data.chain_height() {
+            Ok(Some(height)) => Ok(i64::from(u32::from(height))),
+            Ok(None) => Ok(-1),
+            Err(e) => Err(anyhow!(
+                "Failed to read the chain tip from WalletDb: {:?}",
+                e
+            )),
+        }
+    });
+    unwrap_exc_or(&mut env, res, -1)
+}
+
 const JNI_ACCOUNT_BALANCE: &str = "cash/z/ecc/android/sdk/internal/model/JniAccountBalance";
 
 fn encode_account_balance<'a>(

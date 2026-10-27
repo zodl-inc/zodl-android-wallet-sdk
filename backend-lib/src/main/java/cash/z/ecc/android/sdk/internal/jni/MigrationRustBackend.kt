@@ -181,6 +181,17 @@ class MigrationRustBackend private constructor() {
         }
 
     /**
+     * The chain tip the wallet itself knows (the end of its scan queue, minus the exclusive end), read via the BUNDLED
+     * SQLite like [blockRateSamples]. It can be ahead of the highest scanned block. Returns -1 when the wallet has no
+     * chain tip yet or the read fails.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun chainTipHeight(dbDataPath: String): Long =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            chainTipHeightNative(dbDataPath)
+        }
+
+    /**
      * The ENGINE's persisted migration outcome for the Migration Complete screen's real summary,
      * read via the BUNDLED SQLite the engine uses (never framework SQLite — see
      * blockRateSamplesNative's Rust doc for the SIGBUS dual-instance hazard that forbids it).
@@ -802,6 +813,10 @@ class MigrationRustBackend private constructor() {
             dbDataPath: String,
             windowBlocks: Long
         ): LongArray
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun chainTipHeightNative(dbDataPath: String): Long
 
         @JvmStatic
         @Throws(RuntimeException::class)

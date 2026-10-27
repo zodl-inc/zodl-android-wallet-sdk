@@ -86,15 +86,22 @@ internal fun submissionRefusal(
     }
 
 /**
- * The wallet's own tip for the submission check: the highest block it has scanned, or null when that cannot be
- * read, in which case the server's height alone is judged.
+ * The wallet's own tip for the submission check: its chain tip, the end of its scan queue, which is what the engine
+ * builds against and can be ahead of the highest block it has scanned. The highest scanned block counts too, in case
+ * the chain tip cannot be read. Null when neither can be read, in which case the server's height alone is judged.
  */
-@Suppress("TooGenericExceptionCaught")
 internal suspend fun walletTipForSubmission(backend: TypesafeBackend): Long? =
+    listOfNotNull(
+        readWalletHeight("chain tip") { backend.getChainTipHeight()?.value },
+        readWalletHeight("scanned height") { backend.getMaxScannedHeight()?.value },
+    ).maxOrNull()
+
+@Suppress("TooGenericExceptionCaught")
+private inline fun readWalletHeight(what: String, read: () -> Long?): Long? =
     try {
-        backend.getMaxScannedHeight()?.value
+        read()
     } catch (e: Exception) {
-        Twig.warn(e) { "Could not read the wallet tip for the submission check" }
+        Twig.warn(e) { "Could not read the wallet's $what for the submission check" }
         null
     }
 

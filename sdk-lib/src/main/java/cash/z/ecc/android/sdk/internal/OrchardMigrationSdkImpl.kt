@@ -31,6 +31,7 @@ import cash.z.ecc.android.sdk.MigrationSummary
 import cash.z.ecc.android.sdk.MigrationSyncWakeup
 import cash.z.ecc.android.sdk.MigrationTransferState
 import cash.z.ecc.android.sdk.MigrationTransferStates
+import cash.z.ecc.android.sdk.MigrationWalletTipUnavailableException
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.OrchardMigrationSdk
@@ -173,20 +174,31 @@ internal class OrchardMigrationSdkImpl(
         }
 
     /**
-     * The gate phase at the wallet's next height, judged at the wallet's own scanned tip: the engine plans and builds
+     * The gate phase at the wallet's next height, judged at the wallet's own chain tip: the engine plans and builds
      * there, never at a projection from the clock. The tip is read without a network request; before any block is
      * known the next height is 1, which keeps a mainnet gate closed rather than guessing that NU7 has activated.
      */
     private suspend fun currentGatePhase(): MigrationGatePhase {
-        val tip = chainTipEstimator.scannedTip().coerceAtLeast(0L)
+        val tip = chainTipEstimator.walletTip().coerceAtLeast(0L)
         return migrationGatePhase(network, BlockHeight.new(tip + 1), gateBypass.get())
     }
 
-    /** Throws [MigrationPausedUntilNetworkUpgradeException] unless the scheduled lane is open. */
+    /**
+     * Throws [MigrationPausedUntilNetworkUpgradeException] unless the scheduled lane is open. A wallet whose tip cannot
+     * be read yet is refused with [MigrationWalletTipUnavailableException] instead: its gate is closed all the same,
+     * but "paused until the upgrade" would be the wrong reason to give once the upgrade has happened.
+     */
     private suspend fun requireScheduledLaneOpen() {
-        when (val phase = currentGatePhase()) {
-            MigrationGatePhase.Open -> Unit
-            is MigrationGatePhase.PausedUntil -> throw MigrationPausedUntilNetworkUpgradeException(phase.activation.value)
+        val tip = chainTipEstimator.walletTip()
+        when (val phase = migrationGatePhase(network, BlockHeight.new(tip.coerceAtLeast(0L) + 1), gateBypass.get())) {
+            MigrationGatePhase.Open -> {
+                Unit
+            }
+
+            is MigrationGatePhase.PausedUntil -> {
+                if (tip <= 0L) throw MigrationWalletTipUnavailableException()
+                throw MigrationPausedUntilNetworkUpgradeException(phase.activation.value)
+            }
         }
     }
 
@@ -933,7 +945,7 @@ internal class OrchardMigrationSdkImpl(
         // height. A refusal is not terminal: the transfer waits for the wallet to scan up to the height it was
         // judged at, and then the engine decides whether it is interrupted, rebuilt or sent. When the wallet has
         // scanned nothing yet nothing is sent.
-        val walletTip = chainTipEstimator.scannedTip()
+        val walletTip = chainTipEstimator.walletTip()
         if (walletTip <= 0) {
             Twig.warn { "MIGRATION_DIAG OrchardMigrationSdk: holding back transfer ${prepared.id} (height $walletTip)" }
             return BroadcastPreparation.Settled(TransferAttemptOutcome.NothingDue)
@@ -1030,7 +1042,7 @@ internal class OrchardMigrationSdkImpl(
             if (recordedResultTag(mapped.tag) == RESULT_TAG_AWAITING_REEVALUATION) {
                 maxOf(
                     fetchObservedTipAfterRejection(options.useTor, ready.plan.endpoint),
-                    chainTipEstimator.scannedTip(),
+                    chainTipEstimator.walletTip(),
                 )
             } else {
                 -1L
@@ -1137,7 +1149,7 @@ internal class OrchardMigrationSdkImpl(
             // Broadcast timing uses the estimated (real) chain tip so a proved, due transfer
             // returns Broadcast directly; proving stays on the scanned tip inside the backend.
             val est = chainTipEstimator.estimatedTip()
-            upgradeStepFor(dbDataPath, account, chainTipEstimator.scannedTip())
+            upgradeStepFor(dbDataPath, account, chainTipEstimator.walletTip())
                 ?.let { return@logged MigrationAdvanceResult(step = it, next = null) }
             migrationBackend.nextStep(dbDataPath, network, account, est)?.let { arr ->
                 val id = arr.getOrElse(1) { -1L }
@@ -1157,7 +1169,7 @@ internal class OrchardMigrationSdkImpl(
      * leave the engine's answer alone. A run holding a transaction built for the branch before NU7 is
      * [MigrationAdvanceStep.InterruptedByNetworkUpgrade]; one whose such transaction may already have been sent
      * waits ([MigrationAdvanceStep.Reevaluate]) until the wallet has scanned up to the activation. Judged at the
-     * wallet's own scanned tip ([walletTip]), never at the clock's estimate, so a wallet that is behind the chain
+     * wallet's own chain tip ([walletTip]), never at the clock's estimate, so a wallet that is behind the chain
      * is not told the upgrade has arrived before it has scanned it. Not asked before the activation or on a
      * network without NU7. The testing bypass does not lift it: it only lifts the planning pause.
      */
@@ -1506,7 +1518,7 @@ internal class OrchardMigrationSdkImpl(
                     FirstClassByteArray(txId),
                     SdkFlags(isTorEnabled = useTor && torClient != null, isExchangeRateEnabled = false),
                     network,
-                ) { chainTipEstimator.scannedTip().takeIf { it > 0 } }
+                ) { chainTipEstimator.walletTip().takeIf { it > 0 } }
             }
         } finally {
             withContext(NonCancellable) { client.dispose() }

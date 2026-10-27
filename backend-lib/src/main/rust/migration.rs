@@ -3166,6 +3166,45 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
 
+/// The chain tip the wallet itself knows: `MAX(block_range_end) - 1` of its scan queue, the same height
+/// `WalletRead::chain_height` reports (the range end is exclusive). It can be ahead of the highest scanned block.
+/// Returns -1 when the wallet has no chain tip yet or the read fails, so the caller falls back to the scanned
+/// height. Read through a read-only rusqlite connection for the reasons given on `blockRateSamplesNative`.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_chainTipHeightNative<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+) -> jlong {
+    let res = catch_unwind(&mut env, |env| {
+        let db_path: String = env.get_string(&db_data)?.into();
+        let conn = Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| anyhow!("chain-tip read-only open: {}", e))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| anyhow!("chain-tip busy_timeout: {}", e))?;
+        conn.pragma_update(None, "mmap_size", 0)
+            .map_err(|e| anyhow!("chain-tip mmap disable: {}", e))?;
+        Ok(chain_tip_from_scan_queue(&conn))
+    });
+    unwrap_exc_or(&mut env, res, -1)
+}
+
+/// `MAX(block_range_end) - 1` over the scan queue, or -1 when it is empty or unreadable.
+fn chain_tip_from_scan_queue(conn: &Connection) -> i64 {
+    conn.query_row("SELECT MAX(block_range_end) FROM scan_queue", [], |r| {
+        r.get::<_, Option<i64>>(0)
+    })
+    .ok()
+    .flatten()
+    .map(|end| end.saturating_sub(1).max(0))
+    .unwrap_or(-1)
+}
+
 /// Pure-Rust core of `migrationSummaryNative`'s query logic, split out so it's testable without a
 /// JNIEnv (see `migration_summary_tests` below) — the JNI wrapper just marshals this into a
 /// `jlongArray`. Returns `[totalMigratedZatoshi, transferCount, firstMinedEpochSeconds,
@@ -3263,6 +3302,45 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_MigrationRustBackend_
         Ok(arr.into_raw())
     });
     unwrap_exc_or(&mut env, res, std::ptr::null_mut())
+}
+
+#[cfg(test)]
+mod chain_tip_from_scan_queue_tests {
+    use super::*;
+
+    fn conn_with_scan_queue() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE scan_queue (block_range_start INTEGER, block_range_end INTEGER, priority INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn an_empty_scan_queue_has_no_chain_tip() {
+        assert_eq!(chain_tip_from_scan_queue(&conn_with_scan_queue()), -1);
+    }
+
+    #[test]
+    fn a_missing_scan_queue_has_no_chain_tip() {
+        assert_eq!(
+            chain_tip_from_scan_queue(&Connection::open_in_memory().unwrap()),
+            -1
+        );
+    }
+
+    #[test]
+    fn the_chain_tip_is_the_last_block_of_the_highest_range() {
+        let conn = conn_with_scan_queue();
+        // The range end is exclusive, so a queue ending at 1_001 means the tip is 1_000.
+        conn.execute("INSERT INTO scan_queue VALUES (500, 600, 10)", [])
+            .unwrap();
+        conn.execute("INSERT INTO scan_queue VALUES (900, 1001, 50)", [])
+            .unwrap();
+        assert_eq!(chain_tip_from_scan_queue(&conn), 1_000);
+    }
 }
 
 #[cfg(test)]

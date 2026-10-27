@@ -419,6 +419,13 @@ class MigrationPausedUntilNetworkUpgradeException(
     val activationHeight: Long
 ) : IllegalStateException("Scheduled migration is paused until the NU7 activation at height $activationHeight")
 
+/**
+ * A scheduled-migration call was made while the wallet has no chain tip yet (it has not synced), so the NU7 gate cannot
+ * be judged. The lane stays closed, like a paused one, and syncing opens it. Not a statement about the upgrade.
+ */
+class MigrationWalletTipUnavailableException :
+    IllegalStateException("Scheduled migration needs the wallet's chain tip, which is not known yet; sync first")
+
 /** The kind of step [MigrationPeek] predicts — [MigrationAdvanceStep]'s variants without a transaction id. */
 enum class MigrationStepKind {
     PROVE,

@@ -22,12 +22,13 @@ internal interface ChainTipEstimator {
     suspend fun estimatedSecondsPerBlock(): Long
 
     /**
-     * The highest block the wallet has scanned, or -1 when none is known. Unlike [estimatedTip] this is a fact about
-     * the wallet, not a projection from the clock: the NU7 gate and the activation verdict are judged at it, because
-     * the engine plans and builds at the wallet's own tip. A failed read answers the last height seen, as a tip never
-     * goes down.
+     * The wallet's own chain tip, or -1 when none is known: the end of its scan queue, which its synchronizer sets from
+     * the server it syncs with, or the highest block it has scanned if that is higher. Unlike [estimatedTip] this is a
+     * fact about the wallet, not a projection from the clock: the NU7 gate and the activation verdict are judged at it,
+     * because the engine plans and builds at the wallet's own tip. A failed read answers the last height seen, as a tip
+     * never goes down.
      */
-    suspend fun scannedTip(): Long = -1L
+    suspend fun walletTip(): Long = -1L
 }
 
 internal const val FALLBACK_SECONDS_PER_BLOCK = 75L
@@ -83,7 +84,7 @@ internal fun estimateTip(
     val elapsed = (nowEpochSeconds - scannedBlockTimeEpochSeconds).coerceAtLeast(0L)
     val rate = secondsPerBlock.coerceAtLeast(1L)
     val nu7 = network?.let { BlockSpacing.nu7ActivationHeight(it)?.value }
-    if (nu7 == null || scannedHeight >= nu7 - 1) return scannedHeight + elapsed / rate
+    if (nu7 == null || scannedHeight >= nu7) return scannedHeight + elapsed / rate
     // Blocks scanned + 1 .. nu7 - 1 are still produced at the pre-NU7 rate.
     val blocksBeforeNu7 = nu7 - 1 - scannedHeight
     val secondsBeforeNu7 = blocksBeforeNu7 * rate
@@ -172,11 +173,13 @@ internal class LazyDataDbChainTipEstimator(
     private val clock: Clock = Clock.System,
     private val rustBackendProvider: suspend () -> MigrationRustBackend = { MigrationRustBackend.new() },
 ) : ChainTipEstimator {
+    private suspend fun dataDbPath(): String =
+        DatabaseCoordinator.getInstance(context).dataDbFile(network, alias).absolutePath
+
     private suspend fun samples(): LongArray {
-        val dbFile = DatabaseCoordinator.getInstance(context).dataDbFile(network, alias)
         // blockRateSamples dispatches its own JNI read onto SdkDispatchers.DATABASE_IO.
         return rustBackendProvider()
-            .blockRateSamples(dbFile.absolutePath, RATE_WINDOW_BLOCKS)
+            .blockRateSamples(dataDbPath(), RATE_WINDOW_BLOCKS)
             .also { sample -> sample.firstOrNull()?.let { lastScannedHeight = it } }
     }
 
@@ -184,6 +187,10 @@ internal class LazyDataDbChainTipEstimator(
     // target spacing of the right era.
     @Volatile
     private var lastScannedHeight: Long? = null
+
+    // The highest wallet tip seen by a successful read: a tip never goes down, and a failed read answers it.
+    @Volatile
+    private var lastWalletTip: Long = -1L
 
     // Deliberately broad: the estimate is advisory, and every failure mode of the JNI read (a
     // missing or half-migrated database, a JNI error, an I/O fault) must degrade to the sentinel
@@ -209,13 +216,23 @@ internal class LazyDataDbChainTipEstimator(
         }
 
     @Suppress("TooGenericExceptionCaught")
-    override suspend fun scannedTip(): Long =
-        try {
-            maxOf(samples().firstOrNull() ?: -1L, lastScannedHeight ?: -1L)
-        } catch (e: Exception) {
-            Twig.warn(e) { "ChainTipEstimator: could not read the scanned tip — using the last one seen" }
-            lastScannedHeight ?: -1L
-        }
+    override suspend fun walletTip(): Long {
+        val scanned =
+            try {
+                samples().firstOrNull() ?: -1L
+            } catch (e: Exception) {
+                Twig.warn(e) { "ChainTipEstimator: could not read the scanned tip — using the last one seen" }
+                -1L
+            }
+        val chainTip =
+            try {
+                rustBackendProvider().chainTipHeight(dataDbPath())
+            } catch (e: Exception) {
+                Twig.warn(e) { "ChainTipEstimator: could not read the chain tip — using the scanned tip" }
+                -1L
+            }
+        return maxOf(scanned, chainTip, lastWalletTip).also { lastWalletTip = it }
+    }
 
     // Deliberately broad, for the same reason as [estimatedTip]: an unmeasurable rate falls back to
     // the protocol constant instead of failing the caller.
