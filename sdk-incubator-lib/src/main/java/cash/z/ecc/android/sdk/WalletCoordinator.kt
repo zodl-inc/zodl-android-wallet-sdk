@@ -63,6 +63,7 @@ class WalletCoordinator(
     val isSyncBlocked: Flow<Boolean>,
     val accountName: String,
     val keySource: String?,
+    val ohttpClientTraceIdPrefix: String? = null,
 ) {
     private val applicationContext = context.applicationContext
 
@@ -143,7 +144,8 @@ class WalletCoordinator(
                                         ),
                                     walletInitMode = persistableWallet.walletInitMode,
                                     isTorEnabled = isTorEnabled == true,
-                                    isExchangeRateEnabled = isExchangeRateEnabled == true
+                                    isExchangeRateEnabled = isExchangeRateEnabled == true,
+                                    ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
                                 )
 
                             trySend(InternalSynchronizerStatus.Available(closeableSynchronizer))

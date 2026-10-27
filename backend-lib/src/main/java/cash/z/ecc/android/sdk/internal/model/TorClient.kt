@@ -1,15 +1,21 @@
 package cash.z.ecc.android.sdk.internal.model
 
+import cash.z.ecc.android.backend.BuildConfig
 import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.ext.existsSuspend
 import cash.z.ecc.android.sdk.internal.ext.mkdirsSuspend
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
 import co.electriccoin.lightwallet.client.PartialTorWalletClient
 import co.electriccoin.lightwallet.client.util.Disposable
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.Closeable
 import java.io.File
 import java.math.BigDecimal
 
@@ -125,7 +131,26 @@ class TorClient private constructor(
             }
         }
 
-    suspend fun httpGet(url: String, headers: List<JniHttpHeader>, retryLimit: Int): JniHttpResponseBytes =
+    /**
+     * Makes an HTTP GET request over Tor.
+     *
+     * @param maxResponseBytes the maximum response body size the caller will accept, enforced while
+     * reading the stream. The call fails with "Tor HTTP response body exceeds <limit> bytes" if
+     * the body is larger than this limit.
+     * @param timeoutMs overall deadline for the whole call, retries included, enforced inside the
+     * native call (so it really interrupts the request and releases this client's mutex). The
+     * default [NO_TIMEOUT_MS] (or any value `<= 0`) keeps the previous behavior: no caller-supplied
+     * deadline, only the Tor HTTP client's own per-phase timeouts.
+     * @throws TorHttpTimeoutException if [timeoutMs] elapsed
+     * @throws TorHttpTransportException on a network/transport failure
+     */
+    suspend fun httpGet(
+        url: String,
+        headers: List<JniHttpHeader>,
+        retryLimit: Int,
+        maxResponseBytes: Int,
+        timeoutMs: Long = NO_TIMEOUT_MS
+    ): JniHttpResponseBytes =
         accessMutex.withLock {
             withContext(Dispatchers.IO) {
                 checkNotNull(nativeHandle) { "TorClient is disposed" }
@@ -133,16 +158,24 @@ class TorClient private constructor(
                     nativeHandle!!,
                     url,
                     headers.toTypedArray(),
-                    retryLimit
+                    retryLimit,
+                    maxResponseBytes,
+                    timeoutMs
                 )
             }
         }
 
+    /**
+     * Makes an HTTP POST request over Tor. See [httpGet] for [maxResponseBytes], [timeoutMs] and the exceptions.
+     */
+    @Suppress("LongParameterList")
     suspend fun httpPost(
         url: String,
         headers: List<JniHttpHeader>,
         body: ByteArray,
-        retryLimit: Int
+        retryLimit: Int,
+        maxResponseBytes: Int,
+        timeoutMs: Long = NO_TIMEOUT_MS
     ): JniHttpResponseBytes =
         accessMutex.withLock {
             withContext(Dispatchers.IO) {
@@ -152,10 +185,99 @@ class TorClient private constructor(
                     url,
                     headers.toTypedArray(),
                     body,
-                    retryLimit
+                    retryLimit,
+                    maxResponseBytes,
+                    timeoutMs
                 )
             }
         }
+
+    /**
+     * Makes an HTTP POST request over Tor and hands the response to [read] as soon as its head has
+     * arrived: [read] gets the status, the headers and the [HttpBody], whose bytes it reads as they
+     * arrive, on a blocking thread. [timeoutMs] bounds the whole exchange, the body included.
+     * Cancelling the caller ends the exchange within 100 ms, while it waits for the response head or
+     * in a waiting [HttpBody.read]. The client's mutex is held until [read] returns, as for [httpPost].
+     *
+     * @throws TorHttpTimeoutException if [timeoutMs] elapsed (from [HttpBody.read] too)
+     * @throws TorHttpTransportException on a network/transport failure (from [HttpBody.read] too)
+     */
+    @Suppress("LongParameterList")
+    suspend fun <T> httpPostStreaming(
+        url: String,
+        headers: List<JniHttpHeader>,
+        body: ByteArray,
+        retryLimit: Int,
+        timeoutMs: Long,
+        read: (status: Int, headers: Array<JniHttpHeader>, body: HttpBody) -> T
+    ): T =
+        accessMutex.withLock {
+            withContext(Dispatchers.IO) {
+                checkNotNull(nativeHandle) { "TorClient is disposed" }
+                val signal = httpCancelSignalNew()
+                try {
+                    coroutineScope {
+                        val canceller =
+                            launch(start = CoroutineStart.UNDISPATCHED) {
+                                try {
+                                    awaitCancellation()
+                                } finally {
+                                    httpCancelSignalSet(signal)
+                                }
+                            }
+                        try {
+                            val response =
+                                httpPostStream(
+                                    nativeHandle!!,
+                                    url,
+                                    headers.toTypedArray(),
+                                    body,
+                                    retryLimit,
+                                    timeoutMs,
+                                    signal
+                                )
+                            HttpBody(response.body).use { read(response.status, response.headers, it) }
+                        } finally {
+                            canceller.cancel()
+                        }
+                    }
+                } finally {
+                    httpCancelSignalFree(signal)
+                }
+            }
+        }
+
+    /**
+     * The body of an [httpPostStreaming] response. [read] and [close] are serialised and [close] is
+     * idempotent, so the native body is never freed under a read nor twice: a [close] during a read
+     * waits for it (a waiting read ends within 100 ms of the exchange's cancellation).
+     */
+    class HttpBody internal constructor(
+        handle: Long
+    ) : Closeable {
+        private val lock = Any()
+        private var handle = handle
+
+        /**
+         * The next bytes of the body, null once it has ended.
+         *
+         * @throws TorHttpTimeoutException if the request's deadline passed
+         * @throws TorHttpTransportException on a broken connection or once the caller is cancelled
+         */
+        fun read(): ByteArray? =
+            synchronized(lock) {
+                check(handle != 0L) { "The response body is closed" }
+                httpBodyRead(handle)
+            }
+
+        override fun close() {
+            synchronized(lock) {
+                val freed = handle
+                handle = 0
+                if (freed != 0L) httpBodyFree(freed)
+            }
+        }
+    }
 
     suspend fun getExchangeRateUsd(): BigDecimal =
         accessMutex.withLock {
@@ -203,7 +325,10 @@ class TorClient private constructor(
         }
 
     companion object {
-        suspend fun new(torDir: File, backend: Backend): TorClient =
+        /** No caller-supplied deadline for [httpGet] / [httpPost] (the previous behavior). */
+        const val NO_TIMEOUT_MS = 0L
+
+        suspend fun new(torDir: File, backend: Backend, clientTracePrefix: String? = null): TorClient =
             withContext(Dispatchers.IO) {
                 RustBackend.loadLibrary()
 
@@ -213,7 +338,8 @@ class TorClient private constructor(
                     error("${torDir.path} directory does not exist and could not be created.")
                 }
 
-                TorClient(createTorRuntime(torDir.path), backend)
+                // Trace ids are debug-only: the Rust side no longer gates this itself.
+                TorClient(createTorRuntime(torDir.path, clientTracePrefix.takeIf { BuildConfig.DEBUG }), backend)
             }
 
         //
@@ -225,7 +351,7 @@ class TorClient private constructor(
          */
         @JvmStatic
         @Throws(RuntimeException::class)
-        private external fun createTorRuntime(torDir: String): Long
+        private external fun createTorRuntime(torDir: String, clientTracePrefix: String?): Long
 
         @JvmStatic
         private external fun freeTorRuntime(nativeHandle: Long)
@@ -245,29 +371,77 @@ class TorClient private constructor(
         private external fun setDormant(nativeHandle: Long, mode: Int)
 
         /**
-         * @throws RuntimeException as a common indicator of the operation failure
+         * @throws TorHttpTimeoutException if [timeoutMs] elapsed
+         * @throws TorHttpTransportException on a network/transport failure
+         * @throws RuntimeException as a common indicator of any other operation failure
          */
         @JvmStatic
+        @Suppress("LongParameterList")
         @Throws(RuntimeException::class)
         private external fun httpGet(
             nativeHandle: Long,
             url: String,
             headers: Array<JniHttpHeader>,
-            retryLimit: Int
+            retryLimit: Int,
+            maxResponseBytes: Int,
+            timeoutMs: Long
         ): JniHttpResponseBytes
 
         /**
-         * @throws RuntimeException as a common indicator of the operation failure
+         * @throws TorHttpTimeoutException if [timeoutMs] elapsed
+         * @throws TorHttpTransportException on a network/transport failure
+         * @throws RuntimeException as a common indicator of any other operation failure
          */
         @JvmStatic
         @Throws(RuntimeException::class)
+        @Suppress("LongParameterList")
         private external fun httpPost(
             nativeHandle: Long,
             url: String,
             headers: Array<JniHttpHeader>,
             body: ByteArray,
-            retryLimit: Int
+            retryLimit: Int,
+            maxResponseBytes: Int,
+            timeoutMs: Long
         ): JniHttpResponseBytes
+
+        /**
+         * @throws TorHttpTimeoutException if [timeoutMs] elapsed
+         * @throws TorHttpTransportException on a network/transport failure
+         * @throws RuntimeException as a common indicator of any other operation failure
+         */
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        @Suppress("LongParameterList")
+        private external fun httpPostStream(
+            nativeHandle: Long,
+            url: String,
+            headers: Array<JniHttpHeader>,
+            body: ByteArray,
+            retryLimit: Int,
+            timeoutMs: Long,
+            cancelSignal: Long
+        ): JniHttpStreamResponse
+
+        /**
+         * @throws TorHttpTimeoutException if the request's deadline passed
+         * @throws TorHttpTransportException on a network/transport failure or a cancelled exchange
+         */
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun httpBodyRead(body: Long): ByteArray?
+
+        @JvmStatic
+        private external fun httpBodyFree(body: Long)
+
+        @JvmStatic
+        private external fun httpCancelSignalNew(): Long
+
+        @JvmStatic
+        private external fun httpCancelSignalSet(signal: Long)
+
+        @JvmStatic
+        private external fun httpCancelSignalFree(signal: Long)
 
         /**
          * @throws RuntimeException as a common indicator of the operation failure

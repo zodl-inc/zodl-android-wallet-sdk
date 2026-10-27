@@ -33,3 +33,8 @@
     public static int w(...);
     public static int e(...);
 }
+# OkHttp (direct OHTTP sender): optional TLS platforms it probes for
+-dontwarn org.conscrypt.**
+-dontwarn org.openjsse.**
+-dontwarn okhttp3.internal.platform.**
+-dontwarn org.bouncycastle.**

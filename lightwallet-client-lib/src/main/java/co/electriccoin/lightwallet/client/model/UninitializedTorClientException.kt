@@ -1,5 +1,5 @@
 package co.electriccoin.lightwallet.client.model
 
 class UninitializedTorClientException(
-    cause: Exception
+    cause: Exception,
 ) : RuntimeException(cause)

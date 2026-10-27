@@ -29,6 +29,7 @@ internal interface SynchronizerEngineFactory {
         walletInitMode: WalletInitMode,
         isTorEnabled: Boolean,
         isExchangeRateEnabled: Boolean,
+        ohttpClientTraceIdPrefix: String? = null,
     ): CloseableSynchronizer
 
     suspend fun erase(

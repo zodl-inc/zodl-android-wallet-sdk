@@ -29,6 +29,7 @@ import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
 import cash.z.ecc.android.sdk.internal.Files
 import cash.z.ecc.android.sdk.internal.ImportAccountErrors
+import cash.z.ecc.android.sdk.internal.TorOhttpSender
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.TypesafeBackendImpl
 import cash.z.ecc.android.sdk.internal.exchange.UsdExchangeRateFetcher
@@ -88,6 +89,7 @@ import cash.z.ecc.android.sdk.type.ConsensusMatchType
 import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
+import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
@@ -1399,7 +1401,7 @@ class SlipstreamSynchronizer internal constructor(
                 .fetchUtxos(
                     tAddresses = tAddresses,
                     startHeight = BlockHeightUnsafe(since.value),
-                    serviceMode = ServiceMode.Direct
+                    serviceMode = sdkFlags ifTor ServiceMode.Group("SlipstreamSynchronizer.refreshUtxos")
                 ).collect { response ->
                     if (response is Response.Success) {
                         val utxo = response.result
@@ -1823,8 +1825,22 @@ class SlipstreamSynchronizer internal constructor(
     }
 
     @Suppress("TooGenericExceptionCaught")
+    override suspend fun ohttpSenderOverTor(): OhttpSender {
+        if (!sdkFlags.isTorEnabled) throw TorUnavailableException()
+        val isolated =
+            try {
+                lazyTorClient.getOrCreate().isolatedTorClient()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw TorInitializationErrorException(e)
+            }
+        return TorOhttpSender(isolated)
+    }
+
+    @Suppress("TooGenericExceptionCaught")
     override suspend fun acquireVotingTorLease(): VotingTorLease {
-        if (!sdkFlags.isTorEnabled && !sdkFlags.isExchangeRateEnabled) throw TorUnavailableException()
+        if (!sdkFlags.isTorEnabled) throw TorUnavailableException()
         return try {
             VotingTorLease(lazyTorClient.getOrCreate().leaseRuntime())
         } catch (e: CancellationException) {
@@ -2030,6 +2046,7 @@ class SlipstreamSynchronizer internal constructor(
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean,
+            ohttpClientTraceIdPrefix: String? = null,
             engineMemoryFraction: Float = FULL_ENGINE_MEMORY
         ): CloseableSynchronizer =
             new(
@@ -2042,6 +2059,7 @@ class SlipstreamSynchronizer internal constructor(
                 zcashNetwork = zcashNetwork,
                 isTorEnabled = isTorEnabled,
                 isExchangeRateEnabled = isExchangeRateEnabled,
+                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
                 engineMemoryFraction = engineMemoryFraction,
                 birthdayResolved = null
             )
@@ -2071,6 +2089,7 @@ class SlipstreamSynchronizer internal constructor(
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean,
+            ohttpClientTraceIdPrefix: String?,
             engineMemoryFraction: Float,
             birthdayResolved: CompletableDeferred<Boolean>?
         ): CloseableSynchronizer {
@@ -2091,6 +2110,7 @@ class SlipstreamSynchronizer internal constructor(
                         setup = ownedSetup,
                         walletInitMode = walletInitMode,
                         zcashNetwork = zcashNetwork,
+                        ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
                         isTorEnabled = isTorEnabled,
                         isExchangeRateEnabled = isExchangeRateEnabled,
                         engineMemoryFraction = engineMemoryFraction,
@@ -2150,6 +2170,7 @@ class SlipstreamSynchronizer internal constructor(
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean,
+            ohttpClientTraceIdPrefix: String?,
             engineMemoryFraction: Float,
             birthdayResolved: CompletableDeferred<Boolean>?,
             key: SlipstreamKey
@@ -2222,6 +2243,11 @@ class SlipstreamSynchronizer internal constructor(
                 )
             val typesafeBackend = TypesafeBackendImpl(backend)
 
+            // Set the default OHTTP client trace prefix before engine operations so direct OHTTP
+            // connections (Tor OFF) can emit X-Client-Trace-Id without requiring TorClient creation.
+            // Debug-only: the Rust side no longer gates this itself.
+            SlipstreamNative.setDefaultOhttpClientTracePrefix(ohttpClientTraceIdPrefix.takeIf { BuildConfig.DEBUG })
+
             val engine =
                 SlipstreamEngine(
                     dbFile.absolutePath,
@@ -2237,7 +2263,7 @@ class SlipstreamSynchronizer internal constructor(
              * Tor is only needed for on-demand/background work, never on the cold-start critical
              * path, so its creation (~1s) is deferred to first use via [LazyTorClient].
              */
-            val lazyTorClient = LazyTorClient { TorClient.new(Files.getTorDir(applicationContext), backend) }
+            val lazyTorClient = LazyTorClient { TorClient.new(Files.getTorDir(applicationContext), backend, ohttpClientTraceIdPrefix) }
             val exchangeRateFetcher =
                 if (isExchangeRateEnabled) {
                     UsdExchangeRateFetcher(
@@ -2250,12 +2276,31 @@ class SlipstreamSynchronizer internal constructor(
                     null
                 }
 
+            val saplingParamsTorHttpClientProvider: (suspend () -> HttpClient)? =
+                if (isTorEnabled) {
+                    {
+                        val isolatedTor = lazyTorClient.getOrCreate().isolatedTorClient()
+                        HttpClient(TorHttp) {
+                            engine {
+                                tor = isolatedTor
+                                retryLimit = 1
+                            }
+                        }
+                    }
+                } else {
+                    null
+                }
+
             val walletClientFactory =
                 WalletClientFactory(
                     context = applicationContext,
                     torClient = lazyTorClient.takeIf { isTorEnabled }
                 )
-            val walletClient = walletClientFactory.create(endpoint = lightWalletEndpoint)
+            val walletClient =
+                walletClientFactory.create(
+                    endpoint = lightWalletEndpoint,
+                    ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+                )
             val fastestServerFetcher =
                 FastestServerFetcher(typesafeBackend, zcashNetwork, walletClientFactory, sdkFlags)
 
@@ -2268,7 +2313,9 @@ class SlipstreamSynchronizer internal constructor(
                     walletClient = walletClient,
                     engine = engine,
                     sdkFlags = sdkFlags,
-                    ensureSaplingParams = { SaplingParams.ensureDownloaded(saplingParamsDir) },
+                    ensureSaplingParams = {
+                        SaplingParams.ensureDownloaded(saplingParamsDir, saplingParamsTorHttpClientProvider)
+                    },
                     readRawTransaction = transactionReader::readRawTransaction
                 )
 
@@ -2285,7 +2332,8 @@ class SlipstreamSynchronizer internal constructor(
                     engine = engine,
                     planStore = SubmitPlanStore(submitPlanPreferences),
                     saplingParamsDir = saplingParamsDir,
-                    transactionReader = transactionReader
+                    transactionReader = transactionReader,
+                    saplingParamsTorHttpClientProvider = saplingParamsTorHttpClientProvider
                 )
 
             val resubmissionTicker =

@@ -8,5 +8,8 @@ interface PartialTorWalletClient :
     Disposable {
     suspend fun checkSingleUseTransparentAddress(accountUuid: ByteArray): Response<String?>
 
-    suspend fun fetchUtxosByAddress(accountUuid: ByteArray, address: String): Response<String?>
+    suspend fun fetchUtxosByAddress(
+        accountUuid: ByteArray,
+        address: String,
+    ): Response<String?>
 }

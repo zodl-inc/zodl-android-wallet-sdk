@@ -31,16 +31,18 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use super::db::db_from_handle;
 use super::helpers::*;
 use super::round_session::{
-    fallback_runtime, optional_seconds, resolve_tor_runtime, unix_now_seconds,
+    fallback_runtime, optional_seconds, resolve_session_route, resolve_tor_runtime,
+    unix_now_seconds,
 };
-use super::route::ZodlVotingRoute;
+use super::route::ZodlOhttpRoute;
+
 use super::*;
 
 use tor_rtcompat::ToplevelBlockOn;
 
 use voting::{
-    ChainSubmissionControl, DirectRoute, HelperClient, HelperHealth, HelperTransport,
-    HyperTransport, NoopShareTrackingReporter, ShareTrackingDriver, ShareTrackingHostContext,
+    ChainSubmissionControl, HelperClient, HelperHealth, HelperTransport, HyperTransport,
+    NoopShareTrackingReporter, ShareTrackingDriver, ShareTrackingHostContext,
     ShareTrackingHostSourceBridge,
 };
 
@@ -125,8 +127,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
 }
 
 /// Drives `session_handle`'s round to share-tracking quiescence with a
-/// [`ShareTrackingDriver`]. See `trackSharesNative`'s old doc comment (now
-/// superseded) for the Tor-optional fallback this preserves unchanged.
+/// [`ShareTrackingDriver`]. Uses the same route selection as `openRoundSessionNative`:
+/// Tor ON → Tor; Tor OFF + predefined helper → OHTTP (fail closed); Tor OFF + custom → Direct.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_runShareTrackingSessionNative<
     'local,
@@ -135,6 +137,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
     _: JClass<'local>,
     session_handle: jlong,
     tor_runtime: jlong,
+    is_custom_server: jboolean,
     helper_urls: JObjectArray<'local>,
     vote_end_time_seconds: jlong,
 ) -> jobject {
@@ -144,12 +147,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
         let configured_helper_urls = java_string_array(env, &helper_urls, "helper_urls")?;
         let vote_end_time_seconds = optional_seconds(vote_end_time_seconds)?;
 
-        // SAFETY: see resolve_tor_runtime's doc comment in round_session.rs.
-        let resolved_tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) };
-
         let database: &voting::storage::VotingDb = &db;
         let template = ShareTrackingHostContext {
-            configured_helper_urls,
+            configured_helper_urls: configured_helper_urls.clone(),
             now_seconds: unix_now_seconds(),
             vote_end_time_seconds,
         };
@@ -159,30 +159,51 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
             ctx
         });
 
+        let is_custom = is_custom_server != 0;
+
+        let network = db.network;
+
+        // Build route using the first helper URL. When Tor is OFF and server is not custom,
+        // every configured helper URL must be OHTTP-eligible.
+        let helper_sample = configured_helper_urls
+            .first()
+            .ok_or_else(|| anyhow!("At least one helper_url is required"))?;
+        let route = resolve_session_route(tor_runtime, is_custom, helper_sample, network)?;
+
+        // When Tor is OFF and server is not custom, verify all endpoints are OHTTP-eligible
+        // (not just the first). The route itself carries no per-endpoint state, but eligibility
+        // is a per-URL property.
+        if tor_runtime == 0 && !is_custom {
+            for url in &configured_helper_urls {
+                ZodlOhttpRoute::new(url, network).map_err(|e| {
+                    anyhow!(
+                        "cannot reach predefined helper at {} with Tor disabled: {}",
+                        url,
+                        e
+                    )
+                })?;
+            }
+        }
+
+        // Resolve Tor runtime to decide which async runtime to use for block_on
+        let resolved_tor_runtime = unsafe { resolve_tor_runtime(tor_runtime) };
+
+        let transport: Arc<dyn HelperTransport> = Arc::new(HyperTransport::with_route(route));
+        let client = HelperClient::new(transport, HelperHealth::default());
+        let driver = ShareTrackingDriver::new(database, &client, &session.round_id);
+
+        // Run with the appropriate runtime: Tor's tokio runtime if Tor ON, fallback otherwise
         let report = match resolved_tor_runtime {
-            Ok(tor_runtime) => {
-                let transport: Arc<dyn HelperTransport> = Arc::new(HyperTransport::with_route(
-                    ZodlVotingRoute::new(tor_runtime),
-                ));
-                let client = HelperClient::new(transport, HelperHealth::default());
-                let driver = ShareTrackingDriver::new(database, &client, &session.round_id);
-                tor_runtime.runtime().block_on(async {
-                    driver
-                        .run(&host, &session.control, &NoopShareTrackingReporter {})
-                        .await
-                })
-            }
-            Err(_) => {
-                let transport: Arc<dyn HelperTransport> =
-                    Arc::new(HyperTransport::with_route(DirectRoute::new()));
-                let client = HelperClient::new(transport, HelperHealth::default());
-                let driver = ShareTrackingDriver::new(database, &client, &session.round_id);
-                fallback_runtime()?.block_on(async {
-                    driver
-                        .run(&host, &session.control, &NoopShareTrackingReporter {})
-                        .await
-                })
-            }
+            Ok(tor_rt) => tor_rt.runtime().block_on(async {
+                driver
+                    .run(&host, &session.control, &NoopShareTrackingReporter {})
+                    .await
+            }),
+            Err(_) => fallback_runtime()?.block_on(async {
+                driver
+                    .run(&host, &session.control, &NoopShareTrackingReporter {})
+                    .await
+            }),
         };
 
         Ok(encode_share_tracking_report(env, &report)?.into_raw())

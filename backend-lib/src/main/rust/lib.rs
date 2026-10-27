@@ -121,10 +121,12 @@ mod migration_engine;
 mod migration_keystone;
 mod migration_plan_cache;
 mod migration_send_max;
+mod ohttp;
 mod payment_uri;
 mod proving;
 mod send_max;
 mod tor;
+mod tor_http;
 #[cfg(test)]
 mod unified_r0;
 mod utils;
@@ -250,9 +252,26 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_initOnLoa
                 tracing::level_filters::LevelFilter::DEBUG
             });
 
+        // The HTTP/2, TLS and tower internals log every frame at debug: thousands of lines a second
+        // during a sync, so logcat drops the wallet's own lines. Cap them at info.
+        let noisy = std::cmp::min(log_filter, tracing::level_filters::LevelFilter::INFO);
+        let targets = tracing_subscriber::filter::Targets::new()
+            .with_default(log_filter)
+            .with_targets(
+                [
+                    "h2",
+                    "hyper",
+                    "hyper_util",
+                    "rustls",
+                    "tokio_rustls",
+                    "tower",
+                ]
+                .map(|t| (t, noisy)),
+            );
+
         paranoid_android::layer("cash.z.rust.logs")
             .with_ansi(false)
-            .with_filter(log_filter)
+            .with_filter(targets)
     };
 
     // Generate Android trace events from `tracing` spans.
@@ -3870,11 +3889,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_createTor
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
     tor_dir: JString<'local>,
+    client_trace_prefix: JString<'local>,
 ) -> jlong {
     let res = catch_unwind(&mut env, |env| {
         let tor_dir = path_from_jni(env, tor_dir)?;
+        let client_trace_prefix =
+            crate::ohttp::gated_trace_prefix(if client_trace_prefix.is_null() {
+                None
+            } else {
+                Some(env.get_string(&client_trace_prefix)?.to_str()?.to_string())
+            });
 
-        let tor = crate::tor::TorRuntime::create(&tor_dir)?;
+        #[cfg(feature = "slipstream")]
+        slipstream_core::ohttp::set_default_client_trace_prefix(client_trace_prefix.clone());
+        let tor = crate::tor::TorRuntime::create(&tor_dir, client_trace_prefix)?;
 
         Ok(Box::into_raw(Box::new(tor)).expose_provenance() as jlong)
     });
@@ -3893,6 +3921,21 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_freeTorRu
         let s = unsafe { Box::from_raw(ptr) };
         drop(s);
     }
+}
+
+/// Raises the typed Kotlin exception matching `e` (`TorHttpTimeoutException` /
+/// `TorHttpTransportException`) and returns the `anyhow` error for the generic path. As with
+/// `map_proposal_error`, the typed throw wins when it succeeds and the generic
+/// `RuntimeException` remains the fallback when it does not (or for non-retryable failures).
+fn throw_tor_http_error(env: &mut JNIEnv, e: crate::tor_http::TorHttpError) -> anyhow::Error {
+    if let Some(class) = e.exception_class() {
+        let message = e.message().to_owned();
+        utils::exception::throw_object(env, class, |env| {
+            let message = env.new_string(&message)?;
+            env.new_object(class, "(Ljava/lang/String;)V", &[JValue::Object(&message)])
+        });
+    }
+    e.into_anyhow()
 }
 
 /// Returns a new isolated `TorClient` handle.
@@ -3958,6 +4001,37 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_setDorman
 
 const JNI_HTTP_HEADER: &str = "cash/z/ecc/android/sdk/internal/model/JniHttpHeader";
 
+/// Reads an HTTP response body into memory, counting bytes as frames arrive.
+///
+/// Returns `Ok(None)` as soon as the body exceeds `max_bytes`, without reading the rest, so a
+/// hostile relay or server cannot make the device buffer an unbounded response.
+async fn collect_body_limited<B, E>(mut body: B, max_bytes: usize) -> Result<Option<Bytes>, E>
+where
+    B: BodyExt<Data = Bytes, Error = E> + Unpin,
+{
+    let mut out = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame?;
+        if let Some(data) = frame.data_ref() {
+            if data.len() > max_bytes - out.len() {
+                return Ok(None);
+            }
+            out.extend_from_slice(data);
+        }
+    }
+    Ok(Some(Bytes::from(out)))
+}
+
+/// Fails the call when [`collect_body_limited`] stopped at the caller-supplied size limit.
+fn within_response_limit_custom(
+    response: http::Response<Option<Bytes>>,
+    max_bytes: usize,
+) -> anyhow::Result<http::Response<Bytes>> {
+    let (parts, body) = response.into_parts();
+    let body = body.ok_or_else(|| anyhow!("Tor HTTP response body exceeds {max_bytes} bytes"))?;
+    Ok(http::Response::from_parts(parts, body))
+}
+
 fn encode_http_header<'a>(
     env: &mut JNIEnv<'a>,
     name: &http::HeaderName,
@@ -3973,16 +4047,11 @@ fn encode_http_header<'a>(
     )
 }
 
-fn encode_http_response_bytes<'a>(
+fn encode_http_headers<'a>(
     env: &mut JNIEnv<'a>,
-    response: http::Response<Bytes>,
-) -> anyhow::Result<JObject<'a>> {
-    let (parts, body) = response.into_parts();
-
-    let version = JObject::from(env.new_string(format!("{:?}", parts.version))?);
-
-    let headers = parts
-        .headers
+    headers: &http::HeaderMap,
+) -> anyhow::Result<JObjectArray<'a>> {
+    let headers = headers
         .iter()
         .map(|(name, value)| {
             value
@@ -3992,9 +4061,23 @@ fn encode_http_response_bytes<'a>(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let headers = utils::rust_vec_to_java(env, headers, JNI_HTTP_HEADER, |env, (name, value)| {
-        encode_http_header(env, name, value)
-    })?;
+    Ok(utils::rust_vec_to_java(
+        env,
+        headers,
+        JNI_HTTP_HEADER,
+        |env, (name, value)| encode_http_header(env, name, value),
+    )?)
+}
+
+fn encode_http_response_bytes<'a>(
+    env: &mut JNIEnv<'a>,
+    response: http::Response<Bytes>,
+) -> anyhow::Result<JObject<'a>> {
+    let (parts, body) = response.into_parts();
+
+    let version = JObject::from(env.new_string(format!("{:?}", parts.version))?);
+
+    let headers = encode_http_headers(env, &parts.headers)?;
 
     Ok(env.new_object(
         "cash/z/ecc/android/sdk/internal/model/JniHttpResponseBytes",
@@ -4012,6 +4095,15 @@ fn encode_http_response_bytes<'a>(
 ///
 /// `retry_limit` is the maximum number of times that a failed request should be retried.
 /// You can disable retries by setting this to 0.
+///
+/// `max_response_bytes` is the maximum body size the caller will accept, enforced while reading
+/// the stream. The call fails with "Tor HTTP response body exceeds <limit> bytes" if the body
+/// is larger than this limit.
+///
+/// `timeout_ms` is an overall deadline for the whole call, retries included; `<= 0` means no
+/// caller-supplied deadline (the client's own per-phase timeouts still apply). On expiry a
+/// `TorHttpTimeoutException` is thrown; network/transport failures throw
+/// `TorHttpTransportException`; anything else throws a plain `RuntimeException`.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'local>(
     mut env: JNIEnv<'local>,
@@ -4020,6 +4112,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
     url: JString<'local>,
     headers: JObjectArray<'local>,
     retry_limit: jint,
+    max_response_bytes: jint,
+    timeout_ms: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let tor_runtime =
@@ -4033,26 +4127,35 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
         let headers = parse_http_headers(env, headers)?;
         let retry_limit =
             u8::try_from(retry_limit).map_err(|e| anyhow!("retryLimit is too large: {e}"))?;
+        let max_response_bytes = usize::try_from(max_response_bytes)
+            .map_err(|e| anyhow!("maxResponseBytes is negative: {e}"))?;
 
-        let response = tor_runtime.runtime().block_on(async {
-            tor_runtime
-                .client()
-                .http_get(
+        let runtime = tor_runtime.runtime();
+        let response = runtime
+            .block_on(crate::tor_http::with_deadline(
+                runtime,
+                timeout_ms,
+                tor_runtime.client().http_get(
                     url,
                     |builder| {
                         headers
                             .iter()
                             .fold(builder, |builder, (key, value)| builder.header(key, value))
                     },
-                    |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
+                    |body| async {
+                        Ok(collect_body_limited(body, max_response_bytes)
+                            .await
+                            .map_err(HttpError::from)?)
+                    },
                     retry_limit,
                     |res| {
                         res.is_err()
                             .then_some(zcash_client_backend::tor::http::Retry::Same)
                     },
-                )
-                .await
-        })?;
+                ),
+            ))
+            .map_err(|e| throw_tor_http_error(env, e))?;
+        let response = within_response_limit_custom(response, max_response_bytes)?;
 
         Ok(encode_http_response_bytes(env, response)?.into_raw())
     });
@@ -4063,6 +4166,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpGet<'
 ///
 /// `retry_limit` is the maximum number of times that a failed request should be retried.
 /// You can disable retries by setting this to 0.
+///
+/// `max_response_bytes` is the maximum body size the caller will accept, enforced while reading
+/// the stream. The call fails with "Tor HTTP response body exceeds <limit> bytes" if the body
+/// is larger than this limit.
+///
+/// `timeout_ms` is an overall deadline for the whole call, retries included; `<= 0` means no
+/// caller-supplied deadline (the client's own per-phase timeouts still apply). On expiry a
+/// `TorHttpTimeoutException` is thrown; network/transport failures throw
+/// `TorHttpTransportException`; anything else throws a plain `RuntimeException`.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<'local>(
     mut env: JNIEnv<'local>,
@@ -4072,6 +4184,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
     headers: JObjectArray<'local>,
     body: JByteArray<'local>,
     retry_limit: jint,
+    max_response_bytes: jint,
+    timeout_ms: jlong,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
         let tor_runtime =
@@ -4086,11 +4200,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
         let body = utils::java_bytes_to_rust(env, &body)?;
         let retry_limit =
             u8::try_from(retry_limit).map_err(|e| anyhow!("retryLimit is too large: {e}"))?;
+        let max_response_bytes = usize::try_from(max_response_bytes)
+            .map_err(|e| anyhow!("maxResponseBytes is negative: {e}"))?;
 
-        let response = tor_runtime.runtime().block_on(async {
-            tor_runtime
-                .client()
-                .http_post(
+        let runtime = tor_runtime.runtime();
+        let response = runtime
+            .block_on(crate::tor_http::with_deadline(
+                runtime,
+                timeout_ms,
+                tor_runtime.client().http_post(
                     url,
                     |builder| {
                         headers
@@ -4098,19 +4216,244 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPost<
                             .fold(builder, |builder, (key, value)| builder.header(key, value))
                     },
                     http_body_util::Full::new(io::Cursor::new(body)),
-                    |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
+                    |body| async {
+                        Ok(collect_body_limited(body, max_response_bytes)
+                            .await
+                            .map_err(HttpError::from)?)
+                    },
                     retry_limit,
                     |res| {
                         res.is_err()
                             .then_some(zcash_client_backend::tor::http::Retry::Same)
                     },
-                )
-                .await
-        })?;
+                ),
+            ))
+            .map_err(|e| throw_tor_http_error(env, e))?;
+        let response = within_response_limit_custom(response, max_response_bytes)?;
 
         Ok(encode_http_response_bytes(env, response)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// A new cancel signal for `httpPostStream`: set with `httpCancelSignalSet` (from any thread),
+/// freed with `httpCancelSignalFree` once the exchange is over.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpCancelSignalNew<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+) -> jlong {
+    let res = catch_unwind(&mut env, |_| {
+        let signal = crate::tor_http::CancelSignal::default();
+        Ok(std::sync::Arc::into_raw(signal).expose_provenance() as jlong)
+    });
+    unwrap_exc_or(&mut env, res, 0)
+}
+
+/// The signal behind a handle of `httpCancelSignalNew`, as a new reference.
+///
+/// # Safety
+///
+/// `handle` must be a handle of `httpCancelSignalNew` that `httpCancelSignalFree` has not freed.
+unsafe fn cancel_signal(handle: jlong) -> anyhow::Result<crate::tor_http::CancelSignal> {
+    let ptr = ptr::with_exposed_provenance::<std::sync::atomic::AtomicBool>(handle as usize);
+    if ptr.is_null() {
+        return Err(anyhow!("The cancel signal is freed"));
+    }
+    // SAFETY: by the contract above, `ptr` came from `Arc::into_raw` and its count is live.
+    unsafe {
+        std::sync::Arc::increment_strong_count(ptr);
+        Ok(std::sync::Arc::from_raw(ptr))
+    }
+}
+
+/// Sets a cancel signal: the exchange that uses it fails within 100 ms, whether it is waiting
+/// for the response head or reading the body.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpCancelSignalSet<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    signal: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        // SAFETY: the Kotlin wrapper frees the signal only after its last use.
+        unsafe { cancel_signal(signal) }?.store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+/// Frees a cancel signal (a body that shares it keeps its own reference). 0 is a no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpCancelSignalFree<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    signal: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        let ptr = ptr::with_exposed_provenance::<std::sync::atomic::AtomicBool>(signal as usize);
+        if !ptr.is_null() {
+            // SAFETY: the Kotlin wrapper frees each signal once, after its last use.
+            drop(unsafe { std::sync::Arc::from_raw(ptr) });
+        }
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
+}
+
+/// Makes an HTTP POST request over Tor and returns as soon as the response head has arrived:
+/// `JniHttpStreamResponse(status, headers, body)`, where `body` is the handle of a
+/// `TorHttpBody` that the JVM reads with `httpBodyRead` as it arrives and frees with
+/// `httpBodyFree`.
+///
+/// `timeout_ms` is an overall deadline for the whole exchange, the body reads included; setting
+/// `cancel` (a handle of `httpCancelSignalNew`) ends it at any point, the wait for the head
+/// included. The exceptions are those of `httpPost`.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpPostStream<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    tor_runtime: jlong,
+    url: JString<'local>,
+    headers: JObjectArray<'local>,
+    body: JByteArray<'local>,
+    retry_limit: jint,
+    timeout_ms: jlong,
+    cancel: jlong,
+) -> jobject {
+    let res = catch_unwind(&mut env, |env| {
+        let started = std::time::Instant::now();
+        // SAFETY: the Kotlin wrapper frees the signal only after this call has returned.
+        let cancel = unsafe { cancel_signal(cancel) }?;
+        let tor_runtime =
+            std::ptr::with_exposed_provenance_mut::<crate::tor::TorRuntime>(tor_runtime as usize);
+        let tor_runtime =
+            unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
+
+        let url = utils::java_string_to_rust(env, &url)?
+            .try_into()
+            .map_err(|e| anyhow!("Invalid URL: {e}"))?;
+        let headers = parse_http_headers(env, headers)?;
+        let body = utils::java_bytes_to_rust(env, &body)?;
+        let retry_limit =
+            u8::try_from(retry_limit).map_err(|e| anyhow!("retryLimit is too large: {e}"))?;
+
+        let runtime = tor_runtime.runtime();
+        let response = crate::tor_http::block_on_unless_cancelled(
+            runtime,
+            &cancel,
+            crate::tor_http::with_deadline(
+                runtime,
+                timeout_ms,
+                tor_runtime.client().http_post(
+                    url,
+                    |builder| {
+                        headers
+                            .iter()
+                            .fold(builder, |builder, (key, value)| builder.header(key, value))
+                    },
+                    http_body_util::Full::new(io::Cursor::new(body)),
+                    |body| async move {
+                        Ok::<_, zcash_client_backend::tor::Error>(crate::tor_http::boxed_body(body))
+                    },
+                    retry_limit,
+                    |res| {
+                        res.is_err()
+                            .then_some(zcash_client_backend::tor::http::Retry::Same)
+                    },
+                ),
+            ),
+        )
+        .map_err(|e| throw_tor_http_error(env, e))?;
+        let (parts, body) = response.into_parts();
+        let headers = encode_http_headers(env, &parts.headers)?;
+        let body =
+            crate::tor_http::TorHttpBody::new(runtime.clone(), body, cancel, timeout_ms, started);
+        let handle = Box::into_raw(Box::new(body)).expose_provenance() as jlong;
+        match env.new_object(
+            "cash/z/ecc/android/sdk/internal/model/JniHttpStreamResponse",
+            format!("(I[L{};J)V", JNI_HTTP_HEADER),
+            &[
+                JValue::Int(parts.status.as_u16().into()),
+                (&headers).into(),
+                JValue::Long(handle),
+            ],
+        ) {
+            Ok(object) => Ok(object.into_raw()),
+            Err(e) => {
+                // SAFETY: `handle` was created above and has not left this function.
+                drop(unsafe { take_tor_http_body(handle) });
+                Err(e.into())
+            }
+        }
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Reclaims the body behind a handle of `httpPostStream`, or `None` for 0.
+///
+/// # Safety
+///
+/// `handle` must be 0 or a live handle of `httpPostStream`, used by no other call at the same
+/// time and not used again.
+unsafe fn take_tor_http_body(handle: jlong) -> Option<Box<crate::tor_http::TorHttpBody>> {
+    let ptr = ptr::with_exposed_provenance_mut::<crate::tor_http::TorHttpBody>(handle as usize);
+    // SAFETY: by the contract above, `ptr` is null or came from `Box::into_raw` and is
+    // reclaimed once.
+    (!ptr.is_null()).then(|| unsafe { Box::from_raw(ptr) })
+}
+
+/// The body behind a live handle of `httpPostStream`.
+///
+/// # Safety
+///
+/// `handle` must be a handle of `httpPostStream` that `httpBodyFree` has not freed and will not
+/// free during the borrow.
+unsafe fn tor_http_body<'a>(handle: jlong) -> anyhow::Result<&'a crate::tor_http::TorHttpBody> {
+    let ptr = ptr::with_exposed_provenance::<crate::tor_http::TorHttpBody>(handle as usize);
+    // SAFETY: by the contract above.
+    unsafe { ptr.as_ref() }.ok_or_else(|| anyhow!("The response body is closed"))
+}
+
+/// The next bytes of a response body over Tor, or null once it has ended. Fails like
+/// `httpPost` (`TorHttpTimeoutException` past the request's deadline, `TorHttpTransportException`
+/// on a broken connection or once the exchange's cancel signal is set).
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpBodyRead<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    body: jlong,
+) -> jbyteArray {
+    let res = catch_unwind(&mut env, |env| {
+        // SAFETY: the Kotlin wrapper frees the handle only after its last read.
+        let body = unsafe { tor_http_body(body) }?;
+        match body.read().map_err(|e| throw_tor_http_error(env, e))? {
+            Some(bytes) => Ok(env.byte_array_from_slice(&bytes)?.into_raw()),
+            None => Ok(ptr::null_mut()),
+        }
+    });
+    unwrap_exc_or(&mut env, res, ptr::null_mut())
+}
+
+/// Frees a response body of `httpPostStream` (read to its end or not). 0 is a no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorClient_httpBodyFree<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    body: jlong,
+) {
+    let res = catch_unwind(&mut env, |_| {
+        // SAFETY: the Kotlin wrapper frees each handle once, after its last read.
+        drop(unsafe { take_tor_http_body(body) });
+        Ok(())
+    });
+    unwrap_exc_or(&mut env, res, ())
 }
 
 /// Fetches the current ZEC-USD exchange rate over Tor.
@@ -4777,6 +5120,67 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOr
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tor_http_body_within_the_limit_is_returned_whole() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let body = http_body_util::Full::new(super::Bytes::from_static(b"0123456789"));
+        let out = rt
+            .block_on(super::collect_body_limited(body, 10))
+            .unwrap()
+            .expect("exactly at the limit");
+        assert_eq!(&out[..], b"0123456789");
+    }
+
+    #[test]
+    fn tor_http_body_over_the_limit_is_refused() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let body = http_body_util::Full::new(super::Bytes::from_static(b"0123456789"));
+        let out = rt.block_on(super::collect_body_limited(body, 9)).unwrap();
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn tor_http_body_65kib_fails_with_64kib_limit() {
+        use futures_util::stream;
+        use http_body_util::StreamBody;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        // Create a 65 KiB body split into multiple 16 KiB frames to verify that
+        // collect_body_limited stops early (before consuming all frames) once the limit is exceeded.
+        let chunk_size = 16 * 1024;
+        let total_size = 65 * 1024;
+        // Frames come from `Full::frame()`: `http_body::Frame` is not a direct dependency.
+        let chunks: Vec<_> = rt.block_on(async {
+            let mut chunks = Vec::new();
+            for offset in (0..total_size).step_by(chunk_size) {
+                let end = (offset + chunk_size).min(total_size);
+                let frame = http_body_util::Full::new(super::Bytes::from(vec![0u8; end - offset]))
+                    .frame()
+                    .await
+                    .expect("one frame")
+                    .expect("infallible");
+                chunks.push(Ok::<_, std::convert::Infallible>(frame));
+            }
+            chunks
+        });
+
+        let body = StreamBody::new(stream::iter(chunks));
+        let out = rt
+            .block_on(super::collect_body_limited(body, 64 * 1024))
+            .unwrap();
+        assert!(
+            out.is_none(),
+            "A 65 KiB body should be refused with a 64 KiB limit"
+        );
+    }
+
     use zcash_client_backend::data_api::{
         Account as _, MaxSpendMode,
         testing::{AddressType, TestBuilder, TestState},

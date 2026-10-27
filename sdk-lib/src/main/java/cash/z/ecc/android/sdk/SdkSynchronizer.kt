@@ -103,6 +103,7 @@ import cash.z.ecc.android.sdk.type.ConsensusMatchType
 import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
+import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
@@ -822,8 +823,28 @@ class SdkSynchronizer private constructor(
         }
 
     @Suppress("TooGenericExceptionCaught")
+    override suspend fun ohttpSenderOverTor(): OhttpSender {
+        if (!sdkFlags.isTorEnabled) throw TorUnavailableException()
+        if (lazyTorClient == null) {
+            throw TorInitializationErrorException(
+                NullPointerException("Tor has not been initialized during synchronizer setup")
+            )
+        }
+        val isolated =
+            try {
+                lazyTorClient.getOrCreate().isolatedTorClient()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw TorInitializationErrorException(e)
+            }
+        return cash.z.ecc.android.sdk.internal
+            .TorOhttpSender(isolated)
+    }
+
+    @Suppress("TooGenericExceptionCaught")
     override suspend fun acquireVotingTorLease(): VotingTorLease =
-        if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
+        if (sdkFlags.isTorEnabled) {
             if (lazyTorClient == null) {
                 throw TorInitializationErrorException(
                     NullPointerException("Tor has not been initialized during synchronizer setup")

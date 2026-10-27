@@ -332,7 +332,58 @@ class FastestServerFetcherTest {
             }
         }
 
-    private fun fetcher(clients: Map<LightWalletEndpoint, FakeWalletClient>): FastestServerFetcher {
+    @Test
+    fun `getFastestServers skips block-fetch phase when Tor is enabled`() =
+        runBlocking {
+            val clients =
+                listOf("a.example", "b.example", "c.example").associate {
+                    endpoint(it) to FakeWalletClient()
+                }
+            val fetcher = fetcher(clients, isTorEnabled = true)
+
+            val results = fetcher(clients.keys.toList()).toList()
+
+            assertEquals(
+                0,
+                clients.values.sumOf { it.blockRangeRequests.size },
+                "No block range requests when Tor is on"
+            )
+            val done = results.last() as FastestServersResult.Done
+            assertEquals(3, done.servers.size)
+            clients.forEach { (endpoint, client) ->
+                assertTrue(client.disposed, "Client for $endpoint was not disposed")
+            }
+        }
+
+    @Test
+    fun `evaluateServerSwitch skips block-fetch phase when Tor is enabled`() =
+        runBlocking {
+            val current = endpoint("current.example")
+            val candidate = endpoint("candidate.example")
+            val clients = mapOf(current to FakeWalletClient(), candidate to FakeWalletClient())
+            val fetcher = fetcher(clients, isTorEnabled = true)
+
+            fetcher.evaluateServerSwitch(
+                current = current,
+                candidates = listOf(current, candidate),
+                fetchThreshold = 5.seconds,
+                blocksToFetch = 1
+            )
+
+            assertEquals(
+                0,
+                clients.values.sumOf { it.blockRangeRequests.size },
+                "No block range requests when Tor is on"
+            )
+            clients.forEach { (endpoint, client) ->
+                assertTrue(client.disposed, "Client for $endpoint was not disposed")
+            }
+        }
+
+    private fun fetcher(
+        clients: Map<LightWalletEndpoint, FakeWalletClient>,
+        isTorEnabled: Boolean = false
+    ): FastestServerFetcher {
         val backend = mock(TypesafeBackend::class.java)
         clients.values.map { it.tip }.distinct().forEach {
             `when`(backend.getBranchIdForHeight(BlockHeight.new(it))).thenReturn(BRANCH_ID)
@@ -349,7 +400,7 @@ class FastestServerFetcherTest {
             backend = backend,
             network = ZcashNetwork.Mainnet,
             walletClientFactory = walletClientFactory,
-            sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false),
+            sdkFlags = SdkFlags(isTorEnabled = isTorEnabled, isExchangeRateEnabled = false),
             switchEvaluator = ServerSwitchEvaluator()
         )
     }

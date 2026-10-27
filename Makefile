@@ -68,7 +68,8 @@ endif
 # renderer a headless runner needs.
 MANAGED_DEVICE_FLAGS := \
 	-Pandroid.experimental.testOptions.managedDevices.maxConcurrentDevices=1 \
-	-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect
+	-Pandroid.testoptions.manageddevices.emulator.gpu=swiftshader_indirect \
+	-Pandroid.testoptions.manageddevices.emulator.showKernelLogging=true
 
 # Android targets the Rust JNI backend is cross-compiled for.
 RUST_ANDROID_TARGETS := \
@@ -246,8 +247,8 @@ check-properties: ## Validate the Gradle properties
 # ---------------------------------------------------------------------------
 
 .PHONY: test-unit
-test-unit: ## Run JVM unit tests for every module
-	$(GRADLE) test
+test-unit: ## Run JVM unit tests for every module (no native build: they load no .so)
+	$(GRADLE) test -x :backend-lib:cargoBuild
 
 # Downloads a system image on first run. On an Apple Silicon Mac this needs
 # the `aosp` system image for the device's API level.

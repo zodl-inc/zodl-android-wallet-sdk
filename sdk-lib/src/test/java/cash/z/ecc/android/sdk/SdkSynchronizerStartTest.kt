@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk
 
 import android.content.Context
 import cash.z.ecc.android.sdk.block.processor.CompactBlockProcessor
+import cash.z.ecc.android.sdk.exception.TorUnavailableException
 import cash.z.ecc.android.sdk.internal.FastestServerFetcher
 import cash.z.ecc.android.sdk.internal.TypesafeBackend
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
@@ -77,6 +78,38 @@ class SdkSynchronizerStartTest {
 
             try {
                 assertTrue(received.any { it === startupError }, "the start-up error reached the handler")
+            } finally {
+                synchronizer.close()
+            }
+        }
+
+    @Test
+    fun ohttpSenderOverTorNeedsTorModeNotOnlyExchangeRates() =
+        runBlocking {
+            val synchronizer =
+                SdkSynchronizer.new(
+                    context = mock(Context::class.java),
+                    zcashNetwork = ZcashNetwork.Testnet,
+                    alias = "tor_sender_gate_test",
+                    repository = mock(DerivedDataRepository::class.java),
+                    txManager = mock(OutboundTransactionManager::class.java),
+                    processor = processorFailingSetupWith(IllegalStateException("startup")),
+                    backend = mock(TypesafeBackend::class.java),
+                    fastestServerFetcher = mock(FastestServerFetcher::class.java),
+                    fetchExchangeChangeUsd = null,
+                    preferenceProvider = mock(PreferenceProvider::class.java),
+                    lazyTorClient = null,
+                    walletClient = mock(CombinedWalletClient::class.java),
+                    walletClientFactory = mock(WalletClientFactory::class.java),
+                    defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, false),
+                    pendingSubmitPlanStore = PendingSubmitPlanStore(),
+                    sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = true),
+                    onCriticalErrorHandler = { false }
+                )
+
+            try {
+                val thrown = runCatching { synchronizer.ohttpSenderOverTor() }.exceptionOrNull()
+                assertTrue(thrown is TorUnavailableException, "Tor off, exchange rates on: $thrown")
             } finally {
                 synchronizer.close()
             }

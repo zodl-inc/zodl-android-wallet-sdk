@@ -18,6 +18,7 @@ import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
+import io.ktor.client.HttpClient
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -47,11 +48,14 @@ internal class SlipstreamBroadcaster(
     private val planStore: SubmitPlanStore,
     private val saplingParamsDir: File,
     private val transactionReader: SlipstreamTransactionReader,
+    /** Non-null when Tor is enabled; see [SaplingParams.ensureDownloaded]. */
+    private val saplingParamsTorHttpClientProvider: (suspend () -> HttpClient)? = null,
     /**
-     * Production: `{ SaplingParams.ensureDownloaded(saplingParamsDir) }`. Injected so tests never
-     * trigger a real download.
+     * Production: `{ SaplingParams.ensureDownloaded(saplingParamsDir, saplingParamsTorHttpClientProvider) }`.
+     * Injected so tests never trigger a real download.
      */
-    private val ensureSaplingParams: suspend () -> Unit = { SaplingParams.ensureDownloaded(saplingParamsDir) }
+    private val ensureSaplingParams: suspend () -> Unit =
+        { SaplingParams.ensureDownloaded(saplingParamsDir, saplingParamsTorHttpClientProvider) }
 ) : Broadcaster {
     /**
      * Fetches the Sapling parameters first only when [proposal] needs Sapling proofs (see
