@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-10-28
+
 ### Added
 - `DerivationTool.describeUnifiedFullViewingKey(ufvk, network)` returns the components of a
   `UnifiedFullViewingKey` as a new `UnifiedFullViewingKeyComponents`, or `null` when the key is not a
