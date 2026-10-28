@@ -29,7 +29,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MigrationWalletTipUnavailableException` while the wallet has no chain tip. A migration transaction is built for the consensus branch of the height it
   was planned at, and no block accepts one built for the branch before NU7 once NU7 is active.
 - `MigrationPausedUntilNetworkUpgradeException`, thrown by the scheduled-migration calls (propose, build,
-  sign, store, note split and restart) until NU7 activates, judged at the wallet's own chain tip (the end of its scan
+  sign, store and note split) until NU7 activates, judged at the wallet's own chain tip (the end of its scan
   queue, which can be ahead of what it has scanned). `MigrationWalletTipUnavailableException` is thrown instead while
   the wallet has no chain tip yet, so a wallet that has not synced is not told the network upgrade is pending. `MigrationAdvanceStep.PausedForNetworkUpgrade`,
   answered by `nextStep()` in place of a rebuild or re-plan before NU7. There is no cutoff window: valid
@@ -103,6 +103,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Rust toolchain is 1.99.1 (at least 1.97.0 is required by `zcash_voting`).
 - Slipstream's stop-to-start tip freshness window is 1.6 target blocks (120 s before NU7, 40 s from it).
 - The `zodl-slipstream` engine is the 0.4.1 release from crates.io (0.4.0 was published with exact `=` dependency pins).
+  `halo2_proofs` moves from 0.4.0 to 0.4.1 in the lockfile with it (`cargo update -p halo2_proofs`, at the Slipstream
+  maintainers' request, for the proving improvements in that release).
 - The migration block-rate estimate is NU7-aware. `OrchardMigrationSdk.estimatedSecondsPerBlock()` falls back to the
   height-aware target (75 s before NU7, 25 s from NU7), and a measuring window that spans the NU7 activation
   height is not measured, because its average fits neither era. `OrchardMigrationSdk.nu7ActivationHeight` exposes
