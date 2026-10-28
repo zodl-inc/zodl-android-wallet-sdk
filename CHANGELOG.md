@@ -6,6 +6,89 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-10-28
+
+### Added
+- `OrchardMigrationSdk.migrationAvailability()` says what a migration may start at the wallet's next height,
+  as a `MigrationAvailability`, without a network request: `Available`, `PausedUntilNetworkUpgrade` (the
+  scheduled lane waits for NU7, the immediate lane stays open at every height). It throws
+  `MigrationWalletTipUnavailableException` while the wallet has no chain tip. A migration transaction is built for the consensus branch of the height it
+  was planned at, and no block accepts one built for the branch before NU7 once NU7 is active.
+- `MigrationPausedUntilNetworkUpgradeException`, thrown by the scheduled-migration calls (propose, build,
+  sign, store and note split) until NU7 activates, judged at the wallet's own chain tip (the end of its scan
+  queue, which can be ahead of what it has scanned). `MigrationWalletTipUnavailableException` is thrown instead while
+  the wallet has no chain tip yet, so a wallet that has not synced is not told the network upgrade is pending. `MigrationAdvanceStep.PausedForNetworkUpgrade`,
+  answered by `nextStep()` in place of a rebuild or re-plan before NU7. There is no cutoff window: valid
+  transfers that were signed before the activation keep being proved and broadcast until it.
+- `MigrationAdvanceStep.InterruptedByNetworkUpgrade`, answered by `nextStep()` once NU7 is active when the run
+  still holds a transaction built for the consensus branch before it, which no block accepts. A transaction
+  that may already have been sent makes `nextStep()` answer `Reevaluate` until the wallet has scanned up to
+  the activation. `OrchardMigrationSdk.cancelMigrationRun()` ends such a run and releases its note
+  reservations, so a new migration can be planned over the full balance.
+- `OrchardMigrationSdk.setMigrationNetworkUpgradeGateBypass(enabled)`, for internal testing only: it lifts
+  the pause on new scheduled work so a scheduled run can be tried before NU7. Off by default.
+- `ConsensusBranchId` now covers NU5, NU6, NU6.1, NU6.2, NU6.3 and NU7, so `fromId`, `fromHex` and `fromName`
+  no longer return null for branches after Canopy.
+- `BlockSpacing` gives the height-aware target spacing between blocks (150 s before Blossom, 75 s until NU7,
+  25 s from NU7, ZIP 208 and ZIP 218): `targetSeconds(network, height)` and
+  `targetSecondsBetween(network, from, to)`, mirroring `zcash_protocol`. Use it for any conversion between a block
+  count and a duration, because one range can span the NU7 activation height.
+
+### Changed
+- `OrchardMigrationSdk.restartCurrentMigrationStep()` returns a `MigrationRestartOutcome` instead of a
+  `MigrationSchedule`: `Replanned(schedule)` is what it returned before. While the wallet's next block is before
+  the NU7 activation it cancels the run, plans nothing (a scheduled run planned now would be built for the
+  branch the upgrade ends) and answers `CancelledUntilNetworkUpgrade(activationHeight)` instead of throwing
+  `MigrationPausedUntilNetworkUpgradeException`. It still throws `MigrationWalletTipUnavailableException`
+  while the wallet has no chain tip, and then cancels nothing.
+- Every transaction submission (a send, `Broadcaster`, a background resubmit, the Slipstream sends and resubmits,
+  a scheduled migration transfer) now reads the latest height
+  of the server the transaction is about to go to, on the same connection, and does not submit a
+  transaction built for another consensus branch than the next block's (local code `-9101`), judged at the
+  higher of that server's height and the wallet's own chain tip, or one that
+  has expired by then (`-9102`). When the height cannot be read nothing is submitted and the submission
+  fails as a network failure. NU7 changes the consensus branch, so a transaction signed just before the
+  activation and submitted just after it can no longer be mined. Each submission makes one extra request.
+  A transaction that is refused locally but is already in a block of the server's main chain (mined, not
+  scanned yet) is reported as `Success`, as before this change. One the server only holds in its mempool or
+  in an orphaned block stays a failure.
+- `TransactionSubmitResult.Failure` has public `isWrongConsensusBranch` and `isExpired`, and the constants
+  `CODE_WRONG_CONSENSUS_BRANCH` (`-9101`) and `CODE_EXPIRED` (`-9102`), so a caller can tell a local refusal
+  from a generic send failure.
+- `OrchardMigrationSdk.setMigrationNetworkUpgradeGateBypass` is marked `@InternalTestingApi`, an opt-in
+  (`@RequiresOptIn`, error level). This is source-breaking for callers of the bypass: they must opt in.
+- The Rust backend moves to the NU7 release crates (`zcash_client_backend` 0.25.0, `zcash_client_sqlite` 0.23.0,
+  `zcash_protocol` 0.11.0, `zcash_pool_migration` 0.2.0 and the rest of the family) and `zcash_voting` 5.2.0-rc.2.
+  Transactions now expire after 120 blocks from NU7, and the ZIP 318 migration schedule is drawn in 75-second
+  reference blocks, so it keeps its length in time across NU7.
+- The Rust toolchain is 1.99.1 (at least 1.97.0 is required by `zcash_voting`).
+- Slipstream's stop-to-start tip freshness window is 1.6 target blocks (120 s before NU7, 40 s from it).
+- The `zodl-slipstream` engine is the 0.4.1 release from crates.io (0.4.0 was published with exact `=` dependency pins).
+  `halo2_proofs` moves from 0.4.0 to 0.4.1 in the lockfile with it (`cargo update -p halo2_proofs`, as the
+  Slipstream maintainers asked when 0.4.1 was published). Nothing else in the lockfile changes.
+- The migration block-rate estimate is NU7-aware. `OrchardMigrationSdk.estimatedSecondsPerBlock()` falls back to the
+  height-aware target (75 s before NU7, 25 s from NU7), and a measuring window that spans the NU7 activation
+  height is not measured, because its average fits neither era. `OrchardMigrationSdk.nu7ActivationHeight` exposes
+  the activation height so a height range spanning it can be split by the caller.
+- On the Slipstream path, the estimated time of an expired transaction that has no block time uses `BlockSpacing`
+  instead of a fixed 75 s per block.
+- The migration chain-tip estimate converts elapsed time past the NU7 activation height at 25 s per block, and a
+  failed rate read falls back to the target spacing of the last scanned height.
+- A server counts as behind when its served tip lags its own estimate by six hours of target time (it was 288
+  blocks, which is six hours only before NU7).
+- The birthday estimate from a date scales the average checkpoint interval for checkpoints from NU7 on.
+- `OrchardMigrationSdk.executeNextPendingTransfer` no longer submits a pre-signed migration transaction whose
+  consensus branch ID does not match the next block (NU7 changes it), or one that has expired by then. It is judged
+  at the higher of the wallet's own chain tip and the server's latest height, read on the connection the
+  transaction would go out on; when that height cannot be read nothing is sent. A refused transfer is not failed:
+  the engine is told the height it was refused at, `nextStep()` answers `Reevaluate` until the wallet has scanned
+  up to it, and then the run is interrupted or rebuilt as usual.
+
+### Deprecated
+- `ZcashSdk.EXPIRY_OFFSET`: the Rust backend chooses the expiry delta from the consensus branch (20, 40 or, from
+  NU7, 120 blocks).
+- `ZcashSdk.BLOCK_INTERVAL_MILLIS`: it is only right between Blossom and NU7. Use `BlockSpacing`.
+
 ## [5.3.0] - 2026-10-23
 
 ### Added

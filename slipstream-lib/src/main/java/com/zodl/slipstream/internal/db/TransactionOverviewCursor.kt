@@ -2,11 +2,13 @@ package com.zodl.slipstream.internal.db
 
 import cash.z.ecc.android.sdk.internal.model.ConfirmationsPolicy
 import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.BlockSpacing
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionState
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.model.Zip318Kind
 import com.zodl.slipstream.model.SlipstreamTransactionRow
 import kotlin.math.absoluteValue
@@ -19,7 +21,10 @@ import kotlin.math.absoluteValue
  * the internal `DbTransactionOverview` type), built instead over the public 17-field constructor.
  */
 internal object TransactionOverviewCursor {
-    /** Zcash's protocol-target block interval; used only as a fallback timestamp estimator below. */
+    /**
+     * The 75 s pre-NU7 protocol-target block interval; used only as a fallback timestamp estimator below,
+     * when no network is given. With a network the height-aware [BlockSpacing] is used instead.
+     */
     private const val SECONDS_PER_BLOCK = 75L
     private const val MILLIS_PER_SECOND = 1000L
 
@@ -37,11 +42,14 @@ internal object TransactionOverviewCursor {
      * @param latestHeight the engine snapshot's `chainTip` at query time (the adapter's twin of
      *   the upstream SDK folding `processor.networkHeight` into the flow,
      *   `SdkSynchronizer.kt:360-374`); 0 or unknown -> pass `null`.
+     * @param network when given, the time estimate for an expired transaction without a block time uses the
+     *   height-aware target spacing (25 s from NU7); without it the pre-NU7 75 s is assumed.
      */
     fun fromRow(
         row: SlipstreamTransactionRow,
         latestHeight: BlockHeight?,
-        nowEpochSeconds: Long = System.currentTimeMillis() / MILLIS_PER_SECOND
+        nowEpochSeconds: Long = System.currentTimeMillis() / MILLIS_PER_SECOND,
+        network: ZcashNetwork? = null
     ): TransactionOverview {
         val minedBlockHeight = row.minedHeight?.let(BlockHeight::new)
         val expiryBlockHeight = row.expiryHeight?.takeIf { it != 0L }?.let(BlockHeight::new)
@@ -73,8 +81,13 @@ internal object TransactionOverviewCursor {
                 if (transactionState != TransactionState.Expired || expiryBlockHeight == null || latestHeight == null) {
                     null
                 } else {
-                    val blocksSinceExpiry = latestHeight.value - expiryBlockHeight.value
-                    (nowEpochSeconds - blocksSinceExpiry * SECONDS_PER_BLOCK).takeIf { it > 0 }
+                    val secondsSinceExpiry =
+                        if (network != null) {
+                            BlockSpacing.targetSecondsBetween(network, expiryBlockHeight, latestHeight)
+                        } else {
+                            (latestHeight.value - expiryBlockHeight.value) * SECONDS_PER_BLOCK
+                        }
+                    (nowEpochSeconds - secondsSinceExpiry).takeIf { it > 0 }
                 }
             }
 

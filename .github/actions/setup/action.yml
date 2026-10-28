@@ -5,7 +5,7 @@ inputs:
   rust-version:
     description: "Rust toolchain version to install."
     required: false
-    default: "1.92.0"
+    default: "1.99.1"
   rust-cache:
     description: "Whether to restore and save the Rust build cache for jobs that compile Rust."
     required: false
@@ -52,7 +52,7 @@ runs:
       # Use the channel pinned in rust-toolchain.toml (the single source of truth) rather than a
       # hardcoded version. rustup honors the toolchain file in-repo regardless, so a hardcoded
       # version here installs components onto a toolchain the build never runs: that is why
-      # `cargo clippy` failed with "'cargo-clippy' is not installed for the toolchain 1.92.0"
+      # `cargo clippy` failed with "'cargo-clippy' is not installed for the toolchain 1.99.1"
       # while clippy had been installed for 1.84.1.
       run: |
         # `sed` rather than `grep -oP`: -P is a GNU extension, and this composite action

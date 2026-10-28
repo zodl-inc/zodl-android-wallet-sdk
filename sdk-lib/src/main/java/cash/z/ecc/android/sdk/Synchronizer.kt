@@ -30,6 +30,7 @@ import cash.z.ecc.android.sdk.internal.storage.preference.StandardPreferenceProv
 import cash.z.ecc.android.sdk.internal.transaction.EndpointTransactionSubmitter
 import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
 import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
+import cash.z.ecc.android.sdk.internal.transaction.walletTipForSubmission
 import cash.z.ecc.android.sdk.ledger.LedgerAccountBinding
 import cash.z.ecc.android.sdk.ledger.LedgerApduTransport
 import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
@@ -1550,12 +1551,20 @@ interface Synchronizer {
                         walletClient = walletClientDeferred.await()
 
                         val downloader = downloaderDeferred.await()
-                        val txManager = DefaultSynchronizerFactory.defaultTxManager(encoder, walletClient, sdkFlags)
+                        val txManager =
+                            DefaultSynchronizerFactory.defaultTxManager(
+                                encoder,
+                                walletClient,
+                                sdkFlags,
+                                zcashNetwork
+                            ) { walletTipForSubmission(backend) }
                         val (preferenceProvider, pendingSubmitPlanStore) = prefsDeferred.await()
                         val transactionSubmitter =
                             EndpointTransactionSubmitter(
                                 walletClientFactory = walletClientFactory,
-                                sdkFlags = sdkFlags
+                                sdkFlags = sdkFlags,
+                                network = zcashNetwork,
+                                walletTip = { walletTipForSubmission(backend) }
                             )
                         val submitPlanExecutor = SubmitPlanExecutor(transactionSubmitter)
                         val processor =
