@@ -103,8 +103,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Rust toolchain is 1.99.1 (at least 1.97.0 is required by `zcash_voting`).
 - Slipstream's stop-to-start tip freshness window is 1.6 target blocks (120 s before NU7, 40 s from it).
 - The `zodl-slipstream` engine is the 0.4.1 release from crates.io (0.4.0 was published with exact `=` dependency pins).
-  `halo2_proofs` moves from 0.4.0 to 0.4.1 in the lockfile with it (`cargo update -p halo2_proofs`, at the Slipstream
-  maintainers' request, for the proving improvements in that release).
+  `halo2_proofs` moves from 0.4.0 to 0.4.1 in the lockfile with it (`cargo update -p halo2_proofs`, as the
+  Slipstream maintainers asked when 0.4.1 was published). Nothing else in the lockfile changes.
 - The migration block-rate estimate is NU7-aware. `OrchardMigrationSdk.estimatedSecondsPerBlock()` falls back to the
   height-aware target (75 s before NU7, 25 s from NU7), and a measuring window that spans the NU7 activation
   height is not measured, because its average fits neither era. `OrchardMigrationSdk.nu7ActivationHeight` exposes
