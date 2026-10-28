@@ -13,8 +13,10 @@ import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.ServiceMode
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
+import co.electriccoin.lightwallet.client.model.RawTransactionUnsafe
 import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
+import kotlin.coroutines.cancellation.CancellationException
 
 /** Local result codes for a transaction the SDK refuses to submit. Nothing is sent. */
 internal const val SUBMIT_REFUSED_WRONG_BRANCH = TransactionSubmitResult.Failure.CODE_WRONG_CONSENSUS_BRANCH
@@ -48,9 +50,11 @@ internal suspend fun CombinedWalletClient.submitTransaction(
 
         // A transaction that was mined but not scanned yet looks expired from here, and the server already has it.
         // As everywhere else, the network is trusted over the local view: that send landed, so it is not a failure.
-        isTransactionKnownToServer(txId, sdkFlags) -> {
+        // Only a block of the main chain counts. A transaction the server holds in its mempool or in an orphaned
+        // block was refused for a reason (wrong branch, expired) that keeps it from ever being mined.
+        refusal.isLocalRefusal() && isTransactionMined(txId, sdkFlags) -> {
             Twig.info {
-                "SUCCESS (verified known to server): refused locally but already submitted: " +
+                "SUCCESS (verified mined): refused locally but already submitted: " +
                     txId.byteArray.toHexReversed()
             }
             TransactionSubmitResult.Success(txId)
@@ -149,7 +153,7 @@ private suspend fun CombinedWalletClient.submitUnchecked(
     // the broadcast already landed (Zebra's MempoolError::InMempool / AlreadyQueued, zcashd's
     // already-in-chain, or any future variant). Skip the misleading failure UI.
     if (initialResult is TransactionSubmitResult.Failure && !initialResult.grpcError) {
-        if (isTransactionKnownToServer(txId, sdkFlags)) {
+        if (fetchKnownTransaction(txId, sdkFlags) != null) {
             Twig.info {
                 "SUCCESS (verified known to server): submit transaction for: ${txId.byteArray.toHexReversed()}"
             }
@@ -160,11 +164,16 @@ private suspend fun CombinedWalletClient.submitUnchecked(
     return initialResult
 }
 
-@Suppress("TooGenericExceptionCaught")
-private suspend fun CombinedWalletClient.isTransactionKnownToServer(
+private suspend fun CombinedWalletClient.isTransactionMined(
     txId: FirstClassByteArray,
     sdkFlags: SdkFlags
-): Boolean =
+): Boolean = fetchKnownTransaction(txId, sdkFlags) is RawTransactionUnsafe.MainChain
+
+@Suppress("TooGenericExceptionCaught")
+private suspend fun CombinedWalletClient.fetchKnownTransaction(
+    txId: FirstClassByteArray,
+    sdkFlags: SdkFlags
+): RawTransactionUnsafe? =
     try {
         val response =
             fetchTransaction(
@@ -174,14 +183,16 @@ private suspend fun CombinedWalletClient.isTransactionKnownToServer(
                         ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
             )
         when (response) {
-            is Response.Success -> true
-            else -> false
+            is Response.Success -> response.result
+            else -> null
         }
+    } catch (e: CancellationException) {
+        throw e
     } catch (t: Throwable) {
         Twig.warn(t) {
             "Failed to verify whether server knows tx ${txId.byteArray.toHexReversed()}; treating as unknown"
         }
-        false
+        null
     }
 
 internal fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArray): TransactionSubmitResult =

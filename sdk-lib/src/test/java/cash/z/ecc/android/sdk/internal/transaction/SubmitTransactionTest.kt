@@ -77,13 +77,22 @@ class SubmitTransactionTest {
         height: Long,
         serverKnowsTx: Boolean
     ): CombinedWalletClient =
+        clientAtHeight(
+            height,
+            if (serverKnowsTx) RawTransactionUnsafe.MainChain(ByteArray(0), BlockHeightUnsafe(height - 1)) else null
+        )
+
+    private fun clientAtHeight(
+        height: Long,
+        serverTx: RawTransactionUnsafe?
+    ): CombinedWalletClient =
         mock(CombinedWalletClient::class.java).also { client ->
             runBlocking {
                 `when`(client.getLatestBlockHeight(ServiceMode.Direct))
                     .thenReturn(Response.Success(BlockHeightUnsafe(height)))
                 `when`(client.fetchTransaction(txId.byteArray, ServiceMode.Direct)).thenReturn(
-                    if (serverKnowsTx) {
-                        Response.Success(RawTransactionUnsafe.MainChain(ByteArray(0), BlockHeightUnsafe(height - 1)))
+                    if (serverTx != null) {
+                        Response.Success(serverTx)
                     } else {
                         Response.Failure.Server.NotFound(RuntimeException("not found"), 5, "not found")
                     }
@@ -113,6 +122,46 @@ class SubmitTransactionTest {
 
             require(result is TransactionSubmitResult.Failure)
             assertEquals(SUBMIT_REFUSED_EXPIRED, result.code)
+            verify(client, never()).submitTransaction(tx.byteArray, ServiceMode.Direct)
+        }
+
+    @Test
+    fun `an expired transaction only in the mempool is refused and not reported as sent`() =
+        runBlocking<Unit> {
+            val tx = rawTx(ConsensusBranchId.NU6_3.id, expiry = 1_000L)
+            val client = clientAtHeight(height = 2_000L, serverTx = RawTransactionUnsafe.Mempool(ByteArray(0)))
+
+            val result = client.submitTransaction(tx, txId, noTor, ZcashNetwork.Mainnet) { null }
+
+            require(result is TransactionSubmitResult.Failure)
+            assertEquals(SUBMIT_REFUSED_EXPIRED, result.code)
+        }
+
+    @Test
+    fun `an expired transaction only in an orphaned block is refused and not reported as sent`() =
+        runBlocking<Unit> {
+            val tx = rawTx(ConsensusBranchId.NU6_3.id, expiry = 1_000L)
+            val client = clientAtHeight(height = 2_000L, serverTx = RawTransactionUnsafe.OrphanedBlock(ByteArray(0)))
+
+            val result = client.submitTransaction(tx, txId, noTor, ZcashNetwork.Mainnet) { null }
+
+            require(result is TransactionSubmitResult.Failure)
+            assertEquals(SUBMIT_REFUSED_EXPIRED, result.code)
+        }
+
+    @Test
+    fun `an unreadable server height is a failure without asking the server about the transaction`() =
+        runBlocking<Unit> {
+            val tx = rawTx(ConsensusBranchId.NU6_3.id, expiry = 1_000L)
+            val client = mock(CombinedWalletClient::class.java)
+            `when`(client.getLatestBlockHeight(ServiceMode.Direct))
+                .thenReturn(Response.Failure.Connection<BlockHeightUnsafe>(cause = RuntimeException("offline")))
+
+            val result = client.submitTransaction(tx, txId, noTor, ZcashNetwork.Mainnet) { null }
+
+            require(result is TransactionSubmitResult.Failure)
+            assertTrue(result.grpcError)
+            verify(client, never()).fetchTransaction(txId.byteArray, ServiceMode.Direct)
             verify(client, never()).submitTransaction(tx.byteArray, ServiceMode.Direct)
         }
 }

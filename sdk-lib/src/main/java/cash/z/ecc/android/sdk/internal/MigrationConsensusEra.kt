@@ -34,7 +34,7 @@ internal fun rawTransactionBranchId(rawTx: ByteArray): Long? {
 
 /**
  * The expiry height of a serialized v5+ transaction (zero means it does not expire), or null when
- * [rawTx] is too short or is not an Overwinter-or-later transaction. It follows the branch ID and
+ * [rawTx] is too short or is not a v5 or later transaction. It follows the branch ID and
  * the lock time in the fixed prefix (ZIP 225).
  */
 internal fun rawTransactionExpiryHeight(rawTx: ByteArray): Long? {

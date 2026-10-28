@@ -1065,6 +1065,9 @@ interface OrchardMigrationSdk {
      * [includeResidual] — should match whatever choice the user made for
      * [proposeMigrationTransfers] on the schedule being recovered (**pass `false`** until the
      * opt-in UI for that exists — see [proposeMigrationTransfers]'s doc).
+     *
+     * @throws MigrationWalletTipUnavailableException while the wallet has no chain tip yet, so it cannot tell
+     * whether NU7 is active. Nothing is cancelled then.
      */
     suspend fun restartCurrentMigrationStep(includeResidual: Boolean = false): MigrationRestartOutcome
 

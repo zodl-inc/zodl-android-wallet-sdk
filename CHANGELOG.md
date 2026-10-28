@@ -25,7 +25,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contains the cause's message; the failure is chained as `cause`.
 - `OrchardMigrationSdk.migrationAvailability()` says what a migration may start at the wallet's next height,
   as a `MigrationAvailability`, without a network request: `Available`, `PausedUntilNetworkUpgrade` (the
-  scheduled lane waits for NU7, the immediate lane stays open at every height). A migration transaction is built for the consensus branch of the height it
+  scheduled lane waits for NU7, the immediate lane stays open at every height). It throws
+  `MigrationWalletTipUnavailableException` while the wallet has no chain tip. A migration transaction is built for the consensus branch of the height it
   was planned at, and no block accepts one built for the branch before NU7 once NU7 is active.
 - `MigrationPausedUntilNetworkUpgradeException`, thrown by the scheduled-migration calls (propose, build,
   sign, store, note split and restart) until NU7 activates, judged at the wallet's own chain tip (the end of its scan
@@ -51,7 +52,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `OrchardMigrationSdk.restartCurrentMigrationStep()` returns a `MigrationRestartOutcome` instead of a
   `MigrationSchedule`: `Replanned(schedule)` is what it returned before. While the wallet's next block is before
   the NU7 activation it cancels the run, plans nothing (a scheduled run planned now would be built for the
-  branch the upgrade ends) and answers `CancelledUntilNetworkUpgrade(activationHeight)` instead of throwing.
+  branch the upgrade ends) and answers `CancelledUntilNetworkUpgrade(activationHeight)` instead of throwing
+  `MigrationPausedUntilNetworkUpgradeException`. It still throws `MigrationWalletTipUnavailableException`
+  while the wallet has no chain tip, and then cancels nothing.
 - Every transaction submission (a send, `Broadcaster`, a background resubmit, the Slipstream sends and resubmits,
   a scheduled migration transfer) now reads the latest height
   of the server the transaction is about to go to, on the same connection, and does not submit a
@@ -60,6 +63,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has expired by then (`-9102`). When the height cannot be read nothing is submitted and the submission
   fails as a network failure. NU7 changes the consensus branch, so a transaction signed just before the
   activation and submitted just after it can no longer be mined. Each submission makes one extra request.
+  A transaction that is refused locally but is already in a block of the server's main chain (mined, not
+  scanned yet) is reported as `Success`, as before this change. One the server only holds in its mempool or
+  in an orphaned block stays a failure.
+- `TransactionSubmitResult.Failure` has public `isWrongConsensusBranch` and `isExpired`, and the constants
+  `CODE_WRONG_CONSENSUS_BRANCH` (`-9101`) and `CODE_EXPIRED` (`-9102`), so a caller can tell a local refusal
+  from a generic send failure.
+- `OrchardMigrationSdk.setMigrationNetworkUpgradeGateBypass` is marked `@InternalTestingApi`, an opt-in
+  (`@RequiresOptIn`, error level). This is source-breaking for callers of the bypass: they must opt in.
 - `Synchronizer` declares `findAccountSharingKeyComponents(ufvk)`: any implementer or test fake must
   now provide it.
 - `Synchronizer` declares `renameAccount(accountUuid, name)`: any implementer or test fake must now
