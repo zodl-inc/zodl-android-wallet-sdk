@@ -8,6 +8,7 @@ import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.NonCancellable
@@ -110,7 +111,9 @@ internal interface TransactionSubmitter {
 
 internal class EndpointTransactionSubmitter(
     private val walletClientFactory: WalletClientFactory,
-    private val sdkFlags: SdkFlags
+    private val sdkFlags: SdkFlags,
+    private val network: ZcashNetwork,
+    private val walletTip: suspend () -> Long?
 ) : TransactionSubmitter {
     override suspend fun submit(
         transaction: CreatedTransaction,
@@ -118,7 +121,7 @@ internal class EndpointTransactionSubmitter(
     ): TransactionSubmitResult {
         val walletClient = walletClientFactory.create(endpoint)
         try {
-            return walletClient.submitTransaction(transaction.raw, transaction.txId, sdkFlags)
+            return walletClient.submitTransaction(transaction.raw, transaction.txId, sdkFlags, network, walletTip)
         } finally {
             withContext(NonCancellable) {
                 walletClient.dispose()

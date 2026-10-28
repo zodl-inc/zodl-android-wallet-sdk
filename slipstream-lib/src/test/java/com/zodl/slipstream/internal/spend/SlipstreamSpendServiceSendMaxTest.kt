@@ -13,6 +13,7 @@ import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import com.zodl.slipstream.internal.SlipstreamEngine
 import kotlinx.coroutines.CancellationException
@@ -209,6 +210,8 @@ class SlipstreamSpendServiceSendMaxTest {
             walletClient = mock(CombinedWalletClient::class.java),
             engine = engine,
             sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false),
+            network = ZcashNetwork.Mainnet,
+            walletTip = { null },
             ensureSaplingParams = ensureSaplingParams,
             readRawTransaction = { FirstClassByteArray(byteArrayOf()) }
         )

@@ -361,6 +361,14 @@ class RustBackend private constructor(
             }
         }
 
+    override suspend fun getChainTipHeight(): Long? =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            getChainTipHeight(
+                dataDbFile.absolutePath,
+                networkId = networkId
+            ).takeIf { it != -1L }
+        }
+
     override suspend fun getMaxScannedHeight() =
         withContext(SdkDispatchers.DATABASE_IO) {
             val height =
@@ -937,6 +945,12 @@ class RustBackend private constructor(
 
         @JvmStatic
         private external fun getFullyScannedHeight(
+            dbDataPath: String,
+            networkId: Int
+        ): Long
+
+        @JvmStatic
+        private external fun getChainTipHeight(
             dbDataPath: String,
             networkId: Int
         ): Long

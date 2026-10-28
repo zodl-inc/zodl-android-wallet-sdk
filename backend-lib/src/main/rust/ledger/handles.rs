@@ -39,7 +39,7 @@ impl<T> Registry<T> {
     pub(crate) fn insert(&self, value: T) -> Result<jlong, LedgerError> {
         let handle = self
             .next
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| LedgerError::internal("the Ledger handle space is exhausted"))?;
         self.entries()
             .lock()

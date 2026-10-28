@@ -29,9 +29,11 @@ object ZcashSdk {
     const val MAX_MEMO_SIZE = 512
 
     /**
-     * The amount of blocks ahead of the current height where new transactions are set to expire. This value is
-     * controlled by the rust backend but it is helpful to know what it is set to and should be kept in sync.
+     * The amount of blocks ahead of the current height where new transactions were set to expire. The Rust backend now
+     * chooses the delta from the consensus branch (20, 40 or, from NU7, 120 blocks), so this value is wrong for any
+     * current network upgrade.
      */
+    @Deprecated("The expiry delta depends on the consensus branch and is chosen by the Rust backend.")
     const val EXPIRY_OFFSET = 20
 
     /**
@@ -47,8 +49,9 @@ object ZcashSdk {
     const val POLL_INTERVAL = 20_000L
 
     /**
-     * Estimate of the time between blocks.
+     * Estimate of the time between blocks. It is only right between Blossom and NU7.
      */
+    @Deprecated("NU7 changes the block spacing. Use BlockSpacing, which is height-aware.")
     const val BLOCK_INTERVAL_MILLIS = 75_000L
 
     /**
