@@ -58,6 +58,16 @@ read_lock_entry() {
     ' "${LOCK}"
 }
 
+# Releases that upstream published to crates.io without pushing the `<crate>-<version>` tag. The ref
+# is the commit the release was packaged from, which cargo records in the release's
+# `.cargo_vcs_info.json`. Drop an entry once upstream tags the release.
+untagged_release_ref() {
+    case "$1" in
+        0.25.0) echo "c8b579f0b75a90722162f42af790ae692a57a1ff" ;;
+        *) return 1 ;;
+    esac
+}
+
 # The git ref carrying the proto for the pinned dependency. A crates.io release
 # is tagged `<crate>-<version>`; a git dependency pins an exact revision, which
 # Cargo.lock records as the fragment of the source URL. Resolving the ref from
@@ -77,7 +87,7 @@ upstream_ref() {
 
     case "${source}" in
         registry+*)
-            echo "${CRATE}-${version}"
+            untagged_release_ref "${version}" || echo "${CRATE}-${version}"
             ;;
         git+*)
             if [ "${source}" = "${source#*#}" ]; then

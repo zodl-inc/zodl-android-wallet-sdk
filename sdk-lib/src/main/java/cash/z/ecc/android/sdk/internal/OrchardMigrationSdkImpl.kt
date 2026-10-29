@@ -12,15 +12,19 @@ package cash.z.ecc.android.sdk.internal
 import android.content.Context
 import android.os.SystemClock
 import cash.z.ecc.android.sdk.AttentionReason
+import cash.z.ecc.android.sdk.InternalTestingApi
 import cash.z.ecc.android.sdk.KeystoneBatchDecodeResult
 import cash.z.ecc.android.sdk.KeystoneBatchSignedPczts
 import cash.z.ecc.android.sdk.KeystoneSigningRoundBudget
 import cash.z.ecc.android.sdk.MigrationAdvanceResult
 import cash.z.ecc.android.sdk.MigrationAdvanceStep
+import cash.z.ecc.android.sdk.MigrationAvailability
 import cash.z.ecc.android.sdk.MigrationBlocker
 import cash.z.ecc.android.sdk.MigrationNextAction
+import cash.z.ecc.android.sdk.MigrationPausedUntilNetworkUpgradeException
 import cash.z.ecc.android.sdk.MigrationPeek
 import cash.z.ecc.android.sdk.MigrationProgress
+import cash.z.ecc.android.sdk.MigrationRestartOutcome
 import cash.z.ecc.android.sdk.MigrationSchedule
 import cash.z.ecc.android.sdk.MigrationState
 import cash.z.ecc.android.sdk.MigrationStepKind
@@ -28,6 +32,7 @@ import cash.z.ecc.android.sdk.MigrationSummary
 import cash.z.ecc.android.sdk.MigrationSyncWakeup
 import cash.z.ecc.android.sdk.MigrationTransferState
 import cash.z.ecc.android.sdk.MigrationTransferStates
+import cash.z.ecc.android.sdk.MigrationWalletTipUnavailableException
 import cash.z.ecc.android.sdk.NetworkPrivacyOptions
 import cash.z.ecc.android.sdk.NoteSplitProposal
 import cash.z.ecc.android.sdk.OrchardMigrationSdk
@@ -57,8 +62,11 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
 import cash.z.ecc.android.sdk.internal.storage.preference.PreferenceHolder
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferenceKeys
+import cash.z.ecc.android.sdk.internal.transaction.isLocalRefusal
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.BlockSpacing
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
@@ -90,6 +98,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
@@ -164,6 +173,51 @@ internal class OrchardMigrationSdkImpl(
                 null
             }
         }
+
+    /**
+     * The gate phase at the wallet's next height, judged at the wallet's own chain tip: the engine plans and builds
+     * there, never at a projection from the clock. The tip is read without a network request.
+     *
+     * A wallet whose tip is unknown (nothing synced yet, or the read failed) never gets a phase that says the upgrade is
+     * pending: the gate is closed all the same, but that would be the wrong reason to give once the upgrade has
+     * happened. It throws [MigrationWalletTipUnavailableException] instead. A gate that is open (no NU7 height on the
+     * network, or the bypass) needs no tip.
+     */
+    private suspend fun currentGatePhase(): MigrationGatePhase {
+        val tip = chainTipEstimator.walletTip()
+        val phase = migrationGatePhase(network, BlockHeight.new(tip.coerceAtLeast(0L) + 1), gateBypass.get())
+        if (phase is MigrationGatePhase.PausedUntil && tip <= 0L) throw MigrationWalletTipUnavailableException()
+        return phase
+    }
+
+    /** Throws [MigrationPausedUntilNetworkUpgradeException] unless the scheduled lane is open. */
+    private suspend fun requireScheduledLaneOpen() {
+        when (val phase = currentGatePhase()) {
+            MigrationGatePhase.Open -> Unit
+            is MigrationGatePhase.PausedUntil -> throw MigrationPausedUntilNetworkUpgradeException(phase.activation.value)
+        }
+    }
+
+    private suspend fun <T> gatedLogged(operation: String, block: suspend () -> T): T {
+        requireScheduledLaneOpen()
+        return logged(operation, block)
+    }
+
+    private suspend fun <T> gatedLoggedRead(operation: String, block: suspend () -> T): T {
+        requireScheduledLaneOpen()
+        return loggedRead(operation, block)
+    }
+
+    override suspend fun migrationAvailability(): MigrationAvailability =
+        when (val phase = currentGatePhase()) {
+            MigrationGatePhase.Open -> MigrationAvailability.Available
+            is MigrationGatePhase.PausedUntil -> MigrationAvailability.PausedUntilNetworkUpgrade(phase.activation.value)
+        }
+
+    @InternalTestingApi
+    override fun setMigrationNetworkUpgradeGateBypass(enabled: Boolean) {
+        gateBypass.set(enabled)
+    }
 
     private suspend fun dbDataPath(): String =
         withContext(Dispatchers.IO) {
@@ -377,7 +431,7 @@ internal class OrchardMigrationSdkImpl(
      */
     override suspend fun submitNoteSplit(proposal: NoteSplitProposal, usk: UnifiedSpendingKey): TransferResult {
         val prepared =
-            logged("submitNoteSplit.prepare") {
+            gatedLogged("submitNoteSplit.prepare") {
                 val dbDataPath = dbDataPath()
                 val account = account ?: noAccountAvailable()
                 val uskBytes = usk.copyBytes()
@@ -410,7 +464,7 @@ internal class OrchardMigrationSdkImpl(
     // ── External signer (Keystone hardware wallet) ──────────────────────────
 
     override suspend fun createUnsignedNoteSplitPczt(proposal: NoteSplitProposal): Pczt =
-        logged("createUnsignedNoteSplitPczt") {
+        gatedLogged("createUnsignedNoteSplitPczt") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             Pczt(migrationBackend.createUnsignedNoteSplitPczt(dbDataPath, network, account, proposal.proposalHandle))
@@ -422,7 +476,7 @@ internal class OrchardMigrationSdkImpl(
         options: NetworkPrivacyOptions
     ): TransferResult {
         val prepared =
-            logged("storeSignedNoteSplitPczt.prepare") {
+            gatedLogged("storeSignedNoteSplitPczt.prepare") {
                 val dbDataPath = dbDataPath()
                 val account = account ?: noAccountAvailable()
                 val stored = migrationBackend.storeSignedNoteSplitPczt(dbDataPath, network, account, signedPczt.toByteArray())
@@ -441,7 +495,7 @@ internal class OrchardMigrationSdkImpl(
     }
 
     override suspend fun createUnsignedTransferPczts(schedule: MigrationSchedule): List<Pair<Long, Pczt>> =
-        logged("createUnsignedTransferPczts") {
+        gatedLogged("createUnsignedTransferPczts") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend
@@ -450,7 +504,7 @@ internal class OrchardMigrationSdkImpl(
         }
 
     override suspend fun createUnsignedPreparationPczts(schedule: MigrationSchedule): List<UnsignedPreparationPczt> =
-        logged("createUnsignedPreparationPczts") {
+        gatedLogged("createUnsignedPreparationPczts") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend
@@ -459,7 +513,7 @@ internal class OrchardMigrationSdkImpl(
         }
 
     override suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, Pczt>>) =
-        logged("storeSignedSchedulePczts") {
+        gatedLogged("storeSignedSchedulePczts") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend.storeSignedSchedulePczts(
@@ -505,7 +559,7 @@ internal class OrchardMigrationSdkImpl(
         transferUnsignedPczts: List<Pczt>,
         batchSignResponse: ByteArray
     ): KeystoneBatchSignedPczts =
-        loggedRead("applyKeystoneBatchSignatures") {
+        gatedLoggedRead("applyKeystoneBatchSignatures") {
             migrationBackend
                 .applyKeystoneBatchSignatures(
                     splitUnsignedPczt?.toByteArray(),
@@ -517,14 +571,14 @@ internal class OrchardMigrationSdkImpl(
     // ── Migration proposal ───────────────────────────────────────────────────
 
     override suspend fun proposeMigrationTransfers(includeResidual: Boolean): MigrationSchedule =
-        logged("proposeMigrationTransfers") {
+        gatedLogged("proposeMigrationTransfers") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend.proposeMigrationTransfers(dbDataPath, network, account, includeResidual).toPublic()
         }
 
     override suspend fun proposeMigrationTransfersFromSplit(splitProposal: NoteSplitProposal): MigrationSchedule =
-        logged("proposeMigrationTransfersFromSplit") {
+        gatedLogged("proposeMigrationTransfersFromSplit") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             migrationBackend
@@ -552,7 +606,7 @@ internal class OrchardMigrationSdkImpl(
         }
 
     override suspend fun signAndStoreMigrationSchedule(schedule: MigrationSchedule, usk: UnifiedSpendingKey) =
-        logged("signAndStoreMigrationSchedule") {
+        gatedLogged("signAndStoreMigrationSchedule") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
             val uskBytes = usk.copyBytes()
@@ -651,7 +705,7 @@ internal class OrchardMigrationSdkImpl(
         plan: PreparedBroadcast,
         submitResult: TransactionSubmitResult,
     ): Long =
-        if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError) {
+        if (submitResult is TransactionSubmitResult.Failure && !submitResult.grpcError && !submitResult.isLocalRefusal()) {
             loggedRead("$operation.minedHeightProbe") {
                 migrationBackend.transactionMinedHeight(plan.dbDataPath, network, plan.prepared.txid)
             }
@@ -883,6 +937,35 @@ internal class OrchardMigrationSdkImpl(
         }
 
         val rawTx = migrationBackend.extractBroadcastTx(dbDataPath, network, account, prepared.pcztBytes)
+        // Never submit what the network would reject: it can only leak the transaction. The wallet's own scanned
+        // tip is judged here, with no network request; the send then judges the higher of that and the server's
+        // height. A refusal is not terminal: the transfer waits for the wallet to scan up to the height it was
+        // judged at, and then the engine decides whether it is interrupted, rebuilt or sent. When the wallet has
+        // scanned nothing yet nothing is sent.
+        val walletTip = chainTipEstimator.walletTip()
+        if (walletTip <= 0) {
+            Twig.warn { "MIGRATION_DIAG OrchardMigrationSdk: holding back transfer ${prepared.id} (height $walletTip)" }
+            return BroadcastPreparation.Settled(TransferAttemptOutcome.NothingDue)
+        }
+        val nextHeight = BlockHeight.new(walletTip + 1)
+        val refusal = checkSubmittable(rawTx, network, nextHeight)
+        if (refusal != null) {
+            Twig.warn {
+                "MIGRATION_DIAG OrchardMigrationSdk: transfer ${prepared.id} cannot be mined at $nextHeight " +
+                    "($refusal) — not submitting"
+            }
+            migrationBackend.recordTransferResult(
+                dbDataPath,
+                network,
+                account,
+                prepared.id,
+                RESULT_TAG_AWAITING_REEVALUATION,
+                false,
+                ByteArray(0),
+                walletTip,
+            )
+            return BroadcastPreparation.Settled(TransferAttemptOutcome.Executed(TransferResult.InvalidNote))
+        }
         // Mark the broadcast as in-flight before attempting the network call so the sync engine
         // is gated for the duration. A stale mark from a crash self-expires in
         // BROADCAST_IN_FLIGHT_WINDOW_SECONDS.
@@ -954,7 +1037,10 @@ internal class OrchardMigrationSdkImpl(
         // kill a hung follow-up call.
         val observedTip =
             if (recordedResultTag(mapped.tag) == RESULT_TAG_AWAITING_REEVALUATION) {
-                fetchObservedTipAfterRejection(options.useTor, ready.plan.endpoint)
+                maxOf(
+                    fetchObservedTipAfterRejection(options.useTor, ready.plan.endpoint),
+                    chainTipEstimator.walletTip(),
+                )
             } else {
                 -1L
             }
@@ -1012,6 +1098,9 @@ internal class OrchardMigrationSdkImpl(
 
     override suspend fun estimatedSecondsPerBlock(): Long = chainTipEstimator.estimatedSecondsPerBlock()
 
+    override val nu7ActivationHeight: Long?
+        get() = BlockSpacing.nu7ActivationHeight(network)?.value
+
     override suspend fun hasInvalidTransfers(): Boolean =
         logged("hasInvalidTransfers") {
             val dbDataPath = dbDataPath()
@@ -1021,11 +1110,26 @@ internal class OrchardMigrationSdkImpl(
 
     // ── Invalidity recovery ──────────────────────────────────────────────────
 
-    override suspend fun restartCurrentMigrationStep(includeResidual: Boolean): MigrationSchedule =
+    override suspend fun restartCurrentMigrationStep(includeResidual: Boolean): MigrationRestartOutcome =
         logged("restartCurrentMigrationStep") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            migrationBackend.restartCurrentMigrationStep(dbDataPath, network, account, includeResidual).toPublic()
+            when (val phase = currentGatePhase()) {
+                MigrationGatePhase.Open -> {
+                    val schedule =
+                        migrationBackend
+                            .restartCurrentMigrationStep(dbDataPath, network, account, includeResidual)
+                            .toPublic()
+                    MigrationRestartOutcome.Replanned(schedule)
+                }
+
+                // A scheduled run planned now would be built for the branch the upgrade ends: end the run and
+                // plan nothing.
+                is MigrationGatePhase.PausedUntil -> {
+                    migrationBackend.clearMigration(dbDataPath, network, account)
+                    MigrationRestartOutcome.CancelledUntilNetworkUpgrade(phase.activation.value)
+                }
+            }
         }
 
     override suspend fun getMigrationTransferStates(): MigrationTransferStates? =
@@ -1042,42 +1146,117 @@ internal class OrchardMigrationSdkImpl(
             // Broadcast timing uses the estimated (real) chain tip so a proved, due transfer
             // returns Broadcast directly; proving stays on the scanned tip inside the backend.
             val est = chainTipEstimator.estimatedTip()
+            upgradeStepFor(dbDataPath, account, chainTipEstimator.walletTip())
+                ?.let { return@logged MigrationAdvanceResult(step = it, next = null) }
             migrationBackend.nextStep(dbDataPath, network, account, est)?.let { arr ->
                 val id = arr.getOrElse(1) { -1L }
+                val rawKind = arr.getOrElse(0) { STEP_WAITING }
                 val step =
-                    when (arr.getOrElse(0) { STEP_WAITING }) {
-                        STEP_PROVE -> {
-                            MigrationAdvanceStep.Prove(id)
-                        }
-
-                        STEP_BROADCAST -> {
-                            MigrationAdvanceStep.Broadcast(id)
-                        }
-
-                        STEP_REBUILD -> {
-                            MigrationAdvanceStep.Rebuild(id)
-                        }
-
-                        STEP_COMPLETE -> {
-                            MigrationAdvanceStep.Complete
-                        }
-
-                        STEP_REPLAN -> {
-                            // Every consumer of nextStep() gets a superseded migration automatically,
-                            // not just the app worker's specific Replan handler.
-                            migrationBackend.markMigrationSuperseded(dbDataPath, network, account)
-                            MigrationAdvanceStep.Replan
-                        }
-
-                        STEP_REEVALUATE -> {
-                            MigrationAdvanceStep.Reevaluate
-                        }
-
-                        else -> {
-                            MigrationAdvanceStep.Waiting
-                        }
+                    gatePausedStep(rawKind) ?: advanceStepOf(rawKind, id) {
+                        // Every consumer of nextStep() gets a superseded migration automatically,
+                        // not just the app worker's specific Replan handler.
+                        migrationBackend.markMigrationSuperseded(dbDataPath, network, account)
                     }
                 MigrationAdvanceResult(step = step, next = parsePeek(arr))
+            }
+        }
+
+    /**
+     * The step the NU7 upgrade forces once the wallet's next height has reached the activation, or null to
+     * leave the engine's answer alone. A run holding a transaction built for the branch before NU7 is
+     * [MigrationAdvanceStep.InterruptedByNetworkUpgrade]; one whose such transaction may already have been sent
+     * waits ([MigrationAdvanceStep.Reevaluate]) until the wallet has scanned up to the activation. Judged at the
+     * wallet's own chain tip ([walletTip]), never at the clock's estimate, so a wallet that is behind the chain
+     * is not told the upgrade has arrived before it has scanned it. Not asked before the activation or on a
+     * network without NU7. The testing bypass does not lift it: it only lifts the planning pause.
+     */
+    private suspend fun upgradeStepFor(
+        dbDataPath: String,
+        account: AccountUuid,
+        walletTip: Long
+    ): MigrationAdvanceStep? {
+        val nextHeight = walletTip + 1
+        val activation =
+            BlockSpacing
+                .nu7ActivationHeight(network)
+                ?.value
+                ?.takeIf { walletTip > 0 && nextHeight >= it }
+        return activation?.let {
+            when (migrationBackend.migrationUpgradeVerdict(dbDataPath, network, account, nextHeight)) {
+                VERDICT_INTERRUPTED -> {
+                    MigrationAdvanceStep.InterruptedByNetworkUpgrade(it)
+                }
+
+                VERDICT_AWAIT_SCAN -> {
+                    MigrationAdvanceStep.Reevaluate
+                }
+
+                else -> {
+                    null
+                }
+            }
+        }
+    }
+
+    /**
+     * The step the NU7 gate substitutes for the engine's [rawKind], or null to leave it alone. Before NU7
+     * only the work that would build new transactions (rebuild, re-plan) waits; already signed
+     * transfers still prove and broadcast.
+     */
+    private suspend fun gatePausedStep(rawKind: Long): MigrationAdvanceStep? {
+        val isBuild = rawKind == STEP_REBUILD || rawKind == STEP_REPLAN
+        val phase =
+            try {
+                currentGatePhase()
+            } catch (e: MigrationWalletTipUnavailableException) {
+                // Nothing is built until the wallet knows its tip; crank again once it does.
+                Twig.warn(e) { "OrchardMigrationSdk: wallet tip unknown, holding back a rebuild or re-plan" }
+                return MigrationAdvanceStep.Reevaluate.takeIf { isBuild }
+            }
+        return when (phase) {
+            MigrationGatePhase.Open -> {
+                null
+            }
+
+            is MigrationGatePhase.PausedUntil -> {
+                MigrationAdvanceStep.PausedForNetworkUpgrade(phase.activation.value).takeIf { isBuild }
+            }
+        }
+    }
+
+    private suspend fun advanceStepOf(
+        rawKind: Long,
+        id: Long,
+        supersede: suspend () -> Unit
+    ): MigrationAdvanceStep =
+        when (rawKind) {
+            STEP_PROVE -> {
+                MigrationAdvanceStep.Prove(id)
+            }
+
+            STEP_BROADCAST -> {
+                MigrationAdvanceStep.Broadcast(id)
+            }
+
+            STEP_REBUILD -> {
+                MigrationAdvanceStep.Rebuild(id)
+            }
+
+            STEP_COMPLETE -> {
+                MigrationAdvanceStep.Complete
+            }
+
+            STEP_REPLAN -> {
+                supersede()
+                MigrationAdvanceStep.Replan
+            }
+
+            STEP_REEVALUATE -> {
+                MigrationAdvanceStep.Reevaluate
+            }
+
+            else -> {
+                MigrationAdvanceStep.Waiting
             }
         }
 
@@ -1169,6 +1348,14 @@ internal class OrchardMigrationSdkImpl(
         }
 
     // ── Debug ─────────────────────────────────────────────────────────────────
+
+    override suspend fun cancelMigrationRun() {
+        logged("cancelMigrationRun") {
+            val dbDataPath = dbDataPath()
+            val account = account ?: return@logged
+            migrationBackend.clearMigration(dbDataPath, network, account)
+        }
+    }
 
     override suspend fun clearMigration() =
         logged("clearMigration") {
@@ -1335,7 +1522,8 @@ internal class OrchardMigrationSdkImpl(
                     FirstClassByteArray(rawTx),
                     FirstClassByteArray(txId),
                     SdkFlags(isTorEnabled = useTor && torClient != null, isExchangeRateEnabled = false),
-                )
+                    network,
+                ) { chainTipEstimator.walletTip().takeIf { it > 0 } }
             }
         } finally {
             withContext(NonCancellable) { client.dispose() }
@@ -1383,6 +1571,9 @@ internal class OrchardMigrationSdkImpl(
         // migration operation never touch the wallet database at the same moment. See logged()'s
         // doc comment for the full rationale.
         val MIGRATION_DB_ACCESS_MUTEX = Mutex()
+
+        // Process-wide, like the mutex: the internal testing bypass of the NU7 migration gate. Off by default.
+        val gateBypass = AtomicBoolean(false)
 
         // Diagnostic-only label of whichever operation currently holds [MIGRATION_DB_ACCESS_MUTEX]
         // — see [logged]'s timing/attribution log lines. Never read for control flow.
@@ -1622,6 +1813,8 @@ private const val DUE_AWAITING_PROOF = 2
 
 // The `nextStep` step codes, mirroring the `STEP_*` constants that own the contract in
 // `migration.rs`. Kept in the same order so the two lists can be diffed by eye.
+private const val VERDICT_INTERRUPTED = 1
+private const val VERDICT_AWAIT_SCAN = 2
 private const val STEP_WAITING = 0L
 private const val STEP_PROVE = 1L
 private const val STEP_BROADCAST = 2L

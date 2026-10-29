@@ -728,7 +728,7 @@ fn hotkey_unified_address(
         voting::types::Network::Mainnet => Network::MainNetwork,
         voting::types::Network::Testnet | voting::types::Network::Regtest => Network::TestNetwork,
     };
-    Ok(unified_address.encode_receiver_preserving(&encode_network))
+    Ok(unified_address.encode(&encode_network))
 }
 
 /// Builds the Kotlin bundle setup JNI model with width-checked Java primitives.

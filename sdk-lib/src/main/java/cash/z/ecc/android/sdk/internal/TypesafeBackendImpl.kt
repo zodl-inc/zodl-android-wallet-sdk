@@ -373,6 +373,8 @@ internal class TypesafeBackendImpl(
             Twig.warn(it) { "Currently unable to get fully scanned height" }
         }.getOrElse { throw RustLayerException.GetFullyScannedHeight(it) }
 
+    override suspend fun getChainTipHeight(): BlockHeight? = backend.getChainTipHeight()?.let { BlockHeight.new(it) }
+
     override suspend fun getMaxScannedHeight(): BlockHeight? =
         runCatching {
             backend.getMaxScannedHeight()?.let {

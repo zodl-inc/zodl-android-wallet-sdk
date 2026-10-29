@@ -3,6 +3,8 @@ package cash.z.ecc.android.sdk.internal
 import android.content.Context
 import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.jni.MigrationRustBackend
+import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.BlockSpacing
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import kotlin.time.Clock
 
@@ -11,12 +13,22 @@ internal interface ChainTipEstimator {
 
     /**
      * Measured average seconds per block over the recent scanned window (header timestamps),
-     * clamped to [MIN_SECONDS_PER_BLOCK, MAX_SECONDS_PER_BLOCK]. Falls back to the 75s protocol
-     * target when fewer than two blocks are available. Testnet's minimum-difficulty rule makes
+     * clamped to [MIN_SECONDS_PER_BLOCK, MAX_SECONDS_PER_BLOCK]. Falls back to the height-aware
+     * protocol target (75 s before NU7, 25 s from NU7) when fewer than two blocks are available or the
+     * window spans the NU7 activation height. Testnet's minimum-difficulty rule makes
      * real spacing bursty (seconds-per-block during bursts) — a constant 75s there turns every
      * height-to-time projection into an overestimate.
      */
     suspend fun estimatedSecondsPerBlock(): Long
+
+    /**
+     * The wallet's own chain tip, or -1 when none is known: the end of its scan queue, which its synchronizer sets from
+     * the server it syncs with, or the highest block it has scanned if that is higher. Unlike [estimatedTip] this is a
+     * fact about the wallet, not a projection from the clock: the NU7 gate and the activation verdict are judged at it,
+     * because the engine plans and builds at the wallet's own tip. A failed read answers the last height seen, as a tip
+     * never goes down.
+     */
+    suspend fun walletTip(): Long = -1L
 }
 
 internal const val FALLBACK_SECONDS_PER_BLOCK = 75L
@@ -54,34 +66,92 @@ internal fun measuredSecondsPerBlock(
 }
 
 /**
- * Estimates the current chain tip from the latest scanned block plus elapsed wall-clock time at a
- * 75-second average block interval. Returns -1 when no block has been scanned yet.
+ * Estimates the current chain tip from the latest scanned block plus elapsed wall-clock time at
+ * [secondsPerBlock], the rate that holds at the scanned height. Returns -1 when no block has been
+ * scanned yet.
+ *
+ * With a [network], elapsed time that runs past the NU7 activation height is converted at the 25 s
+ * spacing from there on, so a wallet that last scanned a block before NU7 does not under-estimate the
+ * tip. Without a [network] one rate is used throughout.
  */
 internal fun estimateTip(
     scannedHeight: Long,
     scannedBlockTimeEpochSeconds: Long,
     nowEpochSeconds: Long,
     secondsPerBlock: Long = FALLBACK_SECONDS_PER_BLOCK,
-): Long =
-    scannedHeight +
-        ((nowEpochSeconds - scannedBlockTimeEpochSeconds).coerceAtLeast(0L) / secondsPerBlock.coerceAtLeast(1L))
+    network: ZcashNetwork? = null,
+): Long {
+    val elapsed = (nowEpochSeconds - scannedBlockTimeEpochSeconds).coerceAtLeast(0L)
+    val rate = secondsPerBlock.coerceAtLeast(1L)
+    val nu7 = network?.let { BlockSpacing.nu7ActivationHeight(it)?.value }
+    if (nu7 == null || scannedHeight >= nu7) return scannedHeight + elapsed / rate
+    // Blocks scanned + 1 .. nu7 - 1 are still produced at the pre-NU7 rate.
+    val blocksBeforeNu7 = nu7 - 1 - scannedHeight
+    val secondsBeforeNu7 = blocksBeforeNu7 * rate
+    return if (elapsed <= secondsBeforeNu7) {
+        scannedHeight + elapsed / rate
+    } else {
+        scannedHeight + blocksBeforeNu7 + (elapsed - secondsBeforeNu7) / BlockSpacing.POST_NU7_SECONDS
+    }
+}
 
 /**
  * Pure derivation of the measured rate from a `blockRateSamples` array
  * (`[latestHeight, latestTime, olderHeight, olderTime]`): the clamped average spacing between the
- * two samples, or the protocol fallback when the older sample is absent (array shorter than 4).
+ * two samples, or the target spacing when the older sample is absent (array shorter than 4).
+ *
+ * With a [network], the target spacing is the height-aware one (ZIP 218), and a window that mixes
+ * blocks from before and after NU7 activation is not measured at all: its average is meaningless
+ * for either era, so the target spacing at the latest block is used until the whole window lies after
+ * activation. Without a [network] the pre-NU7 75 s target is used and the window is taken as is.
  */
-internal fun secondsPerBlockFromSamples(samples: LongArray): Long =
-    if (samples.size >= SAMPLE_PAIR_SIZE) {
+internal fun secondsPerBlockFromSamples(
+    samples: LongArray,
+    network: ZcashNetwork? = null
+): Long {
+    val latestHeight = samples.firstOrNull()
+    val fallback =
+        if (network != null && latestHeight != null) {
+            BlockSpacing.targetSeconds(network, BlockHeight(latestHeight))
+        } else {
+            FALLBACK_SECONDS_PER_BLOCK
+        }
+    val nu7 = network?.let { BlockSpacing.nu7ActivationHeight(it)?.value }
+    val windowMixesEras = samples.size >= SAMPLE_PAIR_SIZE && nu7 != null && samples[2] < nu7 && samples[0] >= nu7
+    return if (samples.size < SAMPLE_PAIR_SIZE || windowMixesEras) {
+        fallback
+    } else {
         measuredSecondsPerBlock(
             olderHeight = samples[2],
             olderTimeEpochSeconds = samples[3],
             newerHeight = samples[0],
             newerTimeEpochSeconds = samples[1],
         )
-    } else {
-        FALLBACK_SECONDS_PER_BLOCK
     }
+}
+
+/**
+ * The rate that holds at the estimated tip. [secondsPerBlockFromSamples] gives the rate at the latest scanned
+ * block, but a wallet that last scanned a block before NU7 can already have an estimated tip past it, and a
+ * caller that prices a height range with this rate expects the rate of the tip's era. In that case the 25 s
+ * target is returned.
+ */
+internal fun secondsPerBlockAtEstimatedTip(
+    samples: LongArray,
+    network: ZcashNetwork,
+    nowEpochSeconds: Long
+): Long {
+    val rate = secondsPerBlockFromSamples(samples, network)
+    val nu7 = BlockSpacing.nu7ActivationHeight(network)?.value
+    val scannedBeforeNu7 = nu7 != null && samples.size >= 2 && samples[0] < nu7
+    return if (nu7 != null && scannedBeforeNu7 &&
+        estimateTip(samples[0], samples[1], nowEpochSeconds, rate, network) >= nu7
+    ) {
+        BlockSpacing.POST_NU7_SECONDS
+    } else {
+        rate
+    }
+}
 
 /**
  * A [ChainTipEstimator] that reads its block samples through the engine's BUNDLED SQLite (a JNI
@@ -103,11 +173,24 @@ internal class LazyDataDbChainTipEstimator(
     private val clock: Clock = Clock.System,
     private val rustBackendProvider: suspend () -> MigrationRustBackend = { MigrationRustBackend.new() },
 ) : ChainTipEstimator {
+    private suspend fun dataDbPath(): String =
+        DatabaseCoordinator.getInstance(context).dataDbFile(network, alias).absolutePath
+
     private suspend fun samples(): LongArray {
-        val dbFile = DatabaseCoordinator.getInstance(context).dataDbFile(network, alias)
         // blockRateSamples dispatches its own JNI read onto SdkDispatchers.DATABASE_IO.
-        return rustBackendProvider().blockRateSamples(dbFile.absolutePath, RATE_WINDOW_BLOCKS)
+        return rustBackendProvider()
+            .blockRateSamples(dataDbPath(), RATE_WINDOW_BLOCKS)
+            .also { sample -> sample.firstOrNull()?.let { lastScannedHeight = it } }
     }
+
+    // The latest scanned height seen by a successful read, so a later failed read can still fall back to the
+    // target spacing of the right era.
+    @Volatile
+    private var lastScannedHeight: Long? = null
+
+    // The highest wallet tip seen by a successful read: a tip never goes down, and a failed read answers it.
+    @Volatile
+    private var lastWalletTip: Long = -1L
 
     // Deliberately broad: the estimate is advisory, and every failure mode of the JNI read (a
     // missing or half-migrated database, a JNI error, an I/O fault) must degrade to the sentinel
@@ -123,7 +206,8 @@ internal class LazyDataDbChainTipEstimator(
                     scannedHeight = s[0],
                     scannedBlockTimeEpochSeconds = s[1],
                     nowEpochSeconds = clock.now().epochSeconds,
-                    secondsPerBlock = secondsPerBlockFromSamples(s),
+                    secondsPerBlock = secondsPerBlockFromSamples(s, network),
+                    network = network,
                 )
             }
         } catch (e: Exception) {
@@ -131,14 +215,34 @@ internal class LazyDataDbChainTipEstimator(
             -1L
         }
 
+    @Suppress("TooGenericExceptionCaught")
+    override suspend fun walletTip(): Long {
+        val scanned =
+            try {
+                samples().firstOrNull() ?: -1L
+            } catch (e: Exception) {
+                Twig.warn(e) { "ChainTipEstimator: could not read the scanned tip — using the last one seen" }
+                -1L
+            }
+        val chainTip =
+            try {
+                rustBackendProvider().chainTipHeight(dataDbPath())
+            } catch (e: Exception) {
+                Twig.warn(e) { "ChainTipEstimator: could not read the chain tip — using the scanned tip" }
+                -1L
+            }
+        return maxOf(scanned, chainTip, lastWalletTip).also { lastWalletTip = it }
+    }
+
     // Deliberately broad, for the same reason as [estimatedTip]: an unmeasurable rate falls back to
     // the protocol constant instead of failing the caller.
     @Suppress("TooGenericExceptionCaught")
     override suspend fun estimatedSecondsPerBlock(): Long =
         try {
-            secondsPerBlockFromSamples(samples())
+            secondsPerBlockAtEstimatedTip(samples(), network, clock.now().epochSeconds)
         } catch (e: Exception) {
             Twig.warn(e) { "ChainTipEstimator: could not measure block rate — falling back" }
-            FALLBACK_SECONDS_PER_BLOCK
+            lastScannedHeight?.let { BlockSpacing.targetSeconds(network, BlockHeight(it)) }
+                ?: FALLBACK_SECONDS_PER_BLOCK
         }
 }

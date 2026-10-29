@@ -8,6 +8,7 @@ import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.internal.db.SlipstreamTransactionReader
@@ -185,6 +186,8 @@ class SlipstreamBroadcasterTest {
                 backend = backend,
                 walletClientFactory = mock(WalletClientFactory::class.java),
                 sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false),
+                network = ZcashNetwork.Mainnet,
+                walletTip = { null },
                 engine = engine,
                 planStore = planStore,
                 saplingParamsDir = File("unused"),
