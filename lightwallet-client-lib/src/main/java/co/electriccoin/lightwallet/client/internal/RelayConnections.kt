@@ -137,6 +137,7 @@ internal class RelayConnections(
         OkHttpClient
             .Builder()
             .connectionPool(ConnectionPool(MAX_IDLE_CONNECTIONS, KEEP_ALIVE_SECONDS, TimeUnit.SECONDS))
+            .pingInterval(10, TimeUnit.SECONDS)
             .followRedirects(false)
             .followSslRedirects(false)
             .retryOnConnectionFailure(false)
