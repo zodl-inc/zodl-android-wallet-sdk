@@ -54,6 +54,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tor-off voting against predefined servers is unavailable (fails closed).
 
 ### Changed
+- **HTTP/2 PING on OHTTP relay connections (Tor off).** Pooled relay connections send an HTTP/2 PING every
+  10 s and close when it is not answered within 10 s, so a dead connection is noticed without waiting for an
+  exchange deadline (ZIP #10). Bulk block ranges still share the pool with other calls.
 - **Breaking: Request freshness.** Every OHTTP inner request now carries an `ohttp-freshness` header with
   the estimated gateway clock (offset learned from the authenticated `ohttp-server-time` in prior responses).
   Gateways enforce freshness since 2026-10-11, so older builds cannot use OHTTP. A freshness refusal (inner
