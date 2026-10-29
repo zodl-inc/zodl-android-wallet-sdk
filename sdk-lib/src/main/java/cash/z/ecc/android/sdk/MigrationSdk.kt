@@ -345,7 +345,86 @@ sealed class MigrationAdvanceStep {
     object Reevaluate : MigrationAdvanceStep() {
         override fun toString() = "Reevaluate"
     }
+
+    /**
+     * New scheduled work is paused until NU7 activates ([activationHeight]): the engine's next step
+     * would rebuild or re-plan, and what it built would be for the consensus branch the upgrade ends.
+     * Valid committed transfers are still proved and broadcast before the activation.
+     */
+    data class PausedForNetworkUpgrade(
+        val activationHeight: Long
+    ) : MigrationAdvanceStep()
+
+    /**
+     * NU7 is active ([activationHeight]) and the run still holds a transaction built for the consensus branch
+     * before it, which no block accepts. The run cannot finish. Call [OrchardMigrationSdk.cancelMigrationRun],
+     * which releases its note reservations, then offer the user a new migration of what remains.
+     */
+    data class InterruptedByNetworkUpgrade(
+        val activationHeight: Long
+    ) : MigrationAdvanceStep()
 }
+
+/**
+ * What a migration may start at the wallet's next height, relative to the NU7 activation. See
+ * [OrchardMigrationSdk.migrationAvailability].
+ */
+sealed class MigrationAvailability {
+    /** The scheduled lane waits for NU7, because its transactions are built for the branch before it. */
+    abstract val isScheduledLaneAvailable: Boolean
+
+    /** The immediate (single transaction) lane is a normal send: open at every height. */
+    abstract val isImmediateLaneAvailable: Boolean
+
+    /** NU7 is active, unknown for this network, or the internal bypass is on. */
+    object Available : MigrationAvailability() {
+        override val isScheduledLaneAvailable = true
+        override val isImmediateLaneAvailable = true
+
+        override fun toString() = "Available"
+    }
+
+    /** Before NU7: a scheduled migration cannot start until [activationHeight]. */
+    data class PausedUntilNetworkUpgrade(
+        val activationHeight: Long
+    ) : MigrationAvailability() {
+        override val isScheduledLaneAvailable = false
+        override val isImmediateLaneAvailable = true
+    }
+}
+
+/** What [OrchardMigrationSdk.restartCurrentMigrationStep] did. */
+sealed class MigrationRestartOutcome {
+    /** The run was cancelled and this schedule was planned for the remainder; confirm it with the user. */
+    data class Replanned(
+        val schedule: MigrationSchedule
+    ) : MigrationRestartOutcome()
+
+    /**
+     * The run was cancelled and nothing was planned, because NU7 has not activated ([activationHeight]) yet. Offer
+     * a new scheduled migration once [OrchardMigrationSdk.migrationAvailability] reports its lane open; the
+     * immediate migration is available now.
+     */
+    data class CancelledUntilNetworkUpgrade(
+        val activationHeight: Long
+    ) : MigrationRestartOutcome()
+}
+
+/**
+ * A scheduled-migration call was made before NU7 activation ([activationHeight]). Its transactions
+ * would be built for the consensus branch before NU7, which the network stops accepting at the
+ * activation, so nothing is planned, built, signed or stored until then.
+ */
+class MigrationPausedUntilNetworkUpgradeException(
+    val activationHeight: Long
+) : IllegalStateException("Scheduled migration is paused until the NU7 activation at height $activationHeight")
+
+/**
+ * A scheduled-migration call was made while the wallet has no chain tip yet (it has not synced), so the NU7 gate cannot
+ * be judged. The lane stays closed, like a paused one, and syncing opens it. Not a statement about the upgrade.
+ */
+class MigrationWalletTipUnavailableException :
+    IllegalStateException("Scheduled migration needs the wallet's chain tip, which is not known yet; sync first")
 
 /** The kind of step [MigrationPeek] predicts — [MigrationAdvanceStep]'s variants without a transaction id. */
 enum class MigrationStepKind {
@@ -928,11 +1007,39 @@ interface OrchardMigrationSdk {
     suspend fun estimatedChainTip(): Long
 
     /**
-     * Measured average seconds-per-block over the recently scanned window (clamped; 75s fallback).
+     * Measured average seconds-per-block over the recently scanned window (clamped; the height-aware target
+     * spacing is the fallback, 75s before NU7 and 25s from NU7).
      * Use for every height-to-wall-clock projection — testnet's minimum-difficulty bursts make
      * the 75s constant a large overestimate there.
      */
     suspend fun estimatedSecondsPerBlock(): Long
+
+    /**
+     * The NU7 activation height of this wallet's network, or null if it has none. From this height the target
+     * block spacing is 25 s instead of 75 s (ZIP 218), so a height range that spans it must not be converted
+     * to time with a single rate. [estimatedSecondsPerBlock] is the rate of the era the chain tip is in.
+     */
+    val nu7ActivationHeight: Long?
+        get() = null
+
+    /**
+     * What a migration may start at the wallet's next height, judged at the wallet's own chain tip (the end of its
+     * scan queue, or its highest scanned block if that is higher), never at a projection from the clock. Reads no
+     * network. The tip never goes down while this instance lives, which only matters after a rescan.
+     * Call it before offering a migration, then still handle [MigrationPausedUntilNetworkUpgradeException].
+     *
+     * @throws MigrationWalletTipUnavailableException when the wallet has no chain tip yet, so whether the upgrade has
+     * happened is not known. Syncing fixes that.
+     */
+    suspend fun migrationAvailability(): MigrationAvailability = MigrationAvailability.Available
+
+    /**
+     * Internal testing only: lifts the NU7 pause on new scheduled work so a scheduled run can be tried on mainnet
+     * before the activation. It never disables the submission check. Off by default; production builds must never
+     * turn it on.
+     */
+    @InternalTestingApi
+    fun setMigrationNetworkUpgradeGateBypass(enabled: Boolean) = Unit
 
     /**
      * True if any stored transfer is in an invalid state (spent note or expired anchor).
@@ -950,14 +1057,19 @@ interface OrchardMigrationSdk {
      * re-evaluates the remaining unspent Orchard notes, and returns a new schedule
      * for the remainder of the balance.
      *
-     * The returned MigrationSchedule must go through the normal user confirmation
-     * flow → signAndStoreMigrationSchedule() — same as the first time.
+     * A [MigrationRestartOutcome.Replanned] schedule must go through the normal user confirmation
+     * flow → signAndStoreMigrationSchedule() — same as the first time. Before NU7 activates no new scheduled
+     * run is planned, because it would be built for the consensus branch the upgrade ends: the run is still
+     * cancelled and the outcome is [MigrationRestartOutcome.CancelledUntilNetworkUpgrade].
      *
      * [includeResidual] — should match whatever choice the user made for
      * [proposeMigrationTransfers] on the schedule being recovered (**pass `false`** until the
      * opt-in UI for that exists — see [proposeMigrationTransfers]'s doc).
+     *
+     * @throws MigrationWalletTipUnavailableException while the wallet has no chain tip yet, so it cannot tell
+     * whether NU7 is active. Nothing is cancelled then.
      */
-    suspend fun restartCurrentMigrationStep(includeResidual: Boolean = false): MigrationSchedule
+    suspend fun restartCurrentMigrationStep(includeResidual: Boolean = false): MigrationRestartOutcome
 
     /**
      * The live, persisted status of EVERY committed migration transaction — transfers AND
@@ -1063,6 +1175,13 @@ interface OrchardMigrationSdk {
      * proposal with a shorter test schedule without waiting out or resuming the previous one).
      */
     suspend fun clearMigration()
+
+    /**
+     * Ends this account's run that the NU7 upgrade interrupted ([MigrationAdvanceStep.InterruptedByNetworkUpgrade])
+     * and releases the note reservations of its unsent transactions, so a new migration can be planned over the
+     * full balance. Transactions already sent or mined are left alone. Does nothing without a run.
+     */
+    suspend fun cancelMigrationRun() = Unit
 
     companion object {
         /**

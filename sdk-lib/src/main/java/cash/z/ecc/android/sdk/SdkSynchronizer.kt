@@ -59,6 +59,7 @@ import cash.z.ecc.android.sdk.internal.transaction.SdkBroadcaster
 import cash.z.ecc.android.sdk.internal.transaction.SubmitPlanExecutor
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoder
 import cash.z.ecc.android.sdk.internal.transaction.TransactionEncoderImpl
+import cash.z.ecc.android.sdk.internal.transaction.walletTipForSubmission
 import cash.z.ecc.android.sdk.ledger.LedgerAccountBinding
 import cash.z.ecc.android.sdk.ledger.LedgerApduTransport
 import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
@@ -357,7 +358,9 @@ class SdkSynchronizer private constructor(
             transactionSubmitter =
                 EndpointTransactionSubmitter(
                     walletClientFactory = walletClientFactory,
-                    sdkFlags = sdkFlags
+                    sdkFlags = sdkFlags,
+                    network = network,
+                    walletTip = { walletTipForSubmission(backend) }
                 ),
             pendingSubmitPlanStore = pendingSubmitPlanStore
         )
@@ -1635,8 +1638,10 @@ internal object DefaultSynchronizerFactory {
     internal fun defaultTxManager(
         encoder: TransactionEncoder,
         service: CombinedWalletClient,
-        sdkFlags: SdkFlags
-    ): OutboundTransactionManager = OutboundTransactionManagerImpl.new(encoder, service, sdkFlags)
+        sdkFlags: SdkFlags,
+        network: ZcashNetwork,
+        walletTip: suspend () -> Long?
+    ): OutboundTransactionManager = OutboundTransactionManagerImpl.new(encoder, service, sdkFlags, network, walletTip)
 
     @Suppress("LongParameterList")
     internal fun defaultProcessor(

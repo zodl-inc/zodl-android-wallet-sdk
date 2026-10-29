@@ -1,16 +1,142 @@
 package cash.z.ecc.android.sdk.internal.transaction
 
+import cash.z.ecc.android.sdk.internal.SubmissionRefusal
 import cash.z.ecc.android.sdk.internal.Twig
+import cash.z.ecc.android.sdk.internal.TypesafeBackend
+import cash.z.ecc.android.sdk.internal.checkSubmittable
 import cash.z.ecc.android.sdk.internal.ext.toHexReversed
+import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
+import co.electriccoin.lightwallet.client.model.RawTransactionUnsafe
 import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
+import kotlin.coroutines.cancellation.CancellationException
 
+/** Local result codes for a transaction the SDK refuses to submit. Nothing is sent. */
+internal const val SUBMIT_REFUSED_WRONG_BRANCH = TransactionSubmitResult.Failure.CODE_WRONG_CONSENSUS_BRANCH
+internal const val SUBMIT_REFUSED_EXPIRED = TransactionSubmitResult.Failure.CODE_EXPIRED
+
+/**
+ * Submits [rawTransaction] unless the network would reject it. The height of the
+ * server the transaction is about to go to is read first, on this same client, and a transaction built
+ * for another consensus branch than the next block's, or one that has expired by then, is refused
+ * locally: submitting it can only leak it. The next block is the one after the higher of that height
+ * and the wallet's own tip ([walletTip], when it is known). NU7 changes the consensus branch, so a transaction signed
+ * just before the activation and submitted just after it is such a case. When the height cannot be
+ * read nothing is submitted.
+ */
 internal suspend fun CombinedWalletClient.submitTransaction(
+    rawTransaction: FirstClassByteArray,
+    txId: FirstClassByteArray,
+    sdkFlags: SdkFlags,
+    network: ZcashNetwork,
+    walletTip: suspend () -> Long?
+): TransactionSubmitResult {
+    val serverHeight =
+        getLatestBlockHeight(
+            serviceMode = sdkFlags ifTor ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
+        )
+    val refusal = submissionRefusal(rawTransaction, txId, network, serverHeight, walletTip())
+    return when {
+        refusal == null -> {
+            submitUnchecked(rawTransaction, txId, sdkFlags)
+        }
+
+        // A transaction that was mined but not scanned yet looks expired from here, and the server already has it.
+        // As everywhere else, the network is trusted over the local view: that send landed, so it is not a failure.
+        // Only a block of the main chain counts. A transaction the server holds in its mempool or in an orphaned
+        // block was refused for a reason (wrong branch, expired) that keeps it from ever being mined.
+        refusal.isLocalRefusal() && isTransactionMined(txId, sdkFlags) -> {
+            Twig.info {
+                "SUCCESS (verified mined): refused locally but already submitted: " +
+                    txId.byteArray.toHexReversed()
+            }
+            TransactionSubmitResult.Success(txId)
+        }
+
+        else -> {
+            refusal
+        }
+    }
+}
+
+/**
+ * The failure to return instead of submitting, or null when the transaction may be submitted. Judged at
+ * the height after the higher of the server's latest block and the wallet's tip, so a server that lags
+ * the wallet cannot make an old-branch transaction look valid.
+ */
+internal fun submissionRefusal(
+    rawTransaction: FirstClassByteArray,
+    txId: FirstClassByteArray,
+    network: ZcashNetwork,
+    serverHeight: Response<BlockHeightUnsafe>,
+    walletTip: Long? = null
+): TransactionSubmitResult.Failure? =
+    when (serverHeight) {
+        is Response.Success -> {
+            val next = BlockHeight.new(maxOf(serverHeight.result.value, walletTip ?: 0L) + 1)
+            when (checkSubmittable(rawTransaction.byteArray, network, next)) {
+                SubmissionRefusal.WRONG_BRANCH -> {
+                    refused(txId, SUBMIT_REFUSED_WRONG_BRANCH, "Built for another consensus branch than block $next")
+                }
+
+                SubmissionRefusal.EXPIRED -> {
+                    refused(txId, SUBMIT_REFUSED_EXPIRED, "Expired before block $next")
+                }
+
+                else -> {
+                    null
+                }
+            }
+        }
+
+        is Response.Failure -> {
+            TransactionSubmitResult.Failure(
+                txId = txId,
+                grpcError = true,
+                code = serverHeight.code,
+                description = "Could not read the server height before submitting: ${serverHeight.description}",
+                isTorFailure = serverHeight is Response.Failure.OverTor,
+            )
+        }
+    }
+
+/**
+ * The wallet's own tip for the submission check: its chain tip, the end of its scan queue, which is what the engine
+ * builds against and can be ahead of the highest block it has scanned. The highest scanned block counts too, in case
+ * the chain tip cannot be read. Null when neither can be read, in which case the server's height alone is judged.
+ */
+internal suspend fun walletTipForSubmission(backend: TypesafeBackend): Long? =
+    listOfNotNull(
+        readWalletHeight("chain tip") { backend.getChainTipHeight()?.value },
+        readWalletHeight("scanned height") { backend.getMaxScannedHeight()?.value },
+    ).maxOrNull()
+
+@Suppress("TooGenericExceptionCaught")
+private inline fun readWalletHeight(what: String, read: () -> Long?): Long? =
+    try {
+        read()
+    } catch (e: Exception) {
+        Twig.warn(e) { "Could not read the wallet's $what for the submission check" }
+        null
+    }
+
+/** Whether this failure is the SDK's own refusal to submit, as opposed to an answer from the network. */
+internal fun TransactionSubmitResult.Failure.isLocalRefusal(): Boolean = isWrongConsensusBranch || isExpired
+
+private fun refused(
+    txId: FirstClassByteArray,
+    code: Int,
+    description: String
+) = TransactionSubmitResult.Failure(txId = txId, grpcError = false, code = code, description = description)
+
+private suspend fun CombinedWalletClient.submitUnchecked(
     rawTransaction: FirstClassByteArray,
     txId: FirstClassByteArray,
     sdkFlags: SdkFlags
@@ -27,7 +153,7 @@ internal suspend fun CombinedWalletClient.submitTransaction(
     // the broadcast already landed (Zebra's MempoolError::InMempool / AlreadyQueued, zcashd's
     // already-in-chain, or any future variant). Skip the misleading failure UI.
     if (initialResult is TransactionSubmitResult.Failure && !initialResult.grpcError) {
-        if (isTransactionKnownToServer(txId, sdkFlags)) {
+        if (fetchKnownTransaction(txId, sdkFlags) != null) {
             Twig.info {
                 "SUCCESS (verified known to server): submit transaction for: ${txId.byteArray.toHexReversed()}"
             }
@@ -38,11 +164,16 @@ internal suspend fun CombinedWalletClient.submitTransaction(
     return initialResult
 }
 
-@Suppress("TooGenericExceptionCaught")
-private suspend fun CombinedWalletClient.isTransactionKnownToServer(
+private suspend fun CombinedWalletClient.isTransactionMined(
     txId: FirstClassByteArray,
     sdkFlags: SdkFlags
-): Boolean =
+): Boolean = fetchKnownTransaction(txId, sdkFlags) is RawTransactionUnsafe.MainChain
+
+@Suppress("TooGenericExceptionCaught")
+private suspend fun CombinedWalletClient.fetchKnownTransaction(
+    txId: FirstClassByteArray,
+    sdkFlags: SdkFlags
+): RawTransactionUnsafe? =
     try {
         val response =
             fetchTransaction(
@@ -52,14 +183,16 @@ private suspend fun CombinedWalletClient.isTransactionKnownToServer(
                         ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
             )
         when (response) {
-            is Response.Success -> true
-            else -> false
+            is Response.Success -> response.result
+            else -> null
         }
+    } catch (e: CancellationException) {
+        throw e
     } catch (t: Throwable) {
         Twig.warn(t) {
             "Failed to verify whether server knows tx ${txId.byteArray.toHexReversed()}; treating as unknown"
         }
-        false
+        null
     }
 
 internal fun Response<SendResponseUnsafe>.toSubmitResult(txId: FirstClassByteArray): TransactionSubmitResult =
