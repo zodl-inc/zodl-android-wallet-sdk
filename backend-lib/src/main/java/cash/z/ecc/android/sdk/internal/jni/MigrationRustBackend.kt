@@ -117,6 +117,23 @@ class MigrationRustBackend private constructor() {
             clearMigrationNative(dbDataPath, networkId, accountUuidBytes)
         }
 
+    /**
+     * What the run's stored transactions say about the NU7 upgrade, for a wallet whose next height is
+     * [nextHeight]: `0` clear (or no migration), `1` a transaction built for the consensus branch before NU7
+     * can no longer be mined, `2` such a transaction may already have been sent, so wait until the wallet has
+     * scanned the block before the activation.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun migrationUpgradeVerdict(
+        dbDataPath: String,
+        networkId: Int,
+        accountUuidBytes: ByteArray,
+        nextHeight: Long
+    ): Int =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            migrationUpgradeVerdictNative(dbDataPath, networkId, accountUuidBytes, nextHeight)
+        }
+
     @Throws(RuntimeException::class)
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
@@ -161,6 +178,17 @@ class MigrationRustBackend private constructor() {
     ): LongArray =
         withContext(SdkDispatchers.DATABASE_IO) {
             blockRateSamplesNative(dbDataPath, windowBlocks)
+        }
+
+    /**
+     * The chain tip the wallet itself knows (the end of its scan queue, minus the exclusive end), read via the BUNDLED
+     * SQLite like [blockRateSamples]. It can be ahead of the highest scanned block. Returns -1 when the wallet has no
+     * chain tip yet or the read fails.
+     */
+    @Throws(RuntimeException::class)
+    suspend fun chainTipHeight(dbDataPath: String): Long =
+        withContext(SdkDispatchers.DATABASE_IO) {
+            chainTipHeightNative(dbDataPath)
         }
 
     /**
@@ -755,6 +783,15 @@ class MigrationRustBackend private constructor() {
 
         @JvmStatic
         @Throws(RuntimeException::class)
+        private external fun migrationUpgradeVerdictNative(
+            dbDataPath: String,
+            networkId: Int,
+            accountUuidBytes: ByteArray,
+            nextHeight: Long
+        ): Int
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
         private external fun hasOverdueTransfersNative(
             dbDataPath: String,
             networkId: Int,
@@ -776,6 +813,10 @@ class MigrationRustBackend private constructor() {
             dbDataPath: String,
             windowBlocks: Long
         ): LongArray
+
+        @JvmStatic
+        @Throws(RuntimeException::class)
+        private external fun chainTipHeightNative(dbDataPath: String): Long
 
         @JvmStatic
         @Throws(RuntimeException::class)

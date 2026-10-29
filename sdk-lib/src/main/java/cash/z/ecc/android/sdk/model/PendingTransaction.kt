@@ -88,26 +88,6 @@ internal fun PendingTransaction.isExpired(
     return expiryHeightLocal < latestHeight
 }
 
-private const val EXPIRY_BLOCK_COUNT = 100
-
-// if we don't have info on a pendingtx after 100 blocks then it's probably safe to stop polling!
-@Suppress("ReturnCount")
-internal fun PendingTransaction.isLongExpired(
-    latestHeight: BlockHeight?,
-    saplingActivationHeight: BlockHeight
-): Boolean {
-    val expiryHeightLocal = expiryHeight
-
-    if (latestHeight == null || expiryHeightLocal == null) {
-        return false
-    }
-
-    if (latestHeight.value < saplingActivationHeight.value || expiryHeightLocal < saplingActivationHeight) {
-        return false
-    }
-    return (latestHeight.value - expiryHeightLocal.value) > EXPIRY_BLOCK_COUNT
-}
-
 private const val ERROR_CODE_MARKED_FOR_DELETION = -9090
 
 internal fun PendingTransaction.isMarkedForDeletion(): Boolean =

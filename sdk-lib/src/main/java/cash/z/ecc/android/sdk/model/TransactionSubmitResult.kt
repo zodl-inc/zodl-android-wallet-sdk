@@ -41,7 +41,30 @@ sealed class TransactionSubmitResult(
         val code: Int,
         val description: String?,
         val isTorFailure: Boolean = false,
-    ) : TransactionSubmitResult(txId)
+    ) : TransactionSubmitResult(txId) {
+        /**
+         * True when the SDK itself refused to submit the transaction because it was built for another consensus
+         * branch than the next block's, which is what a network upgrade (NU7) changes. Nothing was sent. The
+         * transaction can never be mined, so the caller should build a new one rather than retry this one.
+         */
+        val isWrongConsensusBranch: Boolean
+            get() = !grpcError && code == CODE_WRONG_CONSENSUS_BRANCH
+
+        /**
+         * True when the SDK itself refused to submit the transaction because it had already expired by the next
+         * block. Nothing was sent.
+         */
+        val isExpired: Boolean
+            get() = !grpcError && code == CODE_EXPIRED
+
+        companion object {
+            /** The local code of a refusal for [isWrongConsensusBranch]. Not a code any server returns. */
+            const val CODE_WRONG_CONSENSUS_BRANCH = -9101
+
+            /** The local code of a refusal for [isExpired]. Not a code any server returns. */
+            const val CODE_EXPIRED = -9102
+        }
+    }
 
     /**
      * The transaction was created and is in the local wallet, but was not submitted to

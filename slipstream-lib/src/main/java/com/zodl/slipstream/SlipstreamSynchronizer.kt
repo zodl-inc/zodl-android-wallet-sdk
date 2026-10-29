@@ -45,6 +45,7 @@ import cash.z.ecc.android.sdk.internal.model.TorHttp
 import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.requireNotMainWalletAlias
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
+import cash.z.ecc.android.sdk.internal.transaction.walletTipForSubmission
 import cash.z.ecc.android.sdk.ledger.LedgerAccountBinding
 import cash.z.ecc.android.sdk.ledger.LedgerApduTransport
 import cash.z.ecc.android.sdk.ledger.LedgerSigningProgress
@@ -2305,7 +2306,7 @@ class SlipstreamSynchronizer internal constructor(
                 FastestServerFetcher(typesafeBackend, zcashNetwork, walletClientFactory, sdkFlags)
 
             val transactionReader = SlipstreamTransactionReader(dbFile)
-            val transactionsController = TransactionsController(transactionReader, engine, typesafeBackend)
+            val transactionsController = TransactionsController(transactionReader, engine, typesafeBackend, zcashNetwork)
 
             val spendService =
                 SlipstreamSpendService(
@@ -2313,6 +2314,8 @@ class SlipstreamSynchronizer internal constructor(
                     walletClient = walletClient,
                     engine = engine,
                     sdkFlags = sdkFlags,
+                    network = zcashNetwork,
+                    walletTip = { walletTipForSubmission(typesafeBackend) },
                     ensureSaplingParams = {
                         SaplingParams.ensureDownloaded(saplingParamsDir, saplingParamsTorHttpClientProvider)
                     },
@@ -2329,6 +2332,8 @@ class SlipstreamSynchronizer internal constructor(
                     backend = backend,
                     walletClientFactory = walletClientFactory,
                     sdkFlags = sdkFlags,
+                    network = zcashNetwork,
+                    walletTip = { walletTipForSubmission(typesafeBackend) },
                     engine = engine,
                     planStore = SubmitPlanStore(submitPlanPreferences),
                     saplingParamsDir = saplingParamsDir,
@@ -2343,8 +2348,9 @@ class SlipstreamSynchronizer internal constructor(
                         walletClient.submitTransaction(
                             FirstClassByteArray(candidate.raw),
                             FirstClassByteArray(candidate.txId),
-                            sdkFlags
-                        )
+                            sdkFlags,
+                            zcashNetwork
+                        ) { walletTipForSubmission(typesafeBackend) }
                     },
                     notifyTxChange = engine::notifyTxChange
                 )

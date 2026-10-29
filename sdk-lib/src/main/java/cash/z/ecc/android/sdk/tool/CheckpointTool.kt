@@ -9,6 +9,7 @@ import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.model.Checkpoint
 import cash.z.ecc.android.sdk.internal.model.ext.from
 import cash.z.ecc.android.sdk.model.BlockHeight
+import cash.z.ecc.android.sdk.model.BlockSpacing
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -204,6 +205,24 @@ internal object CheckpointTool {
     private const val MILLIS_IN_HOUR = 3_600_000
 
     /**
+     * The average time between two checkpoints, in hours, for checkpoints at [height]. The averages above were
+     * measured at the 75 s spacing, so heights from NU7 on, which have a shorter spacing, get a proportionally
+     * shorter interval.
+     */
+    internal fun avgIntervalHoursAt(
+        network: ZcashNetwork,
+        height: Long,
+        measuredAvgHours: Float
+    ): Float {
+        val nu7 = BlockSpacing.nu7ActivationHeight(network)
+        return if (nu7 != null && height >= nu7.value) {
+            measuredAvgHours / BlockSpacing.NU7_RATIO
+        } else {
+            measuredAvgHours
+        }
+    }
+
+    /**
      * This API takes a given date and finds out the closes checkpoint's height for it. Each block checkpoint has a
      * timestamp stored that is used for this calculation.
      *
@@ -251,7 +270,8 @@ internal object CheckpointTool {
         val timeDiff =
             (nowTimeIntervalSince1970 - date.toEpochMilliseconds()) -
                 (nowTimeIntervalSince1970 - latestCheckpointTime)
-        val blockDiffHours = ((timeDiff / MILLIS_IN_HOUR) / avgIntervalTime) * blockInterval
+        val latestAvgIntervalTime = avgIntervalHoursAt(network, latestCheckpoint.height.value, avgIntervalTime)
+        val blockDiffHours = ((timeDiff / MILLIS_IN_HOUR) / latestAvgIntervalTime) * blockInterval
 
         val heightToLookAround = (
             (latestCheckpoint.height.value - blockDiffHours.toInt()) /
@@ -296,18 +316,22 @@ internal object CheckpointTool {
 
         // The loaded checkpoint is exactly the one
         var hoursApart = (loadedCheckpoint.epochTimeMillis - date.toEpochMilliseconds()) / MILLIS_IN_HOUR
-        if (hoursApart < 0 && abs(hoursApart) < avgIntervalTime) {
+        if (hoursApart < 0 &&
+            abs(hoursApart) < avgIntervalHoursAt(network, loadedCheckpoint.height.value, avgIntervalTime)
+        ) {
             return loadedCheckpoint.height
         }
 
         if (hoursApart < 0) {
             // The loaded checkpoint is lower, increase until reached the one
             var closestHeight = loadedCheckpoint.height
-            while (abs(hoursApart) > avgIntervalTime) {
+            while (abs(hoursApart) > avgIntervalHoursAt(network, closestHeight.value, avgIntervalTime)) {
                 heightToLookAround += blockInterval
                 val newCheckpoint = loadNearest(context, network, BlockHeight.new(heightToLookAround))
                 hoursApart = (newCheckpoint.epochTimeMillis - date.toEpochMilliseconds()) / MILLIS_IN_HOUR
-                if (hoursApart < 0 && abs(hoursApart) < avgIntervalTime) {
+                if (hoursApart < 0 &&
+                    abs(hoursApart) < avgIntervalHoursAt(network, newCheckpoint.height.value, avgIntervalTime)
+                ) {
                     return newCheckpoint.height
                 } else if (hoursApart >= 0) {
                     return closestHeight

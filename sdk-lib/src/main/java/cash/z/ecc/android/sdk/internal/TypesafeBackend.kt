@@ -267,6 +267,16 @@ internal interface TypesafeBackend {
     suspend fun getMaxScannedHeight(): BlockHeight?
 
     /**
+     * The chain tip the wallet itself knows: the end of its scan queue, which its synchronizer sets from the server it
+     * syncs with. It can be ahead of [getMaxScannedHeight].
+     *
+     * @return The wallet's chain tip, or Null if it has none yet.
+     * @throws RuntimeException as a common indicator of the operation failure
+     */
+    @Throws(RuntimeException::class)
+    suspend fun getChainTipHeight(): BlockHeight? = null
+
+    /**
      * @throws RuntimeException as a common indicator of the operation failure
      */
     @Throws(RuntimeException::class)
