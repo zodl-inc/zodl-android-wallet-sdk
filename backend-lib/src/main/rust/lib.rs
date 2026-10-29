@@ -118,6 +118,7 @@ mod gift_card;
 mod ledger;
 mod migration;
 mod migration_engine;
+mod migration_gate;
 mod migration_keystone;
 mod migration_plan_cache;
 mod migration_send_max;
@@ -1025,7 +1026,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getCurren
             UnifiedAddressRequest::AllAvailableKeys,
         ) {
             Ok(Some(addr)) => {
-                let addr_str = addr.encode_receiver_preserving(&network);
+                let addr_str = addr.encode(&network);
                 let output = env
                     .new_string(addr_str)
                     .expect("Couldn't create Java string!");
@@ -1186,7 +1187,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getNextAv
 
         match db_data.get_next_available_address(account_uuid, address_request) {
             Ok(Some((ua, _))) => {
-                let addr_str = ua.encode_receiver_preserving(&network);
+                let addr_str = ua.encode(&network);
                 let output = env
                     .new_string(addr_str)
                     .expect("Couldn't create Java string!");
@@ -1920,6 +1921,33 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getMaxSca
             Ok(None) => Ok(-1),
             Err(e) => Err(anyhow!(
                 "Failed to read block metadata from WalletDb: {:?}",
+                e
+            )),
+        }
+    });
+    unwrap_exc_or(&mut env, res, -1)
+}
+
+/// The chain tip the wallet itself knows (`WalletRead::chain_height`): the end of its scan queue, which the
+/// synchronizer updates from the server it syncs with. It can be ahead of the highest scanned block. Returns -1 to
+/// signal "no chain tip known yet" across the FFI.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_getChainTipHeight<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    db_data: JString<'local>,
+    network_id: jint,
+) -> jlong {
+    let res = catch_unwind(&mut env, |env| {
+        let _span = tracing::info_span!("RustBackend.getChainTipHeight").entered();
+        let network = parse_network(network_id)?;
+        let db_data = wallet_db(system_rng(), env, network, db_data)?;
+
+        match db_data.chain_height() {
+            Ok(Some(height)) => Ok(i64::from(u32::from(height))),
+            Ok(None) => Ok(-1),
+            Err(e) => Err(anyhow!(
+                "Failed to read the chain tip from WalletDb: {:?}",
                 e
             )),
         }
@@ -3528,7 +3556,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
                 UnifiedAddressRequest::AllAvailableKeys,
             )
             .expect("At least one Unified Address should be derivable");
-        let address_str = ua.encode_receiver_preserving(&network);
+        let address_str = ua.encode(&network);
         let output = env
             .new_string(address_str)
             .expect("Couldn't create Java string!");
@@ -3555,7 +3583,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustDerivationTool_de
         // Derive the default Unified Address (containing the default Sapling payment
         // address that older SDKs used).
         let (ua, _) = ufvk.default_address(UnifiedAddressRequest::AllAvailableKeys)?;
-        let address_str = ua.encode_receiver_preserving(&network);
+        let address_str = ua.encode(&network);
         let output = env
             .new_string(address_str)
             .expect("Couldn't create Java string!");
@@ -4349,8 +4377,15 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_che
         let lwd_conn = unsafe { lwd_conn.as_mut() }
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
-        // one day's worth of blocks.
-        let max_exposure_depth = (24 * 60 * 60) / 75;
+        let cur_height = db_data
+            .chain_height()?
+            .ok_or(SqliteClientError::ChainHeightUnknown)?;
+        // The target spacing of the next block: 75 s before NU7 and 25 s from NU7 (ZIP 218).
+        let block_spacing_secs =
+            zcash_protocol::consensus::pow_target_spacing(&network, cur_height + 1).as_secs();
+
+        // one day's worth of blocks at the current target spacing: 1,152 before NU7, 3,456 from it.
+        let max_exposure_depth = u32::try_from((24 * 60 * 60) / block_spacing_secs)?;
         let addrs =
             db_data.get_ephemeral_transparent_receivers(account_uuid, max_exposure_depth, true)?;
 
@@ -4364,10 +4399,6 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_che
                     && matches!(meta.exposure(), Exposure::Exposed { .. })
             })
             .min_by_key(|(_, meta)| meta.next_check_time());
-
-        let cur_height = db_data
-            .chain_height()?
-            .ok_or(SqliteClientError::ChainHeightUnknown)?;
 
         let mut found = None;
         if let Some((addr, meta)) = selected_addr_meta {
@@ -4407,7 +4438,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_model_TorWalletClient_che
                 let offset_blocks = blocks_since_exposure.log2();
                 // Convert the offset in blocks to an offset in seconds; this will always fit in a
                 // u32.
-                let offset_seconds = (offset_blocks * 75.0).round() as u32;
+                let offset_seconds = (offset_blocks * block_spacing_secs as f64).round() as u32;
                 db_data.schedule_next_check(&addr, offset_seconds)?;
             }
         }
@@ -4778,7 +4809,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOr
 #[cfg(test)]
 mod tests {
     use zcash_client_backend::data_api::{
-        Account as _, MaxSpendMode,
+        MaxSpendMode,
         testing::{AddressType, TestBuilder, TestState},
         wallet::{
             ConfirmationsPolicy, SpendingKeys, create_proposed_transactions,

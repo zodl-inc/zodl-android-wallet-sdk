@@ -1,7 +1,7 @@
 [toolchain]
 # The single source of truth for the toolchain: CI's setup action reads this
 # channel rather than pinning a version of its own.
-channel = "1.92.0"
+channel = "1.99.1"
 targets = [
     "armv7-linux-androideabi",
     "aarch64-linux-android",

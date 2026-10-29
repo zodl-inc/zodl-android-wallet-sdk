@@ -4,6 +4,7 @@ import cash.z.ecc.android.sdk.internal.TypesafeBackend
 import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.TransactionOverview
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import com.zodl.slipstream.internal.SlipstreamEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -34,6 +35,7 @@ internal class TransactionsController(
     private val reader: VisibleTransactionRows,
     private val engine: SlipstreamEngine,
     private val typesafeBackend: TypesafeBackend,
+    private val network: ZcashNetwork? = null,
 ) {
     val allTransactions: Flow<List<TransactionOverview>> = visibleTransactions(accountUuid = null)
 
@@ -70,7 +72,7 @@ internal class TransactionsController(
             emitAll(
                 combine(rows, engine.networkHeight) { latestRows, networkHeight ->
                     val latestHeight = latestHeight(networkHeight, cache)
-                    latestRows.map { row -> TransactionOverviewCursor.fromRow(row, latestHeight) }
+                    latestRows.map { row -> TransactionOverviewCursor.fromRow(row, latestHeight, network = network) }
                 }
             )
         }.flowOn(Dispatchers.Default)

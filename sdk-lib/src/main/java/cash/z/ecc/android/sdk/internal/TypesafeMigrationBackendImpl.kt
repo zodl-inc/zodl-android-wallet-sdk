@@ -67,6 +67,13 @@ internal class TypesafeMigrationBackendImpl(
         account: AccountUuid
     ): Int = rustBackend().clearMigration(dbDataPath, network.id, account.value)
 
+    override suspend fun migrationUpgradeVerdict(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        nextHeight: Long
+    ): Int = rustBackend().migrationUpgradeVerdict(dbDataPath, network.id, account.value, nextHeight)
+
     override suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

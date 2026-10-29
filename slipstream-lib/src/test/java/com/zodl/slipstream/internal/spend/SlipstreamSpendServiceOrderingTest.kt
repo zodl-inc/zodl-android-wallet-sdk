@@ -6,8 +6,10 @@ import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.Response
 import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
 import com.zodl.slipstream.internal.SlipstreamEngine
@@ -51,6 +53,8 @@ class SlipstreamSpendServiceOrderingTest {
 
             val rawBytes = byteArrayOf(9, 9, 9)
             val rawTransaction = FirstClassByteArray(rawBytes)
+            `when`(walletClient.getLatestBlockHeight(ServiceMode.Direct))
+                .thenReturn(Response.Success(BlockHeightUnsafe(MAINNET_TIP)))
             `when`(walletClient.submitTransaction(rawBytes, ServiceMode.Direct))
                 .thenReturn(Response.Success(SendResponseUnsafe(code = 0, message = "ok")))
 
@@ -61,6 +65,8 @@ class SlipstreamSpendServiceOrderingTest {
                     walletClient = walletClient,
                     engine = engine,
                     sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false),
+                    network = ZcashNetwork.Mainnet,
+                    walletTip = { null },
                     ensureSaplingParams = { ensureCalled = true },
                     readRawTransaction = { rawTransaction }
                 )
@@ -76,4 +82,8 @@ class SlipstreamSpendServiceOrderingTest {
             order.verify(walletClient).submitTransaction(rawBytes, ServiceMode.Direct)
             order.verify(engine).notifyTxChange()
         }
+
+    private companion object {
+        const val MAINNET_TIP = 3_000_000L
+    }
 }

@@ -66,7 +66,7 @@ fn share_tracking_registry() -> &'static Mutex<HashMap<jlong, Arc<ShareTrackingS
 
 fn next_share_tracking_session_handle() -> anyhow::Result<jlong> {
     NEXT_SHARE_TRACKING_SESSION_HANDLE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .map_err(|_| anyhow!("share tracking session handle space exhausted"))
 }
 

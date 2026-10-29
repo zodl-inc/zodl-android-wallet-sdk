@@ -14,6 +14,7 @@ import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import com.zodl.slipstream.internal.SlipstreamEngine
@@ -43,6 +44,8 @@ internal class SlipstreamBroadcaster(
     private val backend: Backend,
     private val walletClientFactory: WalletClientFactory,
     private val sdkFlags: SdkFlags,
+    private val network: ZcashNetwork,
+    private val walletTip: suspend () -> Long?,
     private val engine: SlipstreamEngine,
     private val planStore: SubmitPlanStore,
     private val saplingParamsDir: File,
@@ -96,7 +99,7 @@ internal class SlipstreamBroadcaster(
     ): TransactionSubmitResult {
         val client = walletClientFactory.create(endpoint)
         try {
-            val result = client.submitTransaction(transaction.raw, transaction.txId, sdkFlags)
+            val result = client.submitTransaction(transaction.raw, transaction.txId, sdkFlags, network, walletTip)
             planStore.recordSubmitEndpoint(transaction.txId, endpoint)
             engine.notifyTxChange()
             return result

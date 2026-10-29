@@ -74,7 +74,7 @@ fn db_by_key() -> &'static Mutex<HashMap<DbKey, Weak<VotingDbHandle>>> {
 
 fn next_handle() -> anyhow::Result<jlong> {
     NEXT_DB_HANDLE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .map_err(|_| anyhow!("voting DB handle space exhausted"))
 }
 

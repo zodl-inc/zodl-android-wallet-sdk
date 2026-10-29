@@ -61,6 +61,14 @@ internal interface TypesafeMigrationBackend {
         account: AccountUuid
     ): Int
 
+    /** See `MigrationRustBackend.migrationUpgradeVerdict`: 0 clear, 1 interrupted, 2 await scan. */
+    suspend fun migrationUpgradeVerdict(
+        dbDataPath: String,
+        network: ZcashNetwork,
+        account: AccountUuid,
+        nextHeight: Long
+    ): Int
+
     suspend fun hasOverdueTransfers(
         dbDataPath: String,
         network: ZcashNetwork,

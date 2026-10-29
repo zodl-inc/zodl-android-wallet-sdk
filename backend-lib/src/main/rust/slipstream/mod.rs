@@ -90,8 +90,31 @@ const SNAPSHOT_CTOR: &str = "(JJJJJIJZJZIJZJ)V";
 const EVENT_CTOR: &str = "(IJ)V";
 const RESTORE_ANCHOR_CTOR: &str = "(J[B)V";
 
-/// [E-2] Tip-freshness survives a stop→start hop shorter than this (SDKFlags parity).
+/// [E-2] Tip-freshness survives a stop→start hop shorter than this (SDKFlags parity). It is the
+/// window at the 75 s target spacing (1.6 target blocks), and the fallback when the scanned height
+/// is unknown; see [`tip_fresh_stop_window`].
 const TIP_FRESH_STOP_WINDOW: Duration = Duration::from_secs(120);
+
+/// [E-2] The stop→start window as 1.6 target blocks of the block after the last scanned one, so
+/// it is 120 s before NU7 and 40 s from NU7 (ZIP 218). Falls back to [`TIP_FRESH_STOP_WINDOW`]
+/// when no block has been scanned yet.
+fn tip_fresh_stop_window(network: &Network, db_path: &str) -> Duration {
+    stop_window_after(network, max_scanned_height(db_path).ok().flatten())
+}
+
+/// The window for a wallet whose last scanned block is `scanned`.
+fn stop_window_after(network: &Network, scanned: Option<u32>) -> Duration {
+    scanned
+        .and_then(|h| h.checked_add(1))
+        .map(|next| {
+            zcash_protocol::consensus::pow_target_spacing(
+                network,
+                zcash_protocol::consensus::BlockHeight::from_u32(next),
+            ) * 8
+                / 5
+        })
+        .unwrap_or(TIP_FRESH_STOP_WINDOW)
+}
 
 // ════════════════════════════════════════════════════════════════════════════════════════
 // Exception handling — our own `unwrap_exc_or` twin (modeled on the upstream backend-lib's
@@ -349,6 +372,8 @@ fn open_handle(
         state: Arc::new(Mutex::new(SyncState::Idle)),
         events: Arc::new(Mutex::new(Vec::new())),
         task: None,
+        // Nothing has been aborted yet. The engine's own bounded stop records here any pass it
+        // could not wait out; this module still settles passes with its own helpers.
         unfinished_passes: Vec::new(),
         pass_lock: Arc::new(tokio::sync::Mutex::new(())),
         endpoint: Endpoint {
@@ -462,17 +487,21 @@ fn start_session(
     birthday: u64,
     tor_dir: Option<String>,
 ) -> anyhow::Result<()> {
-    // [E-2] Capture the tip-refresh baseline BEFORE the pass; a >120 s stop→start gap
+    // [E-2] Capture the tip-refresh baseline BEFORE the pass; a stop→start gap beyond the window
     // re-masks freshness until the new pass proves the tip again.
     let refreshes_now = handle.inner.progress.tip_refreshes();
     handle
         .tip_refreshes_at_run_start
         .store(refreshes_now, Ordering::Relaxed);
+    let stop_window = tip_fresh_stop_window(
+        &handle.inner.network,
+        &handle.inner.wallet_db_path.to_string_lossy(),
+    );
     let stale_stop = handle
         .last_stop_at
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .map(|t| t.elapsed() >= TIP_FRESH_STOP_WINDOW)
+        .map(|t| t.elapsed() >= stop_window)
         .unwrap_or(false);
     if stale_stop {
         handle.tip_fresh.store(false, Ordering::Relaxed);
@@ -546,6 +575,7 @@ fn start_session(
     cfg.anchor_retention = anchor_retention_floor.map(|floor| {
         AnchorRetention::new(
             BlockHeight::from(floor),
+            zcash_protocol::zip318::BlockSpacing::for_network(&h.network),
             crate::anchor_retention_interval(zcash_protocol::consensus::Parameters::network_type(
                 &h.network,
             )),
@@ -1059,6 +1089,21 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_free<'local>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_window_is_120s_before_nu7_and_40s_from_it() {
+        let main = zcash_protocol::consensus::Network::MainNetwork;
+        assert_eq!(
+            stop_window_after(&main, Some(3_543_403)),
+            Duration::from_secs(120)
+        );
+        // The block after 3,543,404 is the first NU7 block.
+        assert_eq!(
+            stop_window_after(&main, Some(3_543_404)),
+            Duration::from_secs(40)
+        );
+        assert_eq!(stop_window_after(&main, None), TIP_FRESH_STOP_WINDOW);
+    }
 
     #[test]
     fn classify_ok_returns_value_and_no_message() {

@@ -153,7 +153,7 @@ fn registry() -> &'static Mutex<HashMap<jlong, Arc<RoundSessionHandle>>> {
 
 fn next_session_handle() -> anyhow::Result<jlong> {
     NEXT_SESSION_HANDLE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .map_err(|_| anyhow!("round session handle space exhausted"))
 }
 

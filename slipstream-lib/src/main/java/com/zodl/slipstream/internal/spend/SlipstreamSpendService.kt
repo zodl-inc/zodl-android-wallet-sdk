@@ -21,6 +21,7 @@ import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.internal.runCatchingCancellable
@@ -45,11 +46,14 @@ import kotlinx.coroutines.withContext
  * third-party reader - this class adds no new exposure beyond what D5's WAL/busy_timeout pact
  * already covers.
  */
+@Suppress("LongParameterList")
 internal class SlipstreamSpendService(
     private val backend: Backend,
     private val walletClient: CombinedWalletClient,
     private val engine: SlipstreamEngine,
     private val sdkFlags: SdkFlags,
+    private val network: ZcashNetwork,
+    private val walletTip: suspend () -> Long?,
     /** Production: `{ SaplingParams.ensureDownloaded(dir) }`. Injected so tests never trigger a real download. */
     private val ensureSaplingParams: suspend () -> Unit,
     private val readRawTransaction: suspend (FirstClassByteArray) -> FirstClassByteArray
@@ -174,7 +178,7 @@ internal class SlipstreamSpendService(
             engine.notifyTxChange()
             for (txId in txIds) {
                 val txIdBytes = FirstClassByteArray(txId)
-                emit(walletClient.submitTransaction(readRawTransaction(txIdBytes), txIdBytes, sdkFlags))
+                emit(walletClient.submitTransaction(readRawTransaction(txIdBytes), txIdBytes, sdkFlags, network, walletTip))
             }
             engine.notifyTxChange()
         }
@@ -207,7 +211,7 @@ internal class SlipstreamSpendService(
             val txId = backend.extractAndStoreTxFromPczt(pcztWithProofs.toByteArray(), pcztWithSignatures.toByteArray())
             engine.notifyTxChange()
             val txIdBytes = FirstClassByteArray(txId)
-            emit(walletClient.submitTransaction(readRawTransaction(txIdBytes), txIdBytes, sdkFlags))
+            emit(walletClient.submitTransaction(readRawTransaction(txIdBytes), txIdBytes, sdkFlags, network, walletTip))
             engine.notifyTxChange()
         }
 

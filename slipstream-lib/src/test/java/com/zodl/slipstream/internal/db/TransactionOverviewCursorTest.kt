@@ -3,6 +3,7 @@ package com.zodl.slipstream.internal.db
 import cash.z.ecc.android.sdk.internal.model.ConfirmationsPolicy
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.TransactionState
+import cash.z.ecc.android.sdk.model.ZcashNetwork
 import com.zodl.slipstream.model.SlipstreamTransactionRow
 import org.junit.Test
 import kotlin.test.assertEquals
@@ -240,6 +241,72 @@ class TransactionOverviewCursorTest {
         assertEquals(TransactionState.Expired, overview.transactionState)
         // 100 blocks past expiry, at 75s/block = 7_500s ago.
         assertEquals(1_800_000_000L - 7_500L, overview.blockTimeEpochSeconds)
+    }
+
+    private fun expiredRowAt(expiryHeight: Long) =
+        SlipstreamTransactionRow(
+            txId = ByteArray(32) { 7 },
+            minedHeight = null,
+            expiryHeight = expiryHeight,
+            txIndex = null,
+            raw = null,
+            accountBalanceDelta = -1,
+            totalSpent = 1,
+            totalReceived = 0,
+            feePaid = null,
+            hasChange = false,
+            sentNoteCount = 1,
+            receivedNoteCount = 0,
+            memoCount = 0,
+            blockTime = null,
+            isShielding = false,
+            isExpiredUnmined = 0L,
+            zip318Kind = 0,
+            spentNoteCount = 0,
+            poolCrossingValue = null,
+            trustStatus = null
+        )
+
+    @Test
+    fun expired_estimate_with_a_network_before_nu7_is_still_75s_per_block() {
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                row = expiredRowAt(3_000_000),
+                latestHeight = BlockHeight.new(3_000_100),
+                nowEpochSeconds = 1_800_000_000L,
+                network = ZcashNetwork.Mainnet
+            )
+
+        assertEquals(1_800_000_000L - 7_500L, overview.blockTimeEpochSeconds)
+    }
+
+    @Test
+    fun expired_estimate_with_a_network_after_nu7_is_25s_per_block() {
+        val nu7 = 3_543_405L
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                row = expiredRowAt(nu7 + 100),
+                latestHeight = BlockHeight.new(nu7 + 200),
+                nowEpochSeconds = 1_800_000_000L,
+                network = ZcashNetwork.Mainnet
+            )
+
+        assertEquals(1_800_000_000L - 2_500L, overview.blockTimeEpochSeconds)
+    }
+
+    @Test
+    fun expired_estimate_with_a_network_splits_a_gap_that_spans_nu7_activation() {
+        val nu7 = 3_543_405L
+        val overview =
+            TransactionOverviewCursor.fromRow(
+                row = expiredRowAt(nu7 - 40),
+                latestHeight = BlockHeight.new(nu7 + 60),
+                nowEpochSeconds = 1_800_000_000L,
+                network = ZcashNetwork.Mainnet
+            )
+
+        // (nu7-40, nu7+60]: 39 heights below NU7 at 75 s and 61 heights from NU7 at 25 s.
+        assertEquals(1_800_000_000L - (39L * 75 + 61L * 25), overview.blockTimeEpochSeconds)
     }
 
     /** A real block_time on the row is always used verbatim — the estimate is a fallback only. */
