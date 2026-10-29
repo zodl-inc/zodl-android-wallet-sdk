@@ -137,7 +137,7 @@ internal class RelayConnections(
         OkHttpClient
             .Builder()
             .connectionPool(ConnectionPool(MAX_IDLE_CONNECTIONS, KEEP_ALIVE_SECONDS, TimeUnit.SECONDS))
-            .pingInterval(10, TimeUnit.SECONDS)
+            .pingInterval(PING_INTERVAL_SECONDS, TimeUnit.SECONDS)
             .followRedirects(false)
             .followSslRedirects(false)
             .retryOnConnectionFailure(false)
@@ -208,6 +208,13 @@ internal class RelayConnections(
         const val MEASURED_RELAY_IDLE_TIMEOUT_SECONDS = 600L
 
         private const val MAX_IDLE_CONNECTIONS = 5
+
+        /**
+         * HTTP/2 PING interval: a connection that does not answer one within this time is closed, so a
+         * silently lost multiplexed connection fails its calls instead of holding them until their own
+         * deadlines (ZIP #10 "Relay connection", reference 10 s).
+         */
+        private const val PING_INTERVAL_SECONDS = 10L
 
         private const val CONNECT_TIMEOUT_MS = 15_000
 
