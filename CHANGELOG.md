@@ -54,6 +54,24 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tor-off voting against predefined servers is unavailable (fails closed).
 
 ### Changed
+- **OHTTP relay connections (Tor off).** `DirectOhttpSender` reuses relay connections instead of opening one
+  `HttpURLConnection` per request with `Connection: close`: one process-wide OkHttp 5.1.0 pool, HTTP/2 when
+  the relay negotiates it. Under a link saturated by the sync download, every request used to pay a new
+  TCP+TLS handshake. The pool is rotated whole every 10 minutes (slipstream's connection age and the ZIP's
+  reference rotation for Tor-off mode). An exchange in flight finishes on the old connection, and idle
+  connections are closed at that age by a timer. An exchange whose own deadline is longer than the lifetime
+  shares the pool, bounded by its watchdog.
+- **One exchange is one request.** The relay leg never retries at the HTTP layer: no automatic re-post on a
+  503 with `Retry-After`, a 421 or a redirect, because a resent sealed request is refused by the gateway as a
+  replay. The sealed body is one-shot, and an answer with a prior response is not opened. The sender adds
+  `Accept-Encoding: identity` and a fixed `User-Agent` when the caller sets none, so OkHttp's transparent gzip
+  and its `okhttp/x.y.z` agent never reach the relay.
+- **Slipstream engine relay and Tor connections** (slipstream-internal patch in `backend-lib/Cargo.toml`):
+  - HTTP/2 keepalive PINGs on pooled relay connections;
+  - the shared Tor connection is dropped after any failed tree-state request, so the next request opens a
+    fresh one;
+  - each fetch worker uses its own Tor circuit;
+  - SQLite checkpoint and cache tuning.
 - **Breaking: Request freshness.** Every OHTTP inner request now carries an `ohttp-freshness` header with
   the estimated gateway clock (offset learned from the authenticated `ohttp-server-time` in prior responses).
   Gateways enforce freshness since 2026-10-11, so older builds cannot use OHTTP. A freshness refusal (inner
@@ -108,6 +126,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routing Direct.
 
 ### Fixed
+- An OHTTP call whose deadline passes mid-exchange now ends with `DEADLINE_EXCEEDED`, not `UNAVAILABLE`. The
+  exchange budget is rounded up to the next millisecond, so the sender's watchdog can no longer fire just
+  before the gRPC deadline.
+- A response body that ends after the exchange deadline is reported as the timeout, never as a short or late
+  successful response.
 - Key Configuration responses over Tor are now bounded to 64 KiB while reading the stream, not
   after the full body has crossed JNI. The native `httpGet`/`httpPost` functions gained a
   `maxResponseBytes` parameter; OHTTP key config fetches use 64 KiB, sealed relay responses use
