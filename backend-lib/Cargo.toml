@@ -309,10 +309,10 @@ crate-type = ["staticlib", "cdylib"]
 # The slipstream engine with the OHTTP transport lives in the private slipstream-internal
 # repository until a published zodl-slipstream release carries it. This patch makes the
 # `slipstream-core` dependency above resolve from slipstream-internal `feature/ohttp-perf-1`
-# (62a6cc03, crate 0.4.0 on the NU7 release crates: zcash_client_backend 0.25.0,
+# (7345487b, crate 0.4.0 on the NU7 release crates: zcash_client_backend 0.25.0,
 # zcash_client_sqlite 0.23.0). The entry goes once a published zodl-slipstream release
 # contains the OHTTP transport. No SDK release may be cut while it exists.
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "62a6cc036e7d85a9fe70fdcab5529dac77c4a34b" }
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "7345487b6bbada69f0833a11749eb349178b1606" }
 # DO NOT ALTER THIS COMMENT
 #
 # This section is left in place to ensure that development against in-progress
