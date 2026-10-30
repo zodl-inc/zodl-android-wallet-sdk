@@ -305,7 +305,8 @@ const STOP_BUDGET: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StopKind {
     /// [`CoreHandle::stop`]: backgrounding, shutdown, a restart that changes nothing in the
-    /// wallet.
+    /// wallet. Since slipstream 7345487b it also asks the running session to end at its next
+    /// block before the abort: an abort alone cannot reach a scan fed by prefetched chunks.
     Plain,
     /// [`CoreHandle::stop_for_wallet_change`]: right before the host changes the wallet (an
     /// account import or deletion, a rewind). The engine asks the running session to end at its
@@ -1275,9 +1276,10 @@ mod tests {
     }
 
     /// The plain stop (backgrounding, shutdown, a restart) is the engine's `stop`: Idle, the
-    /// tip-fresh stamp, and no request for the scan to end early.
+    /// tip-fresh stamp, and, like the wallet-change stop, the request that ends a running scan at
+    /// its next block (an abort alone cannot reach a scan fed by prefetched chunks).
     #[test]
-    fn a_plain_stop_goes_idle_and_stamps_the_stop_without_asking_the_scan_to_stop() {
+    fn a_plain_stop_goes_idle_stamps_the_stop_and_asks_the_scan_to_stop() {
         let mut handle = handle_in(SyncState::Syncing);
 
         let report = stop_engine(&mut handle, StopKind::Plain, Duration::from_millis(50));
@@ -1289,14 +1291,14 @@ mod tests {
             "the 120 s tip-fresh window starts at the stop"
         );
         assert!(
-            !handle.inner.progress.stop_requested(),
-            "a plain stop must not ask the scan to stop early"
+            handle.inner.progress.stop_requested(),
+            "a plain stop must ask the running session to stop at its next block"
         );
     }
 
     /// The stop a host makes right before it changes the wallet is the engine's
-    /// `stop_for_wallet_change`: everything the plain stop does, plus the request that ends a
-    /// running scan at its next block.
+    /// `stop_for_wallet_change`: the same stop as the plain one (it, too, ends a running scan at
+    /// its next block); hosts use it right before a wallet change.
     #[test]
     fn a_stop_for_a_wallet_change_asks_the_scan_to_stop() {
         let mut handle = handle_in(SyncState::Syncing);
