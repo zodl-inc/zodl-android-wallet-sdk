@@ -9,16 +9,16 @@
 //! snapshot and wakes waiters; Kotlin blocks in `await` on its own IO thread.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jlong, jstring};
+use jni::sys::{jboolean, jlong, jlongArray, jstring};
 use slipstream_core::transport_health::{
-    self, HealthRoute, HealthSnapshot, HealthSubscription,
+    self, HealthOutcome, HealthPurpose, HealthRoute, HealthScope, HealthSnapshot, HealthStage,
+    HealthSubscription,
 };
 
 use super::{catch_unwind, unwrap_exc_or};
@@ -42,30 +42,78 @@ fn registry() -> &'static Mutex<HashMap<u64, Arc<Entry>>> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn render(snapshot: &HealthSnapshot) -> String {
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "gen={} version={} n={}",
-        snapshot.generation,
-        snapshot.version,
-        snapshot.observations.len()
-    );
+/// Longs per observation in the encoded snapshot (see [`encode`]).
+const STRIDE: usize = 14;
+
+/// Flat encoding of a snapshot, decoded by `OhttpHealthNative.decode` in Kotlin (no JNI class lookups):
+/// `[generation, version, count]`, then per observation [`STRIDE`] longs:
+/// `scope, outcomeCategory, retryNotBeforeNs, stage, purpose, historical, version, requestId,
+/// startedAtNs, observedAtNs, hasOperation, operationStartedAtNs, operationIdHigh, operationIdLow`.
+/// Enum values are the engine's declaration order, which the Kotlin enums mirror.
+fn encode(snapshot: &HealthSnapshot) -> Vec<i64> {
+    let mut out = Vec::with_capacity(3 + snapshot.observations.len() * STRIDE);
+    out.push(snapshot.generation as i64);
+    out.push(snapshot.version as i64);
+    out.push(snapshot.observations.len() as i64);
     for o in &snapshot.observations {
-        let _ = writeln!(
-            out,
-            "scope={:?} outcome={:?} stage={:?} purpose={:?} hist={} req={} ver={} started={} observed={} op={}",
-            o.scope,
-            o.outcome,
-            o.stage,
-            o.purpose,
-            o.historical,
-            o.request_id,
-            o.version,
-            o.started_at_nanoseconds,
-            o.observed_at_nanoseconds,
-            o.operation.is_some()
-        );
+        let (category, retry) = match o.outcome {
+            HealthOutcome::Usable => (0, 0),
+            HealthOutcome::TransportUnavailable => (1, 0),
+            HealthOutcome::BackendUnavailable => (2, 0),
+            HealthOutcome::RateLimited {
+                retry_not_before_nanoseconds,
+            } => (3, retry_not_before_nanoseconds as i64),
+            HealthOutcome::PolicyRejected => (4, 0),
+            HealthOutcome::ConfigurationFailure => (5, 0),
+            HealthOutcome::ResponseRejected => (6, 0),
+            HealthOutcome::Cancelled => (7, 0),
+            HealthOutcome::Inconclusive => (8, 0),
+        };
+        let scope = match o.scope {
+            HealthScope::Route => 0,
+            HealthScope::Lightwalletd => 1,
+            HealthScope::ExchangeRates => 2,
+            HealthScope::Swaps => 3,
+            HealthScope::Voting => 4,
+            HealthScope::Flexa => 5,
+            HealthScope::Other => 6,
+        };
+        let stage = match o.stage {
+            HealthStage::Connection => 0,
+            HealthStage::KeyConfiguration => 1,
+            HealthStage::ResponseHead => 2,
+            HealthStage::ResponseBody => 3,
+            HealthStage::Complete => 4,
+        };
+        let purpose = match o.purpose {
+            HealthPurpose::Background => 0,
+            HealthPurpose::UserOperation => 1,
+            HealthPurpose::Diagnostic => 2,
+        };
+        let (has_op, op_started, id_hi, id_lo) = match o.operation {
+            Some(op) => {
+                let hi = i64::from_be_bytes(op.id[0..8].try_into().unwrap());
+                let lo = i64::from_be_bytes(op.id[8..16].try_into().unwrap());
+                (1, op.started_at_nanoseconds as i64, hi, lo)
+            }
+            None => (0, 0, 0, 0),
+        };
+        out.extend_from_slice(&[
+            scope,
+            category,
+            retry,
+            stage,
+            purpose,
+            o.historical as i64,
+            o.version as i64,
+            o.request_id as i64,
+            o.started_at_nanoseconds as i64,
+            o.observed_at_nanoseconds as i64,
+            has_op,
+            op_started,
+            id_hi,
+            id_lo,
+        ]);
     }
     out
 }
@@ -118,7 +166,7 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_subscribe<'local>(
 }
 
 /// Blocks until a snapshot newer than `since_version` is available, the subscription is closed,
-/// or `timeout_ms` elapses. Returns a text rendering, or null on timeout/closed/unknown id.
+/// or `timeout_ms` elapses. Returns the [`encode`]d snapshot, or null on timeout/closed/unknown id.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_await<'local>(
     mut env: JNIEnv<'local>,
@@ -126,7 +174,7 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_await<'local>(
     id: jlong,
     since_version: jlong,
     timeout_ms: jlong,
-) -> jstring {
+) -> jlongArray {
     let res = catch_unwind(&mut env, |env| {
         let entry = registry().lock().unwrap().get(&(id as u64)).cloned();
         let Some(entry) = entry else {
@@ -137,9 +185,11 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_await<'local>(
         loop {
             if let Some(snapshot) = guard.as_ref() {
                 if snapshot.version as i64 > since_version {
-                    let text = render(snapshot);
+                    let encoded = encode(snapshot);
                     drop(guard);
-                    return Ok(env.new_string(text)?.into_raw());
+                    let array = env.new_long_array(encoded.len() as i32)?;
+                    env.set_long_array_region(&array, 0, &encoded)?;
+                    return Ok(array.into_raw());
                 }
             }
             if *entry.latest.closed.lock().unwrap() {
@@ -185,4 +235,23 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_monotonicNowNanos<'
     _: JClass<'local>,
 ) -> jlong {
     transport_health::monotonic_time_nanoseconds() as jlong
+}
+
+/// The relay URL the engine uses for [`gateway_host`] (the same `relay_for` that keys the health route),
+/// or null when the gateway has none. Kotlin builds its health route from this so both stacks' evidence
+/// lands on one route key.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_relayUrlFor<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    gateway_host: JString<'local>,
+) -> jstring {
+    let res = catch_unwind(&mut env, |env| {
+        let host: String = env.get_string(&gateway_host)?.into();
+        match slipstream_core::ohttp::relay_for(&host) {
+            Some(relay) => Ok(env.new_string(relay)?.into_raw()),
+            None => Ok(std::ptr::null_mut()),
+        }
+    });
+    unwrap_exc_or(&mut env, res, std::ptr::null_mut())
 }
