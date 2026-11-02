@@ -1,0 +1,198 @@
+package co.electriccoin.lightwallet.client.health
+
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.flow
+
+/**
+ * Records the outcome of every Kotlin-client OHTTP request ([OhttpHealthSource.CLIENT]) and keeps the
+ * bounded retained evidence per route: the Kotlin counterpart of iOS `OHTTPHealthCenter`.
+ *
+ * Evidence never changes the caller's result. Recording must never block or throw.
+ */
+class OhttpHealthCenter(
+    private val clock: () -> Long = OhttpHealthClock::nowNanos,
+) {
+    private data class Slot(
+        val scope: OhttpHealthScope,
+        val category: Int,
+        val diagnostic: Boolean,
+    )
+
+    private val lock = Any()
+    private var nextRequestId = 0L
+    private var nextVersion = 0L
+
+    // Access-ordered and bounded like the engine's route registry (32 routes).
+    private val routes =
+        object : LinkedHashMap<OhttpHealthRoute, MutableStateFlow<OhttpHealthSnapshot>>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<OhttpHealthRoute, MutableStateFlow<OhttpHealthSnapshot>>?) =
+                size > MAX_ROUTES
+        }
+    private val retained = HashMap<OhttpHealthRoute, LinkedHashMap<Slot, OhttpHealthObservation>>()
+
+    private val completionFlow =
+        MutableSharedFlow<OhttpHealthOperationCompleted>(extraBufferCapacity = COMPLETION_BUFFER)
+
+    /** One entry per [complete] call. A slow subscriber applies backpressure after [COMPLETION_BUFFER]. */
+    val completions: SharedFlow<OhttpHealthOperationCompleted> get() = completionFlow
+
+    /**
+     * Starts the ticket of one logical request. The operation and attempt are read from the coroutine
+     * context by [beginInContext]; pass them explicitly from non-suspending code.
+     */
+    fun begin(
+        route: OhttpHealthRoute,
+        scope: OhttpHealthScope,
+        purpose: OhttpHealthPurpose = OhttpHealthPurpose.BACKGROUND,
+        operation: OhttpHealthOperation? = null,
+        attempt: OhttpHealthAttempt? = null,
+    ): OhttpHealthRequest {
+        val id =
+            synchronized(lock) {
+                nextRequestId += 1
+                nextRequestId
+            }
+        val effectivePurpose =
+            if (purpose == OhttpHealthPurpose.BACKGROUND && operation != null) {
+                OhttpHealthPurpose.USER_OPERATION
+            } else {
+                purpose
+            }
+        return OhttpHealthRequest(this, route, scope, effectivePurpose, operation, attempt, id, clock())
+    }
+
+    /** [begin] with the operation and attempt of the calling coroutine. */
+    suspend fun beginInContext(
+        route: OhttpHealthRoute,
+        scope: OhttpHealthScope,
+        purpose: OhttpHealthPurpose = OhttpHealthPurpose.BACKGROUND,
+    ): OhttpHealthRequest = begin(route, scope, purpose, currentOhttpOperation(), currentOhttpAttempt())
+
+    internal fun record(
+        request: OhttpHealthRequest,
+        scope: OhttpHealthScope,
+        outcome: OhttpHealthOutcome,
+        stage: OhttpHealthStage,
+    ) {
+        val observed = clock()
+        val observation: OhttpHealthObservation
+        synchronized(lock) {
+            nextVersion += 1
+            observation =
+                OhttpHealthObservation(
+                    source = OhttpHealthSource.CLIENT,
+                    route = request.route,
+                    scope = scope,
+                    outcome = outcome,
+                    stage = stage,
+                    version = nextVersion,
+                    requestId = request.requestId,
+                    startedAtNanos = request.startedAtNanos,
+                    observedAtNanos = observed,
+                    operation = request.operation,
+                    purpose = request.purpose,
+                )
+            val slots = retained.getOrPut(request.route) { LinkedHashMap() }
+            val slot = Slot(scope, outcome.category, request.purpose == OhttpHealthPurpose.DIAGNOSTIC)
+            val existing = slots[slot]
+            // A late response of an older request must not replace newer evidence of its own kind.
+            if (existing == null || existing.observedAtNanos <= observed) slots[slot] = observation
+            publish(request.route, slots)
+        }
+        request.attempt?.record(observation)
+    }
+
+    private fun publish(
+        route: OhttpHealthRoute,
+        slots: Map<Slot, OhttpHealthObservation>,
+    ) {
+        val snapshot =
+            OhttpHealthSnapshot(
+                version = slots.values.maxOfOrNull { it.version } ?: 0L,
+                observations = slots.values.sortedBy { it.version },
+            )
+        val flow = routes.getOrPut(route) { MutableStateFlow(snapshot) }
+        flow.value = snapshot
+        // A route evicted from the registry also loses its retained evidence.
+        retained.keys.retainAll(routes.keys)
+    }
+
+    /** The current retained evidence of [route] (empty when none was recorded). */
+    fun snapshot(route: OhttpHealthRoute): OhttpHealthSnapshot =
+        synchronized(lock) { routes[route]?.value } ?: OhttpHealthSnapshot(0L, emptyList())
+
+    /**
+     * Coalesced updates for [route]. The first emission replays the retained history, flagged
+     * `historical`; everything after it is fresh.
+     */
+    fun updates(route: OhttpHealthRoute): Flow<OhttpHealthSnapshot> =
+        flow {
+            val state =
+                synchronized(lock) {
+                    routes.getOrPut(route) { MutableStateFlow(OhttpHealthSnapshot(0L, emptyList())) }
+                }
+            var first = true
+            state.collect { snapshot ->
+                emit(if (first) snapshot.asHistorical() else snapshot)
+                first = false
+            }
+        }
+
+    /**
+     * Publishes the business result of [operation]. [failedAttempt] selects the evidence of the one
+     * network attempt that decided the failure; without it (a local failure) the evidence is empty.
+     * Call it after the business result is published and transaction guards are released.
+     */
+    suspend fun complete(
+        operation: OhttpHealthOperation,
+        failed: Boolean,
+        failedAttempt: OhttpHealthAttempt? = null,
+    ) {
+        val observations =
+            if (failed && failedAttempt != null && failedAttempt.operation == operation) {
+                failedAttempt.terminalObservations()
+            } else {
+                emptyList()
+            }
+        completionFlow.emit(OhttpHealthOperationCompleted(operation, failed, observations))
+    }
+
+    companion object {
+        private const val MAX_ROUTES = 32
+        private const val COMPLETION_BUFFER = 64
+
+        /** The center used by the client transport. */
+        val shared: OhttpHealthCenter by lazy { OhttpHealthCenter() }
+    }
+}
+
+private fun OhttpHealthSnapshot.asHistorical() =
+    copy(observations = observations.map { it.copy(historical = true) })
+
+/** The ticket of one logical request: its start identity and recipients never change on completion. */
+class OhttpHealthRequest internal constructor(
+    private val center: OhttpHealthCenter,
+    val route: OhttpHealthRoute,
+    val scope: OhttpHealthScope,
+    val purpose: OhttpHealthPurpose,
+    val operation: OhttpHealthOperation?,
+    internal val attempt: OhttpHealthAttempt?,
+    val requestId: Long,
+    val startedAtNanos: Long,
+) {
+    /** Records the request's outcome in its own scope. */
+    fun record(
+        outcome: OhttpHealthOutcome,
+        stage: OhttpHealthStage,
+    ) = center.record(this, scope, outcome, stage)
+
+    /**
+     * Records that the route itself answered (an outer response arrived) as [OhttpHealthScope.ROUTE]
+     * evidence, whatever the inner result was.
+     */
+    fun recordRouteUsable(stage: OhttpHealthStage) =
+        center.record(this, OhttpHealthScope.ROUTE, OhttpHealthOutcome.Usable, stage)
+}
