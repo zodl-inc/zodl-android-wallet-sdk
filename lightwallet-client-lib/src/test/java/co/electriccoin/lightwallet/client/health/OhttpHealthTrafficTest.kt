@@ -46,15 +46,23 @@ class OhttpHealthTrafficTest {
     }
 
     @Test
-    fun outerRelayStatusesAreClassifiedByKind() {
+    fun outerRelayStatusesAreClassifiedLikeTheEngine() {
         fun outcome(status: Int) = OhttpHealthTraffic.outcome(OhttpException("x", status), now)
+        // A relay or gateway 5xx: the route does not deliver.
         assertEquals(OhttpHealthOutcome.TransportUnavailable, outcome(502))
         assertEquals(OhttpHealthOutcome.TransportUnavailable, outcome(503))
+        // 501 and 505 are configuration problems, not outage evidence.
+        assertEquals(OhttpHealthOutcome.ConfigurationFailure, outcome(501))
+        assertEquals(OhttpHealthOutcome.ConfigurationFailure, outcome(505))
+        assertEquals(OhttpHealthOutcome.PolicyRejected, outcome(401))
         assertEquals(OhttpHealthOutcome.PolicyRejected, outcome(403))
-        assertEquals(OhttpHealthOutcome.PolicyRejected, outcome(426))
-        assertEquals(OhttpHealthOutcome.ResponseRejected, outcome(400))
+        assertEquals(OhttpHealthOutcome.PolicyRejected, outcome(407))
+        assertEquals(OhttpHealthOutcome.PolicyRejected, outcome(451))
+        listOf(400, 404, 405, 406, 409, 415, 422, 426).forEach {
+            assertEquals(it.toString(), OhttpHealthOutcome.ConfigurationFailure, outcome(it))
+        }
         assertEquals(OhttpHealthOutcome.ResponseRejected, outcome(413))
-        assertEquals(OhttpHealthOutcome.Inconclusive, outcome(302))
+        assertEquals(OhttpHealthOutcome.ResponseRejected, outcome(302))
     }
 
     @Test
@@ -71,6 +79,9 @@ class OhttpHealthTrafficTest {
         assertEquals(OhttpHealthOutcome.BackendUnavailable, OhttpHealthTraffic.innerStatusOutcome(503, nowNanos = now))
         assertEquals(OhttpHealthOutcome.Usable, OhttpHealthTraffic.innerStatusOutcome(200, nowNanos = now))
         assertEquals(OhttpHealthOutcome.PolicyRejected, OhttpHealthTraffic.innerStatusOutcome(401, nowNanos = now))
+        assertEquals(OhttpHealthOutcome.ConfigurationFailure, OhttpHealthTraffic.innerStatusOutcome(426, nowNanos = now))
+        assertEquals(OhttpHealthOutcome.ConfigurationFailure, OhttpHealthTraffic.innerStatusOutcome(501, nowNanos = now))
+        assertEquals(OhttpHealthOutcome.ResponseRejected, OhttpHealthTraffic.innerStatusOutcome(404, nowNanos = now))
     }
 
     @Test
@@ -81,6 +92,7 @@ class OhttpHealthTrafficTest {
         assertEquals(OhttpHealthOutcome.BackendUnavailable, OhttpHealthTraffic.grpcOutcome(4))
         assertEquals(OhttpHealthOutcome.PolicyRejected, OhttpHealthTraffic.grpcOutcome(16))
         assertEquals(OhttpHealthOutcome.ResponseRejected, OhttpHealthTraffic.grpcOutcome(8))
+        assertEquals(OhttpHealthOutcome.ConfigurationFailure, OhttpHealthTraffic.grpcOutcome(12))
     }
 
     @Test

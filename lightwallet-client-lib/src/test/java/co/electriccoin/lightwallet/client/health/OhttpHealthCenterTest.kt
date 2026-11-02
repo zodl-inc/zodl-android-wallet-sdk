@@ -4,6 +4,8 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
@@ -103,8 +105,10 @@ class OhttpHealthCenterTest {
                 .begin(route, OhttpHealthScope.LIGHTWALLETD)
                 .record(OhttpHealthOutcome.TransportUnavailable, OhttpHealthStage.CONNECTION)
             val update = fresh.await()
-            assertTrue(update.observations.any { it.outcome == OhttpHealthOutcome.TransportUnavailable })
-            assertTrue(update.observations.none { it.historical })
+            // The new failure is live; what was retained when the collection began stays history on every emission.
+            val failure = update.observations.single { it.outcome == OhttpHealthOutcome.TransportUnavailable }
+            assertFalse(failure.historical)
+            assertTrue(update.observations.filter { it.outcome == OhttpHealthOutcome.Usable }.all { it.historical })
         }
 
     @Test
@@ -280,4 +284,44 @@ class OhttpHealthCenterTest {
             val request = withOhttpDecisiveCall { center.beginInContext(route, OhttpHealthScope.LIGHTWALLETD) }
             assertNull(request.operation)
         }
+
+    @Test
+    fun replayedHistoryStaysHistoricalOnLaterEmissionsUntilANewerObservationReplacesIt() =
+        runBlocking {
+            center.begin(route, OhttpHealthScope.LIGHTWALLETD)
+                .record(OhttpHealthOutcome.TransportUnavailable, OhttpHealthStage.CONNECTION)
+            val updates = mutableListOf<OhttpHealthSnapshot>()
+            val collector = async(start = CoroutineStart.UNDISPATCHED) { center.updates(route).take(3).toList(updates) }
+
+            // An unrelated new observation re-delivers the replayed failure: it is still history.
+            center.begin(route, OhttpHealthScope.EXCHANGE_RATES).record(OhttpHealthOutcome.Usable, OhttpHealthStage.COMPLETE)
+            yield()
+            // A newer failure of the same kind replaces the replayed one, and is live.
+            center.begin(route, OhttpHealthScope.LIGHTWALLETD)
+                .record(OhttpHealthOutcome.TransportUnavailable, OhttpHealthStage.CONNECTION)
+            collector.await()
+
+            val afterUnrelated = updates[1].observations.single { it.scope == OhttpHealthScope.LIGHTWALLETD }
+            assertTrue(afterUnrelated.historical)
+            val afterReplacement = updates[2].observations.single { it.scope == OhttpHealthScope.LIGHTWALLETD }
+            assertFalse(afterReplacement.historical)
+        }
+
+    @Test
+    fun aRouteUsableThatStartedLaterSupersedesOneObservedLater() {
+        // A starts before B but is observed after it; recovery is judged by the start of the success, so B wins.
+        var t = 0L
+        val ordered = OhttpHealthCenter(clock = { t })
+        t = 5
+        val a = ordered.begin(route, OhttpHealthScope.LIGHTWALLETD)
+        t = 6
+        val b = ordered.begin(route, OhttpHealthScope.LIGHTWALLETD)
+        t = 8
+        b.recordRouteUsable(OhttpHealthStage.RESPONSE_HEAD)
+        t = 10
+        a.recordRouteUsable(OhttpHealthStage.RESPONSE_HEAD)
+
+        val kept = ordered.snapshot(route).observations.single { it.scope == OhttpHealthScope.ROUTE }
+        assertEquals(b.requestId, kept.requestId)
+    }
 }

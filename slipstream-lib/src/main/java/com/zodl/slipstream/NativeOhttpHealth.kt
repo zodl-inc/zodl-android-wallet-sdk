@@ -131,14 +131,15 @@ internal object NativeOhttpHealth {
     fun observe(route: OhttpHealthRoute): Flow<OhttpHealthSnapshot> =
         flow {
             RustBackend.loadLibrary()
-            // Not cancellable: a cancelled collector must still learn the id, or the native subscription and its
-            // worker thread would never be closed.
-            val id =
-                withContext(NonCancellable + Dispatchers.IO) {
-                    OhttpHealthNative.subscribe(route.gatewayHost, route.viaTor, generations.incrementAndGet())
-                }
-            if (id == 0L) return@flow
+            // withContext hands its result back with a prompt-cancellation check: if the collector was cancelled
+            // while the native call ran, the result is dropped and CancellationException is thrown. So the id is
+            // assigned INSIDE the block, and the try/finally below closes it whatever happens afterwards.
+            var id = 0L
             try {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    id = OhttpHealthNative.subscribe(route.gatewayHost, route.viaTor, generations.incrementAndGet())
+                }
+                if (id == 0L) return@flow
                 var since = -1L
                 while (currentCoroutineContext().isActive) {
                     val raw = withContext(Dispatchers.IO) { OhttpHealthNative.await(id, since, AWAIT_SLICE_MS) } ?: continue
@@ -147,7 +148,7 @@ internal object NativeOhttpHealth {
                     emit(snapshot)
                 }
             } finally {
-                withContext(NonCancellable + Dispatchers.IO) { OhttpHealthNative.close(id) }
+                if (id != 0L) withContext(NonCancellable + Dispatchers.IO) { OhttpHealthNative.close(id) }
             }
         }.distinctUntilChangedBy { it.observations }
 }

@@ -23,10 +23,16 @@ use slipstream_core::transport_health::{
 
 use super::{catch_unwind, unwrap_exc_or};
 
+/// The latest snapshot and the closed flag live under ONE mutex, the one the condvar waits on, so a
+/// `close` can never slip between `await` reading `closed` and starting to wait.
+struct LatestState {
+    snapshot: Option<HealthSnapshot>,
+    closed: bool,
+}
+
 struct Latest {
-    snapshot: Mutex<Option<HealthSnapshot>>,
+    state: Mutex<LatestState>,
     wake: Condvar,
-    closed: Mutex<bool>,
 }
 
 struct Entry {
@@ -139,16 +145,18 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_subscribe<'local>(
             via_tor: via_tor != 0,
         };
         let latest = Arc::new(Latest {
-            snapshot: Mutex::new(None),
+            state: Mutex::new(LatestState {
+                snapshot: None,
+                closed: false,
+            }),
             wake: Condvar::new(),
-            closed: Mutex::new(false),
         });
         let sink = latest.clone();
         let subscription = transport_health::subscribe(
             route,
             generation as u64,
             Arc::new(move |snapshot| {
-                *sink.snapshot.lock().unwrap() = Some(snapshot);
+                sink.state.lock().unwrap().snapshot = Some(snapshot);
                 sink.wake.notify_all();
             }),
         );
@@ -181,9 +189,9 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_await<'local>(
             return Ok(std::ptr::null_mut());
         };
         let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(0) as u64);
-        let mut guard = entry.latest.snapshot.lock().unwrap();
+        let mut guard = entry.latest.state.lock().unwrap();
         loop {
-            if let Some(snapshot) = guard.as_ref() {
+            if let Some(snapshot) = guard.snapshot.as_ref() {
                 if snapshot.version as i64 > since_version {
                     let encoded = encode(snapshot);
                     drop(guard);
@@ -192,7 +200,7 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_await<'local>(
                     return Ok(array.into_raw());
                 }
             }
-            if *entry.latest.closed.lock().unwrap() {
+            if guard.closed {
                 return Ok(std::ptr::null_mut());
             }
             let now = Instant::now();
@@ -217,7 +225,7 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_close<'local>(
     let res = catch_unwind(&mut env, |_| {
         let entry = registry().lock().unwrap().remove(&(id as u64));
         if let Some(entry) = entry {
-            *entry.latest.closed.lock().unwrap() = true;
+            entry.latest.state.lock().unwrap().closed = true;
             entry.latest.wake.notify_all();
             let subscription = entry.subscription.lock().unwrap().take();
             drop(subscription);

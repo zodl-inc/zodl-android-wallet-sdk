@@ -73,7 +73,11 @@ object OhttpHealthTraffic {
         }
     }
 
-    /** The outcome of an outer (relay/gateway) HTTP status; a 2xx is [OhttpHealthOutcome.Usable]. */
+    /**
+     * The outcome of an outer (relay/gateway) HTTP status, as the engine's `classify_outer`: a policy refusal
+     * (401, 403, 407, 451), a configuration problem (400, 404, 405, 406, 409, 415, 422, 426, 501, 505), a
+     * response that is too large (413), a 5xx the route does not deliver, anything else a rejected response.
+     */
     fun outerStatusOutcome(
         status: Int,
         retryAfterSeconds: Long? = null,
@@ -82,16 +86,16 @@ object OhttpHealthTraffic {
         when (status) {
             in 200..299 -> OhttpHealthOutcome.Usable
             429 -> rateLimited(retryAfterSeconds, nowNanos)
-            401, 403, 426 -> OhttpHealthOutcome.PolicyRejected
-            400, 404, 405, 409, 413, 415, 422 -> OhttpHealthOutcome.ResponseRejected
-            // An outer relay or gateway 5xx: the private route does not deliver.
+            401, 403, 407, 451 -> OhttpHealthOutcome.PolicyRejected
+            400, 404, 405, 406, 409, 415, 422, 426, 501, 505 -> OhttpHealthOutcome.ConfigurationFailure
+            413 -> OhttpHealthOutcome.ResponseRejected
             in 500..599 -> OhttpHealthOutcome.TransportUnavailable
-            else -> OhttpHealthOutcome.Inconclusive
+            else -> OhttpHealthOutcome.ResponseRejected
         }
 
     /**
-     * The outcome of an inner (backend) HTTP status carried inside a delivered OHTTP response. A
-     * backend 5xx is the backend's trouble, not the route's.
+     * The outcome of an inner (backend) HTTP status carried inside a delivered OHTTP response, as the engine's
+     * `inner_health`. A backend 5xx is the backend's trouble, not the route's.
      */
     fun innerStatusOutcome(
         status: Int,
@@ -100,10 +104,11 @@ object OhttpHealthTraffic {
     ): OhttpHealthOutcome =
         when (status) {
             in 200..299 -> OhttpHealthOutcome.Usable
+            401, 403, 407, 451 -> OhttpHealthOutcome.PolicyRejected
             429 -> rateLimited(retryAfterSeconds, nowNanos)
-            401, 403, 426 -> OhttpHealthOutcome.PolicyRejected
-            400, 404, 405, 409, 413, 415, 422 -> OhttpHealthOutcome.ResponseRejected
+            426, 501, 505 -> OhttpHealthOutcome.ConfigurationFailure
             in 500..599 -> OhttpHealthOutcome.BackendUnavailable
+            in 400..499 -> OhttpHealthOutcome.ResponseRejected
             else -> OhttpHealthOutcome.Inconclusive
         }
 
@@ -114,6 +119,7 @@ object OhttpHealthTraffic {
             1 -> OhttpHealthOutcome.Cancelled
             4, 14 -> OhttpHealthOutcome.BackendUnavailable
             7, 16 -> OhttpHealthOutcome.PolicyRejected
+            12 -> OhttpHealthOutcome.ConfigurationFailure
             else -> OhttpHealthOutcome.ResponseRejected
         }
 

@@ -47,7 +47,7 @@ class OhttpHealthCenter(
      * Starts the ticket of one logical request. The operation and attempt are read from the coroutine
      * context by [beginInContext]; pass them explicitly from non-suspending code.
      */
-    fun begin(
+    internal fun begin(
         route: OhttpHealthRoute,
         scope: OhttpHealthScope,
         purpose: OhttpHealthPurpose = OhttpHealthPurpose.BACKGROUND,
@@ -69,7 +69,7 @@ class OhttpHealthCenter(
     }
 
     /** [begin] with the operation and attempt of the calling coroutine. */
-    suspend fun beginInContext(
+    internal suspend fun beginInContext(
         route: OhttpHealthRoute,
         scope: OhttpHealthScope,
         purpose: OhttpHealthPurpose = OhttpHealthPurpose.BACKGROUND,
@@ -107,8 +107,7 @@ class OhttpHealthCenter(
             val slots = retained.getOrPut(request.route) { LinkedHashMap() }
             val slot = Slot(scope, outcome.category, request.purpose == OhttpHealthPurpose.DIAGNOSTIC)
             val existing = slots[slot]
-            // A late response of an older request must not replace newer evidence of its own kind.
-            if (existing == null || existing.observedAtNanos <= observed) slots[slot] = observation
+            if (existing == null || observation.supersedes(existing)) slots[slot] = observation
             publish(request.route, slots)
         }
         request.attempt?.record(observation)
@@ -143,11 +142,10 @@ class OhttpHealthCenter(
                 synchronized(lock) {
                     routes.getOrPut(route) { MutableStateFlow(OhttpHealthSnapshot(0L, emptyList())) }
                 }
-            var first = true
-            state.collect { snapshot ->
-                emit(if (first) snapshot.asHistorical() else snapshot)
-                first = false
-            }
+            // Everything retained when the collection began is history until a newer observation replaces it, on
+            // every emission (as the engine does), not only on the first.
+            val replayCeiling = state.value.version
+            state.collect { snapshot -> emit(snapshot.markingHistoryUpTo(replayCeiling)) }
         }
 
     /**
@@ -155,7 +153,7 @@ class OhttpHealthCenter(
      * network attempt that decided the failure; without it (a local failure) the evidence is empty.
      * Call it after the business result is published and transaction guards are released.
      */
-    suspend fun complete(
+    internal suspend fun complete(
         operation: OhttpHealthOperation,
         failed: Boolean,
         failedAttempt: OhttpHealthAttempt? = null,
@@ -178,11 +176,27 @@ class OhttpHealthCenter(
     }
 }
 
-private fun OhttpHealthSnapshot.asHistorical() =
-    copy(observations = observations.map { it.copy(historical = true) })
+private fun OhttpHealthSnapshot.markingHistoryUpTo(ceiling: Long) =
+    copy(observations = observations.map { if (it.version <= ceiling) it.copy(historical = true) else it })
+
+/**
+ * Whether [this] replaces [existing] of the same kind. A late response of an older request never replaces newer
+ * evidence of its own kind. A non-diagnostic ROUTE/Usable is ordered like the engine and iOS do, by
+ * (start, observed, version): the request that started later proves the route more recently, and recovery is
+ * judged by the start of the success.
+ */
+private fun OhttpHealthObservation.supersedes(existing: OhttpHealthObservation): Boolean =
+    if (purpose != OhttpHealthPurpose.DIAGNOSTIC &&
+        scope == OhttpHealthScope.ROUTE &&
+        outcome == OhttpHealthOutcome.Usable
+    ) {
+        compareValuesBy(this, existing, { it.startedAtNanos }, { it.observedAtNanos }, { it.version }) > 0
+    } else {
+        existing.observedAtNanos <= observedAtNanos
+    }
 
 /** The ticket of one logical request: its start identity and recipients never change on completion. */
-class OhttpHealthRequest internal constructor(
+internal class OhttpHealthRequest internal constructor(
     private val center: OhttpHealthCenter,
     val route: OhttpHealthRoute,
     val scope: OhttpHealthScope,
@@ -193,7 +207,7 @@ class OhttpHealthRequest internal constructor(
     val startedAtNanos: Long,
 ) {
     /** Records the request's outcome in its own scope. */
-    fun record(
+    internal fun record(
         outcome: OhttpHealthOutcome,
         stage: OhttpHealthStage,
     ) = center.record(this, scope, outcome, stage)
@@ -202,6 +216,6 @@ class OhttpHealthRequest internal constructor(
      * Records that the route itself answered (an outer response arrived) as [OhttpHealthScope.ROUTE]
      * evidence, whatever the inner result was.
      */
-    fun recordRouteUsable(stage: OhttpHealthStage) =
+    internal fun recordRouteUsable(stage: OhttpHealthStage) =
         center.record(this, OhttpHealthScope.ROUTE, OhttpHealthOutcome.Usable, stage)
 }
