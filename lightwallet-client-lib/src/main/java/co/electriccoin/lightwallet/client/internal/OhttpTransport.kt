@@ -21,6 +21,8 @@ import co.electriccoin.lightwallet.client.health.OhttpHealthTraffic
 import java.io.InputStream
 import java.net.SocketTimeoutException
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 
 /**
  * OHTTP (RFC 9458) client transport: seals a request to the gateway's key, POSTs it to the relay
@@ -225,7 +227,7 @@ internal class OhttpTransport(
             ticket.recordDelivered(response.status, response.field("grpc-status"))
             response
         } catch (e: Throwable) {
-            ticket.recordFailure(e)
+            ticket.recordFailure(e, cancelled = !currentCoroutineContext().isActive)
             throw e
         }
     }
@@ -253,7 +255,7 @@ internal class OhttpTransport(
             }
             observed.recordEnd()
         } catch (e: Throwable) {
-            ticket.recordFailure(e, observed.headReceived)
+            ticket.recordFailure(e, observed.headReceived, cancelled = !currentCoroutineContext().isActive)
             throw e
         }
     }
@@ -622,6 +624,7 @@ private fun OhttpHealthRequest.recordDelivered(
 private fun OhttpHealthRequest.recordFailure(
     error: Throwable,
     headReceived: Boolean = false,
+    cancelled: Boolean = false,
 ) {
     val stage =
         when {
@@ -630,7 +633,8 @@ private fun OhttpHealthRequest.recordFailure(
             error is OhttpException && error.httpStatus != null -> OhttpHealthStage.RESPONSE_HEAD
             else -> OhttpHealthStage.CONNECTION
         }
-    record(OhttpHealthTraffic.outcome(error), stage)
+    // Cancelling the caller closes the exchange, which OkHttp reports as an I/O failure: not the route's fault.
+    record(if (cancelled) OhttpHealthOutcome.Cancelled else OhttpHealthTraffic.outcome(error), stage)
 }
 
 /**

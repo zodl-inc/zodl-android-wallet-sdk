@@ -28,7 +28,11 @@ internal class OhttpHealthContextElement(
 fun newOhttpHealthOperation(): OhttpHealthOperation =
     OhttpHealthOperation(id = UUID.randomUUID().toString(), startedAtNanos = OhttpHealthClock.nowNanos())
 
-/** Runs [block] as part of [operation]; requests started inside carry its identity. */
+/**
+ * Runs [block] as part of [operation]; requests started inside carry its identity. It does not collect which
+ * call decided the operation: [withOhttpDecisiveCall] is a no-op inside it. Use [runOhttpOperation] for an
+ * operation that reports its result.
+ */
 suspend fun <T> withOhttpOperation(
     operation: OhttpHealthOperation,
     block: suspend () -> T,
@@ -103,13 +107,9 @@ suspend fun <T> withOhttpAttempt(
     val context = currentOhttpHealthContext()
     val current = context?.operation
     val admitted = current != null && current == attempt.operation && attempt.enter()
-    return try {
-        withContext(
-            OhttpHealthContextElement(current, if (admitted) attempt else null, context?.purpose, context?.handle)
-        ) { block() }
-    } finally {
-        if (admitted) attempt.leave()
-    }
+    return withContext(
+        OhttpHealthContextElement(current, if (admitted) attempt else null, context?.purpose, context?.handle)
+    ) { block() }
 }
 
 /**
@@ -136,7 +136,6 @@ class OhttpHealthAttempt(
 ) {
     private val lock = Any()
     private var entered = false
-    private var active = 0
     private val terminal = LinkedHashMap<Long, OhttpHealthObservation>()
 
     internal fun enter(): Boolean =
@@ -145,14 +144,9 @@ class OhttpHealthAttempt(
                 false
             } else {
                 entered = true
-                active++
                 true
             }
         }
-
-    internal fun leave() {
-        synchronized(lock) { active-- }
-    }
 
     internal fun record(observation: OhttpHealthObservation) {
         synchronized(lock) {

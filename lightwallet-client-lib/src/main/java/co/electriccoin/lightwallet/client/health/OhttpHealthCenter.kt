@@ -1,5 +1,6 @@
 package co.electriccoin.lightwallet.client.health
 
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,9 +35,12 @@ class OhttpHealthCenter(
     private val retained = HashMap<OhttpHealthRoute, LinkedHashMap<Slot, OhttpHealthObservation>>()
 
     private val completionFlow =
-        MutableSharedFlow<OhttpHealthOperationCompleted>(extraBufferCapacity = COMPLETION_BUFFER)
+        MutableSharedFlow<OhttpHealthOperationCompleted>(
+            extraBufferCapacity = COMPLETION_BUFFER,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
 
-    /** One entry per [complete] call. A slow subscriber applies backpressure after [COMPLETION_BUFFER]. */
+    /** One entry per [complete] call. The newest [COMPLETION_BUFFER] are kept: a slow subscriber never stalls a send. */
     val completions: SharedFlow<OhttpHealthOperationCompleted> get() = completionFlow
 
     /**
@@ -162,7 +166,7 @@ class OhttpHealthCenter(
             } else {
                 emptyList()
             }
-        completionFlow.emit(OhttpHealthOperationCompleted(operation, failed, observations))
+        completionFlow.tryEmit(OhttpHealthOperationCompleted(operation, failed, observations))
     }
 
     companion object {

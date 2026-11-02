@@ -131,8 +131,10 @@ internal object NativeOhttpHealth {
     fun observe(route: OhttpHealthRoute): Flow<OhttpHealthSnapshot> =
         flow {
             RustBackend.loadLibrary()
+            // Not cancellable: a cancelled collector must still learn the id, or the native subscription and its
+            // worker thread would never be closed.
             val id =
-                withContext(Dispatchers.IO) {
+                withContext(NonCancellable + Dispatchers.IO) {
                     OhttpHealthNative.subscribe(route.gatewayHost, route.viaTor, generations.incrementAndGet())
                 }
             if (id == 0L) return@flow
