@@ -50,6 +50,17 @@ suspend fun <T> withOhttpAttempt(
     }
 }
 
+/**
+ * Carries the caller's [OhttpHealthContextElement] over the gRPC hop: the channel runs every call on
+ * its own executor, where the coroutine context of the caller is gone.
+ */
+internal val OHTTP_HEALTH_CALL_OPTION: io.grpc.CallOptions.Key<OhttpHealthContextElement> =
+    io.grpc.CallOptions.Key.create("ohttp-health-context")
+
+/** The calling coroutine's health context, to attach to a gRPC stub with [io.grpc.stub.AbstractStub.withOption]. */
+internal suspend fun currentOhttpHealthContext(): OhttpHealthContextElement? =
+    kotlin.coroutines.coroutineContext[OhttpHealthContextElement]
+
 suspend fun currentOhttpOperation(): OhttpHealthOperation? = kotlin.coroutines.coroutineContext[OhttpHealthContextElement]?.operation
 
 internal suspend fun currentOhttpAttempt(): OhttpHealthAttempt? = kotlin.coroutines.coroutineContext[OhttpHealthContextElement]?.attempt

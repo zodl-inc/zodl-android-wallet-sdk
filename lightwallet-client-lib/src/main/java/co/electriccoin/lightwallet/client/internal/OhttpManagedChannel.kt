@@ -11,10 +11,12 @@ import io.grpc.ManagedChannel
 import io.grpc.Metadata
 import io.grpc.MethodDescriptor
 import io.grpc.Status
+import co.electriccoin.lightwallet.client.health.OHTTP_HEALTH_CALL_OPTION
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
+import kotlin.coroutines.EmptyCoroutineContext
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.SocketTimeoutException
@@ -275,7 +277,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
                     body = requestBody.toByteArray(),
                 )
 
-            runBlocking {
+            runBlocking(callOptions.getOption(OHTTP_HEALTH_CALL_OPTION) ?: EmptyCoroutineContext) {
                 synchronized(lock) {
                     if (cancelled) return@runBlocking
                     exchange = coroutineContext.job
