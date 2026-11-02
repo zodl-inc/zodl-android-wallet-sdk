@@ -202,4 +202,17 @@ class OhttpHealthCenterTest {
             center.complete(operation, failed = true, failedAttempt = attempt)
             assertEquals(1, completion.await().observations.size)
         }
+
+    @Test
+    fun aDiagnosticRequestIsKeptApartAndCarriesNoOperation() =
+        runBlocking {
+            val operation = newOhttpHealthOperation()
+            val request =
+                withOhttpOperation(operation) {
+                    withOhttpDiagnostic { center.beginInContext(route, OhttpHealthScope.LIGHTWALLETD) }
+                }
+
+            assertEquals(OhttpHealthPurpose.DIAGNOSTIC, request.purpose)
+            assertNull(request.operation)
+        }
 }

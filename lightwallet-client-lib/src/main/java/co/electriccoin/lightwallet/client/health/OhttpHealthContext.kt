@@ -15,6 +15,8 @@ import kotlin.coroutines.CoroutineContext
 internal class OhttpHealthContextElement(
     val operation: OhttpHealthOperation?,
     val attempt: OhttpHealthAttempt?,
+    /** Set for diagnostic work (a probe): its evidence stays apart from ordinary evidence. */
+    val purpose: OhttpHealthPurpose? = null,
 ) : AbstractCoroutineContextElement(Key) {
     companion object Key : CoroutineContext.Key<OhttpHealthContextElement>
 }
@@ -28,6 +30,14 @@ suspend fun <T> withOhttpOperation(
     operation: OhttpHealthOperation,
     block: suspend () -> T,
 ): T = withContext(OhttpHealthContextElement(operation, null)) { block() }
+
+/**
+ * Runs [block] as a diagnostic (a probe of the route): requests started inside are recorded as
+ * [OhttpHealthPurpose.DIAGNOSTIC], which the engine and the policy keep apart from ordinary traffic,
+ * and carry no user operation.
+ */
+suspend fun <T> withOhttpDiagnostic(block: suspend () -> T): T =
+    withContext(OhttpHealthContextElement(null, null, OhttpHealthPurpose.DIAGNOSTIC)) { block() }
 
 /** Runs [block] without any inherited operation or attempt. */
 suspend fun <T> withOhttpBackground(block: suspend () -> T): T =

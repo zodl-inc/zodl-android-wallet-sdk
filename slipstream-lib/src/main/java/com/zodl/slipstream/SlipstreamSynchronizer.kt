@@ -92,6 +92,7 @@ import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.health.OhttpHealthSnapshot
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.Response
@@ -1320,6 +1321,15 @@ class SlipstreamSynchronizer internal constructor(
             serverBranch = serverBranchId?.let(ConsensusBranchId::fromHex)
         )
     }
+
+    override fun observeOhttpHealth(
+        gatewayHost: String,
+        viaTor: Boolean
+    ): Flow<OhttpHealthSnapshot> =
+        flow {
+            // A gateway without a relay has no route to observe: the flow just ends.
+            NativeOhttpHealth.route(gatewayHost, viaTor)?.let { emitAll(OhttpHealthMonitor().observe(it)) }
+        }
 
     override suspend fun validateServerEndpoint(
         context: Context,

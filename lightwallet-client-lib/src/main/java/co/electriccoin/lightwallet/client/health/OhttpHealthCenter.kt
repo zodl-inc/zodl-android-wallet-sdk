@@ -69,7 +69,12 @@ class OhttpHealthCenter(
         route: OhttpHealthRoute,
         scope: OhttpHealthScope,
         purpose: OhttpHealthPurpose = OhttpHealthPurpose.BACKGROUND,
-    ): OhttpHealthRequest = begin(route, scope, purpose, currentOhttpOperation(), currentOhttpAttempt())
+    ): OhttpHealthRequest {
+        val context = currentOhttpHealthContext()
+        val effective =
+            if (purpose == OhttpHealthPurpose.BACKGROUND && context?.purpose != null) context.purpose else purpose
+        return begin(route, scope, effective, context?.operation, context?.attempt)
+    }
 
     internal fun record(
         request: OhttpHealthRequest,
