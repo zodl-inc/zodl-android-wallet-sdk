@@ -215,4 +215,69 @@ class OhttpHealthCenterTest {
             assertEquals(OhttpHealthPurpose.DIAGNOSTIC, request.purpose)
             assertNull(request.operation)
         }
+
+    @Test
+    fun anOperationCompletesWithTheEvidenceOfItsLatestDecisiveCall() =
+        runBlocking {
+            val completion = async(start = CoroutineStart.UNDISPATCHED) { center.completions.first() }
+
+            val failed =
+                center.runOhttpOperation(isFailure = { it == "failed" }) {
+                    // A pre-check that succeeded is superseded by the send that failed.
+                    withOhttpDecisiveCall {
+                        center.beginInContext(route, OhttpHealthScope.LIGHTWALLETD)
+                            .record(OhttpHealthOutcome.Usable, OhttpHealthStage.COMPLETE)
+                    }
+                    withOhttpDecisiveCall {
+                        center.beginInContext(route, OhttpHealthScope.LIGHTWALLETD)
+                            .record(OhttpHealthOutcome.TransportUnavailable, OhttpHealthStage.CONNECTION)
+                    }
+                    "failed"
+                }
+
+            assertEquals("failed", failed)
+            val completed = completion.await()
+            assertTrue(completed.failed)
+            assertEquals(1, completed.observations.size)
+            assertEquals(OhttpHealthOutcome.TransportUnavailable, completed.observations.single().outcome)
+        }
+
+    @Test
+    fun aSuccessfulOperationCarriesNoEvidence() =
+        runBlocking {
+            val completion = async(start = CoroutineStart.UNDISPATCHED) { center.completions.first() }
+
+            center.runOhttpOperation<String> {
+                withOhttpDecisiveCall {
+                    center.beginInContext(route, OhttpHealthScope.LIGHTWALLETD)
+                        .record(OhttpHealthOutcome.Usable, OhttpHealthStage.COMPLETE)
+                }
+                "ok"
+            }
+
+            val completed = completion.await()
+            assertTrue(!completed.failed)
+            assertTrue(completed.observations.isEmpty())
+        }
+
+    @Test
+    fun anOperationThatThrowsCompletesAsFailedAndRethrows() =
+        runBlocking {
+            val completion = async(start = CoroutineStart.UNDISPATCHED) { center.completions.first() }
+
+            val error =
+                runCatching {
+                    center.runOhttpOperation<Unit> { throw IllegalStateException("boom") }
+                }.exceptionOrNull()
+
+            assertEquals("boom", error?.message)
+            assertTrue(completion.await().failed)
+        }
+
+    @Test
+    fun aDecisiveCallOutsideAnOperationJustRuns() =
+        runBlocking {
+            val request = withOhttpDecisiveCall { center.beginInContext(route, OhttpHealthScope.LIGHTWALLETD) }
+            assertNull(request.operation)
+        }
 }

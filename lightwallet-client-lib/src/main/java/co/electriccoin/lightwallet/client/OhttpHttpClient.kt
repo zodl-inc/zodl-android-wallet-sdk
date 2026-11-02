@@ -1,6 +1,7 @@
 package co.electriccoin.lightwallet.client
 
 import android.util.Log
+import co.electriccoin.lightwallet.client.health.withOhttpDecisiveCall
 import co.electriccoin.lightwallet.client.internal.Constants
 import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.OhttpResponseSink
@@ -132,7 +133,8 @@ class OhttpHttpClient private constructor(
         timeoutMs: Int,
     ): Response {
         val bReq = codecRequest(request)
-        val bRes = withContext(Dispatchers.IO) { transport.roundTrip(bReq, timeoutMs) }
+        // The one request of a call decides the user operation it belongs to (a swap quote, a rate refresh).
+        val bRes = withOhttpDecisiveCall { withContext(Dispatchers.IO) { transport.roundTrip(bReq, timeoutMs) } }
         Log.d(
             Constants.LOG_TAG,
             "OHTTP proxy ${request.method} host=${bReq.authority} -> http=${bRes.status} (${bRes.body.size} bytes)",

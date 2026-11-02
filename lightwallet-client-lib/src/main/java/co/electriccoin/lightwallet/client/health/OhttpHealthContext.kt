@@ -1,5 +1,6 @@
 package co.electriccoin.lightwallet.client.health
 
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.util.UUID
 import kotlin.coroutines.AbstractCoroutineContextElement
@@ -17,6 +18,8 @@ internal class OhttpHealthContextElement(
     val attempt: OhttpHealthAttempt?,
     /** Set for diagnostic work (a probe): its evidence stays apart from ordinary evidence. */
     val purpose: OhttpHealthPurpose? = null,
+    /** Present inside [runOhttpOperation]: collects which call decided the operation's result. */
+    val handle: OhttpOperationHandle? = null,
 ) : AbstractCoroutineContextElement(Key) {
     companion object Key : CoroutineContext.Key<OhttpHealthContextElement>
 }
@@ -39,6 +42,52 @@ suspend fun <T> withOhttpOperation(
 suspend fun <T> withOhttpDiagnostic(block: suspend () -> T): T =
     withContext(OhttpHealthContextElement(null, null, OhttpHealthPurpose.DIAGNOSTIC)) { block() }
 
+/**
+ * What [runOhttpOperation] and [withOhttpDecisiveCall] share: the operation, and the call (attempt) whose
+ * final failure decides its result.
+ */
+class OhttpOperationHandle internal constructor(
+    val operation: OhttpHealthOperation,
+) {
+    /** The latest decisive call started inside the operation: a later call supersedes an earlier one. */
+    @Volatile
+    var decisiveAttempt: OhttpHealthAttempt? = null
+        internal set
+}
+
+/**
+ * Runs [block] as one explicit user operation and reports its result to this center when it ends: the
+ * evidence of the decisive call it made (see [withOhttpDecisiveCall]) is attached when [isFailure] says the
+ * result failed, or [block] threw. A failure with no decisive call (a local one) carries no evidence.
+ * Call it at the one place that knows the business result, after guards are released.
+ */
+suspend fun <T> OhttpHealthCenter.runOhttpOperation(
+    isFailure: (T) -> Boolean = { false },
+    block: suspend () -> T,
+): T {
+    val handle = OhttpOperationHandle(newOhttpHealthOperation())
+    var failed = true
+    try {
+        val result = withContext(OhttpHealthContextElement(handle.operation, null, null, handle)) { block() }
+        failed = isFailure(result)
+        return result
+    } finally {
+        withContext(NonCancellable) { complete(handle.operation, failed, handle.decisiveAttempt) }
+    }
+}
+
+/**
+ * Marks [block] as the call whose failure decides the current operation's result (the send of a transaction,
+ * the one request of a quote). Outside [runOhttpOperation] it just runs [block]. A later decisive call
+ * replaces an earlier one, so a successful pre-check never lets itself be mistaken for the verdict.
+ */
+suspend fun <T> withOhttpDecisiveCall(block: suspend () -> T): T {
+    val handle = currentOhttpHealthContext()?.handle ?: return block()
+    val attempt = OhttpHealthAttempt(handle.operation)
+    handle.decisiveAttempt = attempt
+    return withOhttpAttempt(attempt, block)
+}
+
 /** Runs [block] without any inherited operation or attempt. */
 suspend fun <T> withOhttpBackground(block: suspend () -> T): T =
     withContext(OhttpHealthContextElement(null, null)) { block() }
@@ -51,10 +100,13 @@ suspend fun <T> withOhttpAttempt(
     attempt: OhttpHealthAttempt,
     block: suspend () -> T,
 ): T {
-    val current = currentOhttpOperation()
+    val context = currentOhttpHealthContext()
+    val current = context?.operation
     val admitted = current != null && current == attempt.operation && attempt.enter()
     return try {
-        withContext(OhttpHealthContextElement(current, if (admitted) attempt else null)) { block() }
+        withContext(
+            OhttpHealthContextElement(current, if (admitted) attempt else null, context?.purpose, context?.handle)
+        ) { block() }
     } finally {
         if (admitted) attempt.leave()
     }
