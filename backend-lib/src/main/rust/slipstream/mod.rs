@@ -43,6 +43,7 @@
 //! `host_read` (worklog `08-engine-sigbus-android.md`) — kept wired for
 //! `Synchronizer.debugQuery` only; production reads no longer use it.
 
+mod health;
 mod host_read;
 mod read_query;
 mod summary;
