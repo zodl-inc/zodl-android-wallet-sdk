@@ -4,6 +4,7 @@ import co.electriccoin.lightwallet.client.OhttpCodecRequest
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpInternalException
 import co.electriccoin.lightwallet.client.OhttpRequestTooLargeException
+import co.electriccoin.lightwallet.client.health.OHTTP_HEALTH_CALL_OPTION
 import io.grpc.CallOptions
 import io.grpc.ClientCall
 import io.grpc.ConnectivityState
@@ -11,12 +12,10 @@ import io.grpc.ManagedChannel
 import io.grpc.Metadata
 import io.grpc.MethodDescriptor
 import io.grpc.Status
-import co.electriccoin.lightwallet.client.health.OHTTP_HEALTH_CALL_OPTION
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
-import kotlin.coroutines.EmptyCoroutineContext
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.net.SocketTimeoutException
@@ -30,6 +29,7 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * A gRPC [ManagedChannel] that carries every RPC as one Oblivious HTTP (RFC 9458) exchange.

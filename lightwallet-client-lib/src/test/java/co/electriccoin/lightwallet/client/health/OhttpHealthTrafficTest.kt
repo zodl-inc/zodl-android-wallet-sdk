@@ -5,13 +5,13 @@ import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpInternalException
 import co.electriccoin.lightwallet.client.OhttpRequestTooLargeException
 import org.junit.Assert.assertEquals
+import org.junit.Test
 import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import javax.net.ssl.SSLHandshakeException
 import kotlin.coroutines.cancellation.CancellationException
-import org.junit.Test
 
 class OhttpHealthTrafficTest {
     private val now = 5_000_000_000L

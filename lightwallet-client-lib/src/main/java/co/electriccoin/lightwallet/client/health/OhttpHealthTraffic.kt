@@ -27,16 +27,29 @@ object OhttpHealthTraffic {
     /** Which scope a request to [authority] belongs to (a gateway host is lightwalletd traffic). */
     fun scope(authority: String): OhttpHealthScope =
         when (authority.lowercase()) {
-            "cmc.zodl.com" -> OhttpHealthScope.EXCHANGE_RATES
-            "near.zodl.com" -> OhttpHealthScope.SWAPS
-            "flexa.zodl.com" -> OhttpHealthScope.FLEXA
-            "vote.zodl.com", "pir.zodl.com" -> OhttpHealthScope.VOTING
-            else ->
+            "cmc.zodl.com" -> {
+                OhttpHealthScope.EXCHANGE_RATES
+            }
+
+            "near.zodl.com" -> {
+                OhttpHealthScope.SWAPS
+            }
+
+            "flexa.zodl.com" -> {
+                OhttpHealthScope.FLEXA
+            }
+
+            "vote.zodl.com", "pir.zodl.com" -> {
+                OhttpHealthScope.VOTING
+            }
+
+            else -> {
                 if (OhttpEndpoints.isOhttpGateway(authority.lowercase())) {
                     OhttpHealthScope.LIGHTWALLETD
                 } else {
                     OhttpHealthScope.OTHER
                 }
+            }
         }
 
     /** The outcome of a failed request. [nowNanos] stamps a rate-limit pause. */
@@ -46,14 +59,20 @@ object OhttpHealthTraffic {
     ): OhttpHealthOutcome =
         when (error) {
             is CancellationException -> OhttpHealthOutcome.Cancelled
+
             is OhttpRequestTooLargeException, is OhttpInternalException -> OhttpHealthOutcome.ResponseRejected
+
             is KeyConfigVerificationFailedException -> OhttpHealthOutcome.ConfigurationFailure
+
             is OhttpException -> ohttpExceptionOutcome(error, nowNanos)
+
             is SocketTimeoutException, is ConnectException, is NoRouteToHostException,
             is UnknownHostException, is SSLException, is SocketException,
             -> OhttpHealthOutcome.TransportUnavailable
+
             // Any other I/O failure while talking to the relay is the route not delivering.
             is IOException -> OhttpHealthOutcome.TransportUnavailable
+
             else -> OhttpHealthOutcome.Inconclusive
         }
 

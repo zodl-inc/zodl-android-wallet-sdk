@@ -1,5 +1,6 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
 import co.electriccoin.lightwallet.client.OhttpCodec
 import co.electriccoin.lightwallet.client.OhttpCodecRequest
 import co.electriccoin.lightwallet.client.OhttpCodecResponse
@@ -11,18 +12,17 @@ import co.electriccoin.lightwallet.client.OhttpResponseEvents
 import co.electriccoin.lightwallet.client.OhttpResponseHead
 import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.OhttpVerifiedKey
-import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
 import co.electriccoin.lightwallet.client.health.OhttpHealthCenter
 import co.electriccoin.lightwallet.client.health.OhttpHealthOutcome
 import co.electriccoin.lightwallet.client.health.OhttpHealthRequest
 import co.electriccoin.lightwallet.client.health.OhttpHealthRoute
 import co.electriccoin.lightwallet.client.health.OhttpHealthStage
 import co.electriccoin.lightwallet.client.health.OhttpHealthTraffic
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import java.io.InputStream
 import java.net.SocketTimeoutException
 import kotlin.coroutines.cancellation.CancellationException
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.isActive
 
 /**
  * OHTTP (RFC 9458) client transport: seals a request to the gateway's key, POSTs it to the relay
@@ -615,7 +615,11 @@ private fun OhttpHealthRequest.recordDelivered(
     recordRouteUsable(OhttpHealthStage.RESPONSE_HEAD)
     var outcome = OhttpHealthTraffic.innerStatusOutcome(innerStatus)
     if (outcome == OhttpHealthOutcome.Usable) {
-        grpcStatus?.trim()?.toIntOrNull()?.takeIf { it != 0 }?.let { outcome = OhttpHealthTraffic.grpcOutcome(it) }
+        grpcStatus
+            ?.trim()
+            ?.toIntOrNull()
+            ?.takeIf { it != 0 }
+            ?.let { outcome = OhttpHealthTraffic.grpcOutcome(it) }
     }
     record(outcome, OhttpHealthStage.COMPLETE)
 }

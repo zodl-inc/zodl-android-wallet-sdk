@@ -66,7 +66,14 @@ class OhttpHealthCenterTest {
         val late = backwards.begin(route, OhttpHealthScope.LIGHTWALLETD)
         late.record(OhttpHealthOutcome.Usable, OhttpHealthStage.COMPLETE)
 
-        assertEquals(first.requestId, backwards.snapshot(route).observations.single().requestId)
+        assertEquals(
+            first.requestId,
+            backwards
+                .snapshot(route)
+                .observations
+                .single()
+                .requestId
+        )
     }
 
     @Test
@@ -229,11 +236,13 @@ class OhttpHealthCenterTest {
                 center.runOhttpOperation(isFailure = { it == "failed" }) {
                     // A pre-check that succeeded is superseded by the send that failed.
                     withOhttpDecisiveCall {
-                        center.beginInContext(route, OhttpHealthScope.LIGHTWALLETD)
+                        center
+                            .beginInContext(route, OhttpHealthScope.LIGHTWALLETD)
                             .record(OhttpHealthOutcome.Usable, OhttpHealthStage.COMPLETE)
                     }
                     withOhttpDecisiveCall {
-                        center.beginInContext(route, OhttpHealthScope.LIGHTWALLETD)
+                        center
+                            .beginInContext(route, OhttpHealthScope.LIGHTWALLETD)
                             .record(OhttpHealthOutcome.TransportUnavailable, OhttpHealthStage.CONNECTION)
                     }
                     "failed"
@@ -253,7 +262,8 @@ class OhttpHealthCenterTest {
 
             center.runOhttpOperation<String> {
                 withOhttpDecisiveCall {
-                    center.beginInContext(route, OhttpHealthScope.LIGHTWALLETD)
+                    center
+                        .beginInContext(route, OhttpHealthScope.LIGHTWALLETD)
                         .record(OhttpHealthOutcome.Usable, OhttpHealthStage.COMPLETE)
                 }
                 "ok"
@@ -288,7 +298,8 @@ class OhttpHealthCenterTest {
     @Test
     fun replayedHistoryStaysHistoricalOnLaterEmissionsUntilANewerObservationReplacesIt() =
         runBlocking {
-            center.begin(route, OhttpHealthScope.LIGHTWALLETD)
+            center
+                .begin(route, OhttpHealthScope.LIGHTWALLETD)
                 .record(OhttpHealthOutcome.TransportUnavailable, OhttpHealthStage.CONNECTION)
             val updates = mutableListOf<OhttpHealthSnapshot>()
             val collector = async(start = CoroutineStart.UNDISPATCHED) { center.updates(route).take(3).toList(updates) }
@@ -297,7 +308,8 @@ class OhttpHealthCenterTest {
             center.begin(route, OhttpHealthScope.EXCHANGE_RATES).record(OhttpHealthOutcome.Usable, OhttpHealthStage.COMPLETE)
             yield()
             // A newer failure of the same kind replaces the replayed one, and is live.
-            center.begin(route, OhttpHealthScope.LIGHTWALLETD)
+            center
+                .begin(route, OhttpHealthScope.LIGHTWALLETD)
                 .record(OhttpHealthOutcome.TransportUnavailable, OhttpHealthStage.CONNECTION)
             collector.await()
 

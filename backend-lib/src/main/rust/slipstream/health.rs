@@ -207,7 +207,11 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_await<'local>(
             if now >= deadline {
                 return Ok(std::ptr::null_mut());
             }
-            let (next, _) = entry.latest.wake.wait_timeout(guard, deadline - now).unwrap();
+            let (next, _) = entry
+                .latest
+                .wake
+                .wait_timeout(guard, deadline - now)
+                .unwrap();
             guard = next;
         }
     });

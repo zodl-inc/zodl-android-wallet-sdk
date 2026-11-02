@@ -117,7 +117,8 @@ suspend fun <T> withOhttpAttempt(
  * its own executor, where the coroutine context of the caller is gone.
  */
 internal val OHTTP_HEALTH_CALL_OPTION: io.grpc.CallOptions.Key<OhttpHealthContextElement> =
-    io.grpc.CallOptions.Key.create("ohttp-health-context")
+    io.grpc.CallOptions.Key
+        .create("ohttp-health-context")
 
 /** The calling coroutine's health context, to attach to a gRPC stub with [io.grpc.stub.AbstractStub.withOption]. */
 internal suspend fun currentOhttpHealthContext(): OhttpHealthContextElement? =

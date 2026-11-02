@@ -1,14 +1,13 @@
 package co.electriccoin.lightwallet.client.health
 
 /**
- * Typed OHTTP request-health evidence, shared in shape with the Slipstream engine's
- * `transport_health` observations (slipstream-internal MOB-2300) and with the iOS SDK, so the app
- * policy can treat engine and client-side evidence uniformly.
+ * A configuration identity, never a per-request URL or a backend destination.
  *
- * Times are [OhttpHealthClock] nanoseconds. Never compare them with wall-clock time.
+ * The types in this file are typed OHTTP request-health evidence, shared in shape with the Slipstream engine's
+ * `transport_health` observations (slipstream-internal MOB-2300) and with the iOS SDK, so the app policy can
+ * treat engine and client-side evidence uniformly. Times are [OhttpHealthClock] nanoseconds: never compare them
+ * with wall-clock time.
  */
-
-/** A configuration identity, never a per-request URL or a backend destination. */
 data class OhttpHealthRoute(
     val gatewayHost: String,
     val relayUrl: String,
