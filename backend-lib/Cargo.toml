@@ -311,7 +311,7 @@ crate-type = ["staticlib", "cdylib"]
 # (fcf3101c, crate 0.4.0 on the NU7 release crates: zcash_client_backend 0.25.0,
 # zcash_client_sqlite 0.23.0). The entry goes once a published zodl-slipstream release
 # contains the OHTTP transport. No SDK release may be cut while it exists.
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "fcf3101c62445c4ea6f61ab11b9ea2bd27b33387" }
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "972769390d3566536702cc804381bfb85fc59042" }
 # DO NOT ALTER THIS COMMENT
 #
 # This section is left in place to ensure that development against in-progress

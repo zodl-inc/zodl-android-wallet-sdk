@@ -5,6 +5,8 @@ import cash.z.wallet.sdk.internal.rpc.Service
 import co.electriccoin.lightwallet.client.LightWalletClient
 import co.electriccoin.lightwallet.client.ext.BenchmarkingExt
 import co.electriccoin.lightwallet.client.fixture.BenchmarkingBlockRangeFixture
+import co.electriccoin.lightwallet.client.health.OHTTP_HEALTH_CALL_OPTION
+import co.electriccoin.lightwallet.client.health.currentOhttpHealthContext
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.CompactBlockUnsafe
 import co.electriccoin.lightwallet.client.model.GetAddressUtxosReplyUnsafe
@@ -95,7 +97,7 @@ internal class LightWalletClientImpl(
             } else {
                 val response =
                     requireChannel()
-                        .createStub(singleRequestTimeout)
+                        .createContextStub(singleRequestTimeout)
                         .getLatestBlock(Service.ChainSpec.newBuilder().build())
 
                 val blockHeight = BlockHeightUnsafe(response.height)
@@ -112,7 +114,7 @@ internal class LightWalletClientImpl(
         try {
             val lightdInfo =
                 requireChannel()
-                    .createStub(singleRequestTimeout)
+                    .createContextStub(singleRequestTimeout)
                     .getLightdInfo(Service.Empty.newBuilder().build())
 
             val lightwalletEndpointInfo = LightWalletEndpointInfoUnsafe.new(lightdInfo)
@@ -138,7 +140,7 @@ internal class LightWalletClientImpl(
                 .build()
 
         return try {
-            val response = requireChannel().createStub().sendTransaction(request)
+            val response = requireChannel().createContextStub().sendTransaction(request)
 
             val sendResponse = SendResponseUnsafe.new(response)
 
@@ -169,7 +171,7 @@ internal class LightWalletClientImpl(
                 .build()
 
         return try {
-            val response = requireChannel().createStub().getTransaction(request)
+            val response = requireChannel().createContextStub().getTransaction(request)
 
             val transactionResponse = RawTransactionUnsafe.new(response)
 
@@ -199,7 +201,7 @@ internal class LightWalletClientImpl(
 
         return try {
             requireChannel()
-                .createStub(streamingRequestTimeout)
+                .createContextStub(streamingRequestTimeout)
                 .getAddressUtxosStream(request)
                 .map {
                     val response: Response<GetAddressUtxosReplyUnsafe> =
@@ -286,7 +288,7 @@ internal class LightWalletClientImpl(
         try {
             val response =
                 requireChannel()
-                    .createStub(singleRequestTimeout)
+                    .createContextStub(singleRequestTimeout)
                     .getTreeState(height.toBlockHeight())
 
             Response.Success(TreeStateUnsafe.new(response))
@@ -303,7 +305,7 @@ internal class LightWalletClientImpl(
                     flow {
                         emitAll(
                             requireChannel()
-                                .createStub(streamingRequestTimeout)
+                                .createContextStub(streamingRequestTimeout)
                                 .getMempoolStream(Service.Empty.newBuilder().build())
                                 .map {
                                     Response.Success(RawTransactionUnsafe.new(it))
@@ -360,6 +362,16 @@ private fun Channel.createStub(timeoutSec: Duration = 60.seconds) =
     CompactTxStreamerGrpcKt
         .CompactTxStreamerCoroutineStub(this, CallOptions.DEFAULT)
         .withDeadlineAfter(timeoutSec.inWholeSeconds, TimeUnit.SECONDS)
+
+/**
+ * [createStub] for a suspend caller: the caller's user operation (if any) rides along to the OHTTP
+ * transport, where it attributes the call's health evidence. Streaming reads that are built outside a
+ * coroutine use [createStub] and stay unattributed background traffic.
+ */
+private suspend fun Channel.createContextStub(timeoutSec: Duration = 60.seconds) =
+    createStub(timeoutSec).let { stub ->
+        currentOhttpHealthContext()?.let { stub.withOption(OHTTP_HEALTH_CALL_OPTION, it) } ?: stub
+    }
 
 private fun BlockHeightUnsafe.toBlockHeight(): Service.BlockID =
     Service.BlockID

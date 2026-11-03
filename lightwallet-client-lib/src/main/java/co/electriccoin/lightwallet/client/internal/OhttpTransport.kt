@@ -1,5 +1,6 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
 import co.electriccoin.lightwallet.client.OhttpCodec
 import co.electriccoin.lightwallet.client.OhttpCodecRequest
 import co.electriccoin.lightwallet.client.OhttpCodecResponse
@@ -11,6 +12,14 @@ import co.electriccoin.lightwallet.client.OhttpResponseEvents
 import co.electriccoin.lightwallet.client.OhttpResponseHead
 import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.OhttpVerifiedKey
+import co.electriccoin.lightwallet.client.health.OhttpHealthCenter
+import co.electriccoin.lightwallet.client.health.OhttpHealthOutcome
+import co.electriccoin.lightwallet.client.health.OhttpHealthRequest
+import co.electriccoin.lightwallet.client.health.OhttpHealthRoute
+import co.electriccoin.lightwallet.client.health.OhttpHealthStage
+import co.electriccoin.lightwallet.client.health.OhttpHealthTraffic
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import java.io.InputStream
 import java.net.SocketTimeoutException
 import kotlin.coroutines.cancellation.CancellationException
@@ -54,8 +63,11 @@ internal class OhttpTransport(
      * Production code should leave this null.
      */
     initialExpirySeconds: Long? = null,
+    /** Where the outcome of every call is recorded as health evidence (never changes a call's result). */
+    private val health: OhttpHealthCenter = OhttpHealthCenter.shared,
 ) {
     private val lock = Any()
+    private val healthRoute = OhttpHealthRoute(gatewayHost.lowercase(), relayUrl, sender.viaTor)
     private var cachedKey: ByteArray? = initialKey
     private var cachedExpiry: Long? = initialExpirySeconds
     private val clientTrace: OhttpClientTrace? =
@@ -201,11 +213,25 @@ internal class OhttpTransport(
         request: OhttpCodecRequest,
         timeoutMs: Int,
     ): OhttpCodecResponse {
-        val deadline = CallDeadline(timeoutMs)
-        val response = roundTripOnce(request, deadline)
-        if (!response.isFreshnessRefusal()) return response
-        logger("OHTTP gateway refused the request as stale; sending it again")
-        return roundTripOnce(request, deadline)
+        val ticket = health.beginInContext(healthRoute, OhttpHealthTraffic.scope(request.authority))
+        return try {
+            val deadline = CallDeadline(timeoutMs)
+            val first = roundTripOnce(request, deadline)
+            val response =
+                if (!first.isFreshnessRefusal()) {
+                    first
+                } else {
+                    logger("OHTTP gateway refused the request as stale; sending it again")
+                    roundTripOnce(request, deadline)
+                }
+            ticket.recordDelivered(response.status, response.field("grpc-status"))
+            response
+        } catch (
+            @Suppress("TooGenericExceptionCaught") e: Throwable
+        ) {
+            ticket.recordFailure(e, cancelled = !currentCoroutineContext().isActive)
+            throw e
+        }
     }
 
     /**
@@ -221,10 +247,21 @@ internal class OhttpTransport(
         timeoutMs: Int,
         sink: OhttpResponseSink,
     ) {
-        val deadline = CallDeadline(timeoutMs)
-        if (streamOnce(request, deadline, sink, retryStale = true)) return
-        logger("OHTTP gateway refused the request as stale; sending it again")
-        streamOnce(request, deadline, sink, retryStale = false)
+        val ticket = health.beginInContext(healthRoute, OhttpHealthTraffic.scope(request.authority))
+        val observed = HealthObservingSink(sink, ticket)
+        try {
+            val deadline = CallDeadline(timeoutMs)
+            if (!streamOnce(request, deadline, observed, retryStale = true)) {
+                logger("OHTTP gateway refused the request as stale; sending it again")
+                streamOnce(request, deadline, observed, retryStale = false)
+            }
+            observed.recordEnd()
+        } catch (
+            @Suppress("TooGenericExceptionCaught") e: Throwable
+        ) {
+            ticket.recordFailure(e, observed.headReceived, cancelled = !currentCoroutineContext().isActive)
+            throw e
+        }
     }
 
     /** [roundTripOnce] for [stream]: false if the answer was a freshness refusal held back for a retry. */
@@ -572,6 +609,81 @@ internal interface OhttpResponseSink {
     fun onTrailers(trailers: List<Pair<String, String>>)
 
     fun onEnd()
+}
+
+/** Records a delivered response: the route answered, and the inner status says how the backend did. */
+private fun OhttpHealthRequest.recordDelivered(
+    innerStatus: Int,
+    grpcStatus: String?,
+) {
+    recordRouteUsable(OhttpHealthStage.RESPONSE_HEAD)
+    var outcome = OhttpHealthTraffic.innerStatusOutcome(innerStatus)
+    if (outcome == OhttpHealthOutcome.Usable) {
+        grpcStatus
+            ?.trim()
+            ?.toIntOrNull()
+            ?.takeIf { it != 0 }
+            ?.let { outcome = OhttpHealthTraffic.grpcOutcome(it) }
+    }
+    record(outcome, OhttpHealthStage.COMPLETE)
+}
+
+/** Records a failed call. [headReceived]: the failure came after the response head, so the route did answer. */
+private fun OhttpHealthRequest.recordFailure(
+    error: Throwable,
+    headReceived: Boolean = false,
+    cancelled: Boolean = false,
+) {
+    val stage =
+        when {
+            headReceived -> OhttpHealthStage.RESPONSE_BODY
+            error is KeyConfigVerificationFailedException -> OhttpHealthStage.KEY_CONFIGURATION
+            error is OhttpException && error.httpStatus != null -> OhttpHealthStage.RESPONSE_HEAD
+            else -> OhttpHealthStage.CONNECTION
+        }
+    // Cancelling the caller closes the exchange, which OkHttp reports as an I/O failure: not the route's fault.
+    record(if (cancelled) OhttpHealthOutcome.Cancelled else OhttpHealthTraffic.outcome(error), stage)
+}
+
+/**
+ * Hands every event to [delegate] unchanged and remembers what the health evidence needs: that the
+ * head arrived (the route answered) and its status and gRPC status (head or trailers).
+ */
+private class HealthObservingSink(
+    private val delegate: OhttpResponseSink,
+    private val ticket: OhttpHealthRequest,
+) : OhttpResponseSink {
+    @Volatile
+    var headReceived = false
+        private set
+    private var status = 0
+    private var grpcStatus: String? = null
+
+    override fun onHead(
+        status: Int,
+        headers: List<Pair<String, String>>,
+    ) {
+        headReceived = true
+        this.status = status
+        grpcStatus = headers.grpcStatus() ?: grpcStatus
+        ticket.recordRouteUsable(OhttpHealthStage.RESPONSE_HEAD)
+        delegate.onHead(status, headers)
+    }
+
+    override fun onData(bytes: ByteArray) = delegate.onData(bytes)
+
+    override fun onTrailers(trailers: List<Pair<String, String>>) {
+        grpcStatus = trailers.grpcStatus() ?: grpcStatus
+        delegate.onTrailers(trailers)
+    }
+
+    override fun onEnd() = delegate.onEnd()
+
+    /** The response completed and authenticated: record what the backend answered. */
+    fun recordEnd() = ticket.recordDelivered(status, grpcStatus)
+
+    private fun List<Pair<String, String>>.grpcStatus(): String? =
+        firstOrNull { it.first.equals("grpc-status", ignoreCase = true) }?.second
 }
 
 private const val HTTP_BAD_REQUEST = 400

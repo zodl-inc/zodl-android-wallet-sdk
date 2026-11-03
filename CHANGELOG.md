@@ -7,6 +7,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- OHTTP request-health evidence (package `co.electriccoin.lightwallet.client.health`, `Synchronizer.observeOhttpHealth`).
+  Every OHTTP request of the Kotlin client, and every request of the Slipstream engine, is recorded as a typed
+  observation (scope, outcome, stage, purpose, optional user operation): only an unreachable route or an outer
+  relay/gateway 5xx is `TransportUnavailable`; rate limits, rejections, configuration errors and backend errors are
+  never outage evidence. `Synchronizer.ohttpHealthRoute(gatewayHost, viaTor)` names the route and `Synchronizer.observeOhttpHealth(route)`
+  returns its retained evidence as a `Flow` (engine and client sources merged; replayed history is flagged `historical`).
+  `withOhttpOperation`, `withOhttpAttempt`, `withOhttpDiagnostic` and `OhttpHealthCenter.complete` attribute
+  requests to one explicit user action. Evidence never changes a call's result.
 - OHTTP (RFC 9458) transport for lightwalletd and selected external APIs. A `LightWalletEndpoint` whose
   host is one of the ZODL OHTTP gateways (`ohttp-gateway.example`, `ohttp-gateway-testnet.example`) is
   now served through an OHTTP relay instead of a direct gRPC connection; the gateway's HPKE key

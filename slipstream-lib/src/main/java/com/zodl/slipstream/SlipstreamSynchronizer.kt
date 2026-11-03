@@ -92,6 +92,8 @@ import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.health.OhttpHealthRoute
+import co.electriccoin.lightwallet.client.health.OhttpHealthSnapshot
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.Response
@@ -1320,6 +1322,14 @@ class SlipstreamSynchronizer internal constructor(
             serverBranch = serverBranchId?.let(ConsensusBranchId::fromHex)
         )
     }
+
+    override suspend fun ohttpHealthRoute(
+        gatewayHost: String,
+        viaTor: Boolean
+    ): OhttpHealthRoute? = NativeOhttpHealth.route(gatewayHost, viaTor)
+
+    override fun observeOhttpHealth(route: OhttpHealthRoute): Flow<OhttpHealthSnapshot> =
+        OhttpHealthMonitor().observe(route)
 
     override suspend fun validateServerEndpoint(
         context: Context,

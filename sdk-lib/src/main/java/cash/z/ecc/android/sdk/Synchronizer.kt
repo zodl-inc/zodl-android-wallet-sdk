@@ -72,6 +72,8 @@ import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.health.OhttpHealthRoute
+import co.electriccoin.lightwallet.client.health.OhttpHealthSnapshot
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.Response
@@ -84,6 +86,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
@@ -787,6 +790,27 @@ interface Synchronizer {
         context: Context,
         endpoint: LightWalletEndpoint
     ): ServerValidation
+
+    /**
+     * The health route of the Private connection to [gatewayHost] (the relay is the one the transport uses), or
+     * null when there is none: a gateway without a relay, or a synchronizer without request-health evidence.
+     * The route keys [observeOhttpHealth]; it changes with [viaTor], so ask again after a Tor toggle.
+     */
+    suspend fun ohttpHealthRoute(
+        gatewayHost: String,
+        viaTor: Boolean
+    ): OhttpHealthRoute? = null
+
+    /**
+     * The OHTTP request-health evidence of [route], as a cold [Flow] of coalesced snapshots: the retained
+     * latest observation per scope, outcome and purpose class, from the Slipstream engine and from the Kotlin
+     * OHTTP client. Observations carry `historical = true` when they are replayed from before the collection
+     * began; only fresh ones count as live traffic.
+     *
+     * Evidence never changes the result of any call. The default implementation has no evidence (an empty
+     * flow): only the Slipstream engine synchronizer provides it.
+     */
+    fun observeOhttpHealth(route: OhttpHealthRoute): Flow<OhttpHealthSnapshot> = emptyFlow()
 
     /**
      * Validates the given address, returning information about why it is invalid. This is a
