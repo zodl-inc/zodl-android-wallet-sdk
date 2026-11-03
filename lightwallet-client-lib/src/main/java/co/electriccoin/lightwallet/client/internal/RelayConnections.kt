@@ -194,7 +194,7 @@ internal class RelayConnections(
          * How long an idle connection is kept for reuse. It must stay below the relay's own idle timeout,
          * or a request would be written on a connection the relay has just closed and, with no retry by
          * the HTTP layer, fail as UNAVAILABLE. Fastly does not document the client-side idle timeout of
-         * its edge, so it was measured against `ohttp-relay.example` on 2026-10-23: an
+         * its edge, so it was measured against the production relay on 2026-10-23: an
          * HTTP/1.1 connection left idle after one request was closed by the relay at 600 s, one left idle
          * after the handshake at 600 s too, and an HTTP/2 connection got GOAWAY ("idle timeout") at 610 s
          * ([MEASURED_RELAY_IDLE_TIMEOUT_SECONDS]). Five minutes is half of that, and the rotation at

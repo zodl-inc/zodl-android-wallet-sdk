@@ -76,6 +76,9 @@ jobs:
       # do not contain the default relay URLs (guards against accidental override).
       - name: Guard against relay URL override in release
         timeout-minutes: 5
+        env:
+          EXPECTED_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
+          EXPECTED_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
         run: |
           if [ -n "$ZODL_OHTTP_RELAY_URL_MAINNET" ] || [ -n "$ZODL_OHTTP_RELAY_URL_TESTNET" ]; then
             echo "ERROR: Build-time relay override env vars (ZODL_OHTTP_RELAY_URL_MAINNET / _TESTNET) are set."
@@ -85,9 +88,15 @@ jobs:
 
           # Only libzcashwalletsdk.so links the OHTTP client; other native libs are not expected
           # to embed the relay URLs.
+          # The expected URLs come from secrets, not from this file. An empty value would make grep -F
+          # match every file, so the guard refuses to run without them.
+          if [ -z "$EXPECTED_RELAY_URL_MAINNET" ] || [ -z "$EXPECTED_RELAY_URL_TESTNET" ]; then
+            echo "ERROR: ZODL_OHTTP_RELAY_URL_MAINNET and ZODL_OHTTP_RELAY_URL_TESTNET secrets are required for this guard."
+            exit 1
+          fi
           RELAY_URLS=(
-            "https://ohttp-relay.example/"
-            "https://ohttp-relay-testnet.example/"
+            "$EXPECTED_RELAY_URL_MAINNET"
+            "$EXPECTED_RELAY_URL_TESTNET"
           )
           SO_FILES=$(find backend-lib/build/intermediates -name "libzcashwalletsdk.so" -type f)
           if [ -z "$SO_FILES" ]; then

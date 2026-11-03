@@ -99,12 +99,29 @@ interface OhttpCodec {
  * not private, since one operator then sees both the client's address and the request.
  */
 fun OhttpCodec.usesIndependentRelay(gatewayHost: String): Boolean =
-    relayUrlFor(gatewayHost)?.let { it in INDEPENDENT_RELAY_URLS } == true
+    relayUrlFor(gatewayHost)?.let { isIndependentRelay(it) } == true
 
-private val INDEPENDENT_RELAY_URLS =
+/**
+ * True when [relayUrl] is one of the independently operated relays. The relays are listed as SHA-256 digests
+ * of their exact URL, not as URLs, so this source does not publish the addresses. A relay supplied at build
+ * time counts as independent only if its URL is byte for byte one of them: any other value (a relay
+ * simulator, a trailing slash) is reported as not private.
+ */
+internal fun isIndependentRelay(
+    relayUrl: String,
+    independentRelayDigests: Set<String> = INDEPENDENT_RELAY_URL_SHA256,
+): Boolean = sha256Hex(relayUrl) in independentRelayDigests
+
+internal fun sha256Hex(value: String): String =
+    java.security.MessageDigest
+        .getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+
+private val INDEPENDENT_RELAY_URL_SHA256 =
     setOf(
-        "https://ohttp-relay.example/",
-        "https://ohttp-relay-testnet.example/",
+        "c9b2717f9d990d386cab9d8166d0bd6136c5e8015a22933e76e683130cbf00a5",
+        "a26f45dd94fb561cb15eedc7dc2933f262cb48562727c5ad014027f4bff9a2e7",
     )
 
 /** The request of an [OhttpCodec.encapsulate]: what the gateway forwards to its backend. */
