@@ -137,6 +137,7 @@ internal class RelayConnections(
         OkHttpClient
             .Builder()
             .connectionPool(ConnectionPool(MAX_IDLE_CONNECTIONS, KEEP_ALIVE_SECONDS, TimeUnit.SECONDS))
+            .pingInterval(PING_INTERVAL_SECONDS, TimeUnit.SECONDS)
             .followRedirects(false)
             .followSslRedirects(false)
             .retryOnConnectionFailure(false)
@@ -207,6 +208,18 @@ internal class RelayConnections(
         const val MEASURED_RELAY_IDLE_TIMEOUT_SECONDS = 600L
 
         private const val MAX_IDLE_CONNECTIONS = 5
+
+        /**
+         * HTTP/2 PING interval: a connection that does not answer one within this time is closed, so a
+         * silently lost multiplexed connection fails its calls instead of holding them until their own
+         * deadlines (ZIP #10 "Outer request to the Relay", reference 10 s).
+         *
+         * Block ranges share this pool with the other calls, unlike the ZIP's SHOULD that bulk ranges get a
+         * connection of their own: its reason, an unread range holding the HTTP/2 flow-control window, does
+         * not apply here, because each call reads its body eagerly and parks decoded messages until the
+         * listener asks for them, and sync downloads its batches one after another.
+         */
+        private const val PING_INTERVAL_SECONDS = 10L
 
         private const val CONNECT_TIMEOUT_MS = 15_000
 

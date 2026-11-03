@@ -26,8 +26,9 @@ slipstream = ["dep:slipstream-core", "dep:tokio", "dep:tracing-android", "tracin
 # the JNI entry points that set a prefix ignore it, so a release library has no way to send trace
 # ids (ZIP: release builds MUST NOT contain a code path that can enable them at run time).
 # Gradle enables it with -PZODL_OHTTP_TRACE=true or a non-empty -PZCASH_OHTTP_TRACE_PREFIX, and
-# refuses it for release, benchmark and publish tasks.
-ohttp-trace = []
+# refuses it for release, benchmark and publish tasks. It turns on the engine's own
+# `client-trace` feature, so Slipstream OHTTP requests carry the prefix too.
+ohttp-trace = ["slipstream-core?/client-trace"]
 
 [dependencies]
 # Zcash dependencies
@@ -307,10 +308,11 @@ crate-type = ["staticlib", "cdylib"]
 [patch.crates-io]
 # The slipstream engine with the OHTTP transport lives in the private slipstream-internal
 # repository until a published zodl-slipstream release carries it. This patch makes the
-# `slipstream-core` dependency above resolve from slipstream-internal `feature/ohttp`
-# (fcf3101c, crate 0.4.0 on the NU7 release crates: zcash_client_backend 0.25.0,
-# zcash_client_sqlite 0.23.0). The entry goes once a published zodl-slipstream release
-# contains the OHTTP transport. No SDK release may be cut while it exists.
+# `slipstream-core` dependency above resolve from slipstream-internal PR #67 (9727693,
+# the MOB-2300 request-health stream, on top of `feature/ohttp-perf-1` c3e7ad4c; crate 0.4.0 on
+# the NU7 release crates: zcash_client_backend 0.25.0, zcash_client_sqlite 0.23.0). The entry goes
+# once a published zodl-slipstream release contains the OHTTP transport. No SDK release may be cut
+# while it exists.
 zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "972769390d3566536702cc804381bfb85fc59042" }
 # DO NOT ALTER THIS COMMENT
 #

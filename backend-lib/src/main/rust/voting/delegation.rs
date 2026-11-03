@@ -14,12 +14,11 @@ use super::*;
 /// voting-eligible notes on every PIR round-trip, not just when a user
 /// explicitly submits a vote.
 ///
-/// `precomputeDelegationPirNative` below has no `tor_runtime` JNI parameter
-/// of its own -- it stays unwired from the app per the Task 2 ledger ruling
-/// -- and passes `0` here, preserving its pre-existing Direct-only behavior
-/// unchanged. `precomputePirProofsNative`/`precomputeSnapshotBundlesNative`
-/// further down are the two exports this routes for real, each with their
-/// own `tor_runtime: jlong` JNI parameter.
+/// `precomputeDelegationPirNative`, `precomputePirProofsNative`, and
+/// `precomputeSnapshotBundlesNative` below all take `tor_runtime` and
+/// `is_custom_server` JNI parameters, so the PIR precompute routes over
+/// Tor (or direct for custom servers) the same way as round-session
+/// chain/helper calls.
 fn connect_pir_client(
     pir_url: &str,
     pir_layout: voting::config::PirLayout,
