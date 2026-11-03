@@ -273,22 +273,19 @@ class OhttpHttpClientTest {
     }
 
     @Test
-    fun `only the default relays count as independent`() {
-        val defaults =
-            object : OhttpCodec by FakeOhttpCodec() {
-                override fun relayUrlFor(gatewayHost: String) =
-                    when (gatewayHost) {
-                        "ohttp-gateway.example" -> "https://ohttp-relay.example/"
-                        "ohttp-gateway-testnet.example" -> "https://ohttp-relay-testnet.example/"
-                        else -> null
-                    }
-            }
+    fun `only the listed relays count as independent`() {
+        val listed = "https://relay-independent.example.test/relay"
+        val digests = setOf(sha256Hex(listed))
 
-        assertTrue(defaults.usesIndependentRelay("ohttp-gateway.example"))
-        assertTrue(defaults.usesIndependentRelay("ohttp-gateway-testnet.example"))
-        assertFalse(defaults.usesIndependentRelay("example.zodl.com"))
+        assertTrue(isIndependentRelay(listed, digests))
+        // A different value, even a trailing slash, is not one of them: it is reported as not private.
+        assertFalse(isIndependentRelay("$listed/", digests))
+        // Case is not normalized either.
+        assertFalse(isIndependentRelay(listed.replaceFirst("https", "HTTPS"), digests))
+        assertFalse(isIndependentRelay("https://relay-simulator.example.test/relay", digests))
         // FakeOhttpCodec maps the gateways to other relays, as a relay simulator build would.
         assertFalse(FakeOhttpCodec().usesIndependentRelay("ohttp-gateway.example"))
+        assertFalse(FakeOhttpCodec().usesIndependentRelay("example.zodl.com"))
     }
 
     @Test

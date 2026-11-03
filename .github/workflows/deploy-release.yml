@@ -76,6 +76,9 @@ jobs:
       # do not contain the default relay URLs (guards against accidental override).
       - name: Guard against relay URL override in release
         timeout-minutes: 5
+        env:
+          EXPECTED_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_EXPECTED_RELAY_URL_MAINNET }}
+          EXPECTED_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_EXPECTED_RELAY_URL_TESTNET }}
         run: |
           if [ -n "$ZODL_OHTTP_RELAY_URL_MAINNET" ] || [ -n "$ZODL_OHTTP_RELAY_URL_TESTNET" ]; then
             echo "ERROR: Build-time relay override env vars (ZODL_OHTTP_RELAY_URL_MAINNET / _TESTNET) are set."
@@ -85,9 +88,31 @@ jobs:
 
           # Only libzcashwalletsdk.so links the OHTTP client; other native libs are not expected
           # to embed the relay URLs.
+          # The expected URLs come from secrets, not from this file. An empty value would make grep -F
+          # match every file, and a value with whitespace or a newline would be split into several
+          # patterns, so the guard refuses to run without clean values.
+          for expected in "$EXPECTED_RELAY_URL_MAINNET" "$EXPECTED_RELAY_URL_TESTNET"; do
+            case "$expected" in
+              ""|*[[:space:]]*)
+                echo "ERROR: ZODL_OHTTP_EXPECTED_RELAY_URL_MAINNET and _TESTNET secrets are required for this guard, without whitespace."
+                exit 1
+                ;;
+            esac
+          done
+          # The independent-relay check in OhttpCodec.kt lists SHA-256 digests of the relay URLs. They must be
+          # the digests of the URLs this release ships, or every user would see the connection as not private.
+          CODEC="lightwallet-client-lib/src/main/java/co/electriccoin/lightwallet/client/OhttpCodec.kt"
+          for expected in "$EXPECTED_RELAY_URL_MAINNET" "$EXPECTED_RELAY_URL_TESTNET"; do
+            digest=$(printf '%s' "$expected" | sha256sum | cut -d' ' -f1)
+            if ! grep -F -q "$digest" "$CODEC"; then
+              echo "ERROR: the SHA-256 digest of an expected relay URL is not listed in $CODEC."
+              echo "The independent-relay check would report the release connection as not private."
+              exit 1
+            fi
+          done
           RELAY_URLS=(
-            "https://ohttp-relay.example/"
-            "https://ohttp-relay-testnet.example/"
+            "$EXPECTED_RELAY_URL_MAINNET"
+            "$EXPECTED_RELAY_URL_TESTNET"
           )
           SO_FILES=$(find backend-lib/build/intermediates -name "libzcashwalletsdk.so" -type f)
           if [ -z "$SO_FILES" ]; then

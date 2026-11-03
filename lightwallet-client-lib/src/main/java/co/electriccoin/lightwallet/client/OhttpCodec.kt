@@ -93,18 +93,38 @@ interface OhttpCodec {
 }
 
 /**
- * True when the relay this build uses for [gatewayHost] is the default, independently operated one
- * (`relays.rs` of `zodl-ohttp-client`). A build-time override (`ZODL_OHTTP_RELAY_URL_*`, e.g. the relay
- * simulator, which the gateway operator runs) is false: such a build should present its connection as
- * not private, since one operator then sees both the client's address and the request.
+ * True when the relay this build uses for [gatewayHost] is one of the independently operated relays, see
+ * [isIndependentRelay]. A relay supplied at build time (`ZODL_OHTTP_RELAY_URL_*`) counts only if its URL is
+ * byte for byte one of them. Any other one, for example the relay simulator the gateway operator runs, is
+ * false: such a build should present its connection as not private, since one operator then sees both the
+ * client's address and the request.
  */
 fun OhttpCodec.usesIndependentRelay(gatewayHost: String): Boolean =
-    relayUrlFor(gatewayHost)?.let { it in INDEPENDENT_RELAY_URLS } == true
+    relayUrlFor(gatewayHost)?.let { isIndependentRelay(it) } == true
 
-private val INDEPENDENT_RELAY_URLS =
+/**
+ * True when [relayUrl] is one of the independently operated relays. The relays are listed as SHA-256 digests
+ * of their exact URL, not as URLs, so this source does not publish the addresses. A relay supplied at build
+ * time counts as independent only if its URL is byte for byte one of them: any other value (a relay
+ * simulator, a trailing slash, another letter case) is reported as not private. This hides the addresses
+ * from a casual reader of the source only: the URL is still in the shipped library and visible in DNS and
+ * SNI.
+ */
+internal fun isIndependentRelay(
+    relayUrl: String,
+    independentRelayDigests: Set<String> = INDEPENDENT_RELAY_URL_SHA256,
+): Boolean = sha256Hex(relayUrl) in independentRelayDigests
+
+internal fun sha256Hex(value: String): String =
+    java.security.MessageDigest
+        .getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+
+private val INDEPENDENT_RELAY_URL_SHA256 =
     setOf(
-        "https://ohttp-relay.example/",
-        "https://ohttp-relay-testnet.example/",
+        "c9b2717f9d990d386cab9d8166d0bd6136c5e8015a22933e76e683130cbf00a5",
+        "a26f45dd94fb561cb15eedc7dc2933f262cb48562727c5ad014027f4bff9a2e7",
     )
 
 /** The request of an [OhttpCodec.encapsulate]: what the gateway forwards to its backend. */
