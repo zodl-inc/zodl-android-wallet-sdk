@@ -191,14 +191,14 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_await<'local>(
         let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(0) as u64);
         let mut guard = entry.latest.state.lock().unwrap();
         loop {
-            if let Some(snapshot) = guard.snapshot.as_ref() {
-                if snapshot.version as i64 > since_version {
-                    let encoded = encode(snapshot);
-                    drop(guard);
-                    let array = env.new_long_array(encoded.len() as i32)?;
-                    env.set_long_array_region(&array, 0, &encoded)?;
-                    return Ok(array.into_raw());
-                }
+            if let Some(snapshot) = guard.snapshot.as_ref()
+                && snapshot.version as i64 > since_version
+            {
+                let encoded = encode(snapshot);
+                drop(guard);
+                let array = env.new_long_array(encoded.len() as i32)?;
+                env.set_long_array_region(&array, 0, &encoded)?;
+                return Ok(array.into_raw());
             }
             if guard.closed {
                 return Ok(std::ptr::null_mut());

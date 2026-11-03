@@ -28,9 +28,14 @@ class OhttpHealthCenter(
 
     // Access-ordered and bounded like the engine's route registry (32 routes).
     private val routes =
-        object : LinkedHashMap<OhttpHealthRoute, MutableStateFlow<OhttpHealthSnapshot>>(16, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<OhttpHealthRoute, MutableStateFlow<OhttpHealthSnapshot>>?) =
-                size > MAX_ROUTES
+        object : LinkedHashMap<OhttpHealthRoute, MutableStateFlow<OhttpHealthSnapshot>>(
+            ROUTES_INITIAL_CAPACITY,
+            ROUTES_LOAD_FACTOR,
+            true,
+        ) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<OhttpHealthRoute, MutableStateFlow<OhttpHealthSnapshot>>?,
+            ) = size > MAX_ROUTES
         }
     private val retained = HashMap<OhttpHealthRoute, LinkedHashMap<Slot, OhttpHealthObservation>>()
 
@@ -40,7 +45,10 @@ class OhttpHealthCenter(
             onBufferOverflow = BufferOverflow.DROP_OLDEST,
         )
 
-    /** One entry per [complete] call. The newest [COMPLETION_BUFFER] are kept: a slow subscriber never stalls a send. */
+    /**
+     * One entry per [complete] call. The newest [COMPLETION_BUFFER] are kept: a slow subscriber never stalls
+     * a send.
+     */
     val completions: SharedFlow<OhttpHealthOperationCompleted> get() = completionFlow
 
     /**
@@ -169,6 +177,8 @@ class OhttpHealthCenter(
 
     companion object {
         private const val MAX_ROUTES = 32
+        private const val ROUTES_INITIAL_CAPACITY = 16
+        private const val ROUTES_LOAD_FACTOR = 0.75f
         private const val COMPLETION_BUFFER = 64
 
         /** The center used by the client transport. */
@@ -196,6 +206,7 @@ private fun OhttpHealthObservation.supersedes(existing: OhttpHealthObservation):
     }
 
 /** The ticket of one logical request: its start identity and recipients never change on completion. */
+@Suppress("LongParameterList")
 internal class OhttpHealthRequest internal constructor(
     private val center: OhttpHealthCenter,
     val route: OhttpHealthRoute,

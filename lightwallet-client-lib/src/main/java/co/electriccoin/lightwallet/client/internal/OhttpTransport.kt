@@ -226,7 +226,9 @@ internal class OhttpTransport(
                 }
             ticket.recordDelivered(response.status, response.field("grpc-status"))
             response
-        } catch (e: Throwable) {
+        } catch (
+            @Suppress("TooGenericExceptionCaught") e: Throwable
+        ) {
             ticket.recordFailure(e, cancelled = !currentCoroutineContext().isActive)
             throw e
         }
@@ -254,7 +256,9 @@ internal class OhttpTransport(
                 streamOnce(request, deadline, observed, retryStale = false)
             }
             observed.recordEnd()
-        } catch (e: Throwable) {
+        } catch (
+            @Suppress("TooGenericExceptionCaught") e: Throwable
+        ) {
             ticket.recordFailure(e, observed.headReceived, cancelled = !currentCoroutineContext().isActive)
             throw e
         }

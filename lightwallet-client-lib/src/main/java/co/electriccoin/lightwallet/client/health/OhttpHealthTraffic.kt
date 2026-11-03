@@ -1,3 +1,5 @@
+@file:Suppress("MagicNumber")
+
 package co.electriccoin.lightwallet.client.health
 
 import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException

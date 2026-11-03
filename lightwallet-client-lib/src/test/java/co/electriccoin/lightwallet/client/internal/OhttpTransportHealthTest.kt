@@ -1,3 +1,5 @@
+@file:Suppress("MaxLineLength")
+
 package co.electriccoin.lightwallet.client.internal
 
 import co.electriccoin.lightwallet.client.OhttpCodecRequest

@@ -124,9 +124,11 @@ internal val OHTTP_HEALTH_CALL_OPTION: io.grpc.CallOptions.Key<OhttpHealthContex
 internal suspend fun currentOhttpHealthContext(): OhttpHealthContextElement? =
     kotlin.coroutines.coroutineContext[OhttpHealthContextElement]
 
-suspend fun currentOhttpOperation(): OhttpHealthOperation? = kotlin.coroutines.coroutineContext[OhttpHealthContextElement]?.operation
+suspend fun currentOhttpOperation(): OhttpHealthOperation? =
+    kotlin.coroutines.coroutineContext[OhttpHealthContextElement]?.operation
 
-internal suspend fun currentOhttpAttempt(): OhttpHealthAttempt? = kotlin.coroutines.coroutineContext[OhttpHealthContextElement]?.attempt
+internal suspend fun currentOhttpAttempt(): OhttpHealthAttempt? =
+    kotlin.coroutines.coroutineContext[OhttpHealthContextElement]?.attempt
 
 /**
  * Collects the terminal evidence of the requests started inside one [withOhttpAttempt] scope:

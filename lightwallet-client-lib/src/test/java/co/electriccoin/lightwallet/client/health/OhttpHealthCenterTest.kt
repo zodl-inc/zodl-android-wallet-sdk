@@ -1,3 +1,5 @@
+@file:Suppress("MaxLineLength")
+
 package co.electriccoin.lightwallet.client.health
 
 import kotlinx.coroutines.CoroutineStart

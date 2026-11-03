@@ -1,3 +1,5 @@
+@file:Suppress("MagicNumber")
+
 package com.zodl.slipstream
 
 import cash.z.ecc.android.sdk.internal.jni.RustBackend
@@ -34,7 +36,10 @@ internal object OhttpHealthNative {
         generation: Long,
     ): Long
 
-    /** Blocks until a snapshot newer than [sinceVersion] exists, or timeout; null otherwise. See [decodeNativeHealth]. */
+    /**
+     * Blocks until a snapshot newer than [sinceVersion] exists, or timeout; null otherwise. See
+     * [decodeNativeHealth].
+     */
     external fun await(
         id: Long,
         sinceVersion: Long,
@@ -142,7 +147,9 @@ internal object NativeOhttpHealth {
                 if (id == 0L) return@flow
                 var since = -1L
                 while (currentCoroutineContext().isActive) {
-                    val raw = withContext(Dispatchers.IO) { OhttpHealthNative.await(id, since, AWAIT_SLICE_MS) } ?: continue
+                    val raw =
+                        withContext(Dispatchers.IO) { OhttpHealthNative.await(id, since, AWAIT_SLICE_MS) }
+                            ?: continue
                     val snapshot = decodeNativeHealth(raw, route)
                     since = snapshot.version
                     emit(snapshot)

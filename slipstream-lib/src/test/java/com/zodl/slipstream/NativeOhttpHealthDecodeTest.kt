@@ -1,3 +1,5 @@
+@file:Suppress("MaxLineLength")
+
 package com.zodl.slipstream
 
 import co.electriccoin.lightwallet.client.health.OhttpHealthOutcome
@@ -17,6 +19,7 @@ class NativeOhttpHealthDecodeTest {
     private val route = OhttpHealthRoute("ohttp-gateway.example", "https://relay.test/relay", viaTor = false)
 
     /** scope, category, retry, stage, purpose, historical, version, request, started, observed, hasOp, opStart, idHi, idLo */
+    @Suppress("LongParameterList")
     private fun observation(
         scope: Long,
         category: Long,
