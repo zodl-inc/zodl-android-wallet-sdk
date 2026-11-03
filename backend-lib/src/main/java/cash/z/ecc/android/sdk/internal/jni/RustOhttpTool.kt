@@ -135,10 +135,10 @@ class RustOhttpTool private constructor() : OhttpCodec {
             .let { OhttpVerifiedKey(key = it.key, notAfter = it.notAfter, network = it.network) }
 
     override fun keyConfigDnsName(gatewayHost: String): String =
-        nativeKeyConfigDnsName(gatewayHost)
+        translating { nativeKeyConfigDnsName(gatewayHost) }
 
     override fun dohQueryUrl(resolver: String, gatewayHost: String): String =
-        nativeDohQueryUrl(resolver, gatewayHost)
+        translating { nativeDohQueryUrl(resolver, gatewayHost) }
 
     override fun envelopeFromDohJson(dohBody: ByteArray, gatewayHost: String): ByteArray =
         translating { nativeEnvelopeFromDohJson(dohBody, gatewayHost) }
@@ -340,8 +340,10 @@ class RustOhttpTool private constructor() : OhttpCodec {
         ): String
 
         /**
-         * Returns the relay URL for a given gateway host, or null if the host is not a known gateway.
-         * The built-in mapping can be overridden at build time via environment variables.
+         * Returns the relay URL for a given gateway host, or null if the host is not the gateway of a
+         * network the native library was built with (OHTTP unavailable for it). There are no built-in
+         * values: gateway hosts and relay URLs are build-time configuration (`ZODL_OHTTP_GATEWAY_HOST_*`,
+         * `ZODL_OHTTP_RELAY_URL_*`).
          */
         @JvmStatic
         private external fun nativeRelayUrlFor(gatewayHost: String): String?
@@ -359,15 +361,17 @@ class RustOhttpTool private constructor() : OhttpCodec {
         private external fun profileInfo(profile: Int): JniOhttpProfile
 
         /**
-         * Returns the DNS name of the signed Key Configuration TXT record for [gatewayHost]:
-         * `ohttp-keys.example` or `ohttp-keys-testnet.example`.
+         * Returns the DNS name of the signed Key Configuration TXT record for [gatewayHost], as the
+         * library was built with it (`ZODL_OHTTP_KEYS_DNS_NAME_MAINNET` / `_TESTNET`). Throws a
+         * key-configuration [JniOhttpException] when [gatewayHost] is not a configured gateway or
+         * the build set no DNS name for its network (OHTTP DNS source unavailable).
          */
         @JvmStatic
         private external fun nativeKeyConfigDnsName(gatewayHost: String): String
 
         /**
          * Returns the DoH query URL (JSON API) for [resolver] and [gatewayHost]: the URL to GET
-         * to fetch the TXT record as JSON.
+         * to fetch the TXT record as JSON. Throws like [nativeKeyConfigDnsName].
          */
         @JvmStatic
         private external fun nativeDohQueryUrl(

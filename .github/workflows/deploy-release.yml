@@ -10,6 +10,24 @@ on:
 
 concurrency: deploy_release
 
+# The OHTTP endpoint configuration that zodl-ohttp-client (zodl-inc/zodl-ohttp) reads when
+# backend-lib is compiled: gateway hosts, relay URLs, signing public keys and DNS TXT names of the
+# signed key configuration. The crate has no built-in endpoints: a network left unset has OHTTP
+# off in the built library. Workflow-level, so every step inherits it, Gradle passes it on to the
+# cargo builds of rust-android-gradle, and `make test-rust` / clippy see it too. The Rust unit
+# tests do not depend on it (they use example endpoints). Repository Actions secrets, managed in
+# zodl-inc/github-config: secrets, not variables, so that GitHub masks the values in the log
+# (variables are printed in clear in the env listing of every step).
+env:
+  ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
+  ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
+  ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
+  ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
+  ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
+  ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
+  ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
+  ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
+
 jobs:
   validate_gradle_wrapper:
     runs-on: ubuntu-latest
@@ -72,48 +90,78 @@ jobs:
         timeout-minutes: 30
         run: |
           ./gradlew :backend-lib:assembleRelease
-      # Fail if build-time relay override env vars are set, or if the built .so files
-      # do not contain the default relay URLs (guards against accidental override).
-      - name: Guard against relay URL override in release
+      # Release guard. Nothing in this step prints a value of the OHTTP configuration (relay URLs,
+      # gateway hosts, signing keys, DNS names) or anything derived from one: errors name the
+      # variable or secret only.
+      # Fails if any of the eight ZODL_OHTTP_* variables is missing (a library built without it has
+      # OHTTP off for that network), if the relay URLs the library was built with are not exactly
+      # the expected ones (guards against an accidental override), if the independent-relay digests
+      # in OhttpCodec.kt do not match them, or if the built .so files do not contain the relay URLs
+      # and gateway hosts.
+      - name: Guard OHTTP endpoint configuration in release
         timeout-minutes: 5
         env:
           EXPECTED_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_EXPECTED_RELAY_URL_MAINNET }}
           EXPECTED_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_EXPECTED_RELAY_URL_TESTNET }}
         run: |
-          if [ -n "$ZODL_OHTTP_RELAY_URL_MAINNET" ] || [ -n "$ZODL_OHTTP_RELAY_URL_TESTNET" ]; then
-            echo "ERROR: Build-time relay override env vars (ZODL_OHTTP_RELAY_URL_MAINNET / _TESTNET) are set."
-            echo "These are for debug/test builds only. Release builds must use the embedded URLs."
+          missing=0
+          for name in \
+            ZODL_OHTTP_GATEWAY_HOST_MAINNET ZODL_OHTTP_GATEWAY_HOST_TESTNET \
+            ZODL_OHTTP_RELAY_URL_MAINNET ZODL_OHTTP_RELAY_URL_TESTNET \
+            ZODL_OHTTP_SIGNING_PUBKEY_MAINNET ZODL_OHTTP_SIGNING_PUBKEY_TESTNET \
+            ZODL_OHTTP_KEYS_DNS_NAME_MAINNET ZODL_OHTTP_KEYS_DNS_NAME_TESTNET; do
+            if [ -z "${!name}" ]; then
+              echo "ERROR: $name is not set (repository Actions secret, zodl-inc/github-config)."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "A release library built without it would have OHTTP off for that network."
             exit 1
           fi
 
-          # Only libzcashwalletsdk.so links the OHTTP client; other native libs are not expected
-          # to embed the relay URLs.
           # The expected URLs come from secrets, not from this file. An empty value would make grep -F
           # match every file, and a value with whitespace or a newline would be split into several
-          # patterns, so the guard refuses to run without clean values.
-          for expected in "$EXPECTED_RELAY_URL_MAINNET" "$EXPECTED_RELAY_URL_TESTNET"; do
-            case "$expected" in
+          # patterns, so the guard refuses to run without clean values. The same holds for the
+          # configured gateway hosts and relay URLs searched in the .so below.
+          for name in \
+            EXPECTED_RELAY_URL_MAINNET EXPECTED_RELAY_URL_TESTNET \
+            ZODL_OHTTP_RELAY_URL_MAINNET ZODL_OHTTP_RELAY_URL_TESTNET \
+            ZODL_OHTTP_GATEWAY_HOST_MAINNET ZODL_OHTTP_GATEWAY_HOST_TESTNET; do
+            case "${!name}" in
               ""|*[[:space:]]*)
-                echo "ERROR: ZODL_OHTTP_EXPECTED_RELAY_URL_MAINNET and _TESTNET secrets are required for this guard, without whitespace."
+                echo "ERROR: $name is required for this guard, without whitespace."
+                echo "(EXPECTED_RELAY_URL_* = secrets ZODL_OHTTP_EXPECTED_RELAY_URL_MAINNET / _TESTNET.)"
                 exit 1
                 ;;
             esac
           done
+          # The relay URLs are build-time configuration now, so instead of refusing any
+          # ZODL_OHTTP_RELAY_URL_* the guard against an accidental override requires them to be byte for
+          # byte the expected ones: a release cannot ship another relay (a simulator, a typo).
+          for net in MAINNET TESTNET; do
+            configured="ZODL_OHTTP_RELAY_URL_$net"
+            expected="EXPECTED_RELAY_URL_$net"
+            if [ "${!configured}" != "${!expected}" ]; then
+              echo "ERROR: $configured differs from the secret ZODL_OHTTP_EXPECTED_RELAY_URL_$net."
+              echo "Release builds must use the expected relay URLs."
+              exit 1
+            fi
+          done
           # The independent-relay check in OhttpCodec.kt lists SHA-256 digests of the relay URLs. They must be
           # the digests of the URLs this release ships, or every user would see the connection as not private.
           CODEC="lightwallet-client-lib/src/main/java/co/electriccoin/lightwallet/client/OhttpCodec.kt"
-          for expected in "$EXPECTED_RELAY_URL_MAINNET" "$EXPECTED_RELAY_URL_TESTNET"; do
-            digest=$(printf '%s' "$expected" | sha256sum | cut -d' ' -f1)
+          for name in EXPECTED_RELAY_URL_MAINNET EXPECTED_RELAY_URL_TESTNET; do
+            digest=$(printf '%s' "${!name}" | sha256sum | cut -d' ' -f1)
             if ! grep -F -q "$digest" "$CODEC"; then
-              echo "ERROR: the SHA-256 digest of an expected relay URL is not listed in $CODEC."
+              echo "ERROR: the SHA-256 digest of $name is not listed in $CODEC."
               echo "The independent-relay check would report the release connection as not private."
               exit 1
             fi
           done
-          RELAY_URLS=(
-            "$EXPECTED_RELAY_URL_MAINNET"
-            "$EXPECTED_RELAY_URL_TESTNET"
-          )
+
+          # Only libzcashwalletsdk.so links the OHTTP client; other native libs are not expected
+          # to embed the endpoint configuration.
           SO_FILES=$(find backend-lib/build/intermediates -name "libzcashwalletsdk.so" -type f)
           if [ -z "$SO_FILES" ]; then
             echo "ERROR: No libzcashwalletsdk.so found after assembleRelease"
@@ -121,16 +169,18 @@ jobs:
           fi
 
           for so in $SO_FILES; do
-            for url in "${RELAY_URLS[@]}"; do
-              if ! grep -a -F -q "$url" "$so"; then
-                echo "ERROR: $so does not contain the default relay URL: $url"
-                echo "This indicates a build-time override or incorrect relay URL embedding."
+            for name in \
+              EXPECTED_RELAY_URL_MAINNET EXPECTED_RELAY_URL_TESTNET \
+              ZODL_OHTTP_GATEWAY_HOST_MAINNET ZODL_OHTTP_GATEWAY_HOST_TESTNET; do
+              if ! grep -a -F -q "${!name}" "$so"; then
+                echo "ERROR: $so does not contain the value of $name."
+                echo "This indicates a build-time override or incorrect endpoint embedding."
                 exit 1
               fi
             done
           done
 
-          echo "Relay URL guard passed: all libzcashwalletsdk.so files contain the default mainnet and testnet relay URLs"
+          echo "OHTTP guard passed: all libzcashwalletsdk.so files contain the expected mainnet and testnet relay URLs and the configured gateway hosts"
       # Note that GitHub Actions appears to have issues with environment variables that contain periods,
       # so the GPG variables are done as command line arguments instead.
       - name: Deploy to Maven Central

@@ -23,8 +23,10 @@ interface OhttpCodec {
     fun profileInfo(): OhttpProfileInfo
 
     /**
-     * Returns the relay URL for a given gateway host, or null if the host is not a known gateway.
-     * The built-in mapping can be overridden at build time via environment variables.
+     * Returns the relay URL for a given gateway host, or null if the host is not the gateway of a
+     * network the native library was built with (OHTTP unavailable for it). There are no built-in
+     * values: gateway hosts and relay URLs are build-time configuration (`ZODL_OHTTP_GATEWAY_HOST_*`,
+     * `ZODL_OHTTP_RELAY_URL_*`).
      */
     fun relayUrlFor(gatewayHost: String): String?
 
@@ -66,9 +68,10 @@ interface OhttpCodec {
     fun relayBackoffRemainingMs(relayUrl: String): Long = 0
 
     /**
-     * Returns the DNS name of the signed Key Configuration TXT record for [gatewayHost]:
-     * `ohttp-keys.example` or `ohttp-keys-testnet.example`. Used for DNS-over-HTTPS
-     * fallback when the relay fetch fails.
+     * Returns the DNS name of the signed Key Configuration TXT record for [gatewayHost], as the native
+     * library was built with it (`ZODL_OHTTP_KEYS_DNS_NAME_MAINNET` / `_TESTNET`). Used for
+     * DNS-over-HTTPS fallback when the relay fetch fails. Throws [KeyConfigVerificationFailedException]
+     * when the host is not a configured gateway or the build set no DNS name for its network.
      */
     fun keyConfigDnsName(gatewayHost: String): String
 

@@ -10,11 +10,44 @@ use crate::tor::TorRuntime;
 #[cfg(feature = "slipstream")]
 use slipstream_core::ohttp::{Dialer, http_round_trip_with_dispatch};
 
-/// OHTTP gateway hostname for voting traffic (mainnet).
-const OHTTP_GATEWAY_HOST_MAINNET: &str = "ohttp-gateway.example";
+/// The OHTTP gateway host of `network` for voting traffic, out of the build's gateway hosts
+/// (`mainnet`, `testnet`): `zodl_ohttp_client::GATEWAY_HOST_MAINNET` / `_TESTNET`, read from
+/// `ZODL_OHTTP_GATEWAY_HOST_MAINNET` / `_TESTNET` when that crate is compiled. Regtest uses the
+/// testnet gateway. An error (OHTTP unavailable, nothing sent) when the build set none.
+fn select_gateway(
+    network: zcash_voting::types::Network,
+    mainnet: Option<&'static str>,
+    testnet: Option<&'static str>,
+) -> Result<(&'static str, zcash_protocol::consensus::NetworkType), RouteError> {
+    use zcash_protocol::consensus::NetworkType;
+    let (host, network_type, name) = match network {
+        zcash_voting::types::Network::Mainnet => (mainnet, NetworkType::Main, "mainnet"),
+        zcash_voting::types::Network::Testnet | zcash_voting::types::Network::Regtest => {
+            (testnet, NetworkType::Test, "testnet")
+        }
+    };
+    host.filter(|h| !h.is_empty())
+        .map(|h| (h, network_type))
+        .ok_or_else(|| {
+            RouteError::before_dispatch(format!(
+                "OHTTP unavailable: no {name} gateway configured in this build"
+            ))
+        })
+}
 
-/// OHTTP gateway hostname for voting traffic (testnet).
-const OHTTP_GATEWAY_HOST_TESTNET: &str = "ohttp-gateway-testnet.example";
+/// The build's gateway hosts. The unit tests use example hosts (RFC 2606 names) instead, so that
+/// they run the same whether or not the `ZODL_OHTTP_*` variables are set.
+#[cfg(not(test))]
+const GATEWAY_HOSTS: (Option<&str>, Option<&str>) = (
+    zodl_ohttp_client::GATEWAY_HOST_MAINNET,
+    zodl_ohttp_client::GATEWAY_HOST_TESTNET,
+);
+
+#[cfg(test)]
+const GATEWAY_HOSTS: (Option<&str>, Option<&str>) = (
+    Some("ohttp-gateway.example"),
+    Some("ohttp-gateway-testnet.example"),
+);
 
 /// Exact vote and PIR hosts in gateway BACKENDS (mainnet).
 /// Gateway removed suffix routing and uses exact host matching only.
@@ -165,7 +198,7 @@ fn can_handle_ohttp(host: &str) -> bool {
 /// IP to vote servers.
 ///
 /// Uses the same OHTTP stack as the lightwalletd gRPC path: signed HPKE key
-/// configs, relay from `zodl_ohttp_client::relay_for` (Fastly production relays),
+/// configs, relay from `zodl_ohttp_client::relay_for` (build-time `ZODL_OHTTP_RELAY_URL_*`),
 /// 64 MiB response cap ([`MAX_RESPONSE_BYTES`]), client trace prefix.
 pub(super) struct ZodlOhttpRoute {
     gateway_host: String,
@@ -198,16 +231,9 @@ impl ZodlOhttpRoute {
             )));
         }
 
-        // Select gateway based on network
-        use zcash_protocol::consensus::NetworkType;
-        let (gateway_host, gateway_network) = match network {
-            zcash_voting::types::Network::Mainnet => {
-                (OHTTP_GATEWAY_HOST_MAINNET, NetworkType::Main)
-            }
-            zcash_voting::types::Network::Testnet | zcash_voting::types::Network::Regtest => {
-                (OHTTP_GATEWAY_HOST_TESTNET, NetworkType::Test)
-            }
-        };
+        // Select gateway based on network (build-time configuration; unset = unavailable)
+        let (gateway_host, gateway_network) =
+            select_gateway(network, GATEWAY_HOSTS.0, GATEWAY_HOSTS.1)?;
 
         Ok(Self {
             gateway_host: gateway_host.to_string(),
@@ -385,20 +411,35 @@ mod tests {
         let mainnet_route =
             ZodlOhttpRoute::new("https://voting.valargroup.dev/api", Network::Mainnet)
                 .expect("mainnet route should succeed");
-        assert_eq!(mainnet_route.gateway_host, OHTTP_GATEWAY_HOST_MAINNET);
+        assert_eq!(mainnet_route.gateway_host, "ohttp-gateway.example");
         assert_eq!(mainnet_route.gateway_network, NetworkType::Main);
 
         let testnet_route =
             ZodlOhttpRoute::new("https://voting.valargroup.dev/api", Network::Testnet)
                 .expect("testnet route should succeed");
-        assert_eq!(testnet_route.gateway_host, OHTTP_GATEWAY_HOST_TESTNET);
+        assert_eq!(testnet_route.gateway_host, "ohttp-gateway-testnet.example");
         assert_eq!(testnet_route.gateway_network, NetworkType::Test);
 
         let regtest_route =
             ZodlOhttpRoute::new("https://voting.valargroup.dev/api", Network::Regtest)
                 .expect("regtest route should succeed");
-        assert_eq!(regtest_route.gateway_host, OHTTP_GATEWAY_HOST_TESTNET);
+        assert_eq!(regtest_route.gateway_host, "ohttp-gateway-testnet.example");
         assert_eq!(regtest_route.gateway_network, NetworkType::Test);
+    }
+
+    #[test]
+    fn a_network_without_a_configured_gateway_is_unavailable_not_a_panic() {
+        use zcash_protocol::consensus::NetworkType;
+        use zcash_voting::types::Network;
+
+        let only_testnet = (None, Some("ohttp-gateway-testnet.example"));
+        assert!(select_gateway(Network::Mainnet, only_testnet.0, only_testnet.1).is_err());
+        assert_eq!(
+            select_gateway(Network::Regtest, only_testnet.0, only_testnet.1).unwrap(),
+            ("ohttp-gateway-testnet.example", NetworkType::Test)
+        );
+        assert!(select_gateway(Network::Testnet, Some("ohttp-gateway.example"), None).is_err());
+        assert!(select_gateway(Network::Mainnet, Some(""), None).is_err());
     }
 
     #[test]
