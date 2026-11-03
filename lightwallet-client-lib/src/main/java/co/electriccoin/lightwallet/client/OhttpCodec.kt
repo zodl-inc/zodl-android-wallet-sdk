@@ -93,10 +93,11 @@ interface OhttpCodec {
 }
 
 /**
- * True when the relay this build uses for [gatewayHost] is the default, independently operated one
- * (`relays.rs` of `zodl-ohttp-client`). A build-time override (`ZODL_OHTTP_RELAY_URL_*`, e.g. the relay
- * simulator, which the gateway operator runs) is false: such a build should present its connection as
- * not private, since one operator then sees both the client's address and the request.
+ * True when the relay this build uses for [gatewayHost] is one of the independently operated relays, see
+ * [isIndependentRelay]. A relay supplied at build time (`ZODL_OHTTP_RELAY_URL_*`) counts only if its URL is
+ * byte for byte one of them. Any other one, for example the relay simulator the gateway operator runs, is
+ * false: such a build should present its connection as not private, since one operator then sees both the
+ * client's address and the request.
  */
 fun OhttpCodec.usesIndependentRelay(gatewayHost: String): Boolean =
     relayUrlFor(gatewayHost)?.let { isIndependentRelay(it) } == true
@@ -105,7 +106,9 @@ fun OhttpCodec.usesIndependentRelay(gatewayHost: String): Boolean =
  * True when [relayUrl] is one of the independently operated relays. The relays are listed as SHA-256 digests
  * of their exact URL, not as URLs, so this source does not publish the addresses. A relay supplied at build
  * time counts as independent only if its URL is byte for byte one of them: any other value (a relay
- * simulator, a trailing slash) is reported as not private.
+ * simulator, a trailing slash, another letter case) is reported as not private. This hides the addresses
+ * from a casual reader of the source only: the URL is still in the shipped library and visible in DNS and
+ * SNI.
  */
 internal fun isIndependentRelay(
     relayUrl: String,
