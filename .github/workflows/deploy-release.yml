@@ -10,24 +10,6 @@ on:
 
 concurrency: deploy_release
 
-# The OHTTP endpoint configuration that zodl-ohttp-client (zodl-inc/zodl-ohttp) reads when
-# backend-lib is compiled: gateway hosts, relay URLs, signing public keys and DNS TXT names of the
-# signed key configuration. The crate has no built-in endpoints: a network left unset has OHTTP
-# off in the built library. Workflow-level, so every step inherits it, Gradle passes it on to the
-# cargo builds of rust-android-gradle, and `make test-rust` / clippy see it too. The Rust unit
-# tests do not depend on it (they use example endpoints). Repository Actions secrets, managed in
-# zodl-inc/github-config: secrets, not variables, so that GitHub masks the values in the log
-# (variables are printed in clear in the env listing of every step).
-env:
-  ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-  ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-  ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-  ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-  ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-  ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-  ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-  ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
-
 jobs:
   validate_gradle_wrapper:
     runs-on: ubuntu-latest
@@ -86,8 +68,25 @@ jobs:
           rust-cache: true
       # Build the release artifact with Rust dependencies (requires cargo app credentials
       # for private git dependencies). Warm-cache builds complete in <30 minutes.
+      # zodl-ohttp-client reads its OHTTP endpoint configuration (gateway hosts, relay URLs,
+      # signing public keys, DNS TXT names of the signed key configuration) from these variables
+      # when backend-lib is compiled; it has no built-in endpoints. They are repository Actions
+      # secrets (zodl-inc/github-config), so GitHub masks them, and they are scoped to the steps
+      # that compile or check the library rather than to the whole workflow.
+      # ZODL_OHTTP_REQUIRE=1 makes the build fail unless all eight are set, so a release library
+      # can never be built with OHTTP off.
       - name: Build release
         timeout-minutes: 30
+        env:
+          ZODL_OHTTP_REQUIRE: "1"
+          ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
+          ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
+          ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
+          ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
+          ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
+          ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
+          ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
+          ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
         run: |
           ./gradlew :backend-lib:assembleRelease
       # Release guard. Nothing in this step prints a value of the OHTTP configuration (relay URLs,
@@ -103,6 +102,14 @@ jobs:
         env:
           EXPECTED_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_EXPECTED_RELAY_URL_MAINNET }}
           EXPECTED_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_EXPECTED_RELAY_URL_TESTNET }}
+          ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
+          ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
+          ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
+          ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
+          ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
+          ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
+          ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
+          ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
         run: |
           missing=0
           for name in \
@@ -183,9 +190,22 @@ jobs:
           echo "OHTTP guard passed: all libzcashwalletsdk.so files contain the expected mainnet and testnet relay URLs and the configured gateway hosts"
       # Note that GitHub Actions appears to have issues with environment variables that contain periods,
       # so the GPG variables are done as command line arguments instead.
+      # publishToMavenCentral runs the cargoBuild tasks again (they have no up-to-date check), and
+      # cargo rebuilds when the ZODL_OHTTP_* environment differs, so this step needs the same
+      # configuration as "Build release": without it the published library would be rebuilt with
+      # OHTTP off. ZODL_OHTTP_REQUIRE=1 turns that into a build failure.
       - name: Deploy to Maven Central
         timeout-minutes: 8
         env:
+          ZODL_OHTTP_REQUIRE: "1"
+          ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
+          ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
+          ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
+          ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
+          ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
+          ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
+          ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
+          ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
           ORG_GRADLE_PROJECT_IS_SNAPSHOT: false
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
