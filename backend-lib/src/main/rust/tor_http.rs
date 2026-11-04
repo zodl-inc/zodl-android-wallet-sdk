@@ -35,6 +35,10 @@ pub(crate) const TIMEOUT_EXCEPTION_CLASS: &str =
 pub(crate) const TRANSPORT_EXCEPTION_CLASS: &str =
     "cash/z/ecc/android/sdk/internal/model/TorHttpTransportException";
 
+/// `TorHttpCancelledException`: the caller cancelled the exchange; not a failure to retry.
+pub(crate) const CANCELLED_EXCEPTION_CLASS: &str =
+    "cash/z/ecc/android/sdk/internal/model/TorHttpCancelledException";
+
 /// How an HTTP-over-Tor call failed.
 #[derive(Debug)]
 pub(crate) enum TorHttpError {
@@ -43,6 +47,9 @@ pub(crate) enum TorHttpError {
     /// A network/transport failure (Tor circuit or stream error, connection or TLS failure,
     /// a per-phase client timeout, I/O error).
     Transport(String),
+    /// The caller cancelled the exchange ([`CancelSignal`]). Not a transport failure: nothing
+    /// went wrong on the network, and a retry would only send the request the caller abandoned.
+    Cancelled(String),
     /// Anything else (malformed request, JSON error, ...): retrying will not help.
     Other(String),
 }
@@ -50,7 +57,10 @@ pub(crate) enum TorHttpError {
 impl TorHttpError {
     pub(crate) fn message(&self) -> &str {
         match self {
-            TorHttpError::Timeout(m) | TorHttpError::Transport(m) | TorHttpError::Other(m) => m,
+            TorHttpError::Timeout(m)
+            | TorHttpError::Transport(m)
+            | TorHttpError::Cancelled(m)
+            | TorHttpError::Other(m) => m,
         }
     }
 
@@ -60,6 +70,7 @@ impl TorHttpError {
         match self {
             TorHttpError::Timeout(_) => Some(TIMEOUT_EXCEPTION_CLASS),
             TorHttpError::Transport(_) => Some(TRANSPORT_EXCEPTION_CLASS),
+            TorHttpError::Cancelled(_) => Some(CANCELLED_EXCEPTION_CLASS),
             TorHttpError::Other(_) => None,
         }
     }
@@ -122,7 +133,7 @@ const CANCEL_POLL: Duration = Duration::from_millis(100);
 pub(crate) type CancelSignal = Arc<AtomicBool>;
 
 fn cancelled_error() -> TorHttpError {
-    TorHttpError::Transport("the HTTP exchange over Tor was cancelled".to_string())
+    TorHttpError::Cancelled("the HTTP exchange over Tor was cancelled".to_string())
 }
 
 /// Runs `fut` on `runtime` until it completes, or fails it once `cancel` is set.
@@ -330,11 +341,11 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_body_read_fails_as_a_transport_failure() {
+    fn a_cancelled_body_read_fails_as_cancelled_not_as_a_transport_failure() {
         let cancel = CancelSignal::default();
         let body = body_of(b"sealed", cancel.clone(), 5_000, Instant::now());
         cancel.store(true, Ordering::Release);
-        assert!(matches!(body.read(), Err(TorHttpError::Transport(_))));
+        assert!(matches!(body.read(), Err(TorHttpError::Cancelled(_))));
     }
 
     #[test]
@@ -363,7 +374,7 @@ mod tests {
             &cancel,
             std::future::pending::<Result<(), TorHttpError>>(),
         );
-        assert!(matches!(res, Err(TorHttpError::Transport(_))), "{res:?}");
+        assert!(matches!(res, Err(TorHttpError::Cancelled(_))), "{res:?}");
         assert!(start.elapsed() < Duration::from_secs(5));
         setter.join().unwrap();
 
@@ -382,6 +393,10 @@ mod tests {
         assert_eq!(
             TorHttpError::Transport(String::new()).exception_class(),
             Some(TRANSPORT_EXCEPTION_CLASS)
+        );
+        assert_eq!(
+            TorHttpError::Cancelled(String::new()).exception_class(),
+            Some(CANCELLED_EXCEPTION_CLASS)
         );
         assert_eq!(TorHttpError::Other(String::new()).exception_class(), None);
     }

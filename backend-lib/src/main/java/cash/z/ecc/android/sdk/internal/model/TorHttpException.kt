@@ -41,3 +41,17 @@ class TorHttpTransportException(
 class TorHttpTimeoutException(
     message: String
 ) : TorHttpException(message)
+
+/**
+ * The caller cancelled the exchange (the coroutine of [TorClient.httpPostStreaming] was cancelled)
+ * while it waited for the response head or in an [TorClient.HttpBody.read]. Nothing failed on the
+ * network, so it is deliberately NOT a [TorHttpTransportException]: retrying would send again a
+ * request the caller has abandoned.
+ *
+ * Constructed from native code (`tor_http.rs`), so the class name and the `(String)` constructor
+ * are part of the JNI contract and must be kept.
+ */
+@Keep
+class TorHttpCancelledException(
+    message: String
+) : TorHttpException(message)

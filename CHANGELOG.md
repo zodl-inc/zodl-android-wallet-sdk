@@ -49,7 +49,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retries `TorHttpTransportException` (at most 2 retries); a timeout is not retried.
   `TorOhttpSender` turns them into a `SocketTimeoutException` and an `OhttpException` on every call (key
   configuration fetch, post, streamed post), so an OHTTP call over Tor that cannot reach the relay fails as
-  `UNAVAILABLE`, as over the direct sender, not `INTERNAL`.
+  `UNAVAILABLE`, as over the direct sender, not `INTERNAL`. An exchange whose caller was cancelled throws
+  `TorHttpCancelledException` (also a `TorHttpException`, not a `TorHttpTransportException`), which
+  `TorOhttpSender` turns into a `CancellationException`, so it is never retried.
 - **OHTTP transport for voting round driver.** When Tor is OFF and the round uses
   predefined vote servers (not custom user-added servers), the round driver now
   routes HTTP requests (vote commitments, shares, delegation, tree sync) through
