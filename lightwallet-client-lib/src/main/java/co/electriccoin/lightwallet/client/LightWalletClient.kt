@@ -20,6 +20,14 @@ interface LightWalletClient : WalletClient {
             OhttpEndpoints.isOhttpGateway(lightWalletEndpoint.host)
 
         /**
+         * The OHTTP gateway host this SDK build was configured with for testnet ([isTestnet] true) or
+         * mainnet, the host [isOhttpGateway] recognizes for that network, or null when the build has
+         * OHTTP off for it (no `ZODL_OHTTP_*` configuration). Apps use it instead of a host of their
+         * own, so that what they list as the Private connection is exactly what the SDK routes.
+         */
+        fun ohttpGatewayHost(isTestnet: Boolean): String? = OhttpEndpoints.gatewayHosts.forNetwork(isTestnet)
+
+        /**
          * Creates a new LightWalletClient for the given endpoint.
          *
          * @param ohttpClientTraceIdPrefix Optional client trace ID prefix for end-to-end tracing

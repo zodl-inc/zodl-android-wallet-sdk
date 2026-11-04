@@ -20,6 +20,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now served through an OHTTP relay instead of a direct gRPC connection; the gateway's HPKE key
   configuration is fetched through the relay and verified against a signed envelope, and verification
   fails closed.
+- `LightWalletClient.ohttpGatewayHost(isTestnet)`: the gateway host of that network this build was configured
+  with, or null when the build has OHTTP off for it, so apps list the same gateway the SDK routes instead of
+  hardcoding one.
 - `OhttpHttpClient` (package `co.electriccoin.lightwallet.client`): routes calls to allowlisted external
   APIs (NEAR, CoinMarketCap, voting) through the OHTTP gateway. `OhttpHttpClient.create(sender,
   ohttpClientTraceIdPrefix)` takes ownership of the given sender and disposes it on `dispose()`.
