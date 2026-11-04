@@ -103,7 +103,7 @@ jobs:
 
   static_analysis_detekt:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -145,7 +145,7 @@ jobs:
 
   static_analysis_ktlint:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -187,7 +187,7 @@ jobs:
 
   static_analysis_android_lint:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -237,7 +237,7 @@ jobs:
   # executes them, so without this a failing test can sit unnoticed indefinitely.
   test_rust_unit:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -267,7 +267,7 @@ jobs:
   # --tests extends the same coverage to test-only code.
   static_analysis_clippy:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -352,7 +352,7 @@ jobs:
   # depends on.
   check_slipstream_disabled:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -380,7 +380,7 @@ jobs:
 
   test_android_modules_unit:
     needs: [validate_gradle_wrapper]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -643,7 +643,7 @@ jobs:
 
   demo_app_release_build:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
