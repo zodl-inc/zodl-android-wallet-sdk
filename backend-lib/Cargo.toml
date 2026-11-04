@@ -122,11 +122,11 @@ serde_json = "1"
 # the I/O. The JNI surface is `src/main/rust/ohttp.rs`. The repository is private (CI's App
 # token must include `zodl-ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
 # it only to a commit that is on the `main` of zodl-inc/zodl-ohttp, the one zodl-slipstream pins (one copy of the
-# core, so its relay backoff table is shared). Now at 99d83f7115c96422e348eac110a5df0f571856bd (main of the recreated repo,
+# core, so its relay backoff table is shared). Now at 650bb4ac5015dde96f22b67d7d77dc1020be9ed8 (main of the recreated repo,
 # crate 0.1.1 with the per-chunk cap of the streamed response decoder; no built-in
 # endpoints: gateway hosts, relay URLs, signing keys and key DNS names are read from the
 # `ZODL_OHTTP_*` environment when the crate is compiled; unset = OHTTP off for that network).
-zodl-ohttp-client = { git = "https://github.com/zodl-inc/zodl-ohttp.git", rev = "99d83f7115c96422e348eac110a5df0f571856bd", default-features = false }
+zodl-ohttp-client = { git = "https://github.com/zodl-inc/zodl-ohttp.git", rev = "650bb4ac5015dde96f22b67d7d77dc1020be9ed8", default-features = false }
 tonic = "0.14"
 
 # Logging
@@ -292,7 +292,7 @@ base64 = "0.22"
 ed25519-dalek = "2"
 sha2 = "0.10"
 # Same revision as zodl-ohttp-client, so the tests run against the gateway of the client they test.
-ohttp-gateway = { git = "https://github.com/zodl-inc/zodl-ohttp.git", rev = "99d83f7115c96422e348eac110a5df0f571856bd" }
+ohttp-gateway = { git = "https://github.com/zodl-inc/zodl-ohttp.git", rev = "650bb4ac5015dde96f22b67d7d77dc1020be9ed8" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # Driving the gateway's streaming response encoder (`chunked_stream::encode_response_stream`,
 # whose upstream items are `anyhow::Result<UpFrame>` over `Bytes`) in the `ohttp.rs` tests,
@@ -312,13 +312,13 @@ crate-type = ["staticlib", "cdylib"]
 [patch.crates-io]
 # The slipstream engine with the OHTTP transport lives in the private slipstream-internal
 # repository until a published zodl-slipstream release carries it. This patch makes the
-# `slipstream-core` dependency above resolve from slipstream-internal PR #72 (647630e4, not on its main
+# `slipstream-core` dependency above resolve from slipstream-internal PR #72 (41089fa5, not on its main
 # yet: repin to the merged revision before this lands; `zodl-ohttp-client` from zodl-inc/zodl-ohttp
-# 99d83f71 with build-time endpoint configuration;
+# 650bb4ac with build-time endpoint configuration;
 # crate 0.4.0 on the NU7 release crates: zcash_client_backend 0.25.0, zcash_client_sqlite 0.23.0). The entry goes
 # once a published zodl-slipstream release contains the OHTTP transport. No SDK release may be cut
 # while it exists.
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "647630e42eb4037887af4d1041681b30c4819145" }
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "41089fa5e7c8f42db617a35fc13890b90ab70628" }
 # DO NOT ALTER THIS COMMENT
 #
 # This section is left in place to ensure that development against in-progress
