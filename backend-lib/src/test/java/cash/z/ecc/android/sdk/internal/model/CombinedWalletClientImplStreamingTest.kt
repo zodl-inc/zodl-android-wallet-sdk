@@ -14,11 +14,13 @@ import co.electriccoin.lightwallet.client.model.ShieldedProtocolEnum
 import co.electriccoin.lightwallet.client.model.SubtreeRootUnsafe
 import co.electriccoin.lightwallet.client.model.TreeStateUnsafe
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -84,7 +86,49 @@ class CombinedWalletClientImplStreamingTest {
             assertTrue(created.all { it.disposed && it.streams == 1 })
         }
 
-    private class RecordingClient : LightWalletClient {
+    @Test
+    fun a_unique_tor_stream_that_is_never_collected_makes_no_client() =
+        runTest {
+            val created = mutableListOf<RecordingClient>()
+            val combined =
+                CombinedWalletClientImpl.new(endpoint, RecordingClient(), null) {
+                    RecordingClient().also { created += it }
+                }
+
+            combined.observeMempool(ServiceMode.UniqueTor)
+            combined.getBlockRange(BlockHeightUnsafe(1)..BlockHeightUnsafe(2), ServiceMode.UniqueTor)
+
+            assertTrue(created.isEmpty())
+        }
+
+    @Test
+    fun a_unique_tor_stream_whose_collection_fails_or_stops_early_disposes_its_client() =
+        runTest {
+            val created = mutableListOf<RecordingClient>()
+            val combined =
+                CombinedWalletClientImpl.new(endpoint, RecordingClient(), null) {
+                    RecordingClient(items = 3).also { created += it }
+                }
+
+            // Stopped after the first item (the collector cancels the rest of the flow).
+            val firstOnly =
+                combined
+                    .observeMempool(ServiceMode.UniqueTor)
+                    .take(1)
+                    .toList()
+            assertEquals(1, firstOnly.size)
+            // A collector that throws.
+            assertFailsWith<IllegalStateException> {
+                combined.observeMempool(ServiceMode.UniqueTor).collect { error("collector failed") }
+            }
+
+            assertEquals(2, created.size)
+            assertTrue(created.all { it.disposed })
+        }
+
+    private class RecordingClient(
+        private val items: Int = 0
+    ) : LightWalletClient {
         var streams = 0
             private set
 
@@ -93,7 +137,8 @@ class CombinedWalletClientImplStreamingTest {
 
         private fun <T> stream(): Flow<Response<T>> {
             streams++
-            return emptyFlow()
+            @Suppress("UNCHECKED_CAST")
+            return List(items) { Response.Success(Unit) as Response<T> }.asFlow()
         }
 
         override suspend fun fetchUtxos(

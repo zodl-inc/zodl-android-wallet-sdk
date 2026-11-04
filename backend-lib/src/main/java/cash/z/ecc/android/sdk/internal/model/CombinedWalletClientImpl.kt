@@ -17,9 +17,11 @@ import co.electriccoin.lightwallet.client.model.UninitializedTorClientException
 import co.electriccoin.lightwallet.client.util.use
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -133,11 +135,15 @@ class CombinedWalletClientImpl private constructor(
      * Streaming calls exist only on [LightWalletClient]. In a Tor mode they go through
      * [torStreamingClientFactory] (OHTTP with the relay leg over Tor); an endpoint without one has no
      * Tor transport for streams, so the call fails instead of falling back to a direct connection.
+     *
+     * [ServiceMode.UniqueTor] gets a client of its own, made when the returned flow is collected and
+     * disposed when that collection ends (completed, failed or cancelled): a flow that is never
+     * collected never makes one, so nothing leaks.
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend inline fun <T> executeAsStream(
         serviceMode: ServiceMode,
-        block: LightWalletClient.() -> Flow<Response<T>>
+        crossinline block: suspend LightWalletClient.() -> Flow<Response<T>>
     ): Flow<Response<T>> =
         try {
             when (serviceMode) {
@@ -146,12 +152,19 @@ class CombinedWalletClientImpl private constructor(
                 }
 
                 ServiceMode.UniqueTor -> {
-                    val client = createTorStreamingClient()
-                    try {
-                        block(client).onCompletion { client.dispose() }
-                    } catch (e: Exception) {
-                        client.dispose()
-                        throw e
+                    flow {
+                        val client =
+                            try {
+                                createTorStreamingClient()
+                            } catch (e: UninitializedTorClientException) {
+                                emit(Response.Failure.OverTor(cause = e))
+                                return@flow
+                            }
+                        try {
+                            emitAll(block(client))
+                        } finally {
+                            withContext(NonCancellable) { client.dispose() }
+                        }
                     }
                 }
 
