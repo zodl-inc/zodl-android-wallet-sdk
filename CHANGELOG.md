@@ -147,7 +147,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collected no longer leaks a native Tor client.
 - `OhttpHttpClient` and the OHTTP gRPC channel log hosts, URLs, methods, statuses and sizes in debug builds
   only; a release SDK no longer writes them to logcat.
-- `zelay.example` is no longer an OHTTP proxy host.
+- An internal test host is no longer an OHTTP proxy host.
 - An OHTTP call whose deadline passes mid-exchange now ends with `DEADLINE_EXCEEDED`, not `UNAVAILABLE`. The
   exchange budget is rounded up to the next millisecond, so the sender's watchdog can no longer fire just
   before the gRPC deadline.

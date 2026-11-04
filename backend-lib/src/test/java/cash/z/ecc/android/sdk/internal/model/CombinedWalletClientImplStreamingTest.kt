@@ -13,10 +13,14 @@ import co.electriccoin.lightwallet.client.model.SendResponseUnsafe
 import co.electriccoin.lightwallet.client.model.ShieldedProtocolEnum
 import co.electriccoin.lightwallet.client.model.SubtreeRootUnsafe
 import co.electriccoin.lightwallet.client.model.TreeStateUnsafe
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -126,6 +130,33 @@ class CombinedWalletClientImplStreamingTest {
             assertTrue(created.all { it.disposed })
         }
 
+    @Test
+    fun a_unique_tor_stream_whose_collecting_job_is_cancelled_disposes_its_client() =
+        runTest {
+            val created = mutableListOf<SuspendingDisposalClient>()
+            val combined =
+                CombinedWalletClientImpl.new(endpoint, RecordingClient(), null) {
+                    SuspendingDisposalClient().also { created += it }
+                }
+
+            // Launch a Job that collects the stream, then cancel it mid-collection.
+            val job =
+                launch {
+                    combined.observeMempool(ServiceMode.UniqueTor).collect {
+                        // Never completes — the Job will be cancelled.
+                        delay(Long.MAX_VALUE)
+                    }
+                }
+            // Give the collection a chance to start.
+            delay(10)
+            job.cancel()
+            job.join()
+
+            // The client should have been disposed exactly once, even though the Job was cancelled.
+            assertEquals(1, created.size)
+            assertEquals(1, created.single().disposeCallCount)
+        }
+
     private class RecordingClient(
         private val items: Int = 0
     ) : LightWalletClient {
@@ -177,5 +208,57 @@ class CombinedWalletClientImplStreamingTest {
         override suspend fun dispose() {
             disposed = true
         }
+    }
+
+    private class SuspendingDisposalClient : LightWalletClient {
+        var disposeCallCount = 0
+            private set
+
+        private fun <T> infiniteStream(): Flow<Response<T>> =
+            flow {
+                @Suppress("UNCHECKED_CAST")
+                while (true) {
+                    emit(Response.Success(Unit) as Response<T>)
+                }
+            }
+
+        override fun observeMempool(): Flow<Response<RawTransactionUnsafe>> = infiniteStream()
+
+        override suspend fun dispose() {
+            disposeCallCount++
+            // Suspend briefly so that cancellation can race with disposal.
+            delay(1)
+        }
+
+        override suspend fun fetchUtxos(
+            tAddresses: List<String>,
+            startHeight: BlockHeightUnsafe
+        ): Flow<Response<GetAddressUtxosReplyUnsafe>> = TODO()
+
+        override fun getBlockRange(heightRange: ClosedRange<BlockHeightUnsafe>): Flow<Response<CompactBlockUnsafe>> =
+            TODO()
+
+        override fun getTAddressTransactions(
+            tAddress: String,
+            blockHeightRange: ClosedRange<BlockHeightUnsafe>
+        ): Flow<Response<RawTransactionUnsafe>> = TODO()
+
+        override fun getSubtreeRoots(
+            startIndex: UInt,
+            shieldedProtocol: ShieldedProtocolEnum,
+            maxEntries: UInt
+        ): Flow<Response<SubtreeRootUnsafe>> = TODO()
+
+        override fun reconnect() = Unit
+
+        override suspend fun getServerInfo(): Response<LightWalletEndpointInfoUnsafe> = TODO()
+
+        override suspend fun getLatestBlockHeight(): Response<BlockHeightUnsafe> = TODO()
+
+        override suspend fun fetchTransaction(txId: ByteArray): Response<RawTransactionUnsafe> = TODO()
+
+        override suspend fun submitTransaction(tx: ByteArray): Response<SendResponseUnsafe> = TODO()
+
+        override suspend fun getTreeState(height: BlockHeightUnsafe): Response<TreeStateUnsafe> = TODO()
     }
 }
