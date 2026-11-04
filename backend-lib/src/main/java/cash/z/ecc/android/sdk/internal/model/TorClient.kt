@@ -338,7 +338,9 @@ class TorClient private constructor(
                     error("${torDir.path} directory does not exist and could not be created.")
                 }
 
-                // Trace ids are debug-only: the Rust side no longer gates this itself.
+                // Trace ids are debug-only on both sides: the prefix is dropped here outside a DEBUG build,
+                // and the native library ignores it unless it was built with the `ohttp-trace` feature
+                // (`gated_trace_prefix` in ohttp.rs, which createTorRuntime goes through).
                 TorClient(createTorRuntime(torDir.path, clientTracePrefix.takeIf { BuildConfig.DEBUG }), backend)
             }
 
