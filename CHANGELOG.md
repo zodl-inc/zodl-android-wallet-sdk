@@ -139,6 +139,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routing Direct.
 
 ### Fixed
+- The OHTTP voting route parses a vote or PIR server URL with `http::Uri` before its host check and only
+  accepts an absolute `https` URL on the default port without userinfo, so
+  `https://allowed.example:x@other.example/` no longer passes the check as `allowed.example`.
+- A `ServiceMode.UniqueTor` streaming call creates its Tor client when the returned `Flow` is collected
+  and always disposes it when that collection ends (completed, failed or cancelled); a `Flow` that is never
+  collected no longer leaks a native Tor client.
+- `OhttpHttpClient` and the OHTTP gRPC channel log hosts, URLs, methods, statuses and sizes in debug builds
+  only; a release SDK no longer writes them to logcat.
+- `zelay.example` is no longer an OHTTP proxy host.
 - An OHTTP call whose deadline passes mid-exchange now ends with `DEADLINE_EXCEEDED`, not `UNAVAILABLE`. The
   exchange budget is rounded up to the next millisecond, so the sender's watchdog can no longer fire just
   before the gRPC deadline.
