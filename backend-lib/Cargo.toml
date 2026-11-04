@@ -198,9 +198,10 @@ xz2 = { version = "0.1", features = ["static"] }
 # and a network-triggerable vote-tree-sync panic fix. See this crate's own CHANGELOG for
 # the full 4.0.0-through-5.1.0 history if re-pinning again later.
 #
-# 5.2.0-rc.2 is a release candidate built on the NU7 librustzcash generation, from crates.io; there is no
-# `[patch.crates-io]` entry for it any more. No final 5.2.0 exists yet, so check for one before an SDK release.
-zcash_voting = { version = "=5.2.0-rc.2", default-features = false, features = ["lrz"] }
+# 5.3.0 is built on the NU7 librustzcash generation, from crates.io; there is no `[patch.crates-io]` entry for it.
+# It replaces 5.2.0-rc.2, which only accepted NU6.3 and so rejected the note selection for any round whose snapshot
+# is after NU7 activation ("zcash voting only supports Ironwood / NU6.3 shielded voting notes").
+zcash_voting = { version = "=5.3.0", default-features = false, features = ["lrz"] }
 
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
