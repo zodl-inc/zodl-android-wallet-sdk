@@ -137,6 +137,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routing Direct.
 
 ### Fixed
+- Coinholder polling no longer fails with "zcash voting only supports Ironwood / NU6.3 shielded voting notes" for
+  rounds whose snapshot lies after NU7 activation (testnet block 4,465,026): `zcash_voting` moves from 5.2.0-rc.2 to
+  5.3.0. Since 5.2.0 it accepts NU6.3 or later when it selects the notes a vote is built from, and 5.3.0 is the
+  current release (it also moves `zakura-wallet-lib` to 0.1.0-rc9.6). A regression test selects a note at an NU7
+  snapshot height (MOB-2430).
 - An OHTTP call whose deadline passes mid-exchange now ends with `DEADLINE_EXCEEDED`, not `UNAVAILABLE`. The
   exchange budget is rounded up to the next millisecond, so the sender's watchdog can no longer fire just
   before the gRPC deadline.
