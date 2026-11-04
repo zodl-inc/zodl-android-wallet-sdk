@@ -16,6 +16,28 @@ const OHTTP_GATEWAY_HOST_MAINNET: &str = "ohttp-gateway.example";
 /// OHTTP gateway hostname for voting traffic (testnet).
 const OHTTP_GATEWAY_HOST_TESTNET: &str = "ohttp-gateway-testnet.example";
 
+/// The host of a vote or PIR server URL that may go through the gateway: an absolute `https`
+/// URL on the default port, without userinfo. It is parsed with [`http::Uri`], as the OHTTP
+/// transport parses it again, so the host checked here is the host the request goes to (a
+/// `https://allowed.example:x@other.example/` form is refused, not read as `allowed.example`).
+fn ohttp_target_host(url: &str) -> Result<String, RouteError> {
+    let invalid = |why: &str| RouteError::before_dispatch(format!("OHTTP vote route: {why}"));
+    let uri: http::Uri = url.parse().map_err(|_| invalid("not a valid URL"))?;
+    if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+        return Err(invalid("the URL must use https"));
+    }
+    let authority = uri
+        .authority()
+        .ok_or_else(|| invalid("the URL has no host"))?;
+    if authority.as_str().contains('@') {
+        return Err(invalid("the URL must not carry userinfo"));
+    }
+    if authority.port_u16().is_some_and(|port| port != 443) {
+        return Err(invalid("the URL must use the default https port"));
+    }
+    Ok(authority.host().to_string())
+}
+
 /// Exact vote and PIR hosts in gateway BACKENDS (mainnet).
 /// Gateway removed suffix routing and uses exact host matching only.
 /// MUST match the gateway's BACKENDS (infra repo, kubernetes/apps/ohttp-gateway/deployment.yaml).
@@ -182,16 +204,10 @@ impl ZodlOhttpRoute {
         url: &str,
         network: zcash_voting::types::Network,
     ) -> Result<Self, RouteError> {
-        // Extract host from URL
-        let host = url
-            .split("://")
-            .nth(1)
-            .and_then(|s| s.split('/').next())
-            .and_then(|s| s.split(':').next())
-            .ok_or_else(|| RouteError::before_dispatch(format!("invalid URL: {}", url)))?;
-
-        // Check if host is OHTTP-eligible (exact match in gateway BACKENDS)
-        if !can_handle_ohttp(host) {
+        // Only hosts the gateway proxies (exact match in its BACKENDS), checked on the host the
+        // request goes to.
+        let host = ohttp_target_host(url)?;
+        if !can_handle_ohttp(&host) {
             return Err(RouteError::before_dispatch(format!(
                 "host {} not supported by OHTTP gateway",
                 host
@@ -346,6 +362,55 @@ mod tests {
 
         let result = ZodlOhttpRoute::new("https://pir.valargroup.org/api", Network::Mainnet);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn ohttp_route_checks_the_host_the_request_goes_to() {
+        use zcash_voting::types::Network;
+
+        // Userinfo that names an allowed host: `http::Uri` (and so the transport) targets the
+        // host after the `@`.
+        for url in [
+            "https://vote.zodl.com:x@evil.example/",
+            "https://vote.zodl.com@evil.example/",
+            "https://user:pass@vote.zodl.com/",
+            "https://vote.zodl.com:x@vote.zodl.com/",
+        ] {
+            assert!(ZodlOhttpRoute::new(url, Network::Mainnet).is_err(), "{url}");
+        }
+        // Not https, another port, not absolute, not a URL.
+        for url in [
+            "http://vote.zodl.com/",
+            "https://vote.zodl.com:8443/",
+            "https://vote.zodl.com:0/",
+            "//vote.zodl.com/",
+            "vote.zodl.com/api",
+            "/api",
+            "https://vote.zodl.com /",
+            "",
+        ] {
+            assert!(
+                ZodlOhttpRoute::new(url, Network::Mainnet).is_err(),
+                "{url:?}"
+            );
+        }
+        // A trailing dot or a lookalike is another host.
+        for url in [
+            "https://vote.zodl.com./",
+            "https://vote.zodl.com.evil.example/",
+            "https://evil.example/vote.zodl.com",
+            "https://evil.example/?h=vote.zodl.com",
+        ] {
+            assert!(ZodlOhttpRoute::new(url, Network::Mainnet).is_err(), "{url}");
+        }
+        // The default port written out, a path, a query.
+        for url in [
+            "https://vote.zodl.com",
+            "https://vote.zodl.com:443/api/v1/round",
+            "https://VOTE.zodl.com/api?x=1",
+        ] {
+            assert!(ZodlOhttpRoute::new(url, Network::Mainnet).is_ok(), "{url}");
+        }
     }
 
     #[test]
