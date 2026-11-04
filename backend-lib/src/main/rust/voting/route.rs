@@ -47,6 +47,8 @@ const OHTTP_VOTE_HOSTS: &[&str] = &[
     "prod.vote-chain-primary.valargroup.org",
     "voting.valargroup.dev",
     "ru.zcash.space",
+    // Two validators of the production vote chain that are reached by their sslip.io names: the
+    // published dynamic voting config (`vote_servers`) lists them, the round driver sends to them.
     "147-182-192-212.sslip.io",
     "134-209-215-69.sslip.io",
     "mnval01.zcash.legends.sh",
