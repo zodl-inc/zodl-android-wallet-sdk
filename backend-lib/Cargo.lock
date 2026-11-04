@@ -1415,7 +1415,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98e02cd118058400797c74550dca132b57cf2e6af0e9ea0672a83eb186fd655e"
 dependencies = [
  "derive-deftly-macros",
- "heck 0.4.1",
+ "heck 0.5.0",
 ]
 
 [[package]]
@@ -1424,9 +1424,9 @@ version = "1.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba91f619216e76a5eb2515783f7ec2e271938b51aadac592f4930517f4626863"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "indexmap 2.14.0",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
@@ -3611,7 +3611,7 @@ dependencies = [
 [[package]]
 name = "ohttp-gateway"
 version = "1.0.0"
-source = "git+https://github.com/zodl-inc/zodl-ohttp.git?rev=45b0f73695fdbf1792b7f548d17f6f0fdbb96e31#45b0f73695fdbf1792b7f548d17f6f0fdbb96e31"
+source = "git+https://github.com/zodl-inc/zodl-ohttp.git?rev=99d83f7115c96422e348eac110a5df0f571856bd#99d83f7115c96422e348eac110a5df0f571856bd"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4452,8 +4452,8 @@ version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
- "heck 0.4.1",
- "itertools 0.13.0",
+ "heck 0.5.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph 0.8.3",
@@ -4485,7 +4485,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4498,7 +4498,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -5710,7 +5710,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -9150,8 +9150,8 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zodl-ohttp-client"
-version = "0.1.0"
-source = "git+https://github.com/zodl-inc/zodl-ohttp.git?rev=45b0f73695fdbf1792b7f548d17f6f0fdbb96e31#45b0f73695fdbf1792b7f548d17f6f0fdbb96e31"
+version = "0.1.1"
+source = "git+https://github.com/zodl-inc/zodl-ohttp.git?rev=99d83f7115c96422e348eac110a5df0f571856bd#99d83f7115c96422e348eac110a5df0f571856bd"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -9170,7 +9170,7 @@ dependencies = [
 [[package]]
 name = "zodl-slipstream"
 version = "0.4.0"
-source = "git+https://github.com/zodl-inc/slipstream-internal.git?rev=29d74fd9a90468fd8c2535c4bff15bb21d4b7824#29d74fd9a90468fd8c2535c4bff15bb21d4b7824"
+source = "git+https://github.com/zodl-inc/slipstream-internal.git?rev=34ae5eb9e3a7de6c53e1b2cabbb758a8cf5f907d#34ae5eb9e3a7de6c53e1b2cabbb758a8cf5f907d"
 dependencies = [
  "arti-client",
  "bytes",
@@ -9197,6 +9197,7 @@ dependencies = [
  "secrecy",
  "shardtree 0.8.0",
  "sinsemilla",
+ "socket2 0.6.5",
  "thiserror 2.0.20",
  "tokio",
  "tokio-rustls 0.26.4",
