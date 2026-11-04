@@ -9,6 +9,7 @@ import io.grpc.MethodDescriptor
 import io.grpc.Status
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.InputStream
@@ -19,6 +20,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertFailsWith
 
 class OhttpManagedChannelTest {
+    @get:Rule
+    val exampleGateways = ExampleGatewaysRule()
+
     private val marshaller =
         object : MethodDescriptor.Marshaller<ByteArray> {
             override fun stream(value: ByteArray): InputStream = ByteArrayInputStream(value)

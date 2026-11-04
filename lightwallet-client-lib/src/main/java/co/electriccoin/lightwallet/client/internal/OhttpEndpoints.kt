@@ -1,10 +1,12 @@
 package co.electriccoin.lightwallet.client.internal
 
+import co.electriccoin.lightwallet.client.BuildConfig
+
 /**
- * Static OHTTP (RFC 9458) endpoint mapping.
+ * OHTTP (RFC 9458) gateway hosts.
  *
- * A [co.electriccoin.lightwallet.client.model.LightWalletEndpoint] whose host is one of the ZODL
- * OHTTP gateways is served through an OHTTP relay instead of a direct gRPC connection:
+ * A [co.electriccoin.lightwallet.client.model.LightWalletEndpoint] whose host is one of the OHTTP
+ * gateways of this build is served through an OHTTP relay instead of a direct gRPC connection:
  *
  *   app ──HPKE-encrypted──▶ relay (sees IP, not content) ──▶ gateway (sees content, not IP) ──▶ lightwalletd
  *
@@ -12,22 +14,33 @@ package co.electriccoin.lightwallet.client.internal
  * [co.electriccoin.lightwallet.client.OhttpCodec.signedConfigUrl]); which network a gateway host serves,
  * and so which signing key is trusted for it, is decided by the same codec.
  *
- * Relay URLs come from the native `zodl-ohttp-client` library and can be overridden at build time
- * via environment variables `ZODL_OHTTP_RELAY_URL_MAINNET` and `ZODL_OHTTP_RELAY_URL_TESTNET`.
+ * Nothing here is hardcoded: the gateway hosts come from the build environment
+ * (`ZODL_OHTTP_GATEWAY_HOST_MAINNET` / `_TESTNET`, see build.gradle.kts), the same values the native
+ * `zodl-ohttp-client` compiles in together with the relay URLs, key DNS names and signing keys. A build
+ * without them has no gateway: OHTTP is off and no host is treated as one.
  */
 internal object OhttpEndpoints {
-    /** The ZODL OHTTP gateway hosts (exact match only). */
-    private val GATEWAY_HOSTS =
-        setOf(
-            "ohttp-gateway.example",
-            "ohttp-gateway-testnet.example",
+    /** This build's gateway hosts; tests replace them with example hosts. */
+    @Volatile
+    internal var gatewayHosts: OhttpGatewayHosts =
+        OhttpGatewayHosts(
+            mainnet = BuildConfig.OHTTP_GATEWAY_HOST_MAINNET.ifEmpty { null },
+            testnet = BuildConfig.OHTTP_GATEWAY_HOST_TESTNET.ifEmpty { null },
         )
 
     /**
-     * True only for the exact gateway hosts we have a relay for. A prefix match would route a custom
-     * server such as `ohttp-gateway.example.org` into relay selection, which would fail.
+     * True only for the exact gateway hosts of this build. A prefix match would route a custom server
+     * such as `ohttp-gateway.example.org` into relay selection, which would fail.
      */
-    fun isOhttpGateway(host: String): Boolean = GATEWAY_HOSTS.contains(host)
+    fun isOhttpGateway(host: String): Boolean = gatewayHosts.let { host == it.mainnet || host == it.testnet }
+}
+
+/** The gateway host of each network, null when the build configured none. */
+internal data class OhttpGatewayHosts(
+    val mainnet: String?,
+    val testnet: String?,
+) {
+    fun forNetwork(testnet: Boolean): String? = if (testnet) this.testnet else mainnet
 }
 
 // =============================================================================
@@ -95,11 +108,3 @@ internal fun proxyGatewayHostFor(originalHost: String): String? =
 
 /** Returns true if [host] is one of [OHTTP_PROXY_ALLOWED_HOSTS] (case-insensitive, exact match). */
 internal fun isOhttpProxyAllowedHost(host: String): Boolean = OHTTP_PROXY_ALLOWED_HOSTS.contains(host.lowercase())
-
-/**
- * The gateway hosts whose signed key configuration the proxy requests are sealed to, by the wallet's
- * network (both gateways proxy the same BACKENDS).
- */
-internal const val PROXY_GATEWAY_HOST = "ohttp-gateway.example"
-
-internal const val PROXY_GATEWAY_HOST_TESTNET = "ohttp-gateway-testnet.example"

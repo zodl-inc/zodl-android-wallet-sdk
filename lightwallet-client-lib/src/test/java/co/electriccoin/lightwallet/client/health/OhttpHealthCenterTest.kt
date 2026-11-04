@@ -2,6 +2,7 @@
 
 package co.electriccoin.lightwallet.client.health
 
+import co.electriccoin.lightwallet.client.internal.ExampleGatewaysRule
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.drop
@@ -14,9 +15,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 
 class OhttpHealthCenterTest {
+    @get:Rule
+    val exampleGateways = ExampleGatewaysRule()
+
     private val route = OhttpHealthRoute("ohttp-gateway.example", "https://relay.example/relay", viaTor = false)
     private var now = 1_000L
     private val center = OhttpHealthCenter(clock = { now.also { now += 10 } })

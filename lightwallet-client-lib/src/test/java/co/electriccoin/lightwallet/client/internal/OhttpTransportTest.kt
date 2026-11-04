@@ -18,6 +18,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import kotlin.test.assertFailsWith
 
@@ -27,6 +28,9 @@ import kotlin.test.assertFailsWith
  * rejected key and the handling of the native opener on every exit path.
  */
 class OhttpTransportTest {
+    @get:Rule
+    val exampleGateways = ExampleGatewaysRule()
+
     private val sender = RecordingSender()
     private val codec = FakeOhttpCodec()
     private val request =
@@ -174,7 +178,7 @@ class OhttpTransportTest {
 
         assertArrayEquals(FakeOhttpCodec.KEY, key)
         assertEquals(
-            "https://doh-a.test/dns-query?name=ohttp-keys-testnet.example&type=TXT",
+            "https://doh-a.test/dns-query?name=testnet.ohttp-keys.example&type=TXT",
             sender.getCalls[1].first,
         )
         assertEquals("dns-envelope", String(codec.verified.single().second))

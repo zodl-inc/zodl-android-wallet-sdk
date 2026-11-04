@@ -70,7 +70,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ZODL_OHTTP_KEYS_DNS_NAME_*`, each `_MAINNET` / `_TESTNET`). A library built without them has OHTTP off
   for that network: `RustOhttpTool.relayUrlFor` returns null, key configuration verification fails with
   `OhttpException` (key configuration), the DNS source of the key configuration is skipped when no DNS
-  name is set, and voting over OHTTP fails closed with "OHTTP unavailable" instead of sending. CI and the
+  name is set, and voting over OHTTP fails closed with "OHTTP unavailable" instead of sending. The Kotlin side
+  takes its gateway hosts from the same `ZODL_OHTTP_GATEWAY_HOST_*` when `lightwallet-client` is compiled, so
+  `LightWalletClient.isOhttpGateway` recognises exactly the native library's gateways; no endpoint is
+  hardcoded in the sources. `OhttpHttpClient.create` no longer throws when its network has no gateway or
+  relay: the client is created, the new `OhttpHttpClient.isConfigured` is false, and every call fails with
+  an `OhttpException` before anything is sent. CI and the
   release and snapshot workflows pass the repository secrets of the same names (secrets, so the log masks
   them); the release workflow fails when they are missing.
 - **OHTTP relay connections (Tor off).** `DirectOhttpSender` reuses relay connections instead of opening one

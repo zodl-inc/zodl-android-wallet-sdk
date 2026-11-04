@@ -1,5 +1,6 @@
 package co.electriccoin.lightwallet.client
 
+import co.electriccoin.lightwallet.client.internal.ExampleGatewaysRule
 import co.electriccoin.lightwallet.client.internal.FakeOhttpCodec
 import co.electriccoin.lightwallet.client.internal.OhttpDebugFlags
 import co.electriccoin.lightwallet.client.internal.OhttpEndpoints
@@ -12,10 +13,14 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeFalse
 import org.junit.Assume.assumeTrue
+import org.junit.Rule
 import org.junit.Test
 
 @Suppress("ktlint:standard:max-line-length", "ktlint:standard:chain-method-continuation")
 class OhttpHttpClientTest {
+    @get:Rule
+    val exampleGateways = ExampleGatewaysRule()
+
     private val codec = FakeOhttpCodec()
 
     private fun client() = OhttpHttpClient.create(codec)
