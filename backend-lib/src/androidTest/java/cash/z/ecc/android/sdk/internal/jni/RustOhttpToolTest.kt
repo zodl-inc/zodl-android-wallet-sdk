@@ -82,7 +82,7 @@ class RustOhttpToolTest {
                 codec.verifyKeyConfig("ohttp-gateway.example", "not json".toByteArray(), 1_800_000_000)
             }
             assertFailsWith<KeyConfigVerificationFailedException> {
-                codec.verifyKeyConfig("example.org", "{}".toByteArray(), 1_800_000_000)
+                codec.verifyKeyConfig("unknown-gateway.example", "{}".toByteArray(), 1_800_000_000)
             }
         }
 

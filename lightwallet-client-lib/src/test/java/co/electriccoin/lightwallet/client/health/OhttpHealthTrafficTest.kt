@@ -6,7 +6,9 @@ import co.electriccoin.lightwallet.client.KeyConfigVerificationFailedException
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpInternalException
 import co.electriccoin.lightwallet.client.OhttpRequestTooLargeException
+import co.electriccoin.lightwallet.client.internal.ExampleGatewaysRule
 import org.junit.Assert.assertEquals
+import org.junit.Rule
 import org.junit.Test
 import java.io.IOException
 import java.net.ConnectException
@@ -16,6 +18,9 @@ import javax.net.ssl.SSLHandshakeException
 import kotlin.coroutines.cancellation.CancellationException
 
 class OhttpHealthTrafficTest {
+    @get:Rule
+    val exampleGateways = ExampleGatewaysRule()
+
     private val now = 5_000_000_000L
 
     @Test

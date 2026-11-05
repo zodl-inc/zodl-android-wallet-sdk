@@ -38,9 +38,9 @@ use jni::{
 };
 use zodl_ohttp_client::{
     BhttpRequest, ChunkedResponseDecoder, ChunkedResponseOpener, ClientProfile, Error, Field,
-    KEY_BYTES, KeyConfig, OuterOutcome, OuterResponse, ResponseEvent, SizeGuard, check_size,
-    classify_outer_response, encapsulate_chunked_request, pack_fields, signed_config_url,
-    unpack_fields, verify_signed_config, verify_signed_config_with,
+    KEY_BYTES, KeyConfig, Network, OuterOutcome, OuterResponse, ResponseEvent, SizeGuard,
+    check_size, classify_outer_response, encapsulate_chunked_request, pack_fields,
+    signed_config_url, unpack_fields, verify_signed_config, verify_signed_config_with,
 };
 
 use crate::utils::{
@@ -154,6 +154,48 @@ unsafe fn take_opener(handle: jlong) -> Option<ChunkedResponseOpener> {
     }
 }
 
+/// The network the gateway at `host` serves, under `profile`'s rule.
+///
+/// The gateway hosts are build-time configuration of `zodl-ohttp-client`
+/// (`ZODL_OHTTP_GATEWAY_HOST_MAINNET` / `_TESTNET`); a host of no network the build turned on
+/// (all of them, when the build set none) is a key-configuration failure: OHTTP is unavailable
+/// for it. The unit tests resolve their example hosts ([`TEST_GATEWAYS`]) first, so that they run
+/// the same whether or not the `ZODL_OHTTP_*` variables are set; that table is empty outside
+/// `cfg(test)`.
+fn network_of(profile: &ClientProfile, host: &str) -> Result<Network, Failure> {
+    if let Some((_, network)) = TEST_GATEWAYS.iter().find(|(gateway, _)| *gateway == host) {
+        return Ok(*network);
+    }
+    Ok(profile.network_rule.network_for(host)?)
+}
+
+/// [`network_of`] under the rule every preset uses (`NetworkRule::KnownHosts`).
+fn known_network_of(host: &str) -> Result<Network, Failure> {
+    network_of(&ClientProfile::ANDROID, host)
+}
+
+#[cfg(not(test))]
+const TEST_GATEWAYS: &[(&str, Network)] = &[];
+
+/// Example gateway hosts (RFC 2606 names) of the unit tests.
+#[cfg(test)]
+const TEST_GATEWAYS: &[(&str, Network)] = &[
+    ("ohttp-gateway.example", Network::Mainnet),
+    ("ohttp-gateway-testnet.example", Network::Testnet),
+];
+
+/// The failure for a network whose build set no DNS name for its signed key configuration:
+/// the DNS source is off for it.
+fn no_dns_name(network: Network) -> Failure {
+    Failure {
+        kind: KIND_KEY_CONFIG,
+        message: format!(
+            "OHTTP unavailable: no key configuration DNS name configured for {}",
+            network.as_str()
+        ),
+    }
+}
+
 /// A checked gateway key.
 struct VerifiedKey {
     key: [u8; KEY_BYTES],
@@ -171,7 +213,7 @@ fn verify_key_config_with(
     now_secs: u64,
     signer: Option<&zodl_ohttp_client::VerifyingKey>,
 ) -> Result<VerifiedKey, Failure> {
-    let network = profile.network_rule.network_for(host)?;
+    let network = network_of(profile, host)?;
     let signed = match signer {
         None => verify_signed_config(json, network, now_secs, &profile.signed_config)?,
         Some(signer) => verify_signed_config_with(
@@ -761,9 +803,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_signedC
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
-/// Returns the relay URL for a given gateway host, or null if the host is not a known gateway.
-/// The built-in mapping can be overridden at build time via environment variables
-/// `ZODL_OHTTP_RELAY_URL_MAINNET` and `ZODL_OHTTP_RELAY_URL_TESTNET`.
+/// Returns the relay URL for a given gateway host, or null if the host is not the gateway of a
+/// network this build turned on (OHTTP unavailable for it). Gateway hosts and relay URLs are
+/// build-time configuration of `zodl-ohttp-client` (`ZODL_OHTTP_GATEWAY_HOST_*`,
+/// `ZODL_OHTTP_RELAY_URL_*`); there are no built-in values.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeRelayUrlFor<
     'local,
@@ -874,8 +917,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_profile
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
-/// Returns the DNS name of the signed Key Configuration TXT record for the gateway at `gateway_host`:
-/// `ohttp-keys.example` or `ohttp-keys-testnet.example`.
+/// Returns the DNS name of the signed Key Configuration TXT record for the gateway at
+/// `gateway_host` (build-time `ZODL_OHTTP_KEYS_DNS_NAME_MAINNET` / `_TESTNET`). Throws a
+/// key-configuration `JniOhttpException` when the host is not a configured gateway or the build
+/// set no DNS name for its network.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeKeyConfigDnsName<
     'local,
@@ -885,18 +930,19 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeK
     gateway_host: JString<'local>,
 ) -> jstring {
     let res = catch_unwind(&mut env, |env| {
-        use zodl_ohttp_client::{NetworkRule, key_config_dns_name};
+        use zodl_ohttp_client::key_config_dns_name;
         let host = java_string_to_rust(env, &gateway_host)?;
-        let network = NetworkRule::KnownHosts
-            .network_for(&host)
-            .map_err(|e| raise(env, Failure::argument(&e.to_string())))?;
-        let dns_name = key_config_dns_name(network);
+        let network = known_network_of(&host).map_err(|f| raise(env, f))?;
+        let dns_name =
+            key_config_dns_name(network).ok_or_else(|| raise(env, no_dns_name(network)))?;
         Ok(env.new_string(dns_name)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
 /// Returns the DoH query URL for the resolver and gateway: the JSON API URL to fetch the TXT record.
+/// Throws a key-configuration `JniOhttpException` when the host is not a configured gateway or the
+/// build set no DNS name for its network.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeDohQueryUrl<
     'local,
@@ -907,13 +953,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeD
     gateway_host: JString<'local>,
 ) -> jstring {
     let res = catch_unwind(&mut env, |env| {
-        use zodl_ohttp_client::{NetworkRule, doh_query_url};
+        use zodl_ohttp_client::doh_query_url;
         let resolver = java_string_to_rust(env, &resolver)?;
         let host = java_string_to_rust(env, &gateway_host)?;
-        let network = NetworkRule::KnownHosts
-            .network_for(&host)
-            .map_err(|e| raise(env, Failure::argument(&e.to_string())))?;
-        let url = doh_query_url(&resolver, network);
+        let network = known_network_of(&host).map_err(|f| raise(env, f))?;
+        let url =
+            doh_query_url(&resolver, network).ok_or_else(|| raise(env, no_dns_name(network)))?;
         Ok(env.new_string(url)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
@@ -931,12 +976,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeE
     gateway_host: JString<'local>,
 ) -> jobject {
     let res = catch_unwind(&mut env, |env| {
-        use zodl_ohttp_client::{NetworkRule, envelope_from_doh_json};
+        use zodl_ohttp_client::envelope_from_doh_json;
         let body = java_bytes_to_rust(env, &doh_body)?;
         let host = java_string_to_rust(env, &gateway_host)?;
-        let network = NetworkRule::KnownHosts
-            .network_for(&host)
-            .map_err(|e| raise(env, Failure::argument(&e.to_string())))?;
+        let network = known_network_of(&host).map_err(|f| raise(env, f))?;
         let envelope =
             envelope_from_doh_json(&body, network).map_err(|e| raise(env, Failure::from(e)))?;
         Ok(env.byte_array_from_slice(&envelope)?.into_raw())
@@ -1021,6 +1064,8 @@ mod tests {
             backends_policy: HashMap::new(),
             backends_policy_default_allow: false,
             max_inflight_lwd: 128,
+            max_inflight_lwd_heavy: 32,
+            lwd_heavy_block_range: 100,
             redis_op_timeout_ms: 250,
             max_cache_get_concurrency: 64,
             max_large_response_concurrency: 2,
@@ -1038,6 +1083,11 @@ mod tests {
             chunk_size: 16384,
             chunk_flush_ms: 50,
             flexa_publishable_key: None,
+            flexa_alias: None,
+            near_alias: None,
+            relay_secret_on_key_config: ohttp_gateway::config::RelaySecretOnKeyConfig::Off,
+            lwd_permit_wait_ms: 2000,
+            lwd_permit_max_waiters: 0,
         }
     }
 
@@ -1100,7 +1150,7 @@ mod tests {
     fn request() -> BhttpRequest {
         BhttpRequest::new(
             "POST",
-            "ohttp-gateway-testnet.example",
+            TESTNET_HOST,
             "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo",
         )
         .header("Content-Type", "application/grpc")

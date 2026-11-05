@@ -22,6 +22,24 @@ concurrency:
 # Default to no token scopes at all; every job that needs one declares it below.
 permissions: {}
 
+# The OHTTP endpoint configuration that zodl-ohttp-client (zodl-inc/zodl-ohttp) reads when
+# backend-lib is compiled: gateway hosts, relay URLs, signing public keys and DNS TXT names of the
+# signed key configuration. The crate has no built-in endpoints: a network left unset has OHTTP
+# off in the built library. Workflow-level, so every step inherits it, Gradle passes it on to the
+# cargo builds of rust-android-gradle, and `make test-rust` / clippy see it too. The Rust unit
+# tests do not depend on it (they use example endpoints). Repository Actions secrets, managed in
+# zodl-inc/github-config: secrets, not variables, so that GitHub masks the values in the log
+# (variables are printed in clear in the env listing of every step).
+env:
+  ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
+  ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
+  ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
+  ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
+  ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
+  ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
+  ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
+  ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
+
 jobs:
   validate_gradle_wrapper:
     runs-on: ubuntu-latest
@@ -103,7 +121,7 @@ jobs:
 
   static_analysis_detekt:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -145,7 +163,7 @@ jobs:
 
   static_analysis_ktlint:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -187,7 +205,7 @@ jobs:
 
   static_analysis_android_lint:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -237,7 +255,7 @@ jobs:
   # executes them, so without this a failing test can sit unnoticed indefinitely.
   test_rust_unit:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -267,7 +285,7 @@ jobs:
   # --tests extends the same coverage to test-only code.
   static_analysis_clippy:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -352,7 +370,7 @@ jobs:
   # depends on.
   check_slipstream_disabled:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -380,7 +398,7 @@ jobs:
 
   test_android_modules_unit:
     needs: [validate_gradle_wrapper]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -643,7 +661,7 @@ jobs:
 
   demo_app_release_build:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:

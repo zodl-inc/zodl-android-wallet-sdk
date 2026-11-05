@@ -3611,7 +3611,7 @@ dependencies = [
 [[package]]
 name = "ohttp-gateway"
 version = "1.0.0"
-source = "git+https://github.com/zodl-inc/ohttp.git?rev=3778974d72c916b05a866588fd3eba20666fe320#3778974d72c916b05a866588fd3eba20666fe320"
+source = "git+https://github.com/zodl-inc/zodl-ohttp.git?rev=0324db3240adf00ea847aa0a93e8d765e32b61da#0324db3240adf00ea847aa0a93e8d765e32b61da"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -8559,7 +8559,7 @@ dependencies = [
 
 [[package]]
 name = "zcash-android-wallet-sdk"
-version = "5.3.0"
+version = "6.0.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -9145,8 +9145,8 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zodl-ohttp-client"
-version = "0.1.0"
-source = "git+https://github.com/zodl-inc/ohttp.git?rev=b0b2087c9d867115f38ddfbd6021988b64abf8f9#b0b2087c9d867115f38ddfbd6021988b64abf8f9"
+version = "0.1.2"
+source = "git+https://github.com/zodl-inc/zodl-ohttp.git?rev=0324db3240adf00ea847aa0a93e8d765e32b61da#0324db3240adf00ea847aa0a93e8d765e32b61da"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -9165,7 +9165,7 @@ dependencies = [
 [[package]]
 name = "zodl-slipstream"
 version = "0.4.0"
-source = "git+https://github.com/zodl-inc/slipstream-internal.git?rev=972769390d3566536702cc804381bfb85fc59042#972769390d3566536702cc804381bfb85fc59042"
+source = "git+https://github.com/zodl-inc/slipstream-internal.git?rev=6d784cbd17eac0b83a137af106a100a28b6c791b#6d784cbd17eac0b83a137af106a100a28b6c791b"
 dependencies = [
  "arti-client",
  "bytes",
@@ -9192,6 +9192,7 @@ dependencies = [
  "secrecy",
  "shardtree 0.8.0",
  "sinsemilla",
+ "socket2 0.6.5",
  "thiserror 2.0.20",
  "tokio",
  "tokio-rustls 0.26.4",

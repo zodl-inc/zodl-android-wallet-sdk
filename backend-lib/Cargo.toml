@@ -1,6 +1,6 @@
 [package]
 name = "zcash-android-wallet-sdk"
-version = "5.3.0"
+version = "6.0.0"
 authors = [
     "Jack Grigg <jack@z.cash>",
     "Kevin Gorham <kevin.gorham@z.cash>",
@@ -120,10 +120,15 @@ serde_json = "1"
 # classification and size caps, as pure functions (`ClientProfile::ANDROID`). Without default
 # features the networked `Client` (reqwest, tokio) is not compiled: the Kotlin transport does
 # the I/O. The JNI surface is `src/main/rust/ohttp.rs`. The repository is private (CI's App
-# token must include `ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
-# it only to a commit that is on the `main` of zodl-inc/ohttp, the one zodl-slipstream pins (one copy of the
-# core, so its relay backoff table is shared). Now at b0b2087c9d867115f38ddfbd6021988b64abf8f9 (DNS fallback for signed key configuration).
-zodl-ohttp-client = { git = "https://github.com/zodl-inc/ohttp.git", rev = "b0b2087c9d867115f38ddfbd6021988b64abf8f9", default-features = false }
+# token must include `zodl-ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
+# it only to a commit that is on the `main` of zodl-inc/zodl-ohttp, the one zodl-slipstream pins (one copy of the
+# core, so its relay backoff table is shared). Now at 0324db3240adf00ea847aa0a93e8d765e32b61da (main of zodl-inc/zodl-ohttp,
+# crate 0.1.2; no built-in endpoints: gateway hosts, relay URLs, signing keys and key DNS names are
+# read from the `ZODL_OHTTP_*` environment when the crate is compiled. Each network is configured with
+# all four of its variables or none (none = OHTTP off for that network), mainnet and testnet must not
+# share a value, and `ZODL_OHTTP_REQUIRE=1` fails the build unless all eight are set; build errors name
+# the variables only).
+zodl-ohttp-client = { git = "https://github.com/zodl-inc/zodl-ohttp.git", rev = "0324db3240adf00ea847aa0a93e8d765e32b61da", default-features = false }
 tonic = "0.14"
 
 # Logging
@@ -289,7 +294,8 @@ bip0039 = "0.12"
 base64 = "0.22"
 ed25519-dalek = "2"
 sha2 = "0.10"
-ohttp-gateway = { git = "https://github.com/zodl-inc/ohttp.git", rev = "3778974d72c916b05a866588fd3eba20666fe320" }
+# Same revision as zodl-ohttp-client, so the tests run against the gateway of the client they test.
+ohttp-gateway = { git = "https://github.com/zodl-inc/zodl-ohttp.git", rev = "0324db3240adf00ea847aa0a93e8d765e32b61da" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 # Driving the gateway's streaming response encoder (`chunked_stream::encode_response_stream`,
 # whose upstream items are `anyhow::Result<UpFrame>` over `Bytes`) in the `ohttp.rs` tests,
@@ -309,12 +315,13 @@ crate-type = ["staticlib", "cdylib"]
 [patch.crates-io]
 # The slipstream engine with the OHTTP transport lives in the private slipstream-internal
 # repository until a published zodl-slipstream release carries it. This patch makes the
-# `slipstream-core` dependency above resolve from slipstream-internal PR #67 (9727693,
-# the MOB-2300 request-health stream, on top of `feature/ohttp-perf-1` c3e7ad4c; crate 0.4.0 on
-# the NU7 release crates: zcash_client_backend 0.25.0, zcash_client_sqlite 0.23.0). The entry goes
+# `slipstream-core` dependency above resolve from slipstream-internal PR #72 (6d784cbd, not on its main
+# yet: repin to the merged revision before this lands; `zodl-ohttp-client` from zodl-inc/zodl-ohttp
+# 0324db32 with build-time endpoint configuration;
+# crate 0.4.0 on the NU7 release crates: zcash_client_backend 0.25.0, zcash_client_sqlite 0.23.0). The entry goes
 # once a published zodl-slipstream release contains the OHTTP transport. No SDK release may be cut
 # while it exists.
-zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "972769390d3566536702cc804381bfb85fc59042" }
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "6d784cbd17eac0b83a137af106a100a28b6c791b" }
 # DO NOT ALTER THIS COMMENT
 #
 # This section is left in place to ensure that development against in-progress

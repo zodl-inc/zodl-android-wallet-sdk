@@ -2,7 +2,7 @@ name: 'Setup Java, Rust, and Dependency Cache'
 description: "Configures the build environment and caches Gradle, dependencies, and build outputs."
 inputs:
   cargo-app-id:
-    description: "GitHub App ID with Contents:Read on zodl-inc/slipstream, zodl-inc/slipstream-internal and zodl-inc/ohttp (private cargo git dependencies). Empty = skip."
+    description: "GitHub App ID with Contents:Read on zodl-inc/slipstream, zodl-inc/slipstream-internal and zodl-inc/zodl-ohttp (private cargo git dependencies). Empty = skip."
     required: false
     default: ""
   cargo-app-private-key:
@@ -64,7 +64,7 @@ runs:
         app-id: ${{ inputs.cargo-app-id }}
         private-key: ${{ inputs.cargo-app-private-key }}
         owner: zodl-inc
-        repositories: slipstream,slipstream-internal,ohttp
+        repositories: slipstream,slipstream-internal,zodl-ohttp
     - name: Point cargo git fetches at the App token
       if: steps.slipstream-token.outputs.token != ''
       shell: bash

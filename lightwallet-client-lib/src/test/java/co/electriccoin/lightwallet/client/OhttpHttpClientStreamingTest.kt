@@ -1,5 +1,6 @@
 package co.electriccoin.lightwallet.client
 
+import co.electriccoin.lightwallet.client.internal.ExampleGatewaysRule
 import co.electriccoin.lightwallet.client.internal.FakeOhttpCodec
 import co.electriccoin.lightwallet.client.internal.FakeOhttpCodec.Companion.dataRecord
 import co.electriccoin.lightwallet.client.internal.FakeOhttpCodec.Companion.finalRecord
@@ -9,6 +10,7 @@ import co.electriccoin.lightwallet.client.internal.RecordingSender
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import java.io.IOException
 import java.io.InputStream
@@ -20,6 +22,9 @@ import kotlin.concurrent.thread
 
 /** Flexa's REST and SSE calls through [OhttpHttpClient]: inner authority, credentials, headers, streaming. */
 class OhttpHttpClientStreamingTest {
+    @get:Rule
+    val exampleGateways = ExampleGatewaysRule()
+
     @Test
     fun `api_flexa_co is sealed to the flexa_zodl_com alias with its Authorization kept`() {
         val codec = FakeOhttpCodec()
