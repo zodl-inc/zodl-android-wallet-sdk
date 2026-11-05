@@ -3,6 +3,7 @@ package cash.z.ecc.android.sdk.internal
 import cash.z.ecc.android.sdk.internal.model.JniHttpHeader
 import cash.z.ecc.android.sdk.internal.model.JniHttpResponseBytes
 import cash.z.ecc.android.sdk.internal.model.TorClient
+import cash.z.ecc.android.sdk.internal.model.TorHttpCancelledException
 import cash.z.ecc.android.sdk.internal.model.TorHttpTimeoutException
 import cash.z.ecc.android.sdk.internal.model.TorHttpTransportException
 import co.electriccoin.lightwallet.client.OhttpException
@@ -10,6 +11,7 @@ import co.electriccoin.lightwallet.client.OhttpSender
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Tor-backed OHTTP sender: routes the relay POST through an isolated Tor circuit. Used when
@@ -134,15 +136,19 @@ class TorOhttpSender internal constructor(
     override suspend fun dispose() = transport.dispose()
 
     /**
-     * A native timeout surfaces as a [SocketTimeoutException] and a transport failure (a streamed body
-     * included) as an [OhttpException], so that a call over Tor, its key configuration fetch included,
-     * fails as one over the direct sender does (UNAVAILABLE, not INTERNAL).
+     * A native timeout surfaces as a [SocketTimeoutException], a cancelled exchange as a
+     * [CancellationException] and a transport failure (a streamed body included) as an
+     * [OhttpException], so that a call over Tor, its key configuration fetch included, fails as one
+     * over the direct sender does (UNAVAILABLE, not INTERNAL), and a cancelled one is never retried.
      */
     private inline fun <T> asTransportFailure(block: () -> T): T =
         try {
             block()
         } catch (e: TorHttpTimeoutException) {
             throw SocketTimeoutException(e.message).apply { initCause(e) }
+        } catch (e: TorHttpCancelledException) {
+            // The caller gave up on the exchange: a cancellation, never retried as a transport failure.
+            throw CancellationException(e.message).apply { initCause(e) }
         } catch (e: TorHttpTransportException) {
             throw OhttpException(e.message.orEmpty(), cause = e)
         }

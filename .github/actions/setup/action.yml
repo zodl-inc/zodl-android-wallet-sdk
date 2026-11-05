@@ -65,14 +65,6 @@ runs:
         private-key: ${{ inputs.cargo-app-private-key }}
         owner: zodl-inc
         repositories: slipstream,slipstream-internal,zodl-ohttp
-    - name: Point cargo git fetches at the App token
-      if: steps.slipstream-token.outputs.token != ''
-      shell: bash
-      env:
-        SLIPSTREAM_TOKEN: ${{ steps.slipstream-token.outputs.token }}
-      run: |
-        git config --global url."https://x-access-token:${SLIPSTREAM_TOKEN}@github.com/zodl-inc/".insteadOf "https://github.com/zodl-inc/"
-        echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
     - name: Setup Rust
       shell: bash
       # Use the channel pinned in rust-toolchain.toml (the single source of truth) rather than a
@@ -151,6 +143,20 @@ runs:
         restore-keys: |
           ${{ runner.os }}-rust-v3-
 
+    # The App token is used by this one step only: the private git dependencies are fetched into
+    # ~/.cargo/git here, and every later cargo build (Gradle's included) finds the locked revisions
+    # there without fetching. The token reaches git through GIT_CONFIG_* variables of this step,
+    # never ~/.gitconfig or $GITHUB_ENV, so no later step or build script can read it. ~/.cargo/git
+    # is not part of the Rust cache above (private content).
+    - name: Fetch the private cargo git dependencies
+      if: steps.slipstream-token.outputs.token != ''
+      shell: bash
+      env:
+        CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        GIT_CONFIG_COUNT: "1"
+        GIT_CONFIG_KEY_0: url.https://x-access-token:${{ steps.slipstream-token.outputs.token }}@github.com/zodl-inc/.insteadOf
+        GIT_CONFIG_VALUE_0: https://github.com/zodl-inc/
+      run: cargo fetch --locked --manifest-path backend-lib/Cargo.toml
     - name: Gradle Binary Download
       if: steps.gradle-binary-cache-restore.outputs.cache-hit != 'true'
       shell: bash

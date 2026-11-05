@@ -201,6 +201,7 @@ class TorClient private constructor(
      *
      * @throws TorHttpTimeoutException if [timeoutMs] elapsed (from [HttpBody.read] too)
      * @throws TorHttpTransportException on a network/transport failure (from [HttpBody.read] too)
+     * @throws TorHttpCancelledException when the caller was cancelled (from [HttpBody.read] too)
      */
     @Suppress("LongParameterList")
     suspend fun <T> httpPostStreaming(
@@ -262,7 +263,8 @@ class TorClient private constructor(
          * The next bytes of the body, null once it has ended.
          *
          * @throws TorHttpTimeoutException if the request's deadline passed
-         * @throws TorHttpTransportException on a broken connection or once the caller is cancelled
+         * @throws TorHttpTransportException on a broken connection
+         * @throws TorHttpCancelledException once the caller is cancelled
          */
         fun read(): ByteArray? =
             synchronized(lock) {
@@ -338,7 +340,9 @@ class TorClient private constructor(
                     error("${torDir.path} directory does not exist and could not be created.")
                 }
 
-                // Trace ids are debug-only: the Rust side no longer gates this itself.
+                // Trace ids are debug-only on both sides: the prefix is dropped here outside a DEBUG build,
+                // and the native library ignores it unless it was built with the `ohttp-trace` feature
+                // (`gated_trace_prefix` in ohttp.rs, which createTorRuntime goes through).
                 TorClient(createTorRuntime(torDir.path, clientTracePrefix.takeIf { BuildConfig.DEBUG }), backend)
             }
 
@@ -425,7 +429,8 @@ class TorClient private constructor(
 
         /**
          * @throws TorHttpTimeoutException if the request's deadline passed
-         * @throws TorHttpTransportException on a network/transport failure or a cancelled exchange
+         * @throws TorHttpTransportException on a network/transport failure
+         * @throws TorHttpCancelledException on a cancelled exchange
          */
         @JvmStatic
         @Throws(RuntimeException::class)

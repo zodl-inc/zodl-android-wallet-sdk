@@ -52,7 +52,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retries `TorHttpTransportException` (at most 2 retries); a timeout is not retried.
   `TorOhttpSender` turns them into a `SocketTimeoutException` and an `OhttpException` on every call (key
   configuration fetch, post, streamed post), so an OHTTP call over Tor that cannot reach the relay fails as
-  `UNAVAILABLE`, as over the direct sender, not `INTERNAL`.
+  `UNAVAILABLE`, as over the direct sender, not `INTERNAL`. An exchange whose caller was cancelled throws
+  `TorHttpCancelledException` (also a `TorHttpException`, not a `TorHttpTransportException`), which
+  `TorOhttpSender` turns into a `CancellationException`, so it is never retried.
 - **OHTTP transport for voting round driver.** When Tor is OFF and the round uses
   predefined vote servers (not custom user-added servers), the round driver now
   routes HTTP requests (vote commitments, shares, delegation, tree sync) through
@@ -156,6 +158,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routing Direct.
 
 ### Fixed
+- The OHTTP voting route parses a vote or PIR server URL with `http::Uri` before its host check and only
+  accepts an absolute `https` URL on the default port without userinfo, so
+  `https://allowed.example:x@other.example/` no longer passes the check as `allowed.example`.
+- A `ServiceMode.UniqueTor` streaming call creates its Tor client when the returned `Flow` is collected
+  and always disposes it when that collection ends (completed, failed or cancelled); a `Flow` that is never
+  collected no longer leaks a native Tor client.
+- `OhttpHttpClient` and the OHTTP gRPC channel log hosts, URLs, methods, statuses and sizes in debug builds
+  only; a release SDK no longer writes them to logcat.
+- An internal test host is no longer an OHTTP proxy host.
 - Coinholder polling no longer fails with "zcash voting only supports Ironwood / NU6.3 shielded voting notes" for
   rounds whose snapshot lies after NU7 activation (testnet block 4,465,026): `zcash_voting` moves from 5.2.0-rc.2 to
   5.3.0. Since 5.2.0 it accepts NU6.3 or later when it selects the notes a vote is built from, and 5.3.0 is the

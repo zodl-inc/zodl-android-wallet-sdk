@@ -54,8 +54,8 @@ internal data class OhttpGatewayHosts(
 //   Tor OFF: use OHTTP for all external calls (gateway hides client IP)
 //   Tor ON:  LWD → Tor→OHTTP; other external calls → Tor direct (no double-wrap)
 //
-// Note: Sapling params are now hosted on GitHub (raw.githubusercontent.com) and downloaded
-// directly via HTTPS (Tor OFF) or through the SDK's Tor client (Tor ON); no OHTTP proxying.
+// Sapling params are downloaded directly via HTTPS (Tor OFF) or through the SDK's Tor client
+// (Tor ON), never through OHTTP: raw.githubusercontent.com is listed below for another user.
 
 /**
  * The hosts the gateway proxies (exact match only, as the gateway does).
@@ -72,6 +72,8 @@ internal val OHTTP_PROXY_ALLOWED_HOSTS =
         "prod.vote-chain-primary.valargroup.org",
         "voting.valargroup.dev",
         "ru.zcash.space",
+        // Two validators of the production vote chain, reached by their sslip.io names: the published
+        // dynamic voting config lists them as vote servers (as `OHTTP_VOTE_HOSTS` in route.rs).
         "147-182-192-212.sslip.io",
         "134-209-215-69.sslip.io",
         "mnval01.zcash.legends.sh",
@@ -83,7 +85,8 @@ internal val OHTTP_PROXY_ALLOWED_HOSTS =
         "lb-pir-primary.valargroup.org",
         "lb-pir-backup.valargroup.org",
         "zpir-1.stardust.rest",
-        "zelay.example",
+        // The app's voting config mirror (token-holder-voting-config on GitHub, checksum-pinned by the
+        // app); the gateway allows only that repository's paths on this host.
         "raw.githubusercontent.com",
         "flexa.zodl.com",
     )

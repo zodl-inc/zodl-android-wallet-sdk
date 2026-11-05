@@ -18,4 +18,12 @@ internal object OhttpDebugFlags {
      * [OhttpTiming]): debug builds only, a release SDK installs no listener and logs nothing.
      */
     val logTiming: Boolean = BuildConfig.DEBUG
+
+    /**
+     * When true, OHTTP clients log what they talk to and what they send: gateway and relay, the
+     * request's host, method and inner authority, the inner status and size. Debug builds only: a
+     * release SDK puts none of it in logcat, which other apps on old Android versions and bug
+     * reports can read.
+     */
+    val logRequests: Boolean = BuildConfig.DEBUG
 }

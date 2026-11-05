@@ -2256,7 +2256,8 @@ class SlipstreamSynchronizer internal constructor(
 
             // Set the default OHTTP client trace prefix before engine operations so direct OHTTP
             // connections (Tor OFF) can emit X-Client-Trace-Id without requiring TorClient creation.
-            // Debug-only: the Rust side no longer gates this itself.
+            // Debug-only on both sides: dropped here outside a DEBUG build, and a no-op in a native
+            // library built without the `ohttp-trace` feature (setDefaultOhttpClientTracePrefix).
             SlipstreamNative.setDefaultOhttpClientTracePrefix(ohttpClientTraceIdPrefix.takeIf { BuildConfig.DEBUG })
 
             val engine =

@@ -2,6 +2,7 @@ package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.internal.model.JniHttpHeader
 import cash.z.ecc.android.sdk.internal.model.JniHttpResponseBytes
+import cash.z.ecc.android.sdk.internal.model.TorHttpCancelledException
 import cash.z.ecc.android.sdk.internal.model.TorHttpTimeoutException
 import cash.z.ecc.android.sdk.internal.model.TorHttpTransportException
 import co.electriccoin.lightwallet.client.OhttpException
@@ -9,6 +10,7 @@ import co.electriccoin.lightwallet.client.OhttpSender
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import java.net.SocketTimeoutException
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -134,6 +136,31 @@ class TorOhttpSenderTest {
                 }
 
             assertEquals(null, thrown.httpStatus)
+        }
+
+    @Test
+    fun `a cancelled native exchange is a cancellation, not a transport failure to retry`(): Unit =
+        runBlocking {
+            val cancelled = TorHttpCancelledException("the HTTP exchange over Tor was cancelled")
+            val posting = FakeTransport { throw cancelled }
+            val thrown =
+                assertFailsWith<CancellationException> {
+                    TorOhttpSender(posting).post(RELAY, byteArrayOf(), emptyList(), 1_000)
+                }
+            assertSame(cancelled, thrown.cause)
+            assertEquals(1, posting.calls)
+
+            val cancelledRead: () -> ByteArray = { throw cancelled }
+            val reading = FakeTransport(chunks = listOf({ byteArrayOf(1) }, cancelledRead)) { jniResponse(200) }
+            assertFailsWith<CancellationException> {
+                TorOhttpSender(reading).postStreaming(RELAY, byteArrayOf(), emptyList(), 1_000) {
+                    it.readBytes()
+                }
+            }
+            assertFailsWith<CancellationException> {
+                TorOhttpSender(FakeTransport { throw cancelled })
+                    .get("https://relay.example/ohttp-configs", emptyList(), 1_000)
+            }
         }
 
     @Test

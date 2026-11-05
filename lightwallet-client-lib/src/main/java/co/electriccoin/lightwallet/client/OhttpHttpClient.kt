@@ -4,6 +4,7 @@ import android.util.Log
 import co.electriccoin.lightwallet.client.health.withOhttpDecisiveCall
 import co.electriccoin.lightwallet.client.internal.Constants
 import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
+import co.electriccoin.lightwallet.client.internal.OhttpDebugFlags
 import co.electriccoin.lightwallet.client.internal.OhttpEndpoints
 import co.electriccoin.lightwallet.client.internal.OhttpResponseSink
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
@@ -129,15 +130,14 @@ class OhttpHttpClient private constructor(
     fun canHandle(url: String): Boolean {
         val host = runCatching { URI.create(url).host }.getOrNull()
         if (host == null) {
-            Log.w(Constants.LOG_TAG, "OHTTP canHandle: no host in $url")
+            if (OhttpDebugFlags.logRequests) Log.w(Constants.LOG_TAG, "OHTTP canHandle: no host in $url")
             return false
         }
         val mapped = proxyGatewayHostFor(host) != null
         val allowlisted = isOhttpProxyAllowedHost(host)
-        Log.d(
-            Constants.LOG_TAG,
-            "OHTTP canHandle host=$host mapped=$mapped allowlisted=$allowlisted",
-        )
+        if (OhttpDebugFlags.logRequests) {
+            Log.d(Constants.LOG_TAG, "OHTTP canHandle host=$host mapped=$mapped allowlisted=$allowlisted")
+        }
         return mapped || allowlisted
     }
 
@@ -153,10 +153,13 @@ class OhttpHttpClient private constructor(
         val bReq = codecRequest(request)
         // The one request of a call decides the user operation it belongs to (a swap quote, a rate refresh).
         val bRes = withOhttpDecisiveCall { withContext(Dispatchers.IO) { transport.roundTrip(bReq, timeoutMs) } }
-        Log.d(
-            Constants.LOG_TAG,
-            "OHTTP proxy ${request.method} host=${bReq.authority} -> http=${bRes.status} (${bRes.body.size} bytes)",
-        )
+        if (OhttpDebugFlags.logRequests) {
+            Log.d(
+                Constants.LOG_TAG,
+                "OHTTP proxy ${request.method} host=${bReq.authority} -> http=${bRes.status} " +
+                    "(${bRes.body.size} bytes)",
+            )
+        }
         return Response(status = bRes.status, body = bRes.body, headers = bRes.headers)
     }
 
@@ -210,7 +213,7 @@ class OhttpHttpClient private constructor(
         // injects them server-side. The app should not send these at all; log a warning if present.
         val filteredHeaders =
             stripSecretsForGateway(innerAuthority, request.headers) { msg ->
-                Log.w(Constants.LOG_TAG, msg)
+                if (OhttpDebugFlags.logRequests) Log.w(Constants.LOG_TAG, msg)
             }
         val pathQ =
             uri.rawPath
@@ -226,12 +229,15 @@ class OhttpHttpClient private constructor(
                 headers = filteredHeaders,
                 body = request.body,
             )
-        val mode = if (proxyHost != null) "mapped" else "allowlist"
-        val senderType = if (sender is DirectOhttpSender) "direct" else "Tor"
-        Log.d(
-            Constants.LOG_TAG,
-            "OHTTP proxy ${request.method} host=$originalHost authority=$innerAuthority mode=$mode sender=$senderType",
-        )
+        if (OhttpDebugFlags.logRequests) {
+            val mode = if (proxyHost != null) "mapped" else "allowlist"
+            val senderType = if (sender is DirectOhttpSender) "direct" else "Tor"
+            Log.d(
+                Constants.LOG_TAG,
+                "OHTTP proxy ${request.method} host=$originalHost authority=$innerAuthority " +
+                    "mode=$mode sender=$senderType",
+            )
+        }
         return bReq
     }
 
