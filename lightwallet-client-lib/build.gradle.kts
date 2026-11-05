@@ -27,6 +27,22 @@ android {
 
     defaultConfig {
         consumerProguardFiles("proguard-consumer.txt")
+
+        // The OHTTP gateway hosts of this build: the same ZODL_OHTTP_GATEWAY_HOST_* environment that
+        // zodl-ohttp-client compiles into the native library, so Kotlin and Rust recognise the same
+        // gateways. Unset = no gateway for that network (OHTTP off). Only a host name is accepted, so
+        // the value cannot break the generated source.
+        for (network in listOf("MAINNET", "TESTNET")) {
+            val host =
+                providers
+                    .environmentVariable("ZODL_OHTTP_GATEWAY_HOST_$network")
+                    .orElse("")
+                    .get()
+            require(host.matches(Regex("[A-Za-z0-9.-]*"))) {
+                "ZODL_OHTTP_GATEWAY_HOST_$network must be a host name"
+            }
+            buildConfigField("String", "OHTTP_GATEWAY_HOST_$network", "\"$host\"")
+        }
     }
 
     buildFeatures {

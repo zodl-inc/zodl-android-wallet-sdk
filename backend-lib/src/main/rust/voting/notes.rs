@@ -201,17 +201,48 @@ mod tests {
     };
     use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
     use zcash_primitives::block::BlockHash;
-    use zcash_protocol::consensus::{NetworkUpgrade, Parameters};
+    use zcash_protocol::consensus::{BranchId, NetworkUpgrade, Parameters};
     use zip32::Scope;
+
+    /// `zcash_voting`'s own Regtest activation heights for this crate pin
+    /// (`types::REGTEST_NU6_3_ACTIVATION_HEIGHT` / `REGTEST_NU7_ACTIVATION_HEIGHT`, not themselves
+    /// `pub`). The Ironwood pool is recognized from the NU6.3 height onward.
+    const NU6_3_ACTIVATION_HEIGHT: u32 = 10;
+    const NU7_ACTIVATION_HEIGHT: u32 = 11;
+
+    /// A snapshot at the NU6.3 activation height selects the real Ironwood note.
+    #[test]
+    fn get_wallet_notes_returns_a_real_unspent_ironwood_note() {
+        assert_real_ironwood_note_selected_at(NU6_3_ACTIVATION_HEIGHT);
+    }
+
+    /// MOB-2430: a snapshot after NU7 activation (the stage rounds snapshot at testnet block
+    /// 4,559,950, NU7 is active from 4,465,026) must select the same note. `zcash_voting`
+    /// 5.2.0-rc.2 accepted only the NU6.3 branch and failed here with "zcash voting only supports
+    /// Ironwood / NU6.3 shielded voting notes". Regtest has NU7 active from height 11 only from
+    /// `zcash_voting` 5.2.0 on, so the branch assertion also makes this test fail on a downgrade
+    /// to a version where the snapshot would silently fall back to NU6.3.
+    #[test]
+    fn get_wallet_notes_accepts_a_snapshot_after_nu7_activation() {
+        let network = voting::types::Network::Regtest;
+        assert_eq!(
+            BranchId::for_height(
+                &network,
+                zcash_protocol::consensus::BlockHeight::from_u32(NU7_ACTIVATION_HEIGHT)
+            ),
+            BranchId::Nu7,
+            "the snapshot height must be on the NU7 branch for this test to mean anything"
+        );
+        assert_real_ironwood_note_selected_at(NU7_ACTIVATION_HEIGHT);
+    }
 
     /// Real-data proof for `getWalletNotesNative`'s actual logic: builds a real, on-disk
     /// wallet DB with one account and one real, mined, unspent Ironwood note, then exercises
     /// exactly the sequence the JNI entrypoint above runs after decoding its JNI arguments
     /// ([`SqliteWalletDbOpener::open_for_read`], [`require_fully_scanned_to_snapshot`],
-    /// `voting::selection::select_snapshot_note_infos`) and asserts a real, sane note comes
-    /// back -- not a mock standing in for "does the function exist".
-    #[test]
-    fn get_wallet_notes_returns_a_real_unspent_ironwood_note() {
+    /// `voting::selection::select_snapshot_note_infos`) at `snapshot_height_u32` and asserts a
+    /// real, sane note comes back -- not a mock standing in for "does the function exist".
+    fn assert_real_ironwood_note_selected_at(snapshot_height_u32: u32) {
         // Regtest, not Testnet/Mainnet: `zcash_voting::selection::select_snapshot_note_infos`
         // (via `VotingShieldedProtocol::for_height`) only recognizes the Ironwood/V3 pool from
         // the NU6.3 activation height onward, and this pin's real Testnet/Mainnet consensus
@@ -222,16 +253,13 @@ mod tests {
         let db_path = unique_test_db_path();
         const EXPECTED_VALUE: u64 = 12_345;
         const COMMITMENT_TREE_POSITION: u64 = 7;
-        // `zcash_voting`'s own Regtest NU6.3 activation height for this crate pin
-        // (`types::REGTEST_NU6_3_ACTIVATION_HEIGHT`, not itself `pub`) -- snapshot_height must
-        // be at or above it for the Ironwood pool to be recognized at all.
-        const NU6_3_ACTIVATION_HEIGHT: u32 = 10;
 
         let sapling_height = network
             .activation_height(NetworkUpgrade::Sapling)
             .expect("regtest has a Sapling activation height");
+        // The note is mined at the NU6.3 activation height, the snapshot may lie later.
         let mined_height = NU6_3_ACTIVATION_HEIGHT;
-        let snapshot_height = u64::from(mined_height);
+        let snapshot_height = u64::from(snapshot_height_u32);
 
         let mut conn = Connection::open(&db_path).expect("open fresh wallet db file");
         let account_uuid = {

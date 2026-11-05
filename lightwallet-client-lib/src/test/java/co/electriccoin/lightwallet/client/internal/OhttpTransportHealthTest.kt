@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import java.io.IOException
 import java.io.InputStream
@@ -28,6 +29,9 @@ import kotlin.test.assertFailsWith
 
 /** What the transport reports to the health center, whatever the call's own result is. */
 class OhttpTransportHealthTest {
+    @get:Rule
+    val exampleGateways = ExampleGatewaysRule()
+
     private val sender = RecordingSender()
     private val codec = FakeOhttpCodec()
     private val center = OhttpHealthCenter()

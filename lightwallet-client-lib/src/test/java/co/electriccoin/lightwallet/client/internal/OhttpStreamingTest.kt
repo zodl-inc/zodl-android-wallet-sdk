@@ -19,6 +19,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.IOException
@@ -36,6 +37,9 @@ import kotlin.test.assertFailsWith
 
 /** Server-streaming calls over [OhttpTransport.stream]: messages are delivered as their chunks arrive. */
 class OhttpStreamingTest {
+    @get:Rule
+    val exampleGateways = ExampleGatewaysRule()
+
     private val marshaller =
         object : MethodDescriptor.Marshaller<ByteArray> {
             override fun stream(value: ByteArray): InputStream = ByteArrayInputStream(value)

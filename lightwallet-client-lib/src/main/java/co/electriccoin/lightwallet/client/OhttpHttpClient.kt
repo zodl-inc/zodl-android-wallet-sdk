@@ -5,10 +5,9 @@ import co.electriccoin.lightwallet.client.health.withOhttpDecisiveCall
 import co.electriccoin.lightwallet.client.internal.Constants
 import co.electriccoin.lightwallet.client.internal.DirectOhttpSender
 import co.electriccoin.lightwallet.client.internal.OhttpDebugFlags
+import co.electriccoin.lightwallet.client.internal.OhttpEndpoints
 import co.electriccoin.lightwallet.client.internal.OhttpResponseSink
 import co.electriccoin.lightwallet.client.internal.OhttpTransport
-import co.electriccoin.lightwallet.client.internal.PROXY_GATEWAY_HOST
-import co.electriccoin.lightwallet.client.internal.PROXY_GATEWAY_HOST_TESTNET
 import co.electriccoin.lightwallet.client.internal.isOhttpProxyAllowedHost
 import co.electriccoin.lightwallet.client.internal.proxyGatewayHostFor
 import co.electriccoin.lightwallet.client.internal.stripSecretsForGateway
@@ -26,19 +25,34 @@ class OhttpHttpClient private constructor(
      * for details.
      */
     private val ohttpClientTraceIdPrefix: String? = null,
-    gatewayHost: String = PROXY_GATEWAY_HOST,
+    /** The gateway of the client's network; null when this build configured none. */
+    gatewayHost: String?,
+    private val networkName: String,
 ) : Disposable {
-    // F-07 fix: Reuse OhttpTransport instance to share key cache across requests
-    private val transport =
-        OhttpTransport(
-            relayUrl =
-                codec.relayUrlFor(gatewayHost)
-                    ?: error("No OHTTP relay configured for gateway host $gatewayHost"),
-            gatewayHost = gatewayHost,
-            codec = codec,
-            sender = sender,
-            ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
-        )
+    // F-07 fix: Reuse OhttpTransport instance to share key cache across requests. Null when this build has no
+    // gateway or no relay for the network: every call then fails before anything is sent.
+    private val transport: OhttpTransport? =
+        gatewayHost?.let { host ->
+            codec.relayUrlFor(host)?.let { relayUrl ->
+                OhttpTransport(
+                    relayUrl = relayUrl,
+                    gatewayHost = host,
+                    codec = codec,
+                    sender = sender,
+                    ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
+                )
+            }
+        }
+
+    /**
+     * False when this build has no OHTTP gateway or relay for the client's network (the `ZODL_OHTTP_*`
+     * build configuration left it unset): every call then fails with an [OhttpException] before anything
+     * is sent, never by going direct.
+     */
+    val isConfigured: Boolean get() = transport != null
+
+    private fun configuredTransport(): OhttpTransport =
+        transport ?: throw OhttpException("OHTTP unavailable: no $networkName gateway configured in this build")
 
     data class Request(
         val url: String,
@@ -89,7 +103,9 @@ class OhttpHttpClient private constructor(
          *   `cash.z.ecc.android.sdk.util.OhttpCodecFactory`.
          * @param ohttpClientTraceIdPrefix Optional client trace ID prefix for end-to-end tracing.
          * @param testnet seal to the testnet gateway (through its relay) instead of the mainnet one: the
-         *   gateway must match the wallet's network, as the SDK's own voting route does.
+         *   gateway must match the wallet's network, as the SDK's own voting route does. When this build
+         *   configured no gateway for that network, the client is created but every call fails with an
+         *   [OhttpException] ([isConfigured] is false).
          */
         fun create(
             codec: OhttpCodec,
@@ -101,7 +117,8 @@ class OhttpHttpClient private constructor(
                 codec,
                 sender,
                 ohttpClientTraceIdPrefix,
-                if (testnet) PROXY_GATEWAY_HOST_TESTNET else PROXY_GATEWAY_HOST,
+                gatewayHost = OhttpEndpoints.gatewayHosts.forNetwork(testnet),
+                networkName = if (testnet) "testnet" else "mainnet",
             )
     }
 
@@ -132,6 +149,7 @@ class OhttpHttpClient private constructor(
         request: Request,
         timeoutMs: Int,
     ): Response {
+        val transport = configuredTransport()
         val bReq = codecRequest(request)
         // The one request of a call decides the user operation it belongs to (a swap quote, a rate refresh).
         val bRes = withOhttpDecisiveCall { withContext(Dispatchers.IO) { transport.roundTrip(bReq, timeoutMs) } }
@@ -156,6 +174,7 @@ class OhttpHttpClient private constructor(
         timeoutMs: Int,
         listener: ResponseListener,
     ) {
+        val transport = configuredTransport()
         val bReq = codecRequest(request)
         withContext(Dispatchers.IO) {
             transport.stream(

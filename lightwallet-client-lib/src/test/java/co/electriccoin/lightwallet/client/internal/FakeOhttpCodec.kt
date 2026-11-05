@@ -191,7 +191,7 @@ internal class FakeOhttpCodec(
         return verify(gatewayHost, envelopeJson, nowSeconds)
     }
 
-    override fun keyConfigDnsName(gatewayHost: String): String = "ohttp-keys-testnet.example"
+    override fun keyConfigDnsName(gatewayHost: String): String = "testnet.ohttp-keys.example"
 
     override fun dohQueryUrl(
         resolver: String,
@@ -380,5 +380,23 @@ internal class RecordingSender(
         postCalls.add(Triple(url, body, headers))
         check(postResults.isNotEmpty()) { "no POST result queued" }
         return postResults.removeAt(0)()
+    }
+}
+
+/**
+ * Makes the example gateways of [FakeOhttpCodec] this build's gateway hosts for the duration of a test, whatever
+ * `ZODL_OHTTP_GATEWAY_HOST_*` the build was compiled with, and restores the previous ones afterwards.
+ */
+class ExampleGatewaysRule : org.junit.rules.ExternalResource() {
+    private var previous: OhttpGatewayHosts? = null
+
+    override fun before() {
+        previous = OhttpEndpoints.gatewayHosts
+        OhttpEndpoints.gatewayHosts =
+            OhttpGatewayHosts(mainnet = "ohttp-gateway.example", testnet = "ohttp-gateway-testnet.example")
+    }
+
+    override fun after() {
+        previous?.let { OhttpEndpoints.gatewayHosts = it }
     }
 }

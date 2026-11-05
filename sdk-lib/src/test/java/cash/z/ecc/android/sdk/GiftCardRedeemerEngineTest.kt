@@ -566,7 +566,9 @@ class GiftCardRedeemerEngineTest {
         runTest {
             val nothing = FakeCardWallet(emptyList(), spendable = 0, history = 0)
             val wallets = engineWallets(nothing, FakeCardWallet(emptyList()), exact = true)
-            val (redeemer, _) = redeemer(nothing, wallets = wallets)
+            // The teardown runs on the test scheduler: on a real dispatcher, close()'s virtual-time
+            // CLOSE_TIMEOUT can expire before that thread has closed the card wallet.
+            val (redeemer, _) = redeemer(nothing, wallets = wallets, teardownScope = backgroundScope)
 
             val check = async { runCatching { redeemer.check() } }
             advanceTimeBy(1.seconds)

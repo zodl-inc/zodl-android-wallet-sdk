@@ -16,10 +16,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `withOhttpOperation`, `withOhttpAttempt`, `withOhttpDiagnostic` and `OhttpHealthCenter.complete` attribute
   requests to one explicit user action. Evidence never changes a call's result.
 - OHTTP (RFC 9458) transport for lightwalletd and selected external APIs. A `LightWalletEndpoint` whose
-  host is one of the ZODL OHTTP gateways (`ohttp-gateway.example`, `ohttp-gateway-testnet.example`) is
+  host is one of the OHTTP gateways configured at build time (`ZODL_OHTTP_GATEWAY_HOST_*`) is
   now served through an OHTTP relay instead of a direct gRPC connection; the gateway's HPKE key
   configuration is fetched through the relay and verified against a signed envelope, and verification
   fails closed.
+- `LightWalletClient.ohttpGatewayHost(isTestnet)`: the gateway host of that network this build was configured
+  with, or null when the build has OHTTP off for it, so apps list the same gateway the SDK routes instead of
+  hardcoding one.
 - `OhttpHttpClient` (package `co.electriccoin.lightwallet.client`): routes calls to allowlisted external
   APIs (NEAR, CoinMarketCap, voting) through the OHTTP gateway. `OhttpHttpClient.create(sender,
   ohttpClientTraceIdPrefix)` takes ownership of the given sender and disposes it on `dispose()`.
@@ -64,6 +67,22 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tor-off voting against predefined servers is unavailable (fails closed).
 
 ### Changed
+- **OHTTP endpoints are build-time configuration.** `zodl-ohttp-client` now comes from
+  `zodl-inc/zodl-ohttp` (the same revision the Slipstream engine pins, so there is one copy of the core)
+  and carries no built-in endpoint. The gateway hosts, relay URLs, signing public keys and DNS TXT names of
+  the signed key configuration are read from the environment when `backend-lib` is compiled
+  (`ZODL_OHTTP_GATEWAY_HOST_*`, `ZODL_OHTTP_RELAY_URL_*`, `ZODL_OHTTP_SIGNING_PUBKEY_*`,
+  `ZODL_OHTTP_KEYS_DNS_NAME_*`, each `_MAINNET` / `_TESTNET`). A library built without them has OHTTP off
+  for that network: `RustOhttpTool.relayUrlFor` returns null, key configuration verification fails with
+  `OhttpException` (key configuration), the DNS source of the key configuration is skipped when no DNS
+  name is set, and voting over OHTTP fails closed with "OHTTP unavailable" instead of sending. The Kotlin side
+  takes its gateway hosts from the same `ZODL_OHTTP_GATEWAY_HOST_*` when `lightwallet-client` is compiled, so
+  `LightWalletClient.isOhttpGateway` recognises exactly the native library's gateways; no endpoint is
+  hardcoded in the sources. `OhttpHttpClient.create` no longer throws when its network has no gateway or
+  relay: the client is created, the new `OhttpHttpClient.isConfigured` is false, and every call fails with
+  an `OhttpException` before anything is sent. CI and the
+  release and snapshot workflows pass the repository secrets of the same names (secrets, so the log masks
+  them); the release workflow fails when they are missing.
 - **OHTTP relay connections (Tor off).** `DirectOhttpSender` reuses relay connections instead of opening one
   `HttpURLConnection` per request with `Connection: close`: one process-wide OkHttp 5.1.0 pool, HTTP/2 when
   the relay negotiates it. Under a link saturated by the sync download, every request used to pay a new
@@ -96,7 +115,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this update is synchronized with the gateway deployment. Dependency pins: see backend-lib/Cargo.toml.
 - **Shared OHTTP core.** The protocol half of the OHTTP client (key selection, the signed key
   configuration envelope, Binary HTTP, HPKE, the classification of the relay's answer and the size caps)
-  now runs on the Rust library `zodl-ohttp-client` (zodl-inc/ohttp, `ClientProfile::ANDROID`) that the iOS
+  now runs on the Rust library `zodl-ohttp-client` (zodl-inc/zodl-ohttp, `ClientProfile::ANDROID`) that the iOS
   and Slipstream clients share, through the JNI object `RustOhttpTool` in `backend-lib`. The response
   secret stays in native memory (the JVM only holds an opaque handle). The Kotlin HPKE, Binary HTTP, key
   config and envelope code, and the BouncyCastle and `kotlinx-serialization` dependencies of
@@ -116,7 +135,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     open"), and an unknown gateway host now fails when its key configuration is first fetched rather than
     when the channel is created.
   The cargo dependency is a private git repository: the CI GitHub App token used by
-  `.github/actions/setup` now also covers `zodl-inc/ohttp`.
+  `.github/actions/setup` now also covers `zodl-inc/zodl-ohttp`.
 - The OHTTP response opener is now an opaque `OhttpResponseOpener` interface (extending `Closeable`)
   instead of a raw `Long` exposed on the public `OhttpSealedRequest.opener`. The opener is single-use:
   `open()` consumes it, `close()` frees it if not consumed, both idempotent and thread-safe. The
@@ -148,6 +167,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `OhttpHttpClient` and the OHTTP gRPC channel log hosts, URLs, methods, statuses and sizes in debug builds
   only; a release SDK no longer writes them to logcat.
 - An internal test host is no longer an OHTTP proxy host.
+- Coinholder polling no longer fails with "zcash voting only supports Ironwood / NU6.3 shielded voting notes" for
+  rounds whose snapshot lies after NU7 activation (testnet block 4,465,026): `zcash_voting` moves from 5.2.0-rc.2 to
+  5.3.0. Since 5.2.0 it accepts NU6.3 or later when it selects the notes a vote is built from, and 5.3.0 is the
+  current release (it also moves `zakura-wallet-lib` to 0.1.0-rc9.6). A regression test selects a note at an NU7
+  snapshot height (MOB-2430).
 - An OHTTP call whose deadline passes mid-exchange now ends with `DEADLINE_EXCEEDED`, not `UNAVAILABLE`. The
   exchange budget is rounded up to the next millisecond, so the sender's watchdog can no longer fire just
   before the gRPC deadline.

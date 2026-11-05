@@ -29,7 +29,14 @@ internal class OhttpChannelFactory(
 ) : ChannelFactory {
     override fun newChannel(endpoint: LightWalletEndpoint): ManagedChannel {
         require(endpoint.isSecure) { "OHTTP endpoints must be secure (https)" }
-        val logger: (String) -> Unit = { Log.i(Constants.LOG_TAG, it) }
+        // Every line the channel and the transport log (method names, error messages, DNS resolvers, retries) goes
+        // through this one logger, so a release SDK writes none of it to logcat.
+        val logger: (String) -> Unit =
+            if (OhttpDebugFlags.logRequests) {
+                { Log.i(Constants.LOG_TAG, it) }
+            } else {
+                {}
+            }
         if (OhttpDebugFlags.logRequests) {
             Log.d(Constants.LOG_TAG, "OHTTP channel: gateway=${endpoint.host} relay=$relayUrl")
         }
