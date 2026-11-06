@@ -100,7 +100,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - the shared Tor connection is dropped after any failed tree-state request, so the next request opens a
     fresh one;
   - each fetch worker uses its own Tor circuit;
-  - SQLite checkpoint and cache tuning.
+  - SQLite checkpoint and cache tuning;
+  - the engine is pinned to the `main` of slipstream-internal (88505fc7), which also marks the engine's own
+    lightwalletd client so a server cannot forge an OHTTP outcome, turns TLS session resumption off on relay
+    connections, and races IPv6 and IPv4 when dialing the relay.
 - **HTTP/2 PING on OHTTP relay connections (Tor off).** Pooled relay connections send an HTTP/2 PING every
   10 s and close when it is not answered within 10 s, so a dead connection is noticed without waiting for an
   exchange deadline (ZIP #10). Bulk block ranges still share the pool with other calls.
