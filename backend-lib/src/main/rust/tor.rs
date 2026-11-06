@@ -16,7 +16,7 @@ use tonic::transport::{Channel, Uri};
 use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
 
 #[cfg(feature = "slipstream")]
-use slipstream_core::{Endpoint as EngineEndpoint, connector::TorConn};
+use slipstream_core::{Endpoint as EngineEndpoint, connector::TorConn, grpc::LwdClient};
 
 use transparent::{
     address::{Script, TransparentAddress},
@@ -132,7 +132,7 @@ impl TorRuntime {
         Ok(LwdConn {
             runtime: self.runtime.clone(),
             _client: TorHandle::Engine(tor),
-            conn,
+            conn: LwdClientKind::Engine(conn),
         })
     }
 
@@ -212,7 +212,7 @@ impl TorRuntime {
         Ok(LwdConn {
             runtime,
             _client: TorHandle::Zcash(client),
-            conn,
+            conn: LwdClientKind::Channel(conn),
         })
     }
 }
@@ -225,8 +225,28 @@ enum TorHandle {
     Engine(TorConn),
 }
 
+/// The lightwalletd client behind an [`LwdConn`]: a plain Tor channel, or the engine's OHTTP
+/// client, whose transport (`LwdTransport`) carries the engine's own connection provenance and
+/// cannot be built from a bare `Channel` outside the engine.
+enum LwdClientKind {
+    Channel(CompactTxStreamerClient<Channel>),
+    #[cfg(feature = "slipstream")]
+    Engine(LwdClient),
+}
+
+/// Calls `$method` on whichever client `$conn` holds.
+macro_rules! lwd_call {
+    ($conn:expr, $method:ident($request:expr)) => {
+        match &mut $conn {
+            LwdClientKind::Channel(client) => client.$method($request).await,
+            #[cfg(feature = "slipstream")]
+            LwdClientKind::Engine(client) => client.$method($request).await,
+        }
+    };
+}
+
 pub struct LwdConn {
-    conn: CompactTxStreamerClient<Channel>,
+    conn: LwdClientKind,
     _client: TorHandle,
     runtime: PreferredRuntime,
 }
@@ -237,7 +257,7 @@ impl LwdConn {
         Ok(self
             .runtime
             .clone()
-            .block_on(async { self.conn.get_lightd_info(service::Empty {}).await })?
+            .block_on(async { lwd_call!(self.conn, get_lightd_info(service::Empty {})) })?
             .into_inner())
     }
 
@@ -246,7 +266,7 @@ impl LwdConn {
         Ok(self
             .runtime
             .clone()
-            .block_on(async { self.conn.get_latest_block(service::ChainSpec {}).await })?
+            .block_on(async { lwd_call!(self.conn, get_latest_block(service::ChainSpec {})) })?
             .into_inner())
     }
 
@@ -260,7 +280,7 @@ impl LwdConn {
         let response = self
             .runtime
             .clone()
-            .block_on(async { self.conn.get_transaction(request).await })?
+            .block_on(async { lwd_call!(self.conn, get_transaction(request)) })?
             .into_inner();
 
         Ok((response.data, response.height))
@@ -276,7 +296,7 @@ impl LwdConn {
         let response = self
             .runtime
             .clone()
-            .block_on(async { self.conn.send_transaction(request).await })?
+            .block_on(async { lwd_call!(self.conn, send_transaction(request)) })?
             .into_inner();
 
         if response.error_code == 0 {
@@ -307,11 +327,7 @@ impl LwdConn {
         };
 
         self.runtime.clone().block_on(async {
-            let mut utxos = self
-                .conn
-                .get_address_utxos_stream(request)
-                .await?
-                .into_inner();
+            let mut utxos = lwd_call!(self.conn, get_address_utxos_stream(request))?.into_inner();
 
             while let Some(result) = utxos.message().await? {
                 f(WalletTransparentOutput::from_parts(
@@ -363,7 +379,7 @@ impl LwdConn {
         };
 
         self.runtime.clone().block_on(async {
-            let mut txs = self.conn.get_taddress_txids(request).await?.into_inner();
+            let mut txs = lwd_call!(self.conn, get_taddress_txids(request))?.into_inner();
 
             while let Some(tx) = txs.message().await? {
                 let mined_height = match tx.height {
@@ -393,7 +409,7 @@ impl LwdConn {
         Ok(self
             .runtime
             .clone()
-            .block_on(async { self.conn.get_tree_state(request).await })?
+            .block_on(async { lwd_call!(self.conn, get_tree_state(request)) })?
             .into_inner())
     }
 }
