@@ -18,14 +18,14 @@ object GrpcStatusResolver : ApiStatusResolver {
     @Suppress("CyclomaticComplexMethod")
     private fun <T> resolveByStatusCode(
         status: Status,
-        exception: Exception
+        exception: Exception,
     ): Response.Failure<T> =
         when (status.code) {
             Status.Code.ABORTED -> {
                 Response.Failure.Server.Aborted(
                     cause = exception,
                     code = status.code.value(),
-                    description = status.description
+                    description = status.description,
                 )
             }
 
@@ -33,7 +33,7 @@ object GrpcStatusResolver : ApiStatusResolver {
                 Response.Failure.Client.Canceled(
                     cause = exception,
                     code = status.code.value(),
-                    description = status.description
+                    description = status.description,
                 )
             }
 
@@ -41,7 +41,7 @@ object GrpcStatusResolver : ApiStatusResolver {
                 Response.Failure.Server.DeadlineExceeded(
                     cause = exception,
                     code = status.code.value(),
-                    description = status.description
+                    description = status.description,
                 )
             }
 
@@ -49,7 +49,7 @@ object GrpcStatusResolver : ApiStatusResolver {
                 Response.Failure.Server.NotFound(
                     cause = exception,
                     code = status.code.value(),
-                    description = status.description
+                    description = status.description,
                 )
             }
 
@@ -57,7 +57,7 @@ object GrpcStatusResolver : ApiStatusResolver {
                 Response.Failure.Server.PermissionDenied(
                     cause = exception,
                     code = status.code.value(),
-                    description = status.description
+                    description = status.description,
                 )
             }
 
@@ -65,7 +65,7 @@ object GrpcStatusResolver : ApiStatusResolver {
                 Response.Failure.Server.Unavailable(
                     cause = exception,
                     code = status.code.value(),
-                    description = status.description
+                    description = status.description,
                 )
             }
 
@@ -73,7 +73,7 @@ object GrpcStatusResolver : ApiStatusResolver {
                 Response.Failure.Server.Unknown(
                     cause = exception,
                     code = status.code.value(),
-                    description = status.description
+                    description = status.description,
                 )
             }
 
@@ -81,7 +81,7 @@ object GrpcStatusResolver : ApiStatusResolver {
                 Response.Failure.Server.Other(
                     cause = exception,
                     code = status.code.value(),
-                    description = status.description
+                    description = status.description,
                 )
             }
         }

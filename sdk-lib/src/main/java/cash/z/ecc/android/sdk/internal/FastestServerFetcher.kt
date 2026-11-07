@@ -65,13 +65,25 @@ internal class FastestServerFetcher(
             emit(FastestServersResult.Validating(serversByRpcMeanLatency.map { it.endpoint }.take(K)))
 
             val serversByGetBlockRangeTimeout =
-                measureBlockFetches(
-                    survivors = serversByRpcMeanLatency,
-                    blocksToFetch = N,
-                    fetchThreshold = FETCH_THRESHOLD,
-                    logPrefix = FASTEST_SERVER_LOG_PREFIX,
-                    limit = K
-                ).map { it.endpoint }
+                if (sdkFlags.isTorEnabled) {
+                    Twig.debug {
+                        "Fastest Server: block-fetch phase skipped over Tor (ranking by RPC latency only)"
+                    }
+                    // Every survivor holds a client; dispose all of them, not only the K we return.
+                    serversByRpcMeanLatency
+                        .also { survivors ->
+                            survivors.forEach { it.disposeQuietly() }
+                        }.take(K)
+                        .map { it.endpoint }
+                } else {
+                    measureBlockFetches(
+                        survivors = serversByRpcMeanLatency,
+                        blocksToFetch = N,
+                        fetchThreshold = FETCH_THRESHOLD,
+                        logPrefix = FASTEST_SERVER_LOG_PREFIX,
+                        limit = K
+                    ).map { it.endpoint }
+                }
 
             Twig.debug { "Fastest Server: '$serversByGetBlockRangeTimeout' VALIDATED by getBlockRange timeout" }
 
@@ -109,14 +121,25 @@ internal class FastestServerFetcher(
         val isCurrentOffered = candidates.any { it.isSameServer(current) }
 
         return withContext(Dispatchers.Default) {
+            val survivors = measureRpcLatency(if (isCurrentOffered) candidates else candidates + current)
             val ranked =
-                measureBlockFetches(
-                    survivors = measureRpcLatency(if (isCurrentOffered) candidates else candidates + current),
-                    blocksToFetch = blocksToFetch,
-                    fetchThreshold = fetchThreshold,
-                    logPrefix = SERVER_SWITCH_LOG_PREFIX,
-                    limit = Int.MAX_VALUE
-                ).sortedBy { it.score }
+                if (sdkFlags.isTorEnabled) {
+                    Twig.debug {
+                        "Server Switch: block-fetch phase skipped over Tor (ranking by RPC latency only)"
+                    }
+                    survivors
+                        .also { results ->
+                            results.forEach { it.disposeQuietly() }
+                        }.map { MeasuredEndpoint(endpoint = it.endpoint, score = it.meanDuration) }
+                } else {
+                    measureBlockFetches(
+                        survivors = survivors,
+                        blocksToFetch = blocksToFetch,
+                        fetchThreshold = fetchThreshold,
+                        logPrefix = SERVER_SWITCH_LOG_PREFIX,
+                        limit = Int.MAX_VALUE
+                    )
+                }.sortedBy { it.score }
 
             val outcome =
                 switchEvaluator.evaluate(

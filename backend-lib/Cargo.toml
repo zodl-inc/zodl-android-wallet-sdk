@@ -22,12 +22,19 @@ android-test-fixtures = []
 # module's logging setup, and (on Android) the logcat tracing layer. OFF by default; enabled
 # for the merged native library that ships Slipstream.
 slipstream = ["dep:slipstream-core", "dep:tokio", "dep:tracing-android", "tracing-subscriber/env-filter"]
+# Honours the OHTTP client trace prefix (`X-Client-Trace-Id`). Only for QA/E2E builds: without it
+# the JNI entry points that set a prefix ignore it, so a release library has no way to send trace
+# ids (ZIP: release builds MUST NOT contain a code path that can enable them at run time).
+# Gradle enables it with -PZODL_OHTTP_TRACE=true or a non-empty -PZCASH_OHTTP_TRACE_PREFIX, and
+# refuses it for release, benchmark and publish tasks. It turns on the engine's own
+# `client-trace` feature, so Slipstream OHTTP requests carry the prefix too.
+ohttp-trace = ["slipstream-core?/client-trace"]
 
 [dependencies]
 # Zcash dependencies
 
 # The NU7 pre-release generation: orchard 0.16 with the `=`-pinned librustzcash pre-releases
-# below, the same generation `slipstream-core` 0.4.0-pre.1 and the pinned `zcash_voting` are
+# below, the same generation `slipstream-core` 0.4.0-pre.2 and the pinned `zcash_voting` are
 # built against. Everything here resolves from crates.io; no orchard [patch] entry is needed.
 #
 # `unstable-voting-circuits` is not requested here, but it IS enabled in the built graph:
@@ -107,6 +114,21 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # lightwalletd
+
+# Oblivious HTTP (RFC 9458) client core shared with the iOS and Slipstream clients: key
+# selection, signed key-configuration envelopes, Binary HTTP, HPKE, outer-status
+# classification and size caps, as pure functions (`ClientProfile::ANDROID`). Without default
+# features the networked `Client` (reqwest, tokio) is not compiled: the Kotlin transport does
+# the I/O. The JNI surface is `src/main/rust/ohttp.rs`. The repository is private (CI's App
+# token must include `zodl-ohttp`, see .github/actions/setup/action.yml). Pinned by revision; bump
+# it only to a commit that is on the `main` of zodl-inc/zodl-ohttp, the one zodl-slipstream pins (one copy of the
+# core, so its relay backoff table is shared). Now at 0324db3240adf00ea847aa0a93e8d765e32b61da (main of zodl-inc/zodl-ohttp,
+# crate 0.1.2; no built-in endpoints: gateway hosts, relay URLs, signing keys and key DNS names are
+# read from the `ZODL_OHTTP_*` environment when the crate is compiled. Each network is configured with
+# all four of its variables or none (none = OHTTP off for that network), mainnet and testnet must not
+# share a value, and `ZODL_OHTTP_REQUIRE=1` fails the build unless all eight are set; build errors name
+# the variables only).
+zodl-ohttp-client = { git = "https://github.com/zodl-inc/zodl-ohttp.git", rev = "0324db3240adf00ea847aa0a93e8d765e32b61da", default-features = false }
 tonic = "0.14"
 
 # Logging
@@ -176,9 +198,10 @@ xz2 = { version = "0.1", features = ["static"] }
 # and a network-triggerable vote-tree-sync panic fix. See this crate's own CHANGELOG for
 # the full 4.0.0-through-5.1.0 history if re-pinning again later.
 #
-# 5.2.0-rc.2 is a release candidate built on the NU7 librustzcash generation, from crates.io; there is no
-# `[patch.crates-io]` entry for it any more. No final 5.2.0 exists yet, so check for one before an SDK release.
-zcash_voting = { version = "=5.2.0-rc.2", default-features = false, features = ["lrz"] }
+# 5.3.0 is built on the NU7 librustzcash generation, from crates.io; there is no `[patch.crates-io]` entry for it.
+# It replaces 5.2.0-rc.2, which only accepted NU6.3 and so rejected the note selection for any round whose snapshot
+# is after NU7 activation ("zcash voting only supports Ironwood / NU6.3 shielded voting notes").
+zcash_voting = { version = "=5.3.0", default-features = false, features = ["lrz"] }
 
 # The delegation-submission signing recipe (voting/delegation.rs) derives the account
 # SpendAuth key locally and needs the same Pallas scalar/field types zcash_voting and
@@ -199,7 +222,7 @@ ff = { version = "0.14" }
 # docs/slipstream/android/worklog/ARCHIVE-phases-0-9.md for the full writeup). The engine is
 # the `zodl-slipstream` crate, built against the same librustzcash generation as the rest of this graph (verify
 # with `cargo tree -d` after any bump). It resolves from crates.io, with no `[patch.crates-io]` entry.
-slipstream-core = { package = "zodl-slipstream", version = "0.4.1", optional = true }
+slipstream-core = { package = "zodl-slipstream", version = "0.4.0", optional = true }
 # The module's owned engine runtime (HOSTING.md §3.1) and the logcat logging layer it wires up.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 
@@ -257,6 +280,29 @@ secp256k1 = "0.29"
 # builds, so the release library never links tempfile/rand_chacha/ambassador.
 zcash_client_sqlite = { version = "=0.23.0", features = ["orchard", "transparent-inputs", "unstable", "serde", "test-dependencies"] }
 
+# Test-only: converts a BIP-39 mnemonic phrase to seed bytes for `migration::live_wallet_tests`,
+# which needs a real UnifiedSpendingKey to exercise the in-process-signing path
+# (`commit_preparation`) against a real wallet DB fixture — the app itself never uses this crate
+# (Kotlin does the mnemonic-to-seed conversion, Rust always receives already-derived seed bytes).
+bip0039 = "0.12"
+
+# Test-only: the gateway side of an OHTTP exchange and a signed key-configuration envelope, so
+# the JNI glue in `ohttp.rs` is tested against real HPKE and Ed25519 (the versions the core
+# already links). `ohttp-gateway` itself does pull second copies of several crates into the lock
+# (its own tonic, prost, axum and bincode among them); they are built for tests only and never
+# reach the release library.
+base64 = "0.22"
+ed25519-dalek = "2"
+sha2 = "0.10"
+# Same revision as zodl-ohttp-client, so the tests run against the gateway of the client they test.
+ohttp-gateway = { git = "https://github.com/zodl-inc/zodl-ohttp.git", rev = "0324db3240adf00ea847aa0a93e8d765e32b61da" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+# Driving the gateway's streaming response encoder (`chunked_stream::encode_response_stream`,
+# whose upstream items are `anyhow::Result<UpFrame>` over `Bytes`) in the `ohttp.rs` tests,
+# so the JNI `complete` path is checked against what the gateway really sends.
+futures-util = "0.3"
+bytes = "1"
+
 [lib]
 name = "zcashwalletsdk"
 path = "src/main/rust/lib.rs"
@@ -267,6 +313,15 @@ crate-type = ["staticlib", "cdylib"]
 [workspace]
 
 [patch.crates-io]
+# The slipstream engine with the OHTTP transport lives in the private slipstream-internal
+# repository until a published zodl-slipstream release carries it. This patch makes the
+# `slipstream-core` dependency above resolve from the `main` of slipstream-internal (88505fc7, the merge of
+# its feature/ohttp, PR #45; `zodl-ohttp-client` from zodl-inc/zodl-ohttp
+# 0324db32 with build-time endpoint configuration;
+# crate 0.4.0 on the NU7 release crates: zcash_client_backend 0.25.0, zcash_client_sqlite 0.23.0). The entry goes
+# once a published zodl-slipstream release contains the OHTTP transport. No SDK release may be cut
+# while it exists.
+zodl-slipstream = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "88505fc7af9d6fff58817d932e642c571a9043fe" }
 # DO NOT ALTER THIS COMMENT
 #
 # This section is left in place to ensure that development against in-progress

@@ -65,6 +65,7 @@ class VotingSdkRoundTripTest {
                     val roundSession =
                         dbSession.openRoundSession(
                             torLease = torLease,
+                            isCustomServer = false,
                             roundId = ROUND_ID,
                             proposals = listOf(VotingProposalRosterEntry(proposalId = 1, numOptions = 2)),
                             hotkeySecret = null,
@@ -193,6 +194,7 @@ class VotingSdkRoundTripTest {
                     val roundSession =
                         dbSession.openRoundSession(
                             torLease = torLease,
+                            isCustomServer = false,
                             roundId = ROUND_ID,
                             proposals = listOf(VotingProposalRosterEntry(proposalId = 1, numOptions = 2)),
                             hotkeySecret = hotkey.storedSecret,

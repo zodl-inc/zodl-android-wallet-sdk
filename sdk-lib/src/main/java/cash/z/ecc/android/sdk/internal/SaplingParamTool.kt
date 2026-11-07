@@ -6,9 +6,13 @@ import cash.z.ecc.android.sdk.internal.ext.deleteRecursivelySuspend
 import cash.z.ecc.android.sdk.internal.ext.deleteSuspend
 import cash.z.ecc.android.sdk.internal.ext.existsSuspend
 import cash.z.ecc.android.sdk.internal.ext.getCacheDirSuspend
-import cash.z.ecc.android.sdk.internal.ext.getSha1Hash
+import cash.z.ecc.android.sdk.internal.ext.getSha256Hash
 import cash.z.ecc.android.sdk.internal.ext.mkdirsSuspend
 import cash.z.ecc.android.sdk.internal.ext.renameToSuspend
+import io.ktor.client.HttpClient
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.utils.io.jvm.javaio.toInputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -16,13 +20,20 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.channels.Channels
 import kotlin.time.Duration.Companion.milliseconds
 
 internal class SaplingParamTool(
-    val properties: SaplingParamToolProperties
+    val properties: SaplingParamToolProperties,
 ) {
+    /**
+     * Optional provider for a Tor HTTP client. When set, Sapling parameter downloads will be routed
+     * through Tor. When null, downloads use direct HTTPS.
+     */
+    var torHttpClientProvider: (suspend () -> HttpClient)? = null
+
     val spendParamsFile: File
         get() = File(properties.paramsDirectory, SPEND_PARAM_FILE_NAME)
 
@@ -61,19 +72,21 @@ internal class SaplingParamTool(
         private const val TEMPORARY_FILE_NAME_PREFIX = "_"
 
         /**
-         * File SHA1 hash for the sapling spend params
+         * SHA-256 hash for sapling spend params
          */
-        internal const val SPEND_PARAM_FILE_SHA1_HASH = "a15ab54c2888880e53c823a3063820c728444126"
+        internal const val SPEND_PARAM_FILE_SHA256_HASH =
+            "8e48ffd23abb3a5fd9c5589204f32d9c31285a04b78096ba40a79b75677efc13"
 
         /**
-         * File SHA1 hash for the sapling output params
+         * SHA-256 hash for sapling output params
          */
-        internal const val OUTPUT_PARAM_FILE_SHA1_HASH = "0ebc5a1ef3653948e1c46cf7a16071eac4b7e352"
+        internal const val OUTPUT_PARAM_FILE_SHA256_HASH =
+            "2f0ebbcbb9bb0bcffe95a397e7eba89c29eb4dde6191c339db88570e3f3fb0e4"
 
         /**
-         * The Url that is used by default in zcashd
+         * The URL for Sapling parameter files, hosted on GitHub
          */
-        private const val CLOUD_PARAM_DIR_URL = "https://download.z.cash/downloads/"
+        private const val CLOUD_PARAM_DIR_URL = "https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/main/"
 
         private val checkFilesMutex = Mutex()
 
@@ -98,15 +111,15 @@ internal class SaplingParamTool(
                                 paramsDirectory,
                                 SPEND_PARAM_FILE_NAME,
                                 SPEND_PARAM_FILE_MAX_BYTES_SIZE,
-                                SPEND_PARAM_FILE_SHA1_HASH
+                                SPEND_PARAM_FILE_SHA256_HASH,
                             ),
                             SaplingParameters(
                                 paramsDirectory,
                                 OUTPUT_PARAM_FILE_NAME,
                                 OUTPUT_PARAM_FILE_MAX_BYTES_SIZE,
-                                OUTPUT_PARAM_FILE_SHA1_HASH
-                            )
-                        )
+                                OUTPUT_PARAM_FILE_SHA256_HASH,
+                            ),
+                        ),
                 )
             return SaplingParamTool(toolProperties)
         }
@@ -152,19 +165,19 @@ internal class SaplingParamTool(
         }
 
         /**
-         * Compares the input file parameter SHA1 hash with the given input hash.
+         * Compares the input file parameter SHA-256 hash with the given input hash.
          *
-         * @param parametersFile file of which SHA1 hash will be checked
+         * @param parametersFile file of which SHA-256 hash will be checked
          * @param fileHash hash to compare with
          *
          * @return true in case of hashes are the same, false otherwise
          */
         private suspend fun isFileHashValid(
             parametersFile: File,
-            fileHash: String
+            fileHash: String,
         ): Boolean =
             try {
-                fileHash == parametersFile.getSha1Hash()
+                fileHash == parametersFile.getSha256Hash()
             } catch (e: IOException) {
                 Twig.debug { "Failed in comparing file's hashes with: ${e.message}, caused by: ${e.cause}." }
                 false
@@ -180,7 +193,7 @@ internal class SaplingParamTool(
          */
         private suspend fun renameParametersFile(
             fromParamFile: File,
-            toParamFile: File
+            toParamFile: File,
         ): Boolean {
             return runCatching {
                 return@runCatching fromParamFile.renameToSuspend(toParamFile)
@@ -208,7 +221,7 @@ internal class SaplingParamTool(
     @Throws(
         TransactionEncoderException.ValidateParamsException::class,
         TransactionEncoderException.FetchParamsException::class,
-        TransactionEncoderException.MissingParamsException::class
+        TransactionEncoderException.MissingParamsException::class,
     )
     internal suspend fun ensureParams(destinationDir: File) {
         properties.saplingParams
@@ -255,7 +268,7 @@ internal class SaplingParamTool(
      */
     @Throws(
         TransactionEncoderException.ValidateParamsException::class,
-        TransactionEncoderException.FetchParamsException::class
+        TransactionEncoderException.FetchParamsException::class,
     )
     internal suspend fun fetchParams(paramsToFetch: SaplingParameters) {
         fetchParamsMutex.withLock {
@@ -268,10 +281,20 @@ internal class SaplingParamTool(
 
             val url = URL("$CLOUD_PARAM_DIR_URL${paramsToFetch.fileName}")
             Twig.debug { "Sapling params fetch URL: $url" }
+
+            // Ensure the destination directory exists before creating the temp file
+            val destinationDir = paramsToFetch.destinationDirectory
+            if (!destinationDir.exists() && !destinationDir.mkdirs()) {
+                throw TransactionEncoderException.FetchParamsException(
+                    paramsToFetch,
+                    "Failed to create directory ${destinationDir.path}"
+                )
+            }
+
             val temporaryFile =
                 File(
-                    paramsToFetch.destinationDirectory,
-                    "$TEMPORARY_FILE_NAME_PREFIX${paramsToFetch.fileName}"
+                    destinationDir,
+                    "$TEMPORARY_FILE_NAME_PREFIX${paramsToFetch.fileName}",
                 )
 
             withContext(Dispatchers.IO) {
@@ -282,8 +305,8 @@ internal class SaplingParamTool(
                             exception =
                                 TransactionEncoderException.FetchParamsException(
                                     paramsToFetch,
-                                    "Error while fetching ${paramsToFetch.fileName}, caused by $exception."
-                                )
+                                    "Error while fetching ${paramsToFetch.fileName}, caused by $exception.",
+                                ),
                         )
                     }.onSuccess {
                         validateAndStore(paramsToFetch, temporaryFile, resultFile)
@@ -296,6 +319,8 @@ internal class SaplingParamTool(
      * Transfers bytes from [url] to [temporaryFile], from position 0 up to [maxSizeBytes]. This eliminates the
      * risk of downloading a potentially large file from a malicious server.
      *
+     * If [torHttpClientProvider] is set, the download is routed through Tor. Otherwise, it uses direct HTTPS.
+     *
      * Failures surfaced here (non-exhaustive): [IllegalArgumentException] - preconditions on the parameters don't
      * hold; [java.nio.channels.NonReadableChannelException]/[java.nio.channels.NonWritableChannelException] -
      * source/destination channel opened for the wrong direction; [java.nio.channels.ClosedChannelException]/
@@ -305,13 +330,36 @@ internal class SaplingParamTool(
     private suspend fun downloadToFile(
         url: URL,
         temporaryFile: File,
-        maxSizeBytes: Long
+        maxSizeBytes: Long,
     ): Result<Unit> =
         runCatching {
-            Channels.newChannel(url.openStream()).use { readableByteChannel ->
-                temporaryFile.outputStream().use { fileOutputStream ->
-                    fileOutputStream.channel.use { fileChannel ->
-                        fileChannel.transferFrom(readableByteChannel, 0, maxSizeBytes)
+            val torProvider = torHttpClientProvider
+            if (torProvider != null) {
+                Twig.debug { "Sapling params: downloading ${url.file.substringAfterLast('/')} via Tor" }
+                // Closing the client closes its engine, which releases the isolated native Tor client.
+                torProvider().use { client ->
+                    val response = client.get(url.toString())
+                    if (response.status.value != HttpURLConnection.HTTP_OK) {
+                        throw IOException("Unexpected HTTP ${response.status.value} downloading ${url.file}")
+                    }
+                    response.bodyAsChannel().toInputStream().use { inputStream ->
+                        temporaryFile.outputStream().use { fileOutputStream ->
+                            fileOutputStream.channel.use { fileChannel ->
+                                Channels.newChannel(inputStream).use { readableByteChannel ->
+                                    fileChannel.transferFrom(readableByteChannel, 0, maxSizeBytes)
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Direct HTTPS download
+                Twig.debug { "Sapling params: downloading ${url.file.substringAfterLast('/')} via direct HTTPS" }
+                Channels.newChannel(url.openStream()).use { readableByteChannel ->
+                    temporaryFile.outputStream().use { fileOutputStream ->
+                        fileOutputStream.channel.use { fileChannel ->
+                            fileChannel.transferFrom(readableByteChannel, 0, maxSizeBytes)
+                        }
                     }
                 }
             }
@@ -325,7 +373,7 @@ internal class SaplingParamTool(
     private suspend fun validateAndStore(
         paramsToFetch: SaplingParameters,
         temporaryFile: File,
-        resultFile: File
+        resultFile: File,
     ) {
         Twig.debug {
             "Fetch and write of the temporary ${temporaryFile.name} succeeded. Validating and moving it to the " +
@@ -337,8 +385,8 @@ internal class SaplingParamTool(
                 exception =
                     TransactionEncoderException.ValidateParamsException(
                         paramsToFetch,
-                        "Failed while validating fetched param file: ${paramsToFetch.fileName}."
-                    )
+                        "Failed while validating fetched param file: ${paramsToFetch.fileName}.",
+                    ),
             )
         }
         if (!renameParametersFile(temporaryFile, resultFile)) {
@@ -348,8 +396,8 @@ internal class SaplingParamTool(
                 exception =
                     TransactionEncoderException.ValidateParamsException(
                         paramsToFetch,
-                        "Failed while renaming result param file: ${paramsToFetch.fileName}."
-                    )
+                        "Failed while renaming result param file: ${paramsToFetch.fileName}.",
+                    ),
             )
         }
     }
@@ -357,7 +405,7 @@ internal class SaplingParamTool(
     @Throws(TransactionEncoderException.FetchParamsException::class)
     private suspend fun finalizeAndReportError(
         vararg files: File,
-        exception: TransactionEncoderException
+        exception: TransactionEncoderException,
     ) {
         files.forEach {
             it.deleteSuspend()
@@ -371,7 +419,7 @@ internal class SaplingParamTool(
     internal suspend fun validate(destinationDir: File): Boolean =
         arrayOf(
             SPEND_PARAM_FILE_NAME,
-            OUTPUT_PARAM_FILE_NAME
+            OUTPUT_PARAM_FILE_NAME,
         ).all { paramFileName ->
             File(destinationDir, paramFileName).existsSuspend()
         }.also {
@@ -386,7 +434,7 @@ internal data class SaplingParameters(
     val destinationDirectory: File,
     val fileName: String,
     val fileMaxSizeBytes: Long,
-    val fileHash: String
+    val fileHash: String,
 )
 
 /**
@@ -395,5 +443,5 @@ internal data class SaplingParameters(
 internal data class SaplingParamToolProperties(
     val saplingParams: List<SaplingParameters>,
     val paramsDirectory: File,
-    val paramsLegacyDirectory: File
+    val paramsLegacyDirectory: File,
 )

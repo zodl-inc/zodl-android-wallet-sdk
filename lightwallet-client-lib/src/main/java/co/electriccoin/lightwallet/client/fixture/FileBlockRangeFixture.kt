@@ -14,6 +14,6 @@ internal object FileBlockRangeFixture {
 
     fun new(
         lowerBound: BlockHeightUnsafe = BLOCK_HEIGHT_LOWER_BOUND,
-        upperBound: BlockHeightUnsafe = BLOCK_HEIGHT_UPPER_BOUND
+        upperBound: BlockHeightUnsafe = BLOCK_HEIGHT_UPPER_BOUND,
     ): ClosedRange<BlockHeightUnsafe> = lowerBound..upperBound
 }

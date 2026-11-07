@@ -22,6 +22,24 @@ concurrency:
 # Default to no token scopes at all; every job that needs one declares it below.
 permissions: {}
 
+# The OHTTP endpoint configuration that zodl-ohttp-client (zodl-inc/zodl-ohttp) reads when
+# backend-lib is compiled: gateway hosts, relay URLs, signing public keys and DNS TXT names of the
+# signed key configuration. The crate has no built-in endpoints: a network left unset has OHTTP
+# off in the built library. Workflow-level, so every step inherits it, Gradle passes it on to the
+# cargo builds of rust-android-gradle, and `make test-rust` / clippy see it too. The Rust unit
+# tests do not depend on it (they use example endpoints). Repository Actions secrets, managed in
+# zodl-inc/github-config: secrets, not variables, so that GitHub masks the values in the log
+# (variables are printed in clear in the env listing of every step).
+env:
+  ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
+  ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
+  ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
+  ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
+  ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
+  ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
+  ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
+  ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
+
 jobs:
   validate_gradle_wrapper:
     runs-on: ubuntu-latest
@@ -74,6 +92,9 @@ jobs:
         id: setup
         timeout-minutes: 10
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Check properties
         timeout-minutes: 4
         run: |
@@ -115,6 +136,9 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Detekt
         timeout-minutes: 4
         run: |
@@ -154,6 +178,9 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Ktlint
         timeout-minutes: 4
         run: |
@@ -194,10 +221,13 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       - name: Android Lint
-        # With a cold Rust cache, cross-compiling the backend alone can take
-        # longer than 45 minutes; warm-cache runs finish well inside this limit.
+        # 120 minutes for cold-cache first run (seeds Rust cache: vendored zodl-slipstream +
+        # arti/hpke deps take ~45+ min to cross-compile for 4 ABIs). Warm-cache runs complete
+        # in <30 min. the Rust cache step in the setup action caches compiled artifacts.
         timeout-minutes: 120
         env:
           # Disable minify, since it makes lint run faster
@@ -241,6 +271,8 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       - name: Test
         timeout-minutes: 15
@@ -269,6 +301,8 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       - name: Clippy
         timeout-minutes: 15
@@ -297,6 +331,9 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Rustfmt
         timeout-minutes: 5
         run: |
@@ -349,10 +386,12 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       - name: Compile with Slipstream disabled
-        # With a cold Rust cache, cross-compiling the backend alone can take
-        # longer than 30 minutes; warm-cache runs finish well inside this limit.
+        # 120 minutes for cold-cache first run (cross-compiles backend-lib Rust for one ABI,
+        # still includes vendored dependencies). Warm-cache runs complete in <20 min.
         timeout-minutes: 120
         run: |
           ./gradlew :sdk-incubator-lib:compileDebugKotlin :sdk-lib:compileDebugKotlin -PIS_SLIPSTREAM_ENABLED=false
@@ -375,13 +414,13 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
-      # Shielded voting turns on orchard's `unstable-voting-circuits` and pulls the halo2
-      # voting circuits into the native build, and `make test-unit` builds the crate for all
-      # four ABIs, so that lands four times over.
+      # The JVM unit tests load no native library, so `make test-unit` leaves the four-ABI
+      # cargo build out: compiled alongside, it starved the tests with real-time budgets
+      # (OhttpStreamingTest, SlipstreamSynchronizerLifecycleTest) and failed the job.
       - name: Build and test
-        # With a cold Rust cache, cross-compiling the backend alone can take
-        # longer than 60 minutes; warm-cache runs finish well inside this limit.
         timeout-minutes: 120
         run: |
           make test-unit
@@ -516,6 +555,8 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       # The hosted runner's Android SDK does not include the emulator package,
       # which a Gradle Managed Device requires. AGP auto-installs the system
@@ -527,6 +568,34 @@ jobs:
         timeout-minutes: 5
         run: |
           yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" "emulator"
+          # The emulator's qemu links libpulse; the runner image does not ship it, and without it
+          # qemu exits at load time ("libpulse.so.0: cannot open shared object file"), which AGP
+          # reports as EmulatorStartFailedException with an empty message (2026-10-14).
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libpulse0
+      # EmulatorStartFailedException comes with an empty message: print the emulator version (which
+      # also fails on a missing shared library), KVM acceleration, memory and disk, so a failing run
+      # shows its cause.
+      # The managed AVD needs ~7.2 GB for its userdata partition once the Rust and Gradle builds
+      # have filled the disk (2026-10-14: 6.7 GB left, "Not enough space to create userdata
+      # partition"). Drop more of the runner image this job does not use.
+      - name: Free disk space for the emulator
+        timeout-minutes: 5
+        run: |
+          df -h /
+          sudo docker image prune --all --force >/dev/null || true
+          sudo rm -rf /usr/local/share/powershell /usr/share/miniconda /opt/microsoft /opt/google \
+            /usr/local/lib/node_modules /opt/az /usr/share/az_* /usr/local/share/chromium /opt/pipx \
+            /usr/local/julia* || true
+          df -h /
+      - name: Emulator diagnostics
+        timeout-minutes: 2
+        run: |
+          "${ANDROID_SDK_ROOT}/emulator/emulator" -version | head -n 1
+          ls -l /dev/kvm || echo "no /dev/kvm on this runner"
+          "${ANDROID_SDK_ROOT}/emulator/emulator" -accel-check || true
+          free -m
+          df -h /
       # pixel2Min is the Gradle Managed Device defined in
       # zcash-sdk.android-conventions.gradle.kts (Pixel 2, API ANDROID_MIN_SDK_VERSION).
       # Scoped to the same four modules the former emulator.wtf job covered;
@@ -540,11 +609,32 @@ jobs:
       # falls back to 'auto', which needs a real GPU and fails to boot the
       # emulator (EmulatorStartFailedException during snapshot creation).
       - name: Build and test
-        # With a cold Rust cache, cross-compiling the backend alone can take
-        # longer than 45 minutes; warm-cache runs finish well inside this limit.
+        # 120 minutes for cold-cache first run (cross-compiles vendored zodl-slipstream +
+        # arti/hpke for 4 ABIs, then runs instrumented tests). Warm-cache runs complete in <45 min.
         timeout-minutes: 120
+        # The managed device is x86 (dev27_default_x86_Pixel_2): building the Rust backend for the
+        # other three ABIs only filled the disk, until the emulator could not create its userdata
+        # partition ("Not enough space to create userdata partition. Available: 6725.80 MB ...,
+        # need 7372.80 MB", 2026-10-14).
+        env:
+          RUST_ANDROID_ABIS: x86
         run: |
           make test-instrumented
+          df -h /
+      # AGP drops the emulator's own output (EmulatorStartFailedException with an empty
+      # message). On failure, boot the managed AVD it created by hand for 90 s, so the log shows
+      # why the emulator does not start.
+      - name: Emulator boot probe
+        if: ${{ failure() }}
+        timeout-minutes: 3
+        run: |
+          avd_ini=$(find "${HOME}" -path '*gradle-managed*' -name 'dev27_default_x86_Pixel_2.ini' -print -quit)
+          if [ -z "${avd_ini}" ]; then echo "managed AVD not found"; exit 0; fi
+          export ANDROID_AVD_HOME=$(dirname "${avd_ini}")
+          echo "ANDROID_AVD_HOME=${ANDROID_AVD_HOME}"
+          timeout 90 "${ANDROID_SDK_ROOT}/emulator/emulator" -avd dev27_default_x86_Pixel_2 \
+            -no-window -gpu swiftshader_indirect -no-audio -no-boot-anim -no-snapshot -verbose 2>&1 \
+            | tail -n 80 || true
       - name: Collect Artifacts
         if: ${{ always() }}
         timeout-minutes: 1
@@ -587,6 +677,8 @@ jobs:
         timeout-minutes: 30
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       # A fake signing key to satisfy creating a "release" build
       - name: Export Signing Key
@@ -596,14 +688,14 @@ jobs:
         run: |
           keytool -genkey -v -keystore $SIGNING_KEY_PATH -keypass android -storepass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 100000 -dname "CN=, OU=, O=Test, L=, S=, C=" -noprompt
       - name: Build
-        # With a cold Rust cache, cross-compiling the backend alone can take
-        # longer than 45 minutes; warm-cache runs finish well inside this limit.
-        timeout-minutes: 120
         env:
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEYSTORE_PATH: ${{ format('{0}/release.jks', env.home) }}
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEYSTORE_PASSWORD: android
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS: androiddebugkey
           ORG_GRADLE_PROJECT_ZCASH_RELEASE_KEY_ALIAS_PASSWORD: android
+        # 120 minutes for cold-cache first run (cross-compiles vendored zodl-slipstream +
+        # arti/hpke for 4 ABIs, release profile). Warm-cache runs complete in <30 min.
+        timeout-minutes: 120
         run: |
           make build-release
       - name: Collect Artifacts
@@ -647,6 +739,9 @@ jobs:
         id: setup
         timeout-minutes: 30
         uses: ./.github/actions/setup
+        with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
       - name: Authenticate to Google Cloud for Firebase Test Lab
         id: auth_test_lab
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093

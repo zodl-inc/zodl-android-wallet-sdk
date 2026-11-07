@@ -24,6 +24,24 @@ on:
 
 concurrency: deploy_snapshot
 
+# The OHTTP endpoint configuration that zodl-ohttp-client (zodl-inc/zodl-ohttp) reads when
+# backend-lib is compiled: gateway hosts, relay URLs, signing public keys and DNS TXT names of the
+# signed key configuration. The crate has no built-in endpoints: a network left unset has OHTTP
+# off in the built library. Workflow-level, so every step inherits it, Gradle passes it on to the
+# cargo builds of rust-android-gradle, and `make test-rust` / clippy see it too. The Rust unit
+# tests do not depend on it (they use example endpoints). Repository Actions secrets, managed in
+# zodl-inc/github-config: secrets, not variables, so that GitHub masks the values in the log
+# (variables are printed in clear in the env listing of every step).
+env:
+  ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
+  ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
+  ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
+  ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
+  ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
+  ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
+  ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
+  ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
+
 jobs:
   validate_gradle_wrapper:
     runs-on: ubuntu-latest
@@ -94,6 +112,8 @@ jobs:
         timeout-minutes: 50
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       # Note that GitHub Actions appears to have issues with environment variables that contain periods,
       # so the GPG variables are done as command line arguments instead.

@@ -1,6 +1,14 @@
 name: 'Setup Java, Rust, and Dependency Cache'
 description: "Configures the build environment and caches Gradle, dependencies, and build outputs."
 inputs:
+  cargo-app-id:
+    description: "GitHub App ID with Contents:Read on zodl-inc/slipstream, zodl-inc/slipstream-internal and zodl-inc/zodl-ohttp (private cargo git dependencies). Empty = skip."
+    required: false
+    default: ""
+  cargo-app-private-key:
+    description: "PEM private key for cargo-app-id."
+    required: false
+    default: ""
   # rust-toolchain.toml must be in sync with this default.
   rust-version:
     description: "Rust toolchain version to install."
@@ -25,14 +33,15 @@ runs:
       run: |
         echo "Disk space before cleanup:"
         df -h /
-        # Toolchains this build never uses; together about 20 GB that the Rust cross-compile
-        # for four ABIs and the emulator image otherwise compete for.
+        # Remove unnecessary toolchains and build artifacts to save ~20 GB for Rust cross-compilation.
+        # Keep the NDK we need (27.0.12077973 is installed in the next step) and the active emulator.
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /opt/ghc
         sudo rm -rf /usr/local/.ghcup
         sudo rm -rf /opt/hostedtoolcache/CodeQL
         sudo rm -rf /usr/local/share/boost
         sudo rm -rf /usr/share/swift
+        sudo rm -rf "${AGENT_TOOLSDIRECTORY}" || true
         echo "Disk space after cleanup:"
         df -h /
     - name: Set up Java
@@ -47,6 +56,15 @@ runs:
         ANDROID_SDK_ROOT=${ANDROID_ROOT}/sdk
         SDKMANAGER=${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager
         echo "y" | $SDKMANAGER "ndk;27.0.12077973"
+    - name: Authorize cargo against the private slipstream repositories
+      if: inputs.cargo-app-id != '' && inputs.cargo-app-private-key != ''
+      id: slipstream-token
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+      with:
+        app-id: ${{ inputs.cargo-app-id }}
+        private-key: ${{ inputs.cargo-app-private-key }}
+        owner: zodl-inc
+        repositories: slipstream,slipstream-internal,zodl-ohttp
     - name: Setup Rust
       shell: bash
       # Use the channel pinned in rust-toolchain.toml (the single source of truth) rather than a
@@ -125,6 +143,20 @@ runs:
         restore-keys: |
           ${{ runner.os }}-rust-v3-
 
+    # The App token is used by this one step only: the private git dependencies are fetched into
+    # ~/.cargo/git here, and every later cargo build (Gradle's included) finds the locked revisions
+    # there without fetching. The token reaches git through GIT_CONFIG_* variables of this step,
+    # never ~/.gitconfig or $GITHUB_ENV, so no later step or build script can read it. ~/.cargo/git
+    # is not part of the Rust cache above (private content).
+    - name: Fetch the private cargo git dependencies
+      if: steps.slipstream-token.outputs.token != ''
+      shell: bash
+      env:
+        CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        GIT_CONFIG_COUNT: "1"
+        GIT_CONFIG_KEY_0: url.https://x-access-token:${{ steps.slipstream-token.outputs.token }}@github.com/zodl-inc/.insteadOf
+        GIT_CONFIG_VALUE_0: https://github.com/zodl-inc/
+      run: cargo fetch --locked --manifest-path backend-lib/Cargo.toml
     - name: Gradle Binary Download
       if: steps.gradle-binary-cache-restore.outputs.cache-hit != 'true'
       shell: bash

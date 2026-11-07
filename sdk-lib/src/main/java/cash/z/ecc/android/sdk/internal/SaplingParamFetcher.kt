@@ -1,6 +1,7 @@
 package cash.z.ecc.android.sdk.internal
 
 import cash.z.ecc.android.sdk.model.Zatoshi
+import io.ktor.client.HttpClient
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -8,7 +9,8 @@ import kotlin.time.Duration.Companion.seconds
 
 internal class SaplingParamFetcher(
     private val saplingParamTool: SaplingParamTool,
-    private val backend: TypesafeBackend
+    private val backend: TypesafeBackend,
+    private val torHttpClientProvider: (suspend () -> HttpClient)? = null
 ) {
     private val mutex = Mutex()
 
@@ -31,6 +33,7 @@ internal class SaplingParamFetcher(
 
                 if (needsSaplingParams) {
                     retryAndContinue {
+                        saplingParamTool.torHttpClientProvider = torHttpClientProvider
                         saplingParamTool.ensureParams(saplingParamTool.properties.paramsDirectory)
                     }
                 }
@@ -42,6 +45,7 @@ internal class SaplingParamFetcher(
     suspend fun forceDownload() =
         mutex.withLock {
             retryAndRethrow {
+                saplingParamTool.torHttpClientProvider = torHttpClientProvider
                 saplingParamTool.ensureParams(saplingParamTool.properties.paramsDirectory)
             }
         }

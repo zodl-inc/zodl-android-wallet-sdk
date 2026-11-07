@@ -1,4 +1,4 @@
-@file:Suppress("MaxLineLength", "TooManyFunctions")
+@file:Suppress("MaxLineLength", "LongParameterList", "TooManyFunctions")
 
 package com.zodl.slipstream.internal
 
@@ -10,7 +10,6 @@ import cash.z.ecc.android.sdk.model.AccountUuid
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.PercentDecimal
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
-import com.zodl.slipstream.SlipstreamNative
 import com.zodl.slipstream.SlipstreamSyncException
 import com.zodl.slipstream.model.SlipstreamSnapshot
 import kotlinx.coroutines.CancellationException
@@ -40,14 +39,38 @@ internal class SlipstreamEngine(
     /** Engine-owned Tor state directory - NEVER the SDK's own `TorClient` dir (DECISIONS.md D7). */
     private val torDir: String?,
     /** Engine-owned; cancelled via [shutdown], invoked from the synchronizer's `close()`. */
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    /** The native binding; a test supplies a fake (see [EngineNative]). */
+    private val native: EngineNative = EngineNative.Jni,
+    /** The poll period; `HOSTING.md` section 9's 2 s in production, shorter in tests. */
+    private val pollIntervalMs: Long = POLL_INTERVAL_MS
 ) {
     private var handle: Long = 0L
     private var gate = PollGate.INITIAL
     private var errorGate = ErrorEpisodeGate.INITIAL
     private var pollJob: Job? = null
+
+    /** Guards [pollJob] across [startPolling]/[stopPolling] (see [stopPolling]); never the engine itself. */
+    private val pollLock = Any()
     private var lastStartBirthday: Long = 0L
+
+    /**
+     * True from a successful [start] until the next [stop] ([isRunning]). Written on
+     * [SlipstreamDispatchers.SLIPSTREAM_IO] by [start]/[stop].
+     */
+    @Volatile
     private var running = false
+
+    /**
+     * True from the host's start request until [stop], whether or not the native start succeeded: what
+     * [nextStatus] reads as "the host wants the engine running". Set BEFORE the native start, so a start
+     * that throws (every stop-then-restart site in `SlipstreamSynchronizer` catches and logs it, and
+     * keeps polling) leaves an idle engine the host wanted running, reported DISCONNECTED on the next
+     * tick instead of keeping the last healthy status indefinitely. Written on
+     * [SlipstreamDispatchers.SLIPSTREAM_IO] by [start]/[stop], read by [dispatchState] there too.
+     */
+    @Volatile
+    private var hostWantsRunning = false
 
     /**
      * Consecutive ticks whose snapshot reported a stale tip; feeds [effectiveTipFresh]'s fail-open.
@@ -99,9 +122,9 @@ internal class SlipstreamEngine(
     suspend fun open(totalMemoryBytes: Long) =
         withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
             check(handle == 0L) { "engine already open" }
-            SlipstreamNative.ensureLoaded()
+            native.ensureLoaded()
             handle =
-                SlipstreamNative.open(
+                native.open(
                     dbPath = dbPath,
                     serverHost = endpoint.host,
                     serverPort = endpoint.port,
@@ -122,7 +145,8 @@ internal class SlipstreamEngine(
             return@withContext
         }
         lastStartBirthday = birthday
-        SlipstreamNative.start(handle, ufvk, birthday, torDir)
+        hostWantsRunning = true
+        native.start(handle, ufvk, birthday, torDir)
         running = true
     }
 
@@ -136,9 +160,11 @@ internal class SlipstreamEngine(
      */
     suspend fun stop(): Boolean =
         withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
-            val quiescent = if (handle != 0L) SlipstreamNative.stop(handle) else true
+            // Cleared before the native stop leaves the engine idle, so no tick can read that idle as the
+            // engine's own (see [nextStatus]).
+            hostWantsRunning = false
             running = false
-            quiescent
+            if (handle != 0L) native.stop(handle) else true
         }
 
     /**
@@ -150,14 +176,14 @@ internal class SlipstreamEngine(
      */
     suspend fun stopForWalletChange(): Boolean =
         withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
-            val quiescent = if (handle != 0L) SlipstreamNative.stopForWalletChange(handle) else true
+            val quiescent = if (handle != 0L) native.stopForWalletChange(handle) else true
             running = false
             quiescent
         }
 
     suspend fun notifyTxChange() =
         withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
-            if (handle != 0L) SlipstreamNative.notifyTxChange(handle)
+            if (handle != 0L) native.notifyTxChange(handle)
         }
 
     /**
@@ -168,25 +194,36 @@ internal class SlipstreamEngine(
     @Suppress("TooGenericExceptionCaught")
     fun startPolling() {
         if (handle == 0L) return
-        pollJob?.cancel()
-        pollJob =
-            scope.launch(SlipstreamDispatchers.SLIPSTREAM_IO) {
-                while (isActive) {
-                    try {
-                        tick()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        onCriticalErrorHandler?.invoke(e)
+        synchronized(pollLock) {
+            pollJob?.cancel()
+            pollJob =
+                scope.launch(SlipstreamDispatchers.SLIPSTREAM_IO) {
+                    while (isActive) {
+                        try {
+                            tick()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            onCriticalErrorHandler?.invoke(e)
+                        }
+                        delay(pollIntervalMs.milliseconds)
                     }
-                    delay(POLL_INTERVAL_MS.milliseconds)
                 }
-            }
+        }
     }
 
+    /**
+     * [startPolling] and this are serialized on [pollLock]: both are reached from several host
+     * coroutines (the preparation tail, `onForeground`, `resume`, a sync burst's restore), and an
+     * unsynchronized cancel-then-relaunch could leave a loop running that no later stop reaches. A
+     * private lock rather than `@Synchronized`: a synchronized method takes the instance's monitor
+     * before anything else runs, which the unit tests' Mockito mocks of this class contend on.
+     */
     fun stopPolling() {
-        pollJob?.cancel()
-        pollJob = null
+        synchronized(pollLock) {
+            pollJob?.cancel()
+            pollJob = null
+        }
     }
 
     /**
@@ -202,9 +239,9 @@ internal class SlipstreamEngine(
     private suspend fun tick() {
         if (handle == 0L) return
 
-        val snap = SlipstreamNative.snapshot(handle)
+        val snap = native.snapshot(handle)
 
-        SlipstreamNative.drainEvents(handle)
+        native.drainEvents(handle)
 
         if (snap.state == 1 && snap.stalledSeconds >= STALL_LOG_SECONDS) {
             android.util.Log.e(
@@ -214,7 +251,7 @@ internal class SlipstreamEngine(
         }
 
         val summary =
-            SlipstreamNative.walletSummary(
+            native.walletSummary(
                 handle = handle,
                 trustedConfirmations = ConfirmationsPolicy.TRUSTED_CONFIRMATIONS,
                 untrustedConfirmations = ConfirmationsPolicy.UNTRUSTED_CONFIRMATIONS,
@@ -234,8 +271,9 @@ internal class SlipstreamEngine(
         progress.value = permilleToPercentDecimal(snap.progressPermille)
         areFundsSpendable.value = snap.spendableHint
 
+        val previous = lastSnapshot.value
         lastSnapshot.value = snap
-        dispatchState(snap)
+        dispatchState(snap, previous)
 
         val decision = gate.reduce(snap)
         gate = decision.next
@@ -249,9 +287,21 @@ internal class SlipstreamEngine(
      * exactly once per episode (a `true` return retries via [start]); the first `state ∈ {0, 1, 3}`
      * tick after an episode dispatches [onProcessorErrorResolved]. [ErrorEpisodeGate] is the pure
      * enter/stay/leave/none decision; this function is only the side-effecting shell around it.
+     * The status itself is [nextStatus]: an idle engine the host stopped keeps its last status; an
+     * engine retrying a failed pass stays DISCONNECTED until a snapshot shows the server was reached
+     * ([serverReached], against the previous tick's snapshot).
      */
-    private suspend fun dispatchState(snap: SlipstreamSnapshot) {
-        status.value = mapEngineState(snap.state)
+    private suspend fun dispatchState(
+        snap: SlipstreamSnapshot,
+        previous: SlipstreamSnapshot?
+    ) {
+        status.value =
+            nextStatus(
+                previous = status.value,
+                state = snap.state,
+                hostWantsRunning = hostWantsRunning,
+                serverReached = serverReached(previous, snap)
+            )
         val (transition, next) = errorGate.reduce(snap.state)
         errorGate = next
         when (transition) {
@@ -273,7 +323,7 @@ internal class SlipstreamEngine(
     suspend fun free() =
         withContext(SlipstreamDispatchers.SLIPSTREAM_IO) {
             if (handle != 0L) {
-                SlipstreamNative.free(handle)
+                native.free(handle)
                 handle = 0L
             }
         }

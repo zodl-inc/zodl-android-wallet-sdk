@@ -24,7 +24,7 @@ class CompactBlockUnsafe(
     // lightwalletd server actually populates CompactTx.ironwoodActions yet. Safe to remove once
     // that's confirmed one way or the other.
     val ironwoodOutputsCount: UInt,
-    val compactBlockBytes: ByteArray
+    val compactBlockBytes: ByteArray,
 ) {
     companion object {
         fun new(compactBlock: CompactBlock): CompactBlockUnsafe {
@@ -36,7 +36,7 @@ class CompactBlockUnsafe(
                 saplingOutputsCount = outputCounts.saplingOutputsCount,
                 orchardOutputsCount = outputCounts.orchardActionsCount,
                 ironwoodOutputsCount = outputCounts.ironwoodActionsCount,
-                compactBlockBytes = compactBlock.toByteArray()
+                compactBlockBytes = compactBlock.toByteArray(),
             )
         }
 
@@ -58,6 +58,6 @@ class CompactBlockUnsafe(
     data class CompactBlockOutputsCounts(
         val saplingOutputsCount: UInt,
         val orchardActionsCount: UInt,
-        val ironwoodActionsCount: UInt
+        val ironwoodActionsCount: UInt,
     )
 }

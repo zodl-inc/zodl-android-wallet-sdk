@@ -1,5 +1,7 @@
 package com.zodl.slipstream.internal.spend
 
+import cash.z.ecc.android.sdk.internal.model.TorHttpTimeoutException
+import cash.z.ecc.android.sdk.internal.model.TorHttpTransportException
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import java.net.SocketTimeoutException
@@ -35,7 +37,7 @@ class SaplingParamsRetryTest {
     fun `exhausting all retries rethrows the original exception unchanged`() =
         runTest {
             var callCount = 0
-            val originalException = UnknownHostException("download.z.cash")
+            val originalException = UnknownHostException("raw.githubusercontent.com")
 
             val thrown =
                 assertFailsWith<UnknownHostException> {
@@ -63,4 +65,80 @@ class SaplingParamsRetryTest {
 
             assertEquals(1, callCount)
         }
+
+    @Test
+    fun `retries a Tor transport failure and succeeds on the next attempt`() =
+        runTest {
+            var callCount = 0
+
+            SaplingParams.retryOnIOException(maxAttempts = 3, initialBackoffMs = 1_000L) {
+                callCount++
+                if (callCount == 1) {
+                    throw TorHttpTransportException("circuit failed")
+                }
+            }
+
+            assertEquals(2, callCount)
+        }
+
+    @Test
+    fun `a persistent Tor transport failure is retried at most twice with the default attempts`() =
+        runTest {
+            var callCount = 0
+            val originalException = TorHttpTransportException("circuit failed")
+
+            val thrown =
+                assertFailsWith<TorHttpTransportException> {
+                    SaplingParams.retryOnIOException {
+                        callCount++
+                        throw originalException
+                    }
+                }
+
+            // 1 initial attempt + 2 retries.
+            assertEquals(3, callCount)
+            assertSame(originalException, thrown)
+        }
+
+    @Test
+    fun `a Tor timeout is not retried`() =
+        runTest {
+            var callCount = 0
+
+            assertFailsWith<TorHttpTimeoutException> {
+                SaplingParams.retryOnIOException(maxAttempts = 3, initialBackoffMs = 1_000L) {
+                    callCount++
+                    throw TorHttpTimeoutException("timed out")
+                }
+            }
+
+            assertEquals(1, callCount)
+        }
+
+    @Test
+    fun `a generic RuntimeException is not retried`() =
+        runTest {
+            var callCount = 0
+
+            assertFailsWith<RuntimeException> {
+                SaplingParams.retryOnIOException(maxAttempts = 3, initialBackoffMs = 1_000L) {
+                    callCount++
+                    @Suppress("TooGenericExceptionThrown")
+                    throw RuntimeException("native failure")
+                }
+            }
+
+            assertEquals(1, callCount)
+        }
+
+    @Test
+    fun `BASE_URL points to GitHub zcash-sapling-params repo`() {
+        // Ensures params are fetched from our controlled GitHub repo, matching SaplingParamTool.CLOUD_PARAM_DIR_URL
+        val baseUrl =
+            SaplingParams::class.java
+                .getDeclaredField("BASE_URL")
+                .apply { isAccessible = true }
+                .get(null) as String
+        assertEquals("https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/main/", baseUrl)
+    }
 }

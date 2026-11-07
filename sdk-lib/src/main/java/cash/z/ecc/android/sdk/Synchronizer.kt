@@ -70,7 +70,10 @@ import cash.z.ecc.android.sdk.type.ConsensusMatchType
 import cash.z.ecc.android.sdk.type.ServerValidation
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.CombinedWalletClient
+import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.health.OhttpHealthRoute
+import co.electriccoin.lightwallet.client.health.OhttpHealthSnapshot
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import co.electriccoin.lightwallet.client.model.Response
@@ -83,6 +86,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
@@ -788,6 +792,27 @@ interface Synchronizer {
     ): ServerValidation
 
     /**
+     * The health route of the Private connection to [gatewayHost] (the relay is the one the transport uses), or
+     * null when there is none: a gateway without a relay, or a synchronizer without request-health evidence.
+     * The route keys [observeOhttpHealth]; it changes with [viaTor], so ask again after a Tor toggle.
+     */
+    suspend fun ohttpHealthRoute(
+        gatewayHost: String,
+        viaTor: Boolean
+    ): OhttpHealthRoute? = null
+
+    /**
+     * The OHTTP request-health evidence of [route], as a cold [Flow] of coalesced snapshots: the retained
+     * latest observation per scope, outcome and purpose class, from the Slipstream engine and from the Kotlin
+     * OHTTP client. Observations carry `historical = true` when they are replayed from before the collection
+     * began; only fresh ones count as live traffic.
+     *
+     * Evidence never changes the result of any call. The default implementation has no evidence (an empty
+     * flow): only the Slipstream engine synchronizer provides it.
+     */
+    fun observeOhttpHealth(route: OhttpHealthRoute): Flow<OhttpHealthSnapshot> = emptyFlow()
+
+    /**
      * Validates the given address, returning information about why it is invalid. This is a
      * convenience method that combines the behavior of [isValidShieldedAddr],
      * [isValidTransparentAddr], and [isValidUnifiedAddr] into one call so that the developer
@@ -1098,6 +1123,26 @@ interface Synchronizer {
     suspend fun getTorHttpClient(config: HttpClientConfig<HttpClientEngineConfig>.() -> Unit = {}): HttpClient
 
     /**
+     * Creates an OhttpSender that routes relay traffic through Tor, for use with OhttpHttpClient.
+     * Used when Tor is enabled in the app and the target is a gateway-mapped external API (CMC, NEAR).
+     * The relay leg goes over Tor, hiding the app's IP from the relay, and the gateway injects the
+     * secret server-side.
+     *
+     * Defaults to throwing [TorUnavailableException] so an implementer that hasn't (yet) provided
+     * a real OHTTP-over-Tor path fails the same way as Tor itself being off, rather than a compile
+     * error breaking every existing implementer of this interface.
+     *
+     * Each call creates a new isolated native Tor client owned by the returned sender; call
+     * [OhttpSender.dispose] on it (or on the `OhttpHttpClient` wrapping it) to release it.
+     *
+     * @return TorOhttpSender wrapping an isolated TorClient
+     * @throws TorInitializationErrorException if Tor bootstrapping failed
+     * @throws TorUnavailableException if Tor is not enabled
+     */
+    @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
+    suspend fun ohttpSenderOverTor(): OhttpSender = throw TorUnavailableException()
+
+    /**
      * Leases this synchronizer's shared Tor runtime for the voting API -- the `torLease`
      * parameter of `cash.z.ecc.android.sdk.VotingDbSession.openRoundSession`,
      * `cash.z.ecc.android.sdk.VotingShareTrackingSession.run` and the `VotingDbSession.precompute*`
@@ -1105,9 +1150,9 @@ interface Synchronizer {
      * isolated Tor client the way [getTorHttpClient] does -- owning any such isolation for the
      * voting round driver's traffic is that driver's job, not this accessor's.
      *
-     * Deliberately keeps the stricter `isTorEnabled || isExchangeRateEnabled` gate
-     * ([TorUnavailableException] otherwise) even on engines where [getTorHttpClient] itself no
-     * longer enforces it (the Slipstream engine's `getTorHttpClient` now always provides a
+     * Deliberately keeps its own `isTorEnabled` gate ([TorUnavailableException] otherwise, as
+     * [ohttpSenderOverTor] does) even on engines where [getTorHttpClient] itself no
+     * longer enforces one (the Slipstream engine's `getTorHttpClient` now always provides a
      * client, created lazily, so a caller like the currency picker never fails just because Tor
      * is off). Voting is not that caller: it is expected to respect the user's Tor preference
      * explicitly rather than silently routing over plain HTTP the moment a client happens to
@@ -1125,7 +1170,7 @@ interface Synchronizer {
      * [VotingTorLease] for the full contract.
      *
      * @throws TorInitializationErrorException if an error occurred during Tor setup
-     * @throws TorUnavailableException if Tor or exchange rate is not enabled
+     * @throws TorUnavailableException if Tor is not enabled
      */
     @Throws(TorInitializationErrorException::class, TorUnavailableException::class)
     suspend fun acquireVotingTorLease(): VotingTorLease
@@ -1341,7 +1386,8 @@ interface Synchronizer {
             walletInitMode: WalletInitMode,
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
-            isExchangeRateEnabled: Boolean
+            isExchangeRateEnabled: Boolean,
+            ohttpClientTraceIdPrefix: String? = null
         ): CloseableSynchronizer =
             new(
                 alias = alias,
@@ -1353,6 +1399,7 @@ interface Synchronizer {
                 zcashNetwork = zcashNetwork,
                 isTorEnabled = isTorEnabled,
                 isExchangeRateEnabled = isExchangeRateEnabled,
+                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
                 isBirthdayExact = false
             )
 
@@ -1389,6 +1436,7 @@ interface Synchronizer {
             zcashNetwork: ZcashNetwork,
             isTorEnabled: Boolean,
             isExchangeRateEnabled: Boolean,
+            ohttpClientTraceIdPrefix: String? = null,
             isBirthdayExact: Boolean,
             onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null,
             isSetupDisconnectionTolerated: Boolean = false,
@@ -1453,7 +1501,7 @@ interface Synchronizer {
                         if (sdkFlags.isTorEnabled || sdkFlags.isExchangeRateEnabled) {
                             LazyTorClient {
                                 val torDir = Files.getTorDir(applicationContext)
-                                TorClient.new(torDir, backendDeferred.await().second.backend)
+                                TorClient.new(torDir, backendDeferred.await().second.backend, ohttpClientTraceIdPrefix)
                             }
                         } else {
                             null
@@ -1481,7 +1529,10 @@ interface Synchronizer {
                      */
                     val walletClientDeferred =
                         async(Dispatchers.Default) {
-                            walletClientFactory.create(endpoint = lightWalletEndpoint)
+                            walletClientFactory.create(
+                                endpoint = lightWalletEndpoint,
+                                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix
+                            )
                         }
 
                     /**
@@ -1511,7 +1562,21 @@ interface Synchronizer {
                     var walletClient: CombinedWalletClient? = null
                     try {
                         val (saplingParamTool, backend) = backendDeferred.await()
-                        val saplingParamFetcher = SaplingParamFetcher(saplingParamTool, backend)
+                        val torHttpClientProvider: (suspend () -> io.ktor.client.HttpClient)? =
+                            if (sdkFlags.isTorEnabled && lazyTorClient != null) {
+                                {
+                                    val isolatedTor = lazyTorClient.getOrCreate().isolatedTorClient()
+                                    io.ktor.client.HttpClient(cash.z.ecc.android.sdk.internal.model.TorHttp) {
+                                        engine {
+                                            tor = isolatedTor
+                                            retryLimit = 1
+                                        }
+                                    }
+                                }
+                            } else {
+                                null
+                            }
+                        val saplingParamFetcher = SaplingParamFetcher(saplingParamTool, backend, torHttpClientProvider)
                         val blockStore =
                             DefaultSynchronizerFactory
                                 .defaultCompactBlockRepository(coordinator.fsBlockDbRoot(zcashNetwork, alias), backend)

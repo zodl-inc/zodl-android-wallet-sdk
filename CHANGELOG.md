@@ -6,6 +6,189 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- OHTTP request-health evidence (package `co.electriccoin.lightwallet.client.health`, `Synchronizer.observeOhttpHealth`).
+  Every OHTTP request of the Kotlin client, and every request of the Slipstream engine, is recorded as a typed
+  observation (scope, outcome, stage, purpose, optional user operation): only an unreachable route or an outer
+  relay/gateway 5xx is `TransportUnavailable`; rate limits, rejections, configuration errors and backend errors are
+  never outage evidence. `Synchronizer.ohttpHealthRoute(gatewayHost, viaTor)` names the route and `Synchronizer.observeOhttpHealth(route)`
+  returns its retained evidence as a `Flow` (engine and client sources merged; replayed history is flagged `historical`).
+  `withOhttpOperation`, `withOhttpAttempt`, `withOhttpDiagnostic` and `OhttpHealthCenter.complete` attribute
+  requests to one explicit user action. Evidence never changes a call's result.
+- OHTTP (RFC 9458) transport for lightwalletd and selected external APIs. A `LightWalletEndpoint` whose
+  host is one of the OHTTP gateways configured at build time (`ZODL_OHTTP_GATEWAY_HOST_*`) is
+  now served through an OHTTP relay instead of a direct gRPC connection; the gateway's HPKE key
+  configuration is fetched through the relay and verified against a signed envelope, and verification
+  fails closed.
+- `LightWalletClient.ohttpGatewayHost(isTestnet)`: the gateway host of that network this build was configured
+  with, or null when the build has OHTTP off for it, so apps list the same gateway the SDK routes instead of
+  hardcoding one.
+- `OhttpHttpClient` (package `co.electriccoin.lightwallet.client`): routes calls to allowlisted external
+  APIs (NEAR, CoinMarketCap, voting) through the OHTTP gateway. `OhttpHttpClient.create(sender,
+  ohttpClientTraceIdPrefix)` takes ownership of the given sender and disposes it on `dispose()`.
+  Failures surface as `OhttpException` (network, HTTP status, decapsulation) or
+  `KeyConfigVerificationFailedException` (signed key config rejected), both in `co.electriccoin.lightwallet.client`.
+- `OhttpSender` (package `co.electriccoin.lightwallet.client`): transport abstraction for the OHTTP relay leg,
+  with a direct implementation and a Tor-backed one.
+- OHTTP gRPC answers are opened chunk by chunk as they arrive: a server-streaming call (`GetBlockRange`, the
+  mempool and taddress streams) gets each message as soon as it is complete. `OhttpSender.postStreaming`
+  hands the body to a reader as it arrives, over Tor too (the default reads it whole with `post`);
+  `OhttpResponseOpener.openStream` returns the incremental `OhttpResponseDecoder`.
+- `OhttpHttpClient.Response.headers` (the inner response's header fields), a `timeoutMs` on
+  `OhttpHttpClient.execute`, and `OhttpHttpClient.executeStreaming`, which hands the inner response to a
+  `ResponseListener` chunk by chunk as it arrives (e.g. `text/event-stream`). `api.flexa.co` and
+  `flexa.zodl.com` route to the gateway alias `flexa.zodl.com`, with the request's `Authorization` kept.
+- `Synchronizer.ohttpSenderOverTor()`: an `OhttpSender` that sends the relay leg over Tor. It defaults to
+  throwing `TorUnavailableException`, so existing `Synchronizer` implementers still compile. Each call creates
+  a new native Tor client owned by the sender; release it by calling `dispose()` on the sender (or the
+  `OhttpHttpClient` wrapping it). The internal `TorClient` type is deliberately not exposed on the public API.
+- `ohttpClientTraceIdPrefix: String? = null` parameter on `Synchronizer.new`, `LightWalletClient.new`,
+  `OhttpHttpClient.create`, `WalletCoordinator` and the Slipstream synchronizer factory. When set, every
+  outer OHTTP POST carries `X-Client-Trace-Id: <prefix>-<uuid>`. Debug only: it makes requests linkable.
+- The `timeoutMs` of an OHTTP call over Tor is now honored: it is an overall deadline enforced inside the
+  native HTTP-over-Tor call (`TorClient.httpGet`/`httpPost` gained a `timeoutMs` parameter; the default keeps
+  the previous no-deadline behavior). Expiry throws `TorHttpTimeoutException`; network/transport failures
+  throw `TorHttpTransportException` (both extend `TorHttpException`). Slipstream's Sapling parameter download
+  retries `TorHttpTransportException` (at most 2 retries); a timeout is not retried.
+  `TorOhttpSender` turns them into a `SocketTimeoutException` and an `OhttpException` on every call (key
+  configuration fetch, post, streamed post), so an OHTTP call over Tor that cannot reach the relay fails as
+  `UNAVAILABLE`, as over the direct sender, not `INTERNAL`. An exchange whose caller was cancelled throws
+  `TorHttpCancelledException` (also a `TorHttpException`, not a `TorHttpTransportException`), which
+  `TorOhttpSender` turns into a `CancellationException`, so it is never retried.
+- **OHTTP transport for voting round driver.** When Tor is OFF and the round uses
+  predefined vote servers (not custom user-added servers), the round driver now
+  routes HTTP requests (vote commitments, shares, delegation, tree sync) through
+  the OHTTP gateway for privacy (the vote/helper servers see only the gateway's IP,
+  not the user's). Custom servers continue to use direct routing by design (user
+  decision to use a custom endpoint implies accepting direct routing). This mirrors
+  the app's existing OHTTP routing for voting read operations and matches iOS's
+  upcoming implementation. PIR delegation endpoints are now also OHTTP-routed with the
+  same policy (predefined → OHTTP when Tor OFF, custom → Direct). With `IS_SLIPSTREAM_ENABLED=false`,
+  Tor-off voting against predefined servers is unavailable (fails closed).
+
+### Changed
+- **OHTTP endpoints are build-time configuration.** `zodl-ohttp-client` now comes from
+  `zodl-inc/zodl-ohttp` (the same revision the Slipstream engine pins, so there is one copy of the core)
+  and carries no built-in endpoint. The gateway hosts, relay URLs, signing public keys and DNS TXT names of
+  the signed key configuration are read from the environment when `backend-lib` is compiled
+  (`ZODL_OHTTP_GATEWAY_HOST_*`, `ZODL_OHTTP_RELAY_URL_*`, `ZODL_OHTTP_SIGNING_PUBKEY_*`,
+  `ZODL_OHTTP_KEYS_DNS_NAME_*`, each `_MAINNET` / `_TESTNET`). A library built without them has OHTTP off
+  for that network: `RustOhttpTool.relayUrlFor` returns null, key configuration verification fails with
+  `OhttpException` (key configuration), the DNS source of the key configuration is skipped when no DNS
+  name is set, and voting over OHTTP fails closed with "OHTTP unavailable" instead of sending. The Kotlin side
+  takes its gateway hosts from the same `ZODL_OHTTP_GATEWAY_HOST_*` when `lightwallet-client` is compiled, so
+  `LightWalletClient.isOhttpGateway` recognises exactly the native library's gateways; no endpoint is
+  hardcoded in the sources. `OhttpHttpClient.create` no longer throws when its network has no gateway or
+  relay: the client is created, the new `OhttpHttpClient.isConfigured` is false, and every call fails with
+  an `OhttpException` before anything is sent. CI and the
+  release and snapshot workflows pass the repository secrets of the same names (secrets, so the log masks
+  them); the release workflow fails when they are missing.
+- **OHTTP relay connections (Tor off).** `DirectOhttpSender` reuses relay connections instead of opening one
+  `HttpURLConnection` per request with `Connection: close`: one process-wide OkHttp 5.1.0 pool, HTTP/2 when
+  the relay negotiates it. Under a link saturated by the sync download, every request used to pay a new
+  TCP+TLS handshake. The pool is rotated whole every 10 minutes (slipstream's connection age and the ZIP's
+  reference rotation for Tor-off mode). An exchange in flight finishes on the old connection, and idle
+  connections are closed at that age by a timer. An exchange whose own deadline is longer than the lifetime
+  shares the pool, bounded by its watchdog.
+- **One exchange is one request.** The relay leg never retries at the HTTP layer: no automatic re-post on a
+  503 with `Retry-After`, a 421 or a redirect, because a resent sealed request is refused by the gateway as a
+  replay. The sealed body is one-shot, and an answer with a prior response is not opened. The sender adds
+  `Accept-Encoding: identity` and a fixed `User-Agent` when the caller sets none, so OkHttp's transparent gzip
+  and its `okhttp/x.y.z` agent never reach the relay.
+- **Slipstream engine relay and Tor connections** (slipstream-internal patch in `backend-lib/Cargo.toml`):
+  - HTTP/2 keepalive PINGs on pooled relay connections;
+  - the shared Tor connection is dropped after any failed tree-state request, so the next request opens a
+    fresh one;
+  - each fetch worker uses its own Tor circuit;
+  - SQLite checkpoint and cache tuning;
+  - the engine is pinned to the `main` of slipstream-internal (88505fc7), which also marks the engine's own
+    lightwalletd client so a server cannot forge an OHTTP outcome, turns TLS session resumption off on relay
+    connections, and races IPv6 and IPv4 when dialing the relay.
+- **HTTP/2 PING on OHTTP relay connections (Tor off).** Pooled relay connections send an HTTP/2 PING every
+  10 s and close when it is not answered within 10 s, so a dead connection is noticed without waiting for an
+  exchange deadline (ZIP #10). Bulk block ranges still share the pool with other calls.
+- **Breaking: Request freshness.** Every OHTTP inner request now carries an `ohttp-freshness` header with
+  the estimated gateway clock (offset learned from the authenticated `ohttp-server-time` in prior responses).
+  Gateways enforce freshness since 2026-10-11, so older builds cannot use OHTTP. A freshness refusal (inner
+  400 with `ohttp-freshness: rejected`) is retried once with a fresh encapsulation. Dependency pins: see
+  backend-lib/Cargo.toml.
+- **Breaking: Chunked OHTTP.** OHTTP transport now uses chunked OHTTP (draft-ietf-ohai-chunked-ohttp-08) instead of
+  RFC 9458 single-shot encapsulation. Content types changed from `message/ohttp-req` / `message/ohttp-res`
+  to `message/ohttp-chunked-req` / `message/ohttp-chunked-res`. The gateway API is not backward compatible;
+  this update is synchronized with the gateway deployment. Dependency pins: see backend-lib/Cargo.toml.
+- **Shared OHTTP core.** The protocol half of the OHTTP client (key selection, the signed key
+  configuration envelope, Binary HTTP, HPKE, the classification of the relay's answer and the size caps)
+  now runs on the Rust library `zodl-ohttp-client` (zodl-inc/zodl-ohttp, `ClientProfile::ANDROID`) that the iOS
+  and Slipstream clients share, through the JNI object `RustOhttpTool` in `backend-lib`. The response
+  secret stays in native memory (the JVM only holds an opaque handle). The Kotlin HPKE, Binary HTTP, key
+  config and envelope code, and the BouncyCastle and `kotlinx-serialization` dependencies of
+  `lightwallet-client`, are gone; the transport, the senders, the relay tables and the gRPC channel are
+  unchanged. `lightwallet-client` reaches the core through the new `OhttpCodec` interface. **Breaking:**
+  `OhttpHttpClient.create` takes an `OhttpCodec` as its first parameter and `LightWalletClient.new` takes an
+  optional `ohttpCodec` (required for an OHTTP gateway endpoint); get the native one from
+  `cash.z.ecc.android.sdk.util.OhttpCodecFactory.create()`. Behavior that changes with the core, as decided
+  for all three wallet clients:
+  - a key configuration entry with a KEM other than X25519 is skipped instead of failing the document;
+  - every attempt is sealed afresh (the gateway answers a repeated nonce with 409);
+  - an outer 400 or 422 refetches the key configuration and retries once, whatever the response body says
+    (422 used to need `ohttp-key` or `HPKE` in it), and the cached key is discarded before that refetch;
+  - key configuration fetches are capped at 64 KiB (was 64 MiB), sealed responses at 256 MiB plus 64 KiB
+    (was 64 MiB) and sealed requests at 10 MiB (was unbounded);
+  - error messages of a failed exchange come from the core (for example "the gateway's answer does not
+    open"), and an unknown gateway host now fails when its key configuration is first fetched rather than
+    when the channel is created.
+  The cargo dependency is a private git repository: the CI GitHub App token used by
+  `.github/actions/setup` now also covers `zodl-inc/zodl-ohttp`.
+- The OHTTP response opener is now an opaque `OhttpResponseOpener` interface (extending `Closeable`)
+  instead of a raw `Long` exposed on the public `OhttpSealedRequest.opener`. The opener is single-use:
+  `open()` consumes it, `close()` frees it if not consumed, both idempotent and thread-safe. The
+  `OhttpCodec` interface no longer exposes `complete(opener: Long, ...)` or `free(opener: Long)` publicly;
+  these are now private to the implementation.
+- `OhttpSender` and `OhttpHttpClient` extend `Disposable`. Implementers of `OhttpSender` must
+  implement `dispose()`; a `TorOhttpSender` releases its isolated `TorClient` there.
+- Sapling parameters are downloaded from `https://raw.githubusercontent.com/zodl-inc/zcash-sapling-params/`
+  instead of `download.z.cash`, and verified by SHA-256 instead of SHA-1. With Tor enabled, the download
+  goes over Tor (sdk-lib and Slipstream).
+- **Breaking: `VotingSdk.precomputeDelegationPir`, `VotingSdk.precomputePirProofs`,
+  `VotingSdk.precomputeSnapshotBundles`, and `VotingSdk.openRoundSession` gain a required
+  `isCustomServer: Boolean` parameter.** Callers must pass `true` for custom voting configs
+  (with custom PIR endpoints or chain endpoints from `pinnedSource`) or `false` for predefined
+  servers. This routes both PIR delegation traffic and voting driver HTTP traffic the same way:
+  Tor OFF + predefined server → OHTTP (the relay sees the client IP but not the request; the
+  gateway and backend servers never see the client IP); Tor OFF + custom server → Direct (user
+  decision to use custom endpoint implies accepting direct routing). Without this parameter,
+  custom configs with endpoints not in the gateway's allowlist would fail closed instead of
+  routing Direct.
+
+### Fixed
+- The OHTTP voting route parses a vote or PIR server URL with `http::Uri` before its host check and only
+  accepts an absolute `https` URL on the default port without userinfo, so
+  `https://allowed.example:x@other.example/` no longer passes the check as `allowed.example`.
+- A `ServiceMode.UniqueTor` streaming call creates its Tor client when the returned `Flow` is collected
+  and always disposes it when that collection ends (completed, failed or cancelled); a `Flow` that is never
+  collected no longer leaks a native Tor client.
+- `OhttpHttpClient` and the OHTTP gRPC channel log hosts, URLs, methods, statuses and sizes in debug builds
+  only; a release SDK no longer writes them to logcat.
+- An internal test host is no longer an OHTTP proxy host.
+- Coinholder polling no longer fails with "zcash voting only supports Ironwood / NU6.3 shielded voting notes" for
+  rounds whose snapshot lies after NU7 activation (testnet block 4,465,026): `zcash_voting` moves from 5.2.0-rc.2 to
+  5.3.0. Since 5.2.0 it accepts NU6.3 or later when it selects the notes a vote is built from, and 5.3.0 is the
+  current release (it also moves `zakura-wallet-lib` to 0.1.0-rc9.6). A regression test selects a note at an NU7
+  snapshot height (MOB-2430).
+- An OHTTP call whose deadline passes mid-exchange now ends with `DEADLINE_EXCEEDED`, not `UNAVAILABLE`. The
+  exchange budget is rounded up to the next millisecond, so the sender's watchdog can no longer fire just
+  before the gRPC deadline.
+- A response body that ends after the exchange deadline is reported as the timeout, never as a short or late
+  successful response.
+- Key Configuration responses over Tor are now bounded to 64 KiB while reading the stream, not
+  after the full body has crossed JNI. The native `httpGet`/`httpPost` functions gained a
+  `maxResponseBytes` parameter; OHTTP key config fetches use 64 KiB, sealed relay responses use
+  256 MiB + 64 KiB, and Sapling params downloads use 256 MiB + 64 KiB. `DirectOhttpSender.readBounded`
+  now reads at most `limit + 1` bytes instead of overshooting by up to one buffer (16 KiB).
+- Sapling parameter downloads no longer fail with `FileNotFoundException` when the destination
+  directory does not exist; the directory is now created (with a clear error if creation fails)
+  before the temporary file is opened, on both the Tor and direct download paths.
+
 ## [6.0.0] - 2026-10-28
 
 ### Added

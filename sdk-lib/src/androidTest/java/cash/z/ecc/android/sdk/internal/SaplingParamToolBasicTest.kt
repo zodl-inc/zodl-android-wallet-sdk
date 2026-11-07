@@ -4,7 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.filters.MediumTest
 import androidx.test.filters.SmallTest
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
-import cash.z.ecc.android.sdk.internal.ext.getSha1Hash
+import cash.z.ecc.android.sdk.internal.ext.getSha256Hash
 import cash.z.ecc.android.sdk.internal.ext.listFilesSuspend
 import cash.z.ecc.android.sdk.test.getAppContext
 import cash.z.ecc.fixture.SaplingParamToolFixture
@@ -107,7 +107,7 @@ class SaplingParamToolBasicTest {
             assertFalse(isFileInPlace(SaplingParamsFixture.DESTINATION_DIRECTORY, spendFile))
             assertFalse(isFileInPlace(SaplingParamsFixture.DESTINATION_DIRECTORY, outputFile))
 
-            // We need to use modified array of sapling parameters to pass through the SHA1 hashes validation
+            // We need to use modified array of sapling parameters to pass through the SHA-256 hashes validation
             val destDir =
                 SaplingParamTool.initAndGetParamsDestinationDir(
                     SaplingParamToolFixture.new(
@@ -117,13 +117,13 @@ class SaplingParamToolBasicTest {
                                     SaplingParamToolFixture.PARAMS_DIRECTORY,
                                     SaplingParamTool.SPEND_PARAM_FILE_NAME,
                                     SaplingParamTool.SPEND_PARAM_FILE_MAX_BYTES_SIZE,
-                                    spendFile.getSha1Hash()
+                                    spendFile.getSha256Hash()
                                 ),
                                 SaplingParameters(
                                     SaplingParamToolFixture.PARAMS_DIRECTORY,
                                     SaplingParamTool.OUTPUT_PARAM_FILE_NAME,
                                     SaplingParamTool.OUTPUT_PARAM_FILE_MAX_BYTES_SIZE,
-                                    outputFile.getSha1Hash()
+                                    outputFile.getSha256Hash()
                                 )
                             )
                     )
@@ -158,13 +158,13 @@ class SaplingParamToolBasicTest {
                                     SaplingParamToolFixture.PARAMS_DIRECTORY,
                                     "test_file_1",
                                     SaplingParamTool.SPEND_PARAM_FILE_MAX_BYTES_SIZE,
-                                    SaplingParamTool.SPEND_PARAM_FILE_SHA1_HASH
+                                    SaplingParamTool.SPEND_PARAM_FILE_SHA256_HASH
                                 ),
                                 SaplingParameters(
                                     SaplingParamToolFixture.PARAMS_DIRECTORY,
                                     "test_file_0",
                                     SaplingParamTool.OUTPUT_PARAM_FILE_MAX_BYTES_SIZE,
-                                    SaplingParamTool.OUTPUT_PARAM_FILE_SHA1_HASH
+                                    SaplingParamTool.OUTPUT_PARAM_FILE_SHA256_HASH
                                 )
                             )
                     )
