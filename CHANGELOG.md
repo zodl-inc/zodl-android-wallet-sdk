@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.0.0] - 2026-11-07
+
 ### Added
 - OHTTP request-health evidence (package `co.electriccoin.lightwallet.client.health`, `Synchronizer.observeOhttpHealth`).
   Every OHTTP request of the Kotlin client, and every request of the Slipstream engine, is recorded as a typed
