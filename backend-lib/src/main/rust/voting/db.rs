@@ -15,17 +15,43 @@ struct DbKey {
     wallet_id: String,
 }
 
+/// Route key discriminator for vote tree sync routing. When the route policy
+/// changes between calls (Tor on→off, server predefined→custom, etc.), the
+/// tree sync client is recreated to match the new policy.
+///
+/// **Caveat:** `Tor(jlong)` keys on the raw TorRuntime pointer address. If a
+/// runtime is freed and a new one is allocated at the same address, the old
+/// sync slot would be reused. In practice, this results in failed requests
+/// (stale but valid client → connection errors), not UB or data corruption,
+/// because the old client's circuits are gone. A generation counter would
+/// avoid this, but TorRuntime does not expose one, and the failure mode is
+/// recoverable (user retries, gets a fresh sync with the new runtime).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum TreeRouteKey {
+    Tor(jlong),
+    Ohttp,
+    Direct,
+}
+
+/// Holds a VoteTreeSync and the route key it was created for. Sync clients
+/// are recreated when the route key changes, so multi-device or wallet-config
+/// switches (Tor toggle, custom server toggle) start from a fresh sync state.
+pub(super) struct TreeSyncSlot {
+    pub(super) route_key: TreeRouteKey,
+    pub(super) sync: Arc<VoteTreeSync>,
+}
+
 pub(super) struct VotingDbHandle {
     // `VotingDb::open_wallet_sidecar` itself returns `Arc<VotingDb>` -- the
     // crate dedupes sidecar connections by path internally -- so this field
     // has to stay Arc-wrapped to hold that value at all, not because
     // anything in this module clones it independently.
     db: Arc<VotingDb>,
-    // VoteTreeSync owns only its synchronous tree-client cache and protects
-    // that cache internally. JNI vote-tree entrypoints still hold access_mutex
-    // before calling it so DB writes and tree-client state changes are
-    // serialized for shared managed handles.
-    pub(super) tree_sync: VoteTreeSync,
+    // VoteTreeSync slot with route key tracking. When the route changes, the
+    // slot's sync is replaced with one configured for the new route. JNI vote-tree
+    // entrypoints still hold access_mutex before calling it so DB writes and
+    // tree-client state changes are serialized for shared managed handles.
+    pub(super) tree_sync_slot: Mutex<TreeSyncSlot>,
     access_mutex: Mutex<()>,
     // The voting network rides the handle so downstream JNI entrypoints do not
     // need a redundant network_id parameter once a handle is open.
@@ -39,7 +65,10 @@ impl VotingDbHandle {
 
         Ok(Self {
             db,
-            tree_sync: VoteTreeSync::new(),
+            tree_sync_slot: Mutex::new(TreeSyncSlot {
+                route_key: TreeRouteKey::Direct,
+                sync: Arc::new(VoteTreeSync::new()),
+            }),
             access_mutex: Mutex::new(()),
             network,
         })

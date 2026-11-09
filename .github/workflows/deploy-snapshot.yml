@@ -24,6 +24,11 @@ on:
 
 concurrency: deploy_snapshot
 
+# The OHTTP endpoint configuration (ZODL_OHTTP_*) is a set of secrets of the protected
+# `deployment` environment (zodl-inc/github-config). Environment secrets are visible only to jobs
+# that declare the environment, not at the workflow level, so deploy_snapshot sets them in its
+# own env. ZODL_OHTTP_REQUIRE=1 makes the build fail instead of publishing a snapshot with OHTTP
+# off when a value is missing.
 jobs:
   validate_gradle_wrapper:
     runs-on: ubuntu-latest
@@ -59,6 +64,16 @@ jobs:
 
   deploy_snapshot:
     environment: deployment
+    env:
+      ZODL_OHTTP_REQUIRE: "1"
+      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
+      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
+      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
+      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
+      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
+      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
+      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
+      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: [validate_gradle_wrapper, check_secrets]
     if: needs.check_secrets.outputs.has-secrets == 'true'
     runs-on: ubuntu-latest
@@ -94,6 +109,8 @@ jobs:
         timeout-minutes: 50
         uses: ./.github/actions/setup
         with:
+          cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
+          cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
           rust-cache: true
       # Note that GitHub Actions appears to have issues with environment variables that contain periods,
       # so the GPG variables are done as command line arguments instead.

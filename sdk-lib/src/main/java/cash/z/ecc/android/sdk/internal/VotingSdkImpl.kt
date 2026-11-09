@@ -164,6 +164,7 @@ internal class VotingDbSessionImpl(
 
     override suspend fun precomputeDelegationPir(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -176,6 +177,7 @@ internal class VotingDbSessionImpl(
         db
             .precomputeDelegationPir(
                 torLease.rawHandle(),
+                isCustomServer,
                 roundId,
                 bundleIndex,
                 pirServerUrl,
@@ -188,6 +190,7 @@ internal class VotingDbSessionImpl(
 
     override suspend fun precomputePirProofs(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -198,6 +201,7 @@ internal class VotingDbSessionImpl(
         db
             .precomputePirProofs(
                 torLease.rawHandle(),
+                isCustomServer,
                 pirServerUrl,
                 pirDepth,
                 pirTier0Layers,
@@ -208,6 +212,7 @@ internal class VotingDbSessionImpl(
 
     override suspend fun precomputeSnapshotBundles(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -219,6 +224,7 @@ internal class VotingDbSessionImpl(
         db
             .precomputeSnapshotBundles(
                 torLease.rawHandle(),
+                isCustomServer,
                 roundId,
                 pirServerUrl,
                 pirDepth,
@@ -228,7 +234,12 @@ internal class VotingDbSessionImpl(
                 notes.map { it.toInternal() }
             ).toPublic()
 
-    override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long = db.syncVoteTree(roundId, nodeUrl)
+    override suspend fun syncVoteTree(
+        torLease: VotingTorLease?,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long = db.syncVoteTree(torLease.rawHandle(), isCustomServer, roundId, nodeUrl)
 
     override suspend fun resetTreeClient(roundId: String) = db.resetTreeClient(roundId)
 
@@ -250,6 +261,7 @@ internal class VotingDbSessionImpl(
 
     override suspend fun openRoundSession(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         proposals: List<VotingProposalRosterEntry>,
         hotkeySecret: ByteArray?,
@@ -273,7 +285,8 @@ internal class VotingDbSessionImpl(
                     configuredHelperUrls = configuredHelperUrls,
                     voteTreeNodeUrls = voteTreeNodeUrls,
                     ceremonyStartSeconds = ceremonyStartSeconds ?: UNKNOWN_TIME_SECONDS,
-                    voteEndTimeSeconds = voteEndTimeSeconds ?: UNKNOWN_TIME_SECONDS
+                    voteEndTimeSeconds = voteEndTimeSeconds ?: UNKNOWN_TIME_SECONDS,
+                    isCustomServer = isCustomServer
                 ),
             torLease = torLease
         )
@@ -332,7 +345,9 @@ internal class VotingShareTrackingSessionImpl(
 
     override suspend fun run(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
-    ): VotingShareTrackingReport? = session.run(torLease.rawHandle(), helperUrls, voteEndTimeSeconds)?.toPublic()
+    ): VotingShareTrackingReport? =
+        session.run(torLease.rawHandle(), isCustomServer, helperUrls, voteEndTimeSeconds)?.toPublic()
 }

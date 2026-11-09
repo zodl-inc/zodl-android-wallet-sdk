@@ -10,7 +10,7 @@ class GetAddressUtxosReplyUnsafe(
     val index: Int,
     val script: ByteArray,
     val valueZat: Long,
-    val height: Long
+    val height: Long,
 ) {
     companion object {
         fun new(getAddressUtxosReply: Service.GetAddressUtxosReply): GetAddressUtxosReplyUnsafe =

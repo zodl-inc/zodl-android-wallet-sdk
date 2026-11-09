@@ -27,6 +27,22 @@ android {
 
     defaultConfig {
         consumerProguardFiles("proguard-consumer.txt")
+
+        // The OHTTP gateway hosts of this build: the same ZODL_OHTTP_GATEWAY_HOST_* environment that
+        // zodl-ohttp-client compiles into the native library, so Kotlin and Rust recognise the same
+        // gateways. Unset = no gateway for that network (OHTTP off). Only a host name is accepted, so
+        // the value cannot break the generated source.
+        for (network in listOf("MAINNET", "TESTNET")) {
+            val host =
+                providers
+                    .environmentVariable("ZODL_OHTTP_GATEWAY_HOST_$network")
+                    .orElse("")
+                    .get()
+            require(host.matches(Regex("[A-Za-z0-9.-]*"))) {
+                "ZODL_OHTTP_GATEWAY_HOST_$network must be a host name"
+            }
+            buildConfigField("String", "OHTTP_GATEWAY_HOST_$network", "\"$host\"")
+        }
     }
 
     buildFeatures {
@@ -130,11 +146,15 @@ dependencies {
     implementation(libs.kotlin.stdlib)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
+    // Relay connections of the Tor-off OHTTP sender: pooled, HTTP/2, rotated every 10 minutes (RelayConnections).
+    implementation(libs.okhttp)
 
     // Tests
     testImplementation(libs.kotlin.reflect)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.grpc.testing)
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.okhttp.tls)
 
     androidTestImplementation(libs.androidx.multidex)
     androidTestImplementation(libs.androidx.test.runner)

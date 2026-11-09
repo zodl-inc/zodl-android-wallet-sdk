@@ -146,6 +146,7 @@ internal interface TypesafeVotingDb {
 
     suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -178,6 +179,7 @@ internal interface TypesafeVotingDb {
      */
     suspend fun precomputePirProofs(
         torRuntime: Long,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -209,6 +211,7 @@ internal interface TypesafeVotingDb {
      */
     suspend fun precomputeSnapshotBundles(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -218,7 +221,12 @@ internal interface TypesafeVotingDb {
         notes: List<VotingNoteInfo>
     ): SnapshotBundlePrecomputeReport
 
-    suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
+    suspend fun syncVoteTree(
+        torRuntime: Long,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long
 
     suspend fun resetTreeClient(roundId: String)
 
@@ -268,7 +276,8 @@ internal interface TypesafeVotingDb {
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): TypesafeRoundSession
 }
 
@@ -337,6 +346,7 @@ internal interface TypesafeShareTrackingSession {
 
     suspend fun run(
         torRuntime: Long,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
     ): JniShareTrackingRunReport?

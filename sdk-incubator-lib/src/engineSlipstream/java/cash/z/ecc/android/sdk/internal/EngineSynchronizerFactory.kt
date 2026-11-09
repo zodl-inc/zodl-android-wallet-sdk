@@ -36,6 +36,7 @@ internal class SlipstreamWalletRequest(
     val zcashNetwork: ZcashNetwork,
     val isTorEnabled: Boolean,
     val isExchangeRateEnabled: Boolean,
+    val ohttpClientTraceIdPrefix: String?,
     val engineMemoryFraction: Float,
     val birthdayResolved: CompletableDeferred<Boolean>? = null
 )
@@ -59,6 +60,7 @@ internal class SlipstreamEngineFactory(
         walletInitMode: WalletInitMode,
         isTorEnabled: Boolean,
         isExchangeRateEnabled: Boolean,
+        ohttpClientTraceIdPrefix: String?,
     ): CloseableSynchronizer =
         newSynchronizer(
             SlipstreamWalletRequest(
@@ -71,6 +73,7 @@ internal class SlipstreamEngineFactory(
                 zcashNetwork = zcashNetwork,
                 isTorEnabled = isTorEnabled,
                 isExchangeRateEnabled = isExchangeRateEnabled,
+                ohttpClientTraceIdPrefix = ohttpClientTraceIdPrefix,
                 engineMemoryFraction = SlipstreamSynchronizer.FULL_ENGINE_MEMORY
             )
         )
@@ -117,6 +120,7 @@ internal class SlipstreamEngineFactory(
                     zcashNetwork = zcashNetwork,
                     isTorEnabled = isTorEnabled,
                     isExchangeRateEnabled = false,
+                    ohttpClientTraceIdPrefix = null,
                     engineMemoryFraction = HELPER_ENGINE_MEMORY_FRACTION,
                     birthdayResolved = birthdayResolved
                 )
@@ -167,6 +171,7 @@ private suspend fun newSlipstreamSynchronizer(request: SlipstreamWalletRequest):
         zcashNetwork = request.zcashNetwork,
         isTorEnabled = request.isTorEnabled,
         isExchangeRateEnabled = request.isExchangeRateEnabled,
+        ohttpClientTraceIdPrefix = request.ohttpClientTraceIdPrefix,
         engineMemoryFraction = request.engineMemoryFraction,
         birthdayResolved = request.birthdayResolved
     )

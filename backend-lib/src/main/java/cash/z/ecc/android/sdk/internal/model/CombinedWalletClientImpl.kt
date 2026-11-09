@@ -17,7 +17,10 @@ import co.electriccoin.lightwallet.client.model.UninitializedTorClientException
 import co.electriccoin.lightwallet.client.util.use
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -28,8 +31,11 @@ class CombinedWalletClientImpl private constructor(
     private val lightWalletClient: LightWalletClient,
     private val isolatedTorClient: LazyTorClient?,
     private val endpoint: LightWalletEndpoint,
+    private val torStreamingClientFactory: (suspend () -> LightWalletClient)?,
 ) : CombinedWalletClient {
     private val cache = mutableMapOf<ServiceMode, PartialTorWalletClient>()
+
+    private val streamingCache = mutableMapOf<ServiceMode, LightWalletClient>()
 
     private val semaphore = Mutex()
 
@@ -39,6 +45,8 @@ class CombinedWalletClientImpl private constructor(
             isolatedTorClient?.dispose()
             cache.forEach { (_, client) -> client.dispose() }
             cache.clear()
+            streamingCache.forEach { (_, client) -> client.dispose() }
+            streamingCache.clear()
         }
     }
 
@@ -92,71 +100,102 @@ class CombinedWalletClientImpl private constructor(
         tAddresses: List<String>,
         startHeight: BlockHeightUnsafe,
         serviceMode: ServiceMode
-    ): Flow<Response<GetAddressUtxosReplyUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
-        return executeAsFlow(serviceMode) {
-            require(this is LightWalletClient)
-            fetchUtxos(tAddresses, startHeight)
-        }
-    }
+    ): Flow<Response<GetAddressUtxosReplyUnsafe>> =
+        executeAsStream(serviceMode) { fetchUtxos(tAddresses, startHeight) }
 
     override suspend fun getBlockRange(
         heightRange: ClosedRange<BlockHeightUnsafe>,
         serviceMode: ServiceMode
-    ): Flow<Response<CompactBlockUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
-        return executeAsFlow(serviceMode) {
-            require(this is LightWalletClient)
-            getBlockRange(heightRange)
-        }
-    }
+    ): Flow<Response<CompactBlockUnsafe>> =
+        executeAsStream(serviceMode) { getBlockRange(heightRange) }
 
     override suspend fun getTAddressTransactions(
         tAddress: String,
         blockHeightRange: ClosedRange<BlockHeightUnsafe>,
         serviceMode: ServiceMode
-    ): Flow<Response<RawTransactionUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
-        return executeAsFlow(serviceMode) {
-            require(this is LightWalletClient)
-            getTAddressTransactions(tAddress, blockHeightRange)
-        }
-    }
+    ): Flow<Response<RawTransactionUnsafe>> =
+        executeAsStream(serviceMode) { getTAddressTransactions(tAddress, blockHeightRange) }
 
     override suspend fun getSubtreeRoots(
         startIndex: UInt,
         shieldedProtocol: ShieldedProtocolEnum,
         maxEntries: UInt,
         serviceMode: ServiceMode
-    ): Flow<Response<SubtreeRootUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
-        return executeAsFlow(serviceMode) {
-            require(this is LightWalletClient)
-            getSubtreeRoots(startIndex, shieldedProtocol, maxEntries)
-        }
-    }
+    ): Flow<Response<SubtreeRootUnsafe>> =
+        executeAsStream(serviceMode) { getSubtreeRoots(startIndex, shieldedProtocol, maxEntries) }
 
     override suspend fun observeMempool(
         serviceMode: ServiceMode
-    ): Flow<Response<RawTransactionUnsafe>> {
-        require(serviceMode == ServiceMode.Direct)
-        return executeAsFlow(serviceMode) {
-            require(this is LightWalletClient)
-            observeMempool()
-        }
-    }
+    ): Flow<Response<RawTransactionUnsafe>> =
+        executeAsStream(serviceMode) { observeMempool() }
 
     override fun reconnect() = lightWalletClient.reconnect()
 
-    private suspend inline fun <T> executeAsFlow(
+    /**
+     * Streaming calls exist only on [LightWalletClient]. In a Tor mode they go through
+     * [torStreamingClientFactory] (OHTTP with the relay leg over Tor); an endpoint without one has no
+     * Tor transport for streams, so the call fails instead of falling back to a direct connection.
+     *
+     * [ServiceMode.UniqueTor] gets a client of its own, made when the returned flow is collected and
+     * disposed when that collection ends (completed, failed or cancelled): a flow that is never
+     * collected never makes one, so nothing leaks.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend inline fun <T> executeAsStream(
         serviceMode: ServiceMode,
-        block: PartialWalletClient.() -> Flow<Response<T>>
+        crossinline block: suspend LightWalletClient.() -> Flow<Response<T>>
     ): Flow<Response<T>> =
         try {
-            execute(serviceMode, block)
+            when (serviceMode) {
+                ServiceMode.Direct -> {
+                    semaphore.withLock { block(lightWalletClient) }
+                }
+
+                ServiceMode.UniqueTor -> {
+                    flow {
+                        val client =
+                            try {
+                                createTorStreamingClient()
+                            } catch (e: UninitializedTorClientException) {
+                                emit(Response.Failure.OverTor(cause = e))
+                                return@flow
+                            }
+                        try {
+                            emitAll(block(client))
+                        } finally {
+                            withContext(NonCancellable) { client.dispose() }
+                        }
+                    }
+                }
+
+                ServiceMode.DefaultTor,
+                is ServiceMode.Group -> {
+                    semaphore.withLock {
+                        val client = streamingCache[serviceMode] ?: createTorStreamingClient()
+                        streamingCache[serviceMode] = client
+                        block(client)
+                    }
+                }
+            }
         } catch (e: UninitializedTorClientException) {
             flowOf(Response.Failure.OverTor(cause = e))
         }
+
+    @Suppress("TooGenericExceptionCaught", "ThrowsCount")
+    private suspend fun createTorStreamingClient(): LightWalletClient {
+        val factory =
+            torStreamingClientFactory
+                ?: throw UninitializedTorClientException(
+                    IllegalStateException("No Tor transport for streaming calls to ${endpoint.host}")
+                )
+        return try {
+            factory()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw UninitializedTorClientException(e)
+        }
+    }
 
     private suspend inline fun <T> executeAsResponse(
         serviceMode: ServiceMode,
@@ -227,14 +266,21 @@ class CombinedWalletClientImpl private constructor(
     }
 
     companion object Factory {
+        /**
+         * @param torStreamingClientFactory creates a [LightWalletClient] for [endpoint] whose traffic
+         * goes over Tor, used by the streaming calls in a Tor mode. Null when there is none (the
+         * endpoint is not an OHTTP gateway, or Tor is unavailable): such calls then fail.
+         */
         suspend fun new(
             endpoint: LightWalletEndpoint,
             lightWalletClient: LightWalletClient,
-            isolatedTorClient: LazyTorClient?
+            isolatedTorClient: LazyTorClient?,
+            torStreamingClientFactory: (suspend () -> LightWalletClient)? = null
         ) = CombinedWalletClientImpl(
             endpoint = endpoint,
             lightWalletClient = lightWalletClient,
-            isolatedTorClient = isolatedTorClient
+            isolatedTorClient = isolatedTorClient,
+            torStreamingClientFactory = torStreamingClientFactory
         )
     }
 }

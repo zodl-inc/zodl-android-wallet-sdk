@@ -86,6 +86,7 @@ class TypesafeVotingBackendImplTest {
             val result =
                 db.precomputeDelegationPir(
                     torRuntime = 5L,
+                    isCustomServer = false,
                     roundId = "round-1",
                     bundleIndex = 2,
                     pirServerUrl = "https://pir.example",
@@ -99,10 +100,37 @@ class TypesafeVotingBackendImplTest {
             assertEquals(3L, result.cachedCount)
             assertEquals(4L, result.fetchedCount)
             assertEquals(5L, dbBackend.precomputeTorRuntime)
+            assertEquals(false, dbBackend.precomputeIsCustomServer)
             assertEquals("round-1", dbBackend.precomputeRoundId)
             assertEquals(2, dbBackend.precomputeBundleIndex)
             assertEquals("https://pir.example", dbBackend.precomputePirServerUrl)
             assertEquals(listOf(jniNoteInfo()), dbBackend.precomputeNotes)
+        }
+
+    @Test
+    fun precompute_delegation_pir_forwards_isCustomServer_true() =
+        runTest {
+            val dbBackend =
+                RecordingVotingDbBackend(
+                    precomputeResult = JniDelegationPirPrecomputeResult(cachedCount = 1, fetchedCount = 2)
+                )
+            val backend = TypesafeVotingBackendImpl { RecordingVotingBackendBridge(dbBackend) }
+            val db = backend.openVotingDb("/tmp/voting.db", "wallet-1", networkId = 1)
+
+            db.precomputeDelegationPir(
+                torRuntime = 0L,
+                isCustomServer = true,
+                roundId = "round-1",
+                bundleIndex = 0,
+                pirServerUrl = "https://pir.example",
+                pirDepth = 1,
+                pirTier0Layers = 1,
+                pirTier1Layers = 1,
+                pirPolyLen = 2048,
+                notes = listOf(votingNoteInfo())
+            )
+
+            assertEquals(true, dbBackend.precomputeIsCustomServer)
         }
 
     @Test
@@ -123,6 +151,7 @@ class TypesafeVotingBackendImplTest {
             val result =
                 db.precomputePirProofs(
                     torRuntime = 0,
+                    isCustomServer = false,
                     pirServerUrl = "https://pir.example",
                     pirDepth = 1,
                     pirTier0Layers = 1,
@@ -171,6 +200,7 @@ class TypesafeVotingBackendImplTest {
             val result =
                 db.precomputeSnapshotBundles(
                     torRuntime = 0,
+                    isCustomServer = false,
                     roundId = "round-1",
                     pirServerUrl = "https://pir.example",
                     pirDepth = 1,
@@ -298,12 +328,14 @@ class TypesafeVotingBackendImplTest {
             val result =
                 session.run(
                     torRuntime = 42L,
+                    isCustomServer = false,
                     helperUrls = listOf("https://helper.example"),
                     voteEndTimeSeconds = -1
                 )
 
             assertEquals(report, result)
             assertEquals(42L, sessionBackend.runTorRuntime)
+            assertEquals(false, sessionBackend.runIsCustomServer)
             assertEquals(listOf("https://helper.example"), sessionBackend.runHelperUrls)
             assertEquals(-1L, sessionBackend.runVoteEndTimeSeconds)
 
@@ -333,7 +365,8 @@ class TypesafeVotingBackendImplTest {
                 configuredHelperUrls = listOf("https://helper.example"),
                 voteTreeNodeUrls = listOf("https://tree.example"),
                 ceremonyStartSeconds = -1,
-                voteEndTimeSeconds = -1
+                voteEndTimeSeconds = -1,
+                isCustomServer = false
             )
 
             assertEquals(7L, dbBackend.openRoundSessionTorRuntime)
@@ -371,7 +404,8 @@ class TypesafeVotingBackendImplTest {
                     configuredHelperUrls = emptyList(),
                     voteTreeNodeUrls = emptyList(),
                     ceremonyStartSeconds = -1,
-                    voteEndTimeSeconds = -1
+                    voteEndTimeSeconds = -1,
+                    isCustomServer = false
                 )
 
             assertEquals(plan, session.getRoundPlan())
@@ -601,13 +635,16 @@ class TypesafeVotingBackendImplTest {
         private val roundSessionBackend: RoundSessionBackend = RecordingRoundSessionBackend()
     ) : VotingDbBackend {
         var precomputeTorRuntime: Long? = null
+        var precomputeIsCustomServer: Boolean? = null
         var precomputeRoundId: String? = null
         var precomputeBundleIndex: Int? = null
         var precomputePirServerUrl: String? = null
         var precomputeNotes: List<JniNoteInfo>? = null
+        var precomputePirProofsIsCustomServer: Boolean? = null
         var precomputePirProofsTorRuntime: Long? = null
         var precomputePirProofsPirServerUrl: String? = null
         var precomputePirProofsNotes: List<JniNoteInfo>? = null
+        var precomputeSnapshotBundlesIsCustomServer: Boolean? = null
         var precomputeSnapshotBundlesTorRuntime: Long? = null
         var precomputeSnapshotBundlesRoundId: String? = null
         var precomputeSnapshotBundlesPirServerUrl: String? = null
@@ -618,6 +655,7 @@ class TypesafeVotingBackendImplTest {
         var getKeystoneSignaturesRoundId: String? = null
         var openShareTrackingSessionRoundId: String? = null
         var openRoundSessionTorRuntime: Long? = null
+        var openRoundSessionIsCustomServer: Boolean? = null
         var openRoundSessionRoundId: String? = null
         var openRoundSessionProposalIds: IntArray? = null
         var openRoundSessionProposalOptionCounts: IntArray? = null
@@ -660,6 +698,7 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun precomputeDelegationPir(
             torRuntime: Long,
+            isCustomServer: Boolean,
             roundId: String,
             bundleIndex: Int,
             pirServerUrl: String,
@@ -670,6 +709,7 @@ class TypesafeVotingBackendImplTest {
             notes: List<JniNoteInfo>
         ): JniDelegationPirPrecomputeResult {
             precomputeTorRuntime = torRuntime
+            precomputeIsCustomServer = isCustomServer
             precomputeRoundId = roundId
             precomputeBundleIndex = bundleIndex
             precomputePirServerUrl = pirServerUrl
@@ -679,6 +719,7 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun precomputePirProofs(
             torRuntime: Long,
+            isCustomServer: Boolean,
             pirServerUrl: String,
             pirDepth: Int,
             pirTier0Layers: Int,
@@ -686,6 +727,7 @@ class TypesafeVotingBackendImplTest {
             pirPolyLen: Int,
             notes: List<JniNoteInfo>
         ): JniPirPrecomputeResult {
+            precomputePirProofsIsCustomServer = isCustomServer
             precomputePirProofsTorRuntime = torRuntime
             precomputePirProofsPirServerUrl = pirServerUrl
             precomputePirProofsNotes = notes
@@ -694,6 +736,7 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun precomputeSnapshotBundles(
             torRuntime: Long,
+            isCustomServer: Boolean,
             roundId: String,
             pirServerUrl: String,
             pirDepth: Int,
@@ -702,6 +745,7 @@ class TypesafeVotingBackendImplTest {
             pirPolyLen: Int,
             notes: List<JniNoteInfo>
         ): JniSnapshotBundlePrecomputeReport {
+            precomputeSnapshotBundlesIsCustomServer = isCustomServer
             precomputeSnapshotBundlesTorRuntime = torRuntime
             precomputeSnapshotBundlesRoundId = roundId
             precomputeSnapshotBundlesPirServerUrl = pirServerUrl
@@ -709,7 +753,12 @@ class TypesafeVotingBackendImplTest {
             return snapshotBundlePrecomputeReport
         }
 
-        override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long = unused()
+        override suspend fun syncVoteTree(
+            torRuntime: Long,
+            isCustomServer: Boolean,
+            roundId: String,
+            nodeUrl: String
+        ): Long = unused()
 
         override suspend fun resetTreeClient(roundId: String) = unused()
 
@@ -747,9 +796,11 @@ class TypesafeVotingBackendImplTest {
             configuredHelperUrls: List<String>,
             voteTreeNodeUrls: List<String>,
             ceremonyStartSeconds: Long,
-            voteEndTimeSeconds: Long
+            voteEndTimeSeconds: Long,
+            isCustomServer: Boolean
         ): RoundSessionBackend {
             openRoundSessionTorRuntime = torRuntime
+            openRoundSessionIsCustomServer = isCustomServer
             openRoundSessionRoundId = roundId
             openRoundSessionProposalIds = proposalIds
             openRoundSessionProposalOptionCounts = proposalOptionCounts
@@ -824,6 +875,7 @@ class TypesafeVotingBackendImplTest {
         var closeCalls = 0
         var cancelCalls = 0
         var runTorRuntime: Long? = null
+        var runIsCustomServer: Boolean? = null
         var runHelperUrls: List<String>? = null
         var runVoteEndTimeSeconds: Long? = null
 
@@ -837,10 +889,12 @@ class TypesafeVotingBackendImplTest {
 
         override suspend fun run(
             torRuntime: Long,
+            isCustomServer: Boolean,
             helperUrls: List<String>,
             voteEndTimeSeconds: Long
         ): JniShareTrackingRunReport? {
             runTorRuntime = torRuntime
+            runIsCustomServer = isCustomServer
             runHelperUrls = helperUrls
             runVoteEndTimeSeconds = voteEndTimeSeconds
             return runReport

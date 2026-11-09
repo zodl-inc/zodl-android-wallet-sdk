@@ -5,7 +5,8 @@ import cash.z.wallet.sdk.internal.rpc.Service.ShieldedProtocol
 enum class ShieldedProtocolEnum {
     SAPLING,
     ORCHARD,
-    IRONWOOD;
+    IRONWOOD,
+    ;
 
     fun toProtocol() =
         when (this) {
