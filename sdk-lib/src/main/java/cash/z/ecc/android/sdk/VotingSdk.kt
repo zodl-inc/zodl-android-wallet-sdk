@@ -213,6 +213,7 @@ interface VotingDbSession {
      */
     suspend fun precomputeDelegationPir(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -248,6 +249,7 @@ interface VotingDbSession {
      */
     suspend fun precomputePirProofs(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -281,6 +283,7 @@ interface VotingDbSession {
      */
     suspend fun precomputeSnapshotBundles(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -290,7 +293,12 @@ interface VotingDbSession {
         notes: List<VotingNoteInfo>
     ): VotingSnapshotBundlePrecomputeReport
 
-    suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
+    suspend fun syncVoteTree(
+        torLease: VotingTorLease?,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long
 
     suspend fun resetTreeClient(roundId: String)
 
@@ -343,10 +351,16 @@ interface VotingDbSession {
      * [Synchronizer.acquireVotingTorLease], or `null` when Tor is disabled (plain HTTP). The
      * session uses the runtime for its whole lifetime, including every [VotingRoundSession.run]
      * call, so the caller must keep the lease unreleased until after [VotingRoundSession.close].
+     *
+     * @param isCustomServer `true` if the voting config uses custom servers (from `pinnedSource`),
+     *        `false` for predefined servers. Routes HTTP traffic: Tor OFF + predefined → OHTTP
+     *        (privacy: relay sees client IP but not request, gateway/backend never see client IP);
+     *        Tor OFF + custom → Direct (user accepts direct routing by using a custom endpoint).
      */
     @Suppress("LongParameterList")
     suspend fun openRoundSession(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         roundId: String,
         proposals: List<VotingProposalRosterEntry>,
         hotkeySecret: ByteArray?,
@@ -451,11 +465,14 @@ interface VotingShareTrackingSession {
      * [voteEndTimeSeconds] `< 0` decodes to "no vote-end boundary known yet".
      *
      * [torLease] is a lease on the synchronizer's shared Tor runtime from
-     * [Synchronizer.acquireVotingTorLease], or `null` when Tor is disabled (plain HTTP). Keep it
-     * unreleased until this call returns.
+     * [Synchronizer.acquireVotingTorLease], or `null` when Tor is disabled. [isCustomServer]
+     * indicates whether [helperUrls] are custom user-added servers (true) or predefined servers
+     * (false); with Tor OFF, predefined servers route through OHTTP (fail closed), while custom
+     * servers use direct routing by design.
      */
     suspend fun run(
         torLease: VotingTorLease?,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
     ): VotingShareTrackingReport?

@@ -22,6 +22,10 @@ mavenPublishing {
 android {
     namespace = "com.zodl.slipstream"
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     useLibrary("android.test.runner")
 
     defaultConfig {

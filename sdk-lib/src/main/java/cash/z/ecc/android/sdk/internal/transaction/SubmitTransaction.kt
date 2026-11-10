@@ -12,6 +12,7 @@ import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import co.electriccoin.lightwallet.client.ServiceMode
+import co.electriccoin.lightwallet.client.health.withOhttpDecisiveCall
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 import co.electriccoin.lightwallet.client.model.RawTransactionUnsafe
 import co.electriccoin.lightwallet.client.model.Response
@@ -38,10 +39,13 @@ internal suspend fun CombinedWalletClient.submitTransaction(
     network: ZcashNetwork,
     walletTip: suspend () -> Long?
 ): TransactionSubmitResult {
+    // The height read and the send are each the call that decides a failed submission; the later one wins.
     val serverHeight =
-        getLatestBlockHeight(
-            serviceMode = sdkFlags ifTor ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
-        )
+        withOhttpDecisiveCall {
+            getLatestBlockHeight(
+                serviceMode = sdkFlags ifTor ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
+            )
+        }
     val refusal = submissionRefusal(rawTransaction, txId, network, serverHeight, walletTip())
     return when {
         refusal == null -> {
@@ -142,12 +146,14 @@ private suspend fun CombinedWalletClient.submitUnchecked(
     sdkFlags: SdkFlags
 ): TransactionSubmitResult {
     val initialResult =
-        submitTransaction(
-            tx = rawTransaction.byteArray,
-            serviceMode =
-                sdkFlags ifTor
-                    ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
-        ).toSubmitResult(txId)
+        withOhttpDecisiveCall {
+            submitTransaction(
+                tx = rawTransaction.byteArray,
+                serviceMode =
+                    sdkFlags ifTor
+                        ServiceMode.Group("submit-${txId.byteArray.toHexReversed()}")
+            )
+        }.toSubmitResult(txId)
 
     // Trust the network over the submit-side error: if the server confirms it has this tx,
     // the broadcast already landed (Zebra's MempoolError::InMempool / AlreadyQueued, zcashd's

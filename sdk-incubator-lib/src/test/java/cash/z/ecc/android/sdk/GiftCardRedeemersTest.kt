@@ -251,7 +251,8 @@ class GiftCardRedeemersTest {
             setup: AccountCreateSetup?,
             walletInitMode: WalletInitMode,
             isTorEnabled: Boolean,
-            isExchangeRateEnabled: Boolean
+            isExchangeRateEnabled: Boolean,
+            ohttpClientTraceIdPrefix: String?,
         ): CloseableSynchronizer = error("Not a gift card operation")
 
         override suspend fun erase(

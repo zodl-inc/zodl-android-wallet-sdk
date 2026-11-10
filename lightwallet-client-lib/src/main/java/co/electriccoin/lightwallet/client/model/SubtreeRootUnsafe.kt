@@ -15,7 +15,7 @@ import cash.z.wallet.sdk.internal.rpc.Service.SubtreeRoot
 class SubtreeRootUnsafe(
     val rootHash: ByteArray,
     val completingBlockHash: ByteArray,
-    val completingBlockHeight: BlockHeightUnsafe
+    val completingBlockHeight: BlockHeightUnsafe,
 ) {
     companion object {
         fun new(subtreeRoot: SubtreeRoot) =

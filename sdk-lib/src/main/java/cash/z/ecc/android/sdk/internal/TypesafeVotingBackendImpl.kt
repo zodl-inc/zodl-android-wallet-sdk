@@ -263,6 +263,7 @@ internal interface VotingDbBackend {
 
     suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -275,6 +276,7 @@ internal interface VotingDbBackend {
 
     suspend fun precomputePirProofs(
         torRuntime: Long,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -285,6 +287,7 @@ internal interface VotingDbBackend {
 
     suspend fun precomputeSnapshotBundles(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -294,7 +297,12 @@ internal interface VotingDbBackend {
         notes: List<JniNoteInfo>
     ): JniSnapshotBundlePrecomputeReport
 
-    suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long
+    suspend fun syncVoteTree(
+        torRuntime: Long,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long
 
     suspend fun resetTreeClient(roundId: String)
 
@@ -323,7 +331,8 @@ internal interface VotingDbBackend {
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): RoundSessionBackend
 }
 
@@ -369,6 +378,7 @@ private class RustVotingDbBackend(
 
     override suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -380,6 +390,7 @@ private class RustVotingDbBackend(
     ): JniDelegationPirPrecomputeResult =
         votingDb.precomputeDelegationPir(
             torRuntime,
+            isCustomServer,
             roundId,
             bundleIndex,
             pirServerUrl,
@@ -392,6 +403,7 @@ private class RustVotingDbBackend(
 
     override suspend fun precomputePirProofs(
         torRuntime: Long,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -401,6 +413,7 @@ private class RustVotingDbBackend(
     ): JniPirPrecomputeResult =
         votingDb.precomputePirProofs(
             torRuntime,
+            isCustomServer,
             pirServerUrl,
             pirDepth,
             pirTier0Layers,
@@ -411,6 +424,7 @@ private class RustVotingDbBackend(
 
     override suspend fun precomputeSnapshotBundles(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -421,6 +435,7 @@ private class RustVotingDbBackend(
     ): JniSnapshotBundlePrecomputeReport =
         votingDb.precomputeSnapshotBundles(
             torRuntime,
+            isCustomServer,
             roundId,
             pirServerUrl,
             pirDepth,
@@ -430,8 +445,13 @@ private class RustVotingDbBackend(
             notes
         )
 
-    override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long =
-        votingDb.syncVoteTree(roundId, nodeUrl)
+    override suspend fun syncVoteTree(
+        torRuntime: Long,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long =
+        votingDb.syncVoteTree(torRuntime, isCustomServer, roundId, nodeUrl)
 
     override suspend fun resetTreeClient(roundId: String) =
         votingDb.resetTreeClient(roundId)
@@ -465,7 +485,8 @@ private class RustVotingDbBackend(
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): RoundSessionBackend =
         RustRoundSessionBackend(
             votingDb.openRoundSession(
@@ -479,7 +500,8 @@ private class RustVotingDbBackend(
                 configuredHelperUrls,
                 voteTreeNodeUrls,
                 ceremonyStartSeconds,
-                voteEndTimeSeconds
+                voteEndTimeSeconds,
+                isCustomServer
             )
         )
 }
@@ -546,6 +568,7 @@ internal interface ShareTrackingSessionBackend {
 
     suspend fun run(
         torRuntime: Long,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
     ): JniShareTrackingRunReport?
@@ -560,9 +583,10 @@ private class RustShareTrackingSessionBackend(
 
     override suspend fun run(
         torRuntime: Long,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
-    ): JniShareTrackingRunReport? = session.run(torRuntime, helperUrls, voteEndTimeSeconds)
+    ): JniShareTrackingRunReport? = session.run(torRuntime, isCustomServer, helperUrls, voteEndTimeSeconds)
 }
 
 @Suppress("TooManyFunctions", "LongParameterList")
@@ -610,6 +634,7 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun precomputeDelegationPir(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         bundleIndex: Int,
         pirServerUrl: String,
@@ -622,6 +647,7 @@ internal class TypesafeVotingDbImpl(
         votingDb
             .precomputeDelegationPir(
                 torRuntime,
+                isCustomServer,
                 roundId,
                 bundleIndex,
                 pirServerUrl,
@@ -634,6 +660,7 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun precomputePirProofs(
         torRuntime: Long,
+        isCustomServer: Boolean,
         pirServerUrl: String,
         pirDepth: Int,
         pirTier0Layers: Int,
@@ -644,6 +671,7 @@ internal class TypesafeVotingDbImpl(
         votingDb
             .precomputePirProofs(
                 torRuntime,
+                isCustomServer,
                 pirServerUrl,
                 pirDepth,
                 pirTier0Layers,
@@ -654,6 +682,7 @@ internal class TypesafeVotingDbImpl(
 
     override suspend fun precomputeSnapshotBundles(
         torRuntime: Long,
+        isCustomServer: Boolean,
         roundId: String,
         pirServerUrl: String,
         pirDepth: Int,
@@ -665,6 +694,7 @@ internal class TypesafeVotingDbImpl(
         votingDb
             .precomputeSnapshotBundles(
                 torRuntime,
+                isCustomServer,
                 roundId,
                 pirServerUrl,
                 pirDepth,
@@ -674,8 +704,13 @@ internal class TypesafeVotingDbImpl(
                 notes.toJniNoteInfos()
             ).toSnapshotBundlePrecomputeReport()
 
-    override suspend fun syncVoteTree(roundId: String, nodeUrl: String): Long =
-        votingDb.syncVoteTree(roundId, nodeUrl)
+    override suspend fun syncVoteTree(
+        torRuntime: Long,
+        isCustomServer: Boolean,
+        roundId: String,
+        nodeUrl: String
+    ): Long =
+        votingDb.syncVoteTree(torRuntime, isCustomServer, roundId, nodeUrl)
 
     override suspend fun resetTreeClient(roundId: String) =
         votingDb.resetTreeClient(roundId)
@@ -709,7 +744,8 @@ internal class TypesafeVotingDbImpl(
         configuredHelperUrls: List<String>,
         voteTreeNodeUrls: List<String>,
         ceremonyStartSeconds: Long,
-        voteEndTimeSeconds: Long
+        voteEndTimeSeconds: Long,
+        isCustomServer: Boolean
     ): TypesafeRoundSession =
         TypesafeRoundSessionImpl(
             votingDb.openRoundSession(
@@ -723,7 +759,8 @@ internal class TypesafeVotingDbImpl(
                 configuredHelperUrls,
                 voteTreeNodeUrls,
                 ceremonyStartSeconds,
-                voteEndTimeSeconds
+                voteEndTimeSeconds,
+                isCustomServer
             )
         )
 }
@@ -766,9 +803,10 @@ internal class TypesafeShareTrackingSessionImpl(
 
     override suspend fun run(
         torRuntime: Long,
+        isCustomServer: Boolean,
         helperUrls: List<String>,
         voteEndTimeSeconds: Long
-    ): JniShareTrackingRunReport? = session.run(torRuntime, helperUrls, voteEndTimeSeconds)
+    ): JniShareTrackingRunReport? = session.run(torRuntime, isCustomServer, helperUrls, voteEndTimeSeconds)
 }
 
 internal fun JniDelegationPirPrecomputeResult.toDelegationPirPrecomputeResult() =

@@ -412,6 +412,7 @@ class VotingRustBackendTest {
                 assertFailsWith<RuntimeException> {
                     db.precomputeDelegationPir(
                         torRuntime = 0,
+                        isCustomServer = true,
                         roundId = ROUND_ID,
                         bundleIndex = 0,
                         pirServerUrl = "not-a-valid-url",
@@ -439,6 +440,7 @@ class VotingRustBackendTest {
                 assertFailsWith<RuntimeException> {
                     db.precomputePirProofs(
                         torRuntime = 0,
+                        isCustomServer = true,
                         pirServerUrl = "not-a-valid-url",
                         pirDepth = 1,
                         pirTier0Layers = 1,
@@ -466,6 +468,7 @@ class VotingRustBackendTest {
                 assertFailsWith<RuntimeException> {
                     db.precomputeSnapshotBundles(
                         torRuntime = 0,
+                        isCustomServer = true,
                         roundId = ROUND_ID,
                         pirServerUrl = "not-a-valid-url",
                         pirDepth = 1,
@@ -486,7 +489,7 @@ class VotingRustBackendTest {
             val db = VotingRustBackend.new().openVotingDb(newDbPath(), WALLET_ID, TESTNET_NETWORK_ID)
             try {
                 assertFailsWith<RuntimeException> {
-                    db.syncVoteTree(ROUND_ID, "not-a-url")
+                    db.syncVoteTree(torRuntime = 0, isCustomServer = true, ROUND_ID, "not-a-url")
                 }
                 // resetTreeClient succeeds even for a round with no cached tree client -- it is
                 // a pure cache-drop, not a lookup.
@@ -570,7 +573,8 @@ class VotingRustBackendTest {
                         session.run(
                             torRuntime = torClient.torRuntimeHandleForTesting(),
                             helperUrls = listOf("https://helper.example"),
-                            voteEndTimeSeconds = -1
+                            voteEndTimeSeconds = -1,
+                            isCustomServer = false
                         )
                     }.onFailure { error ->
                         assertTrue(error is RuntimeException, "expected RuntimeException, got $error")
@@ -612,7 +616,8 @@ class VotingRustBackendTest {
                         configuredHelperUrls = emptyList(),
                         voteTreeNodeUrls = emptyList(),
                         ceremonyStartSeconds = -1,
-                        voteEndTimeSeconds = -1
+                        voteEndTimeSeconds = -1,
+                        isCustomServer = false
                     )
                 try {
                     // No ballot decisions exist yet, so RoundDriver::run determines there is
@@ -737,7 +742,8 @@ class VotingRustBackendTest {
                         configuredHelperUrls = emptyList(),
                         voteTreeNodeUrls = emptyList(),
                         ceremonyStartSeconds = -1,
-                        voteEndTimeSeconds = -1
+                        voteEndTimeSeconds = -1,
+                        isCustomServer = false
                     )
                 try {
                     // A real (if otherwise-unused) temp path: SqliteWalletDbOpener::open_for_read

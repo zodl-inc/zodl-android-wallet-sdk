@@ -14,13 +14,13 @@ object SaplingParamToolFixture {
                 PARAMS_DIRECTORY,
                 SaplingParamTool.SPEND_PARAM_FILE_NAME,
                 SaplingParamTool.SPEND_PARAM_FILE_MAX_BYTES_SIZE,
-                SaplingParamTool.SPEND_PARAM_FILE_SHA1_HASH
+                SaplingParamTool.SPEND_PARAM_FILE_SHA256_HASH
             ),
             SaplingParameters(
                 PARAMS_DIRECTORY,
                 SaplingParamTool.OUTPUT_PARAM_FILE_NAME,
                 SaplingParamTool.OUTPUT_PARAM_FILE_MAX_BYTES_SIZE,
-                SaplingParamTool.OUTPUT_PARAM_FILE_SHA1_HASH
+                SaplingParamTool.OUTPUT_PARAM_FILE_SHA256_HASH
             )
         )
 

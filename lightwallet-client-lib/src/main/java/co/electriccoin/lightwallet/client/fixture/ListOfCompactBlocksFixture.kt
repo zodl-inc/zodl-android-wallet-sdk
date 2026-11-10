@@ -19,7 +19,7 @@ object ListOfCompactBlocksFixture {
 
         for (blockHeight in blocksHeightRange.start.value..blocksHeightRange.endInclusive.value) {
             blocks.add(
-                SingleCompactBlockFixture.new(height = blockHeight)
+                SingleCompactBlockFixture.new(height = blockHeight),
             )
         }
 

@@ -29,7 +29,7 @@ interface CombinedWalletClient : Disposable {
     suspend fun fetchUtxos(
         tAddresses: List<String>,
         startHeight: BlockHeightUnsafe,
-        serviceMode: ServiceMode
+        serviceMode: ServiceMode,
     ): Flow<Response<GetAddressUtxosReplyUnsafe>>
 
     /**
@@ -42,7 +42,7 @@ interface CombinedWalletClient : Disposable {
      */
     suspend fun getBlockRange(
         heightRange: ClosedRange<BlockHeightUnsafe>,
-        serviceMode: ServiceMode
+        serviceMode: ServiceMode,
     ): Flow<Response<CompactBlockUnsafe>>
 
     /**
@@ -57,7 +57,7 @@ interface CombinedWalletClient : Disposable {
     suspend fun getTAddressTransactions(
         tAddress: String,
         blockHeightRange: ClosedRange<BlockHeightUnsafe>,
-        serviceMode: ServiceMode
+        serviceMode: ServiceMode,
     ): Flow<Response<RawTransactionUnsafe>>
 
     /**
@@ -75,7 +75,7 @@ interface CombinedWalletClient : Disposable {
         startIndex: UInt,
         shieldedProtocol: ShieldedProtocolEnum,
         maxEntries: UInt,
-        serviceMode: ServiceMode
+        serviceMode: ServiceMode,
     ): Flow<Response<SubtreeRootUnsafe>>
 
     /**
@@ -86,23 +86,19 @@ interface CombinedWalletClient : Disposable {
     /**
      * @return useful server details.
      */
-    suspend fun getServerInfo(
-        serviceMode: ServiceMode
-    ): Response<LightWalletEndpointInfoUnsafe>
+    suspend fun getServerInfo(serviceMode: ServiceMode): Response<LightWalletEndpointInfoUnsafe>
 
     /**
      * @return the latest block height known to the service.
      */
-    suspend fun getLatestBlockHeight(
-        serviceMode: ServiceMode
-    ): Response<BlockHeightUnsafe>
+    suspend fun getLatestBlockHeight(serviceMode: ServiceMode): Response<BlockHeightUnsafe>
 
     /**
      * @return the full transaction info.
      */
     suspend fun fetchTransaction(
         txId: ByteArray,
-        serviceMode: ServiceMode
+        serviceMode: ServiceMode,
     ): Response<RawTransactionUnsafe>
 
     /**
@@ -112,7 +108,7 @@ interface CombinedWalletClient : Disposable {
      */
     suspend fun submitTransaction(
         tx: ByteArray,
-        serviceMode: ServiceMode
+        serviceMode: ServiceMode,
     ): Response<SendResponseUnsafe>
 
     /**
@@ -120,15 +116,18 @@ interface CombinedWalletClient : Disposable {
      */
     suspend fun getTreeState(
         height: BlockHeightUnsafe,
-        serviceMode: ServiceMode
+        serviceMode: ServiceMode,
     ): Response<TreeStateUnsafe>
 
-    suspend fun checkSingleUseTransparentAddress(accountUuid: ByteArray, serviceMode: ServiceMode): Response<String?>
+    suspend fun checkSingleUseTransparentAddress(
+        accountUuid: ByteArray,
+        serviceMode: ServiceMode,
+    ): Response<String?>
 
     suspend fun fetchUtxosByAddress(
         accountUuid: ByteArray,
         address: String,
-        serviceMode: ServiceMode
+        serviceMode: ServiceMode,
     ): Response<String?>
 
     /**
@@ -162,6 +161,6 @@ sealed interface ServiceMode {
      * Tags are held in memory for the lifetime of the CombinedWalletClient.
      */
     data class Group(
-        val group: String
+        val group: String,
     ) : ServiceMode
 }

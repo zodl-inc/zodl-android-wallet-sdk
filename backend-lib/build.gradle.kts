@@ -45,6 +45,45 @@ val enableAndroidTestNativeFixtures =
 
 val isSlipstreamEnabled = project.property("IS_SLIPSTREAM_ENABLED").toString().toBoolean()
 
+val isOhttpTraceEnabled =
+    findProperty("ZODL_OHTTP_TRACE")?.toString().toBoolean() ||
+        !findProperty("ZCASH_OHTTP_TRACE_PREFIX")?.toString().isNullOrBlank()
+
+val productionNativeArtifactTasksWithOhttpTrace =
+    if (isOhttpTraceEnabled) {
+        requestedTaskNames.filter { taskName -> taskName.requestsProductionNativeArtifact() }
+    } else {
+        emptyList()
+    }
+
+fun failOhttpTraceInRelease(tasks: List<String>): Nothing =
+    throw GradleException(
+        "The ohttp-trace Cargo feature (ZODL_OHTTP_TRACE / ZCASH_OHTTP_TRACE_PREFIX) is for QA and " +
+            "E2E builds only and must not reach a release native library. Conflicting task(s): " +
+            tasks.joinToString()
+    )
+
+if (productionNativeArtifactTasksWithOhttpTrace.isNotEmpty()) {
+    failOhttpTraceInRelease(productionNativeArtifactTasksWithOhttpTrace)
+}
+
+// Also on the resolved task graph, so a release, benchmark or publish task reached through any other
+// entry point (an aggregate or custom task) cannot package a trace-enabled library either.
+if (isOhttpTraceEnabled) {
+    gradle.taskGraph.whenReady {
+        val releaseTasks =
+            allTasks
+                .map { it.path }
+                .filter { path ->
+                    val name = path.substringAfterLast(":")
+                    name.contains("Release", ignoreCase = true) ||
+                        name.contains("Benchmark", ignoreCase = true) ||
+                        name.startsWith("publish", ignoreCase = true)
+                }
+        if (releaseTasks.isNotEmpty()) failOhttpTraceInRelease(releaseTasks)
+    }
+}
+
 val productionNativeArtifactTasksWithAndroidFixtures =
     if (enableAndroidTestNativeFixtures) {
         requestedTaskNames.filter { taskName ->
@@ -74,6 +113,10 @@ mavenPublishing {
 
 android {
     namespace = "cash.z.ecc.android.backend"
+
+    buildFeatures {
+        buildConfig = true
+    }
 
     useLibrary("android.test.runner")
 
@@ -114,19 +157,27 @@ android {
 cargo {
     module = "."
     libname = "zcashwalletsdk"
-    targets = listOf(
-        "arm",
-        "arm64",
-        "x86",
-        "x86_64"
-    )
+
+    // Read RUST_ANDROID_ABIS from environment first, then Gradle property, or default to all ABIs.
+    // This allows CI to build a subset of ABIs (e.g., x86_64 only for emulator tests) to save disk space.
+    val rustAbisInput = System.getenv("RUST_ANDROID_ABIS")
+        ?: findProperty("RUST_ANDROID_ABIS")?.toString()
+        ?: "arm,arm64,x86,x86_64"
+
+    val validAbis = setOf("arm", "arm64", "x86", "x86_64")
+    val requestedAbis = rustAbisInput.split(",").map { it.trim() }
+
+    requestedAbis.forEach { abi ->
+        if (abi !in validAbis) {
+            throw GradleException(
+                "Invalid ABI '$abi' in RUST_ANDROID_ABIS. Valid values: ${validAbis.joinToString(", ")}"
+            )
+        }
+    }
+
+    targets = requestedAbis
     val minSdkVersion = project.property("ANDROID_MIN_SDK_VERSION").toString().toInt()
-    apiLevels = mapOf(
-        "arm" to minSdkVersion,
-        "arm64" to minSdkVersion,
-        "x86" to minSdkVersion,
-        "x86_64" to minSdkVersion,
-    )
+    apiLevels = requestedAbis.associateWith { minSdkVersion }
     profile = "release"
     extraCargoBuildArguments = run {
         val features = mutableListOf<String>()
@@ -139,6 +190,9 @@ cargo {
         if (enableAndroidTestNativeFixtures) {
             // Test-only fixture exports.
             features.add("android-test-fixtures")
+        }
+        if (isOhttpTraceEnabled) {
+            features.add("ohttp-trace")
         }
         if (features.isEmpty()) emptyList() else listOf("--features", features.joinToString(","))
     }
@@ -194,6 +248,7 @@ project.afterEvaluate {
         .configureEach {
             inputs.property("androidTestNativeFixtures", enableAndroidTestNativeFixtures)
             inputs.property("slipstreamEnabled", isSlipstreamEnabled)
+            inputs.property("ohttpTraceEnabled", isOhttpTraceEnabled)
         }
 }
 

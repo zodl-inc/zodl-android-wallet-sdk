@@ -9,7 +9,7 @@ import java.util.Locale
  * It is marked as "unsafe" because it is not guaranteed to be valid.
  */
 data class LightWalletEndpointInfoUnsafe(
-    val lightdInfo: LightdInfo
+    val lightdInfo: LightdInfo,
 ) {
     companion object {
         fun new(lightdInfo: LightdInfo) = LightWalletEndpointInfoUnsafe(lightdInfo)

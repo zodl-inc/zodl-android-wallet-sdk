@@ -2,7 +2,7 @@ package co.electriccoin.lightwallet.client.model
 
 sealed interface Response<T> {
     data class Success<T>(
-        val result: T
+        val result: T,
     ) : Response<T>
 
     sealed interface Failure<T> : Response<T> {
@@ -39,7 +39,7 @@ sealed interface Response<T> {
          */
         sealed class Server<T>(
             override val code: Int,
-            override val description: String?
+            override val description: String?,
         ) : Failure<T> {
             /**
              * The operation was aborted, typically due to a concurrency issue like sequencer check failures,
@@ -48,7 +48,7 @@ sealed interface Response<T> {
             class Aborted<T>(
                 override val cause: Exception,
                 code: Int,
-                description: String?
+                description: String?,
             ) : Server<T>(code, description)
 
             /**
@@ -59,7 +59,7 @@ sealed interface Response<T> {
             class DeadlineExceeded<T>(
                 override val cause: Exception,
                 code: Int,
-                description: String?
+                description: String?,
             ) : Server<T>(code, description)
 
             /**
@@ -68,7 +68,7 @@ sealed interface Response<T> {
             class NotFound<T>(
                 override val cause: Exception,
                 code: Int,
-                description: String?
+                description: String?,
             ) : Server<T>(code, description)
 
             /**
@@ -79,7 +79,7 @@ sealed interface Response<T> {
             class Other<T>(
                 override val cause: Exception,
                 code: Int,
-                description: String?
+                description: String?,
             ) : Server<T>(code, description)
 
             /**
@@ -88,7 +88,7 @@ sealed interface Response<T> {
             class PermissionDenied<T>(
                 override val cause: Exception,
                 code: Int,
-                description: String?
+                description: String?,
             ) : Server<T>(code, description)
 
             /**
@@ -98,7 +98,7 @@ sealed interface Response<T> {
             class Unavailable<T>(
                 override val cause: Exception,
                 code: Int,
-                description: String?
+                description: String?,
             ) : Server<T>(code, description)
 
             /**
@@ -109,7 +109,7 @@ sealed interface Response<T> {
             class Unknown<T>(
                 override val cause: Exception,
                 code: Int,
-                description: String?
+                description: String?,
             ) : Server<T>(code, description)
         }
 
@@ -118,7 +118,7 @@ sealed interface Response<T> {
          */
         sealed class Client<T>(
             override val code: Int,
-            override val description: String?
+            override val description: String?,
         ) : Failure<T> {
             /**
              * The operation was cancelled (typically by the caller).
@@ -126,7 +126,7 @@ sealed interface Response<T> {
             class Canceled<T>(
                 override val cause: Exception,
                 code: Int,
-                description: String?
+                description: String?,
             ) : Client<T>(code, description)
         }
     }

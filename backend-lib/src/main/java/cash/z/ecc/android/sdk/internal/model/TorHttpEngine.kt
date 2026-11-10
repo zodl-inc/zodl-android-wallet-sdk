@@ -62,7 +62,8 @@ class TorHttpEngine(
                 torClient.httpGet(
                     data.url.toString(),
                     data.headers.toJniHeaders(),
-                    config.retryLimit
+                    config.retryLimit,
+                    co.electriccoin.lightwallet.client.OhttpSender.MAX_SEALED_RESPONSE_BYTES
                 )
             }
 
@@ -79,7 +80,8 @@ class TorHttpEngine(
                     data.url.toString(),
                     data.headers.toJniHeaders(),
                     ByteArray(0),
-                    config.retryLimit
+                    config.retryLimit,
+                    co.electriccoin.lightwallet.client.OhttpSender.MAX_SEALED_RESPONSE_BYTES
                 )
             }
 
@@ -94,7 +96,8 @@ class TorHttpEngine(
                         }.build()
                         .toJniHeaders(),
                     (data.body as OutgoingContent.ByteArrayContent).bytes(),
-                    config.retryLimit
+                    config.retryLimit,
+                    co.electriccoin.lightwallet.client.OhttpSender.MAX_SEALED_RESPONSE_BYTES
                 )
             }
 

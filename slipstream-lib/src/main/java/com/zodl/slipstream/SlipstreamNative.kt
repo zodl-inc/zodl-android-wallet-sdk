@@ -64,6 +64,11 @@ internal object SlipstreamNative {
     @Throws(RuntimeException::class)
     external fun version(): String
 
+    /** Set the default OHTTP client trace prefix (global, process-wide). */
+    @JvmStatic
+    @Throws(RuntimeException::class)
+    external fun setDefaultOhttpClientTracePrefix(prefix: String?)
+
     /** `open` (`HOSTING.md` section 4 row 1): allocates the handle. Returns the handle as a `jlong`. */
     @JvmStatic
     @Throws(RuntimeException::class)

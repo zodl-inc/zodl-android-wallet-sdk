@@ -302,7 +302,8 @@ class CompactBlockProcessor internal constructor(
 
         // Download note commitment tree data from lightwalletd to decide if we communicate with linear
         // or spend-before-sync node.
-        var subTreeRootResult = getSubtreeRoots(downloader, saplingStartIndex, orchardStartIndex, ironwoodStartIndex)
+        var subTreeRootResult =
+            getSubtreeRoots(downloader, saplingStartIndex, orchardStartIndex, ironwoodStartIndex, sdkFlags)
         Twig.info { "Fetched SubTreeRoot result: $subTreeRootResult" }
 
         Twig.debug { "Setup verified. Processor starting..." }
@@ -381,7 +382,8 @@ class CompactBlockProcessor internal constructor(
                                         downloader,
                                         saplingStartIndex,
                                         orchardStartIndex,
-                                        ironwoodStartIndex
+                                        ironwoodStartIndex,
+                                        sdkFlags
                                     )
                                 BlockProcessingResult.Reconnecting
                             }
@@ -456,7 +458,7 @@ class CompactBlockProcessor internal constructor(
         channelFlow<Unit> {
             launch {
                 downloader
-                    .observeMempool(ServiceMode.Direct)
+                    .observeMempool(sdkFlags ifTor ServiceMode.DefaultTor)
                     .filterIsInstance<Response.Success<RawTransactionUnsafe>>()
                     .map { RawTransaction.new(it.result) }
                     .collect { mempoolTransaction ->
@@ -1095,7 +1097,7 @@ class CompactBlockProcessor internal constructor(
                 .fetchUtxos(
                     tAddresses = tAddresses,
                     startHeight = BlockHeightUnsafe.from(startHeight),
-                    serviceMode = ServiceMode.Direct
+                    serviceMode = sdkFlags ifTor ServiceMode.DefaultTor
                 ).onEach { response ->
                     when (response) {
                         is Response.Success -> {
@@ -1382,7 +1384,8 @@ class CompactBlockProcessor internal constructor(
         downloader: CompactBlockDownloader,
         saplingStartIndex: UInt,
         orchardStartIndex: UInt,
-        ironwoodStartIndex: UInt
+        ironwoodStartIndex: UInt,
+        sdkFlags: SdkFlags
     ): GetSubtreeRootsResult {
         Twig.debug { "Fetching SubtreeRoots..." }
         val traceScope = TraceScope("CompactBlockProcessor.getSubtreeRoots")
@@ -1416,7 +1419,7 @@ class CompactBlockProcessor internal constructor(
                             startIndex = startIndex,
                             shieldedProtocol = shieldedProtocol,
                             maxEntries = UInt.MIN_VALUE,
-                            serviceMode = ServiceMode.Direct
+                            serviceMode = sdkFlags ifTor ServiceMode.DefaultTor
                         ).onEach { response ->
                             when (response) {
                                 is Response.Success -> {
@@ -1696,7 +1699,8 @@ class CompactBlockProcessor internal constructor(
                             stageResult =
                                 downloadBatchOfBlocks(
                                     downloader = downloader,
-                                    batch = it
+                                    batch = it,
+                                    sdkFlags = sdkFlags
                                 )
                         )
                     }.buffer(1)
@@ -1949,14 +1953,16 @@ class CompactBlockProcessor internal constructor(
     @VisibleForTesting
     internal suspend fun downloadBatchOfBlocks(
         downloader: CompactBlockDownloader,
-        batch: BlockBatch
+        batch: BlockBatch,
+        sdkFlags: SdkFlags
     ): SyncingResult {
         val traceScope = TraceScope("CompactBlockProcessor.downloadBatchOfBlocks")
 
         val fromState =
             fetchTreeStateForHeight(
                 height = batch.range.start - 1,
-                downloader = downloader
+                downloader = downloader,
+                sdkFlags = sdkFlags
             ) ?: return SyncingResult.DownloadFailed(
                 batch.range.start,
                 CompactBlockProcessorException.FailedDownloadException()
@@ -1981,7 +1987,7 @@ class CompactBlockProcessor internal constructor(
             downloadedBlocks =
                 downloader.downloadBlockRange(
                     heightRange = batch.range,
-                    serviceMode = ServiceMode.Direct
+                    serviceMode = sdkFlags ifTor ServiceMode.DefaultTor
                 )
         }
         traceScope.end()
@@ -2001,6 +2007,7 @@ class CompactBlockProcessor internal constructor(
     internal suspend fun fetchTreeStateForHeight(
         height: BlockHeight,
         downloader: CompactBlockDownloader,
+        sdkFlags: SdkFlags,
     ): TreeState? {
         retryUpToAndContinue(retries = RETRIES) { failedAttempts ->
             if (failedAttempts == 0) {
@@ -2015,7 +2022,7 @@ class CompactBlockProcessor internal constructor(
                 val response =
                     downloader.getTreeState(
                         height = BlockHeightUnsafe(height.value),
-                        serviceMode = ServiceMode.Direct
+                        serviceMode = sdkFlags ifTor ServiceMode.DefaultTor
                     )
             ) {
                 is Response.Success -> {
@@ -2176,7 +2183,8 @@ class CompactBlockProcessor internal constructor(
                             val processTaddrTxidsResult =
                                 processTransparentAddressTxids(
                                     transactionRequest = request,
-                                    downloader = downloader
+                                    downloader = downloader,
+                                    sdkFlags = sdkFlags
                                 )
                             if (processTaddrTxidsResult is SyncingResult.EnhanceFailed) {
                                 val errorType = processTaddrTxidsResult.exception::class.simpleName
@@ -2199,7 +2207,8 @@ class CompactBlockProcessor internal constructor(
     @Suppress("ReturnCount", "ForbiddenComment", "ComplexCondition")
     private suspend fun processTransparentAddressTxids(
         transactionRequest: TransactionDataRequest.TransactionsInvolvingAddress,
-        downloader: CompactBlockDownloader
+        downloader: CompactBlockDownloader,
+        sdkFlags: SdkFlags
     ): SyncingResult {
         Twig.debug { "Starting to get transparent address transactions ids" }
 
@@ -2229,7 +2238,8 @@ class CompactBlockProcessor internal constructor(
                 // Fetching transactions is done with retries to eliminate a bad network condition
                 getTransparentAddressTransactions(
                     transactionRequest = transactionRequest,
-                    downloader = downloader
+                    downloader = downloader,
+                    sdkFlags = sdkFlags
                 ).onEach { rawTransactionUnsafe ->
                     val rawTransaction = RawTransaction.new(rawTransactionUnsafe = rawTransactionUnsafe)
 
@@ -2271,6 +2281,7 @@ class CompactBlockProcessor internal constructor(
     private suspend fun getTransparentAddressTransactions(
         transactionRequest: TransactionDataRequest.TransactionsInvolvingAddress,
         downloader: CompactBlockDownloader,
+        sdkFlags: SdkFlags,
     ): Flow<RawTransactionUnsafe> {
         val traceScope = TraceScope("CompactBlockProcessor.getTransparentAddressTransactions")
         var resultFlow: Flow<RawTransactionUnsafe>? = null
@@ -2296,7 +2307,7 @@ class CompactBlockProcessor internal constructor(
                 downloader.getTAddressTransactions(
                     transparentAddress = transactionRequest.address,
                     blockHeightRange = requestedRange,
-                    serviceMode = ServiceMode.Direct
+                    serviceMode = sdkFlags ifTor ServiceMode.DefaultTor
                 )
         }
         traceScope.end()

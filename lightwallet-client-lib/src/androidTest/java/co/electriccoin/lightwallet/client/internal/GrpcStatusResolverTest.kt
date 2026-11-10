@@ -15,7 +15,7 @@ class GrpcStatusResolverTest {
     fun resolve_explicitly_caught_server_error_test() {
         GrpcStatusResolver
             .resolveFailureFromStatus<Unit>(
-                StatusExceptionFixture.new(Status.NOT_FOUND)
+                StatusExceptionFixture.new(Status.NOT_FOUND),
             ).also { resolvedResponse ->
                 assertTrue(resolvedResponse is Response.Failure.Server.NotFound<Unit>)
                 assertEquals(resolvedResponse.code, Status.NOT_FOUND.code.value())
@@ -28,7 +28,7 @@ class GrpcStatusResolverTest {
     fun resolve_explicitly_caught_error_client_test() {
         GrpcStatusResolver
             .resolveFailureFromStatus<Unit>(
-                StatusExceptionFixture.new(Status.CANCELLED)
+                StatusExceptionFixture.new(Status.CANCELLED),
             ).also { resolvedResponse ->
                 assertTrue(resolvedResponse is Response.Failure.Client.Canceled<Unit>)
                 assertEquals(resolvedResponse.code, Status.CANCELLED.code.value())
@@ -41,7 +41,7 @@ class GrpcStatusResolverTest {
     fun resolve_other_test() {
         GrpcStatusResolver
             .resolveFailureFromStatus<Unit>(
-                StatusExceptionFixture.new(Status.INTERNAL)
+                StatusExceptionFixture.new(Status.INTERNAL),
             ).also { resolvedResponse ->
                 assertTrue(resolvedResponse is Response.Failure.Server.Other<Unit>)
                 assertEquals(resolvedResponse.code, Status.INTERNAL.code.value())
@@ -54,7 +54,7 @@ class GrpcStatusResolverTest {
     fun resolve_unexpected_error_test() {
         GrpcStatusResolver
             .resolveFailureFromStatus<Unit>(
-                IllegalArgumentException("This should not come into the resolver.")
+                IllegalArgumentException("This should not come into the resolver."),
             ).also { resolvedResponse ->
                 assertTrue(resolvedResponse is Response.Failure.Server.Unknown<Unit>)
             }
