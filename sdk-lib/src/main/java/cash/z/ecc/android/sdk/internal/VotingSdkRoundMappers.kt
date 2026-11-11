@@ -41,7 +41,12 @@ internal fun JniVotingHotkey.toPublic(): VotingHotkey =
     VotingHotkey(storedSecret = storedSecret, rawAddress = rawAddress, address = address)
 
 internal fun JniBundleSetupResult.toPublic(): VotingBundleSetupResult =
-    VotingBundleSetupResult(bundleCount = bundleCount, eligibleWeight = eligibleWeight, bundleWeights = bundleWeights)
+    VotingBundleSetupResult(
+        bundleCount = bundleCount,
+        eligibleWeight = eligibleWeight,
+        bundleWeights = bundleWeights,
+        droppedCount = droppedCount
+    )
 
 internal fun JniRoundState.toPublic(): VotingRoundState =
     VotingRoundState(

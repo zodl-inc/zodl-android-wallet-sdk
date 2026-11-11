@@ -47,8 +47,9 @@ const JNI_NOTE_INFO_CTOR_SIG: &str = "([B[BJJ[B[B[BILjava/lang/String;)V";
 const JNI_WITNESS_DATA_CTOR_SIG: &str = "([BJ[B[[B)V";
 // Must match JniVotingHotkey(ByteArray, ByteArray, String) in JniVotingModels.kt.
 const JNI_VOTING_HOTKEY_CTOR_SIG: &str = "([B[BLjava/lang/String;)V";
-// Must match JniBundleSetupResult(Int, Long, LongArray) in JniVotingModels.kt.
-const JNI_BUNDLE_SETUP_RESULT_CTOR_SIG: &str = "(IJ[J)V";
+// Must match JniBundleSetupResult(Int, Long, LongArray, Int) in JniVotingModels.kt.
+// Guarded by JniVotingModelsTest.
+const JNI_BUNDLE_SETUP_RESULT_CTOR_SIG: &str = "(IJ[JI)V";
 // Must match JniDelegationPirPrecomputeResult(Long, Long) in JniVotingModels.kt.
 const JNI_DELEGATION_PIR_PRECOMPUTE_RESULT_CTOR_SIG: &str = "(JJ)V";
 // Must match JniPirPrecomputeResult(Long, Long, ByteArray) in JniVotingModels.kt.
@@ -734,12 +735,11 @@ fn hotkey_unified_address(
 /// Builds the Kotlin bundle setup JNI model with width-checked Java primitives.
 pub(super) fn make_jni_bundle_setup_result<'local>(
     env: &mut JNIEnv<'local>,
-    count: u32,
-    weight: u64,
-    bundle_weights: &[u64],
+    setup: &BundleSetup,
 ) -> anyhow::Result<jobject> {
     let class = env.find_class(JNI_BUNDLE_SETUP_RESULT)?;
-    let weights = bundle_weights
+    let weights = setup
+        .bundle_weights
         .iter()
         .enumerate()
         .map(|(index, weight)| u64_to_jlong(*weight, &format!("bundle_weights[{index}]")))
@@ -752,9 +752,10 @@ pub(super) fn make_jni_bundle_setup_result<'local>(
         &class,
         JNI_BUNDLE_SETUP_RESULT_CTOR_SIG,
         &[
-            JValue::Int(u32_to_jint(count, "bundle_count")?),
-            JValue::Long(u64_to_jlong(weight, "eligible_weight")?),
+            JValue::Int(u32_to_jint(setup.bundle_count, "bundle_count")?),
+            JValue::Long(u64_to_jlong(setup.eligible_weight, "eligible_weight")?),
             JValue::Object(&weights_array_obj),
+            JValue::Int(u32_to_jint(setup.dropped_count, "dropped_count")?),
         ],
     )?;
     Ok(obj.into_raw())
@@ -1102,8 +1103,21 @@ fn make_jni_fixed_byte_array_vec<'local>(
     })?)
 }
 
-/// Runs the voting note chunker and returns total count, total eligible weight,
-/// and each bundle's quantized voting weight.
+/// What the voting note chunker made of a note set, as reported to Kotlin through
+/// `JniBundleSetupResult`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct BundleSetup {
+    pub(super) bundle_count: u32,
+    pub(super) eligible_weight: u64,
+    /// Each bundle's quantized voting weight, in bundle order.
+    pub(super) bundle_weights: Vec<u64>,
+    /// Notes discarded because their bundle totalled less than `BALLOT_DIVISOR`.
+    /// Notes removed by the privacy trim are not counted here.
+    pub(super) dropped_count: u32,
+}
+
+/// Runs the voting note chunker and returns the bundle count, the total eligible
+/// weight, each bundle's quantized voting weight, and the number of dust notes dropped.
 ///
 /// Takes an explicit `policy` (rather than the crate's `chunk_notes(notes)` convenience
 /// wrapper, which is hardcoded to `BundlePolicy::default()`) so this always agrees with
@@ -1113,7 +1127,7 @@ fn make_jni_fixed_byte_array_vec<'local>(
 pub(super) fn bundle_setup_from_notes(
     notes: &[NoteInfo],
     policy: voting::BundlePolicy,
-) -> anyhow::Result<(u32, u64, Vec<u64>)> {
+) -> anyhow::Result<BundleSetup> {
     // zcash_voting 1.0.0 (merged-library patch) moved `chunk_notes`/`chunk_notes_with_policy`
     // from `types` to `note_bundling`; same `&[NoteInfo] -> ChunkResult` signature.
     let chunk_result = voting::note_bundling::chunk_notes_with_policy(notes, policy);
@@ -1128,12 +1142,14 @@ pub(super) fn bundle_setup_from_notes(
             Ok((total / voting::BALLOT_DIVISOR) * voting::BALLOT_DIVISOR)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok((
-        u32::try_from(chunk_result.bundles.len())
+    Ok(BundleSetup {
+        bundle_count: u32::try_from(chunk_result.bundles.len())
             .map_err(|_| anyhow!("bundle count is too large for u32"))?,
-        chunk_result.eligible_weight,
+        eligible_weight: chunk_result.eligible_weight,
         bundle_weights,
-    ))
+        dropped_count: u32::try_from(chunk_result.dropped_count)
+            .map_err(|_| anyhow!("dropped note count is too large for u32"))?,
+    })
 }
 
 /// Recomputes deterministic note chunking and returns the requested bundle.
@@ -1744,5 +1760,53 @@ mod tests {
 
         let payloads = voting::share::recover_payloads(&recovery).expect("recover payloads");
         assert_eq!(payloads.len(), VOTE_SHARE_COUNT);
+    }
+
+    fn setup_note(value: u64, position: u64) -> NoteInfo {
+        let byte = u8::try_from(position + 1).expect("small test position");
+        NoteInfo {
+            commitment: vec![byte; PROTOCOL_FIELD_BYTES],
+            nullifier: vec![byte.wrapping_add(0x80); PROTOCOL_FIELD_BYTES],
+            value,
+            position,
+            diversifier: vec![0; ORCHARD_DIVERSIFIER_BYTES],
+            rho: vec![0; PROTOCOL_FIELD_BYTES],
+            rseed: vec![0; PROTOCOL_FIELD_BYTES],
+            scope: 0,
+            ufvk_str: String::new(),
+        }
+    }
+
+    #[test]
+    fn bundle_setup_reports_no_dropped_notes_when_every_bundle_clears_the_divisor() {
+        let notes: Vec<_> = (0..6).map(|i| setup_note(13_000_000, i)).collect();
+
+        let setup =
+            bundle_setup_from_notes(&notes, voting::BundlePolicy::default()).expect("bundle setup");
+
+        assert_eq!(setup.bundle_count, 2);
+        assert_eq!(setup.dropped_count, 0);
+        assert_eq!(
+            setup.eligible_weight,
+            setup.bundle_weights.iter().sum::<u64>()
+        );
+    }
+
+    #[test]
+    fn bundle_setup_counts_notes_dropped_in_a_dust_bundle() {
+        // Five large notes fill the first bundle; the dust note lands alone in a
+        // second bundle worth less than one ballot, which the chunker discards.
+        let mut notes: Vec<_> = (0..5).map(|i| setup_note(13_000_000, i)).collect();
+        notes.push(setup_note(voting::BALLOT_DIVISOR - 1, 5));
+
+        let setup =
+            bundle_setup_from_notes(&notes, voting::BundlePolicy::default()).expect("bundle setup");
+
+        assert_eq!(setup.bundle_count, 1);
+        assert_eq!(setup.dropped_count, 1);
+        assert_eq!(
+            setup.eligible_weight,
+            setup.bundle_weights.iter().sum::<u64>()
+        );
     }
 }

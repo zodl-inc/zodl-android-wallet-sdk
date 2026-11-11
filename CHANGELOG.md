@@ -6,6 +6,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `VotingBundleSetupResult`, returned by `VotingSdk.computeBundleSetup` and `VotingDbSession.setupBundles`, gains
+  `droppedCount: Int` as its last property: the number of notes discarded because the bundle they landed in was
+  worth less than one ballot. Their value is not part of `eligibleWeight`, so a wallet can now explain why its voting
+  weight is lower than the sum of its notes. Notes removed by the privacy trim are not counted here. Reading the
+  result needs no change; any code that constructs a `VotingBundleSetupResult`, such as a test fake, must now pass
+  `droppedCount`.
+
 ## [8.0.0] - 2026-11-07
 
 ### Added

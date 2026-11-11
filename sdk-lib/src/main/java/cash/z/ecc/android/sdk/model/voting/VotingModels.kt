@@ -96,11 +96,19 @@ data class VotingHotkey(
     override fun hashCode(): Int = address.hashCode()
 }
 
-/** The count/weight summary produced when a round's bundles are first laid out. */
+/**
+ * The count/weight summary produced when a round's bundles are first laid out.
+ *
+ * @property droppedCount Notes discarded because the bundle they landed in totalled less than one
+ * ballot. Their value is not part of [eligibleWeight], which is why a wallet holding dust notes
+ * can see a voting weight below the sum of the notes it passed in. Notes removed by the privacy
+ * trim are not counted here; [VotingBundleLayout] reports those separately.
+ */
 data class VotingBundleSetupResult(
     val bundleCount: Int,
     val eligibleWeight: Long,
-    val bundleWeights: List<Long>
+    val bundleWeights: List<Long>,
+    val droppedCount: Int
 )
 
 /**
