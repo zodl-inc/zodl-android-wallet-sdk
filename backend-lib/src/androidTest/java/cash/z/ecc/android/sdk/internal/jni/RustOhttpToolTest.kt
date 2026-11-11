@@ -208,4 +208,47 @@ class RustOhttpToolTest {
             assertFalse(failure is OhttpInternalException)
             decoder.close()
         }
+
+    /**
+     * The JNI mapping of `nativeConfigure`, which the set-once contract of `Ohttp.configure` relies on:
+     * a refused value is an [IllegalArgumentException] naming the network, the field and the rule but
+     * not the value, and installs nothing; a valid configuration is then accepted, an equal one again
+     * too, and a different one is an [IllegalStateException]. The configuration is set once per
+     * process, so this is the only test here that installs one.
+     */
+    @Test
+    fun native_configure_maps_a_refusal_then_accepts_a_valid_configuration_once() =
+        runTest {
+            RustBackend.loadLibrary()
+
+            val refused =
+                assertFailsWith<IllegalArgumentException> {
+                    configure(gatewayHost = "OHTTP-GATEWAY.example")
+                }
+            val refusal = refused.message.orEmpty()
+            assertTrue(refusal.contains("mainnet"), refusal)
+            assertTrue(refusal.contains("gateway_host"), refusal)
+            assertFalse(refusal.contains("OHTTP-GATEWAY", ignoreCase = true), refusal)
+
+            configure(gatewayHost = "ohttp-gateway.example")
+            configure(gatewayHost = "ohttp-gateway.example")
+
+            val different =
+                assertFailsWith<IllegalStateException> {
+                    configure(gatewayHost = "other-gateway.example")
+                }
+            assertTrue(different.message.orEmpty().contains("already installed"), different.message)
+        }
+
+    private fun configure(gatewayHost: String) =
+        RustOhttpTool.configureNative(
+            mainnetGatewayHost = gatewayHost,
+            mainnetRelayUrl = "https://relay.example/relay",
+            mainnetKeysDnsName = "keys.example",
+            mainnetSigningPublicKey = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+            testnetGatewayHost = null,
+            testnetRelayUrl = null,
+            testnetKeysDnsName = null,
+            testnetSigningPublicKey = null,
+        )
 }

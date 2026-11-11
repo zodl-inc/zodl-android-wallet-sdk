@@ -26,7 +26,7 @@ class OhttpGatewayHostTest {
     }
 
     @Test
-    fun aBuildWithoutOhttpHasNoGatewayHost() {
+    fun withOhttpOffThereIsNoGatewayHost() {
         OhttpEndpoints.gatewayHosts = OhttpGatewayHosts(mainnet = null, testnet = null)
 
         assertNull(LightWalletClient.ohttpGatewayHost(isTestnet = false))

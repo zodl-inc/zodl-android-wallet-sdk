@@ -126,6 +126,7 @@ mod migration_keystone;
 mod migration_plan_cache;
 mod migration_send_max;
 mod ohttp;
+mod ohttp_config;
 mod payment_uri;
 mod proving;
 mod send_max;

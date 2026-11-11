@@ -6,6 +6,57 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The OHTTP configuration moves from the SDK build to the app at runtime. This changes the public API and the
+published artifacts carry no configuration, so the next release is a major version (9.0.0).
+
+### Added
+- `cash.z.ecc.android.sdk.Ohttp.configure(OhttpConfiguration?)`: the app installs the OHTTP configuration of
+  mainnet and testnet once at startup, before it creates a `Synchronizer` or uses any other OHTTP API. Each
+  network is an `OhttpNetworkConfiguration(gatewayHost, relayUrl, keysDnsName, signingPublicKey)` (package
+  `co.electriccoin.lightwallet.client.model`) or null for OHTTP off. The configuration is set once per process
+  and the call is thread-safe: the first successful call wins (null too), an equal one later changes nothing,
+  a different one throws `IllegalStateException`. Values are trimmed and the host names lower-cased, then checked
+  by `zodl-ohttp-client` 1.0; a refused value throws `IllegalArgumentException` naming the network, the field
+  and the rule, never the value, and nothing is installed. `toString` of the configuration shows only which
+  values are set. `Ohttp.configuration` and `Ohttp.isOn(isTestnet)` read it back.
+
+### Changed
+- `zodl-ohttp-client` 1.0.1 and `zodl-slipstream` 0.5.0, both from crates.io: the configuration is passed in
+  at runtime, and
+  requests are padded to fixed size buckets. The Slipstream engine takes the same configuration.
+- Without a configuration (`Ohttp.configure` never called, or a network passed as null), OHTTP is off for that
+  network: `LightWalletClient.ohttpGatewayHost(isTestnet)` returns null, no host is a gateway
+  (`LightWalletClient.isOhttpGateway` is false, so an endpoint on the gateway host is a plain lightwalletd
+  server), `OhttpHttpClient.isConfigured` is false and its calls fail before anything is sent, and voting
+  sessions reach the predefined vote and PIR servers like custom ones (directly with Tor off). With a
+  configuration for the wallet's network, voting with Tor off rides the gateway and fails closed, as before.
+- `LightWalletClient.ohttpGatewayHost(isTestnet)` and the gateway recognition read the installed
+  configuration instead of build values.
+- The SDK build no longer reads any `ZODL_OHTTP_*` variable or `ZODL_OHTTP_REQUIRE`, and the CI workflows no
+  longer pass them: a build of the SDK, including the published artifacts, carries no OHTTP endpoint or key.
+
+### Removed
+- `OhttpCodec.usesIndependentRelay(gatewayHost)` and the SHA-256 digests of the relay URLs it compared with: the
+  app chooses its relay, so whether that relay is independent of the gateway operator is the app's to decide.
+- `BuildConfig.OHTTP_GATEWAY_HOST_MAINNET` / `_TESTNET` of the lightwallet-client module.
+
+### Migration
+- Call `Ohttp.configure` once at startup (for example in `Application.onCreate`, before any other SDK call)
+  with the values your build has, or with null to leave OHTTP off:
+  ```kotlin
+  Ohttp.configure(
+      OhttpConfiguration(
+          mainnet = OhttpNetworkConfiguration(gatewayHost, relayUrl, keysDnsName, signingPublicKey),
+          testnet = null, // OHTTP off for testnet
+      )
+  )
+  ```
+  A build that skips it has OHTTP off everywhere; nothing fails, but no traffic uses OHTTP.
+- Treat `LightWalletClient.ohttpGatewayHost(isTestnet) == null` as "OHTTP off" when you list a private
+  connection; do not offer one then.
+- Replace `OhttpCodec.usesIndependentRelay` with your own check of the relay you configured.
+- Stop passing `ZODL_OHTTP_*` to SDK builds; they have no effect.
+
 ## [8.0.0] - 2026-11-07
 
 ### Added
