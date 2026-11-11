@@ -25,12 +25,12 @@ class OhttpHttpClient private constructor(
      * for details.
      */
     private val ohttpClientTraceIdPrefix: String? = null,
-    /** The gateway of the client's network; null when this build configured none. */
+    /** The gateway of the client's network; null when OHTTP is off for it. */
     gatewayHost: String?,
     private val networkName: String,
 ) : Disposable {
-    // F-07 fix: Reuse OhttpTransport instance to share key cache across requests. Null when this build has no
-    // gateway or no relay for the network: every call then fails before anything is sent.
+    // F-07 fix: Reuse OhttpTransport instance to share key cache across requests. Null when the installed OHTTP
+    // configuration has no gateway or relay for the network: every call then fails before anything is sent.
     private val transport: OhttpTransport? =
         gatewayHost?.let { host ->
             codec.relayUrlFor(host)?.let { relayUrl ->
@@ -45,14 +45,14 @@ class OhttpHttpClient private constructor(
         }
 
     /**
-     * False when this build has no OHTTP gateway or relay for the client's network (the `ZODL_OHTTP_*`
-     * build configuration left it unset): every call then fails with an [OhttpException] before anything
-     * is sent, never by going direct.
+     * False when the installed OHTTP configuration has no gateway or relay for the client's network (or none
+     * is installed, see `cash.z.ecc.android.sdk.Ohttp.configure`): every call then fails with an
+     * [OhttpException] before anything is sent, never by going direct.
      */
     val isConfigured: Boolean get() = transport != null
 
     private fun configuredTransport(): OhttpTransport =
-        transport ?: throw OhttpException("OHTTP unavailable: no $networkName gateway configured in this build")
+        transport ?: throw OhttpException("OHTTP unavailable: no $networkName gateway configured")
 
     data class Request(
         val url: String,
@@ -103,9 +103,9 @@ class OhttpHttpClient private constructor(
          *   `cash.z.ecc.android.sdk.util.OhttpCodecFactory`.
          * @param ohttpClientTraceIdPrefix Optional client trace ID prefix for end-to-end tracing.
          * @param testnet seal to the testnet gateway (through its relay) instead of the mainnet one: the
-         *   gateway must match the wallet's network, as the SDK's own voting route does. When this build
-         *   configured no gateway for that network, the client is created but every call fails with an
-         *   [OhttpException] ([isConfigured] is false).
+         *   gateway must match the wallet's network, as the SDK's own voting route does. When the installed
+         *   OHTTP configuration has no gateway for that network (or none is installed), the client is created
+         *   but every call fails with an [OhttpException] ([isConfigured] is false).
          */
         fun create(
             codec: OhttpCodec,

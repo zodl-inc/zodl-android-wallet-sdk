@@ -84,9 +84,10 @@ impl TorRuntime {
     /// True when `endpoint` is an OHTTP gateway that must never be dialled directly.
     #[cfg(feature = "slipstream")]
     fn is_ohttp_gateway(endpoint: &Uri) -> bool {
-        endpoint
-            .host()
-            .is_some_and(|h| slipstream_core::ohttp::relay_for(h).is_some())
+        endpoint.host().is_some_and(|h| {
+            slipstream_core::ohttp::relay_for(&crate::ohttp_config::installed_networks(), h)
+                .is_some()
+        })
     }
 
     /// The engine `TorConn` for OHTTP-over-Tor, bootstrapping it on this runtime on first use.
@@ -127,7 +128,10 @@ impl TorRuntime {
         tracing::info!(gateway = %ep.host, "FFI Tor client: connecting via OHTTP over Tor");
         let conn = self
             .runtime
-            .block_on(async { tor.connect_isolated(&ep).await })
+            .block_on(async {
+                tor.connect_isolated(&crate::ohttp_config::installed_networks(), &ep)
+                    .await
+            })
             .map_err(|e| anyhow!("OHTTP-over-Tor connect: {e}"))?;
         Ok(LwdConn {
             runtime: self.runtime.clone(),

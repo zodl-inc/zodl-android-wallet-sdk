@@ -669,6 +669,21 @@ class RustBackend private constructor(
         private val rustLogging: RustLogging =
             if (BuildConfig.BUILD_TYPE.contains("release")) RustLogging.Off else RustLogging.Debug
 
+        @Volatile
+        private var isLibraryInitialized = false
+
+        /** Whether the native library is loaded and initialized ([loadLibrary] has completed its load). */
+        val isLoaded: Boolean
+            get() = isLibraryInitialized
+
+        /**
+         * Runs once, right after the native library is loaded and initialized and before [loadLibrary]
+         * returns to anyone. Set by `cash.z.ecc.android.sdk.Ohttp` to install the OHTTP configuration in
+         * the native library; it must not throw.
+         */
+        @Volatile
+        var onLibraryLoaded: (() -> Unit)? = null
+
         suspend fun loadLibrary() {
             rustLibraryLoader.load {
                 require(rustLogging.isNotLoggingInProduction()) {
@@ -676,6 +691,8 @@ class RustBackend private constructor(
                 }
 
                 initOnLoad(rustLogging.identifier)
+                isLibraryInitialized = true
+                onLibraryLoaded?.invoke()
             }
         }
 

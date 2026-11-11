@@ -136,7 +136,8 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_subscribe<'local>(
 ) -> jlong {
     let res = catch_unwind(&mut env, |env| {
         let host: String = env.get_string(&gateway_host)?.into();
-        let Some(relay) = slipstream_core::ohttp::relay_for(&host) else {
+        let networks = crate::ohttp_config::installed_networks();
+        let Some(relay) = slipstream_core::ohttp::relay_for(&networks, &host) else {
             return Ok(0);
         };
         let route = HealthRoute {
@@ -260,7 +261,7 @@ pub extern "C" fn Java_com_zodl_slipstream_OhttpHealthNative_relayUrlFor<'local>
 ) -> jstring {
     let res = catch_unwind(&mut env, |env| {
         let host: String = env.get_string(&gateway_host)?.into();
-        match slipstream_core::ohttp::relay_for(&host) {
+        match slipstream_core::ohttp::relay_for(&crate::ohttp_config::installed_networks(), &host) {
             Some(relay) => Ok(env.new_string(relay)?.into_raw()),
             None => Ok(std::ptr::null_mut()),
         }
