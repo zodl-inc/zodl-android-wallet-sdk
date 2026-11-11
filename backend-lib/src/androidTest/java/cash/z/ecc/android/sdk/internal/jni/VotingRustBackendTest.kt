@@ -66,6 +66,7 @@ class VotingRustBackendTest {
         private const val LARGE_BUNDLE_WEIGHT = 62_500_000L
         private const val SMALL_BUNDLE_WEIGHT = 12_500_000L
         private const val TWO_BUNDLE_ELIGIBLE_WEIGHT = 75_000_000L
+        private const val DUST_NOTE_VALUE = 1_000_000L
         private val HOTKEY_SEED = ByteArray(64) { 0x42 }
         private val OTHER_HOTKEY_SEED = ByteArray(64) { 0x43 }
         private const val EMPTY_ORCHARD_NOTE_COMMITMENT =
@@ -290,6 +291,21 @@ class VotingRustBackendTest {
             assertEquals(TWO_BUNDLE_ELIGIBLE_WEIGHT, setup.eligibleWeight)
             assertEquals(listOf(LARGE_BUNDLE_WEIGHT, SMALL_BUNDLE_WEIGHT), setup.bundleWeights)
             assertEquals(setup.eligibleWeight, setup.bundleWeights.sum())
+            assertEquals(0, setup.droppedCount)
+        }
+
+    @Test
+    fun compute_bundle_setup_reports_notes_dropped_in_a_dust_bundle() =
+        runTest {
+            // Five notes fill the first bundle; the dust note lands alone in a second bundle
+            // worth less than one ballot, which the chunker discards.
+            val notes = notes(noteCount = 5) + note(value = DUST_NOTE_VALUE, position = 5, byteValue = 6)
+
+            val setup = VotingRustBackend.new().computeBundleSetup(notes)
+
+            assertEquals(1, setup.bundleCount)
+            assertEquals(listOf(LARGE_BUNDLE_WEIGHT), setup.bundleWeights)
+            assertEquals(1, setup.droppedCount)
         }
 
     @Test
@@ -726,6 +742,7 @@ class VotingRustBackendTest {
                 // for).
                 val bundleSetup = db.setupBundles(ROUND_ID, notes(1))
                 assertEquals(1, bundleSetup.bundleCount)
+                assertEquals(0, bundleSetup.droppedCount)
                 assertEquals(1, db.getBundleCount(ROUND_ID))
 
                 val hotkey = db.generateHotkey(HOTKEY_SEED)

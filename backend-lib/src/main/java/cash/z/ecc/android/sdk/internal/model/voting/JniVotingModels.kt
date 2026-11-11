@@ -535,14 +535,22 @@ internal const val JNI_ROUND_PHASE_DELEGATION_CONSTRUCTED = 2
 internal const val JNI_ROUND_PHASE_DELEGATION_PROVED = 3
 internal const val JNI_ROUND_PHASE_VOTE_READY = 4
 
+/**
+ * [droppedCount] is the number of notes discarded because their bundle totalled less than one
+ * ballot; their value is not part of [eligibleWeight]. Notes removed by the privacy trim are not
+ * counted.
+ */
 @Keep
 data class JniBundleSetupResult(
     val bundleCount: Int,
     val eligibleWeight: Long,
-    val bundleWeights: List<Long>
+    val bundleWeights: List<Long>,
+    val droppedCount: Int
 ) {
-    internal constructor(bundleCount: Int, eligibleWeight: Long, bundleWeights: LongArray) :
-        this(bundleCount, eligibleWeight, bundleWeights.toList())
+    // Called from Rust: must match JNI_BUNDLE_SETUP_RESULT_CTOR_SIG "(IJ[JI)V" in
+    // backend-lib/src/main/rust/voting/helpers.rs. Guarded by JniVotingModelsTest.
+    internal constructor(bundleCount: Int, eligibleWeight: Long, bundleWeights: LongArray, droppedCount: Int) :
+        this(bundleCount, eligibleWeight, bundleWeights.toList(), droppedCount)
 }
 
 @Keep

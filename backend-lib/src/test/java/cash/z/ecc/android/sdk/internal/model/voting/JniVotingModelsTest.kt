@@ -135,6 +135,19 @@ class JniVotingModelsTest {
     }
 
     @Test
+    fun bundle_setup_result_constructor_matches_rust_jni_signature() {
+        val constructor =
+            JniBundleSetupResult::class.java.getDeclaredConstructor(
+                Int::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType,
+                LongArray::class.java,
+                Int::class.javaPrimitiveType
+            )
+
+        assertEquals("(IJ[JI)V", constructor.jniDescriptor())
+    }
+
+    @Test
     fun voting_hotkey_constructor_matches_rust_jni_signature() {
         val constructor =
             JniVotingHotkey::class.java.getDeclaredConstructor(
