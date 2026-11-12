@@ -24,7 +24,8 @@ sealed class TransactionSubmitResult(
     /**
      * An error occurred while submitting the transaction.
      *
-     * If `grpcError` is true, the transaction failed to reach the `lightwalletd` server.
+     * If `grpcError` is true, the call failed in transport: the server could not be reached, the call
+     * timed out or its response was lost, so the server may still have accepted the transaction.
      * Otherwise, the transaction reached the `lightwalletd` server but failed to enter
      * the mempool.
      *
@@ -36,7 +37,7 @@ sealed class TransactionSubmitResult(
      * for non-Tor failures don't need to change.
      * @param rejection the SDK's verdict on the transaction when this result was returned: the
      * refusal for good it recorded, non-null only when the transaction is rejected, that is every
-     * endpoint it was submitted to answered explicitly, none accepted it and one refused it for good
+     * endpoint it was submitted to answered explicitly, none accepted it and every one refused it for good
      * (the same verdict as [cash.z.ecc.android.sdk.Synchronizer.rejectedTransactions]). `null` while
      * the transaction is pending: this endpoint's refusal is transient or inconclusive, or another
      * endpoint has not answered yet. A transaction another endpoint accepted, in this submission or

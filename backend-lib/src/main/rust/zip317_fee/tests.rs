@@ -46,8 +46,29 @@ fn the_marginal_fee_is_what_the_standard_fee_rule_charges_per_action() {
 
 #[test]
 fn the_marginal_fee_fits_the_jni_return_type() {
+    let fee = marginal_fee_zatoshis();
+
     assert_eq!(
-        jlong::try_from(marginal_fee_zatoshis()).unwrap(),
-        jlong::try_from(zip317::MARGINAL_FEE.into_u64()).unwrap()
+        fee, 5_000,
+        "ZIP 317 fixes the marginal fee at 5000 zatoshis"
+    );
+    assert!(fee <= jlong::MAX as u64);
+    assert_eq!(jlong::try_from(fee).unwrap(), 5_000);
+}
+
+/// The grace actions are charged as if they were used: a transaction of up to two logical actions
+/// costs two marginal fees, and the fee only grows with the third.
+#[test]
+fn the_grace_actions_cost_two_marginal_fees() {
+    for actions in 0..=2 {
+        assert_eq!(
+            standard_fee_for_orchard_actions(actions),
+            2 * marginal_fee_zatoshis(),
+            "{actions} actions"
+        );
+    }
+    assert_eq!(
+        standard_fee_for_orchard_actions(3),
+        3 * marginal_fee_zatoshis()
     );
 }
