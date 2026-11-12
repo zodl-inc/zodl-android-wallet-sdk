@@ -44,9 +44,8 @@ import kotlin.test.assertIs
 /**
  * The card wallet: [status], one account holding [spendable] and [pending], [history]
  * transactions, of which the last [sentHistory] were sent by the card wallet itself (the rest received), counting
- * its [transactionReads], one proposal paying [fee] and sending [sent] (by default what [walletBalances]
- * holds as spendable when the proposal is made, minus [fee]), and whatever [submitResult] says about each
- * transaction. [setupError] is the setup
+ * its [transactionReads], one proposal paying [fee] and sending [sent] (by default [spendable] minus
+ * [fee]), and whatever [submitResult] says about each transaction. [setupError] is the setup
  * failure it has latched, if any, [accounts] its account list (`null` while not loaded yet, as
  * [Synchronizer.accountsFlow] reports it), [progress] its sync progress, and [networkHeight] and
  * [fullyScannedHeight] its heights, both [CARD_WALLET_TIP] unless a test moves them. [onCreate] runs while its
@@ -56,7 +55,7 @@ import kotlin.test.assertIs
 @Suppress("LongParameterList")
 internal class FakeCardWallet(
     private val created: List<CreatedTransaction>,
-    spendable: Long = 1_000_000,
+    private val spendable: Long = 1_000_000,
     pending: Long = 0,
     private val proposalFailure: Exception? = null,
     var fee: Zatoshi = Zatoshi(10_000),
@@ -67,10 +66,6 @@ internal class FakeCardWallet(
     private val onClose: () -> Unit = {},
     override val status: Flow<Synchronizer.Status> = MutableStateFlow(Synchronizer.Status.SYNCED),
     private val onCreate: suspend () -> Unit = {},
-    /** Thrown by a send-max proposed under any size bound but consensus alone. */
-    private val boundFailure: Exception? = null,
-    /** The transactions each creation creates, by creation number from 1. */
-    private val createdInCreation: ((Int) -> List<CreatedTransaction>)? = null,
     private val submitResult: (CreatedTransaction) -> TransactionSubmitResult = {
         TransactionSubmitResult.Success(it.txId)
     }
@@ -81,8 +76,6 @@ internal class FakeCardWallet(
     var ovkPolicy: OvkPolicy? = null
     var transactionReads = 0
     var creations = 0
-    val sizeBounds = mutableListOf<TransactionSizeBound>()
-    val creationBounds = mutableListOf<TransactionSizeBound>()
 
     override val network: ZcashNetwork = ZcashNetwork.Mainnet
     override var onCriticalErrorHandler: ((Throwable?) -> Boolean)? = null
@@ -100,9 +93,6 @@ internal class FakeCardWallet(
 
     override suspend fun getAccounts(): List<Account> = accounts.value.orEmpty()
 
-    /** The card wallet's transactions, as a test settles them. */
-    override val allTransactions: MutableStateFlow<List<TransactionOverview>> = MutableStateFlow(emptyList())
-
     override suspend fun getTransactions(accountUuid: AccountUuid): Flow<List<TransactionOverview>> {
         transactionReads++
         return flowOf(
@@ -114,13 +104,6 @@ internal class FakeCardWallet(
         )
     }
 
-    /** What [walletBalances] holds as spendable when the proposal is made, as the SDK would read it then. */
-    private fun spendableNow(): Long =
-        walletBalances.value
-            ?.values
-            ?.sumOf { it.sapling.available.value + it.orchard.available.value + it.ironwood.available.value }
-            ?: 0
-
     override suspend fun proposeSendMax(
         account: Account,
         recipient: RecipientAddress,
@@ -128,12 +111,10 @@ internal class FakeCardWallet(
         sizeBound: TransactionSizeBound
     ): Proposal {
         proposed = true
-        sizeBounds += sizeBound
         proposalFailure?.let { throw it }
-        boundFailure?.takeIf { sizeBound != TransactionSizeBound.CONSENSUS }?.let { throw it }
         val proposal = mock(Proposal::class.java)
         `when`(proposal.totalFeeRequired()).thenReturn(fee)
-        `when`(proposal.totalPaymentAmount()).thenReturn(Zatoshi(sent ?: (spendableNow() - fee.value).coerceAtLeast(0)))
+        `when`(proposal.totalPaymentAmount()).thenReturn(Zatoshi(sent ?: (spendable - fee.value).coerceAtLeast(0)))
         return proposal
     }
 
@@ -146,10 +127,9 @@ internal class FakeCardWallet(
                 sizeBound: TransactionSizeBound
             ): List<CreatedTransaction> {
                 this@FakeCardWallet.ovkPolicy = ovkPolicy
-                creationBounds += sizeBound
                 creations++
                 onCreate()
-                return createdInCreation?.invoke(creations) ?: created
+                return created
             }
 
             override suspend fun createTransactionFromPczt(
@@ -386,14 +366,12 @@ internal fun createdTransaction(tag: String) =
         expiryHeight = null
     )
 
-@Suppress("LongParameterList")
 internal fun redeemer(
     cardWallet: FakeCardWallet,
     wallets: FakeWallets = FakeWallets(cardWallet),
     aliases: GiftCardAliases = GiftCardAliases(),
     isTorEnabled: Boolean = false,
-    teardownScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
-    sendWhatFits: SendWhatFits? = null
+    teardownScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ): Pair<GiftCardRedeemer, FakeWallets> {
     val redeemer =
         GiftCardRedeemer.new(
@@ -405,8 +383,7 @@ internal fun redeemer(
             alias = GiftCardRedeemer.defaultAlias(card()),
             wallets = wallets,
             aliases = aliases,
-            teardownScope = teardownScope,
-            sendWhatFits = sendWhatFits
+            teardownScope = teardownScope
         )
     return redeemer to wallets
 }

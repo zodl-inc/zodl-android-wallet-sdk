@@ -287,17 +287,22 @@ class GiftCardRedeemerTest {
 
         val ready =
             AccountBalance(pool(), pool(available = 10_000), pool(available = 1_000_000, pending = 5), Zatoshi(0))
-        // The minimum fee alone cannot decide a card above it: it must be proposed.
-        assertNull(ready.toGiftCardBalance().toStatus())
+        assertEquals(
+            GiftCardRedeemer.Status.Ready(
+                GiftCardRedeemer.Balance(Zatoshi(1_010_005), Zatoshi(1_010_000), Zatoshi(5)),
+                GiftCardRedeemer.MINIMUM_FEE
+            ),
+            ready.toGiftCardBalance().toStatus()
+        )
     }
 
     /** Dust that is spendable now plus funds still confirming is pending: wait for them. */
     @Test
-    fun aCardHoldingNoMoreThanTheFeeIsEmptyAndOneAboveItNeedsAProposal() {
+    fun aCardHoldingNoMoreThanTheFeeIsEmptyAndOneAboveItIsReady() {
         assertEquals(10_000, GiftCardRedeemer.MINIMUM_FEE.value)
         assertEquals(GiftCardRedeemer.Status.Empty, balance(available = 10_000).toGiftCardBalance().toStatus())
         assertEquals(GiftCardRedeemer.Status.Empty, balance(pending = 10_000).toGiftCardBalance().toStatus())
-        assertNull(balance(available = 10_001).toGiftCardBalance().toStatus())
+        assertIs<GiftCardRedeemer.Status.Ready>(balance(available = 10_001).toGiftCardBalance().toStatus())
         assertIs<GiftCardRedeemer.Status.Pending>(
             balance(available = 5_000, pending = 1_000_000).toGiftCardBalance().toStatus()
         )
@@ -392,16 +397,14 @@ class GiftCardRedeemerTest {
     fun readyCarriesTheFeeTheCardsNotesRequireAndTheAmountARedemptionSends() =
         runBlocking {
             val claim = createdTransaction("claim")
-            // The proposal sends less than the spendable balance minus the fee (1,000,000 - 25,000), so the
-            // assertions below can only pass if both values are read from the proposal, not computed from the balance.
-            val cardWallet = FakeCardWallet(listOf(claim), fee = Zatoshi(25_000), sent = 960_000)
+            val cardWallet = FakeCardWallet(listOf(claim), fee = Zatoshi(25_000))
             val (redeemer, _) = redeemer(cardWallet)
 
             val ready = assertIs<GiftCardRedeemer.Status.Ready>(redeemer.check())
 
             assertEquals(Zatoshi(25_000), ready.fee)
-            assertEquals(Zatoshi(960_000), ready.redeemable)
-            assertEquals(Zatoshi(960_000), redeemer.redeem(recipient()).amount)
+            assertEquals(Zatoshi(975_000), ready.redeemable)
+            assertEquals(Zatoshi(975_000), redeemer.redeem(recipient()).amount)
         }
 
     @Test

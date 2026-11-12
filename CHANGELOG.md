@@ -174,19 +174,6 @@ published artifacts carry no configuration, so the next release is a major versi
   with its submit plan; proposal marks and marks of transactions that never got a plan (an
   abandoned PCZT's) are erased with the wallet and once older than 30 days. The interface provides defaults that report no
   rejection, so other implementations keep compiling; the SDK and Slipstream synchronizers report them.
-- `GiftCardRedeemer.redeem` takes an optional `sizeBound: TransactionSizeBound` (default
-  `CONSENSUS`), `roundTimeout` and `onProgress: suspend (GiftCardRedeemer.RedeemProgress) -> Unit`.
-  A card whose notes do not fit in one transaction within the bound fails with
-  `GiftCardException.TooManyNotes`, having sent nothing; redeeming such a card in several rounds
-  stays gated off until librustzcash ships the selection of what fits within a bound
-  (zcash/librustzcash#3131), so `rounds` is `1` and `onProgress` is called once until then. A
-  redemption does not hold the redeemer's lock while a round waits to be mined (`close()` and
-  `check()` are not blocked; a `close()` ends that wait with `GiftCardException.Closed`), and an
-  `onProgress` callback that throws is logged and ignored, so the transactions sent are never lost. `GiftCardRedeemer.Redemption.rounds` (default `1`),
-  `GiftCardRedeemer.Remainder` and `GiftCardRedeemer.RedeemProgress` describe a redemption in
-  rounds; `GiftCardException.RoundFailed.sentTxIds` and `TooManyNotes.sentTxIds` name the
-  transactions of the rounds already sent.
-
 - `ExternalSignerBudgets.qrSigningRoundMaxActions(): Int` (in `cash.z.ecc.android.sdk.model`), a
   `suspend` function returning the most Orchard-family actions one signing round of a QR-code signer
   such as Keystone may carry, across every transaction in the round. Read from librustzcash
@@ -276,14 +263,6 @@ published artifacts carry no configuration, so the next release is a major versi
   component: source that constructs it or destructures `rootCause` still compiles, but its
   generated `copy` and `componentN` change, so code compiled against the previous class must be
   recompiled.
-- `GiftCardException` has three new subtypes: `TooManyNotes`, `RoundFailed(round, redemption)`
-  and `RoundExpired(round, txIds)`. An exhaustive `when` over `GiftCardException` stops compiling
-  until they are handled. `GiftCardRedeemer.redeem` now throws `TooManyNotes`, with the
-  `ProposalTooLargeException` as its cause, where it threw that `TransactionEncoderException`
-  directly for a card whose notes do not fit in a block.
-- `GiftCardRedeemer.Status.Ready.redeemable` and `GiftCardRedeemer.Redemption.amount` are the
-  redemption proposal's `Proposal.totalPaymentAmount()`: what the redemption sends to the
-  recipient, after the fee.
 - `TransactionEncoderException` has three new subtypes, `ProposalTooLargeException`,
   `ProposalRecipientCannotReceiveMemoException` and `ProposalUnsupportedRecipientException`, each
   carrying the failure as `rootCause`; their messages are fixed and never contain the recipient
