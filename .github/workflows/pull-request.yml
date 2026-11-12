@@ -199,7 +199,7 @@ jobs:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
     needs: validate_gradle_wrapper
-    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.LINUX_RUNNER_LONG || vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -372,7 +372,7 @@ jobs:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
     needs: validate_gradle_wrapper
-    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.LINUX_RUNNER_LONG || vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -669,7 +669,7 @@ jobs:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
     needs: validate_gradle_wrapper
-    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.LINUX_RUNNER_LONG || vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
