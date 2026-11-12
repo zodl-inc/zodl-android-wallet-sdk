@@ -137,7 +137,7 @@ internal class SubmitPlanStore(
      * Records [result], [endpoint]'s answer when [txId] was submitted to it, adding [endpoint] to the
      * transaction's endpoints, and stores or clears the transaction's rejection by the same rule as
      * `sdk-lib`'s `PendingSubmitPlanStore` (see `submitRejectionVerdict`): rejected only once every
-     * endpoint gave an explicit server answer, none accepted and one refused for good.
+     * endpoint gave an explicit server answer, none accepted and every one refused for good.
      * [TransactionSubmitResult.NotAttempted] records a submission that returned no answer (it threw
      * or was cancelled, possibly after the request was sent), and a transport failure
      * ([TransactionSubmitResult.Failure.grpcError]: timeout, gRPC or I/O error) is inconclusive too:

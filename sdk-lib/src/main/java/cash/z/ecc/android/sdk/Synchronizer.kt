@@ -174,8 +174,8 @@ interface Synchronizer {
      *
      * This is the SDK's verdict over every endpoint a transaction was submitted to, not one
      * endpoint's answer: a transaction is rejected only when every such endpoint gave an explicit
-     * server answer, none accepted it, and at least one refused it explicitly and for good. A
-     * transient refusal beside that refusal does not prevent it. A transport failure
+     * server answer, none accepted it, and every one refused it explicitly and for good. A
+     * transient refusal from any endpoint (such as a full mempool) keeps it pending. A transport failure
      * ([cash.z.ecc.android.sdk.model.TransactionSubmitResult.Failure.grpcError]: unreachable, timed
      * out, response lost) is inconclusive, as the server may have accepted the transaction, and so
      * is an endpoint whose submission has not answered (still in flight, or it threw or was

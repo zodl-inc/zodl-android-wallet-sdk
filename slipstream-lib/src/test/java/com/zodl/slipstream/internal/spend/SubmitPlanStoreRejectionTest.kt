@@ -97,7 +97,7 @@ class SubmitPlanStoreRejectionTest {
     }
 
     @Test
-    fun a_refusal_and_a_transient_failure_in_either_order_is_rejected_with_the_refusal() {
+    fun a_refusal_and_a_transient_failure_in_either_order_stays_pending() {
         listOf(listOf(a to tooLarge, b to mempoolFull), listOf(b to mempoolFull, a to tooLarge)).forEach { answers ->
             val preferences = InMemoryPreferences()
             val store = SubmitPlanStore(preferences)
@@ -108,13 +108,28 @@ class SubmitPlanStoreRejectionTest {
             assertNull(store.rejectionFor(txId))
             store.recordSubmitOutcome(txId, answers[1].first, answers[1].second)
 
-            assertEquals(StoredRejection(-25, "exceeding the configured mempool maximum"), store.rejectionFor(txId))
-            assertEquals(mapOf(TransactionId.new(txId) to SubmitRejection.TOO_LARGE), store.rejectedTransactions.value)
-            assertEquals(
-                mapOf(TransactionId.new(txId) to SubmitRejection.TOO_LARGE),
-                SubmitPlanStore(preferences).rejectedTransactions.value
-            )
+            assertNull(store.rejectionFor(txId))
+            assertEquals(emptyMap(), store.rejectedTransactions.value)
+            assertEquals(emptyMap(), SubmitPlanStore(preferences).rejectedTransactions.value)
         }
+    }
+
+    @Test
+    fun two_endpoints_that_both_refuse_for_good_reject_the_transaction() {
+        val preferences = InMemoryPreferences()
+        val store = SubmitPlanStore(preferences)
+        store.recordSubmitStarted(txId, a)
+        store.recordSubmitStarted(txId, b)
+
+        store.recordSubmitOutcome(txId, a, tooLarge)
+        store.recordSubmitOutcome(txId, b, tooLarge)
+
+        assertEquals(StoredRejection(-25, "exceeding the configured mempool maximum"), store.rejectionFor(txId))
+        assertEquals(mapOf(TransactionId.new(txId) to SubmitRejection.TOO_LARGE), store.rejectedTransactions.value)
+        assertEquals(
+            mapOf(TransactionId.new(txId) to SubmitRejection.TOO_LARGE),
+            SubmitPlanStore(preferences).rejectedTransactions.value
+        )
     }
 
     @Test

@@ -404,6 +404,10 @@ class PendingSubmitPlanStoreTest {
                 PendingSubmitPlanStore.StoredSubmitPlan.Rejected(-25, TOO_LARGE_TEXT),
                 store.getSubmitPlan(transaction.txId)
             )
+            assertEquals(
+                mapOf(TransactionId.new(transaction.txId) to SubmitRejection.TOO_LARGE),
+                store.rejectedTransactions.first()
+            )
         }
 
     @Test

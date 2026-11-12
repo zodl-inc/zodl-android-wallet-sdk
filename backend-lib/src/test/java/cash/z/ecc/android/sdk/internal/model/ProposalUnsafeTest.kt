@@ -192,7 +192,7 @@ class ProposalUnsafeTest {
     }
 
     @Test
-    fun total_payment_amount_of_a_transfer_to_the_wallet_itself_is_zero() {
+    fun total_payment_amount_is_zero_when_everything_but_the_fee_comes_back_as_change() {
         val step =
             singleStep(
                 listOf(receivedOutputInput(ValuePool.Sapling, value = 100_000L)),

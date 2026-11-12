@@ -137,8 +137,8 @@ internal class PendingSubmitPlanStore(
      * [StoredSubmitPlan.Rejected].
      *
      * A transaction is rejected only once every endpoint it was submitted to, or is planned for,
-     * has given an explicit server answer, none accepted it and at least one refused it explicitly
-     * and for good; a transient refusal beside it does not prevent that. An endpoint that has not
+     * has given an explicit server answer, none accepted it and every one refused it explicitly
+     * and for good; a transient refusal from any endpoint keeps it pending. An endpoint that has not
      * answered, or whose submission failed in transport (timeout, gRPC or I/O error: the server may
      * have accepted it), is inconclusive and keeps the transaction pending, so it is resubmitted
      * (see [submitRejectionVerdict]). Any acceptance, including a late one, clears it. A migration
