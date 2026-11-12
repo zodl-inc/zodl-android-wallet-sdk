@@ -484,6 +484,7 @@ class GiftCardRedeemerEngineTest {
                 cardAccountBalance(pending = 1_000_000) to GiftCardRedeemer.Status.Pending::class,
                 cardAccountBalance(available = 1_000_000) to GiftCardRedeemer.Status.Ready::class
             ).forEach { (late, expected) ->
+                // Nothing is spendable at first; once funds arrive, the proposal pays them less the fee.
                 val cardWallet = FakeCardWallet(emptyList(), spendable = 0, history = 0)
                 val wallets = engineWallets(cardWallet, exact = true)
                 val (redeemer, _) = redeemer(cardWallet, wallets = wallets)

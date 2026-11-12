@@ -14,7 +14,7 @@
 use anyhow::anyhow;
 use zcash_client_backend::{
     data_api::{
-        Account as _, InputSource, MaxSpendMode, WalletRead,
+        Account as _, InputSource, MaxSpendMode, WalletRead, WalletWrite,
         wallet::{
             ConfirmationsPolicy, input_selection::LockedInputPolicy, propose_send_max_transfer,
         },
@@ -22,17 +22,13 @@ use zcash_client_backend::{
     fees::StandardFeeRule,
     proposal::Proposal,
 };
-use zcash_client_sqlite::{AccountUuid, WalletDb, util::SystemClock};
 use zcash_protocol::{
     ShieldedPool,
-    consensus::{Network, NetworkUpgrade, Parameters},
+    consensus::{NetworkUpgrade, Parameters},
     memo::MemoBytes,
 };
 
-/// The wallet database as the JNI layer holds it.
-type Db = WalletDb<rusqlite::Connection, Network, SystemClock, crate::SystemRng>;
-
-type MigrationProposal = Proposal<StandardFeeRule, <Db as InputSource>::NoteRef>;
+type MigrationProposal<NoteRef> = Proposal<StandardFeeRule, NoteRef>;
 
 /// Proposes migrating the account's Orchard balance into the Ironwood pool.
 ///
@@ -61,11 +57,21 @@ type MigrationProposal = Proposal<StandardFeeRule, <Db as InputSource>::NoteRef>
 /// value is the account's entire Orchard balance, which any observer can read
 /// off the chain. Splitting a crossing into less-identifying denominations is
 /// a separate mechanism; this deliberately does not attempt it.
-pub(crate) fn propose_orchard_to_ironwood(
-    db_data: &mut Db,
-    network: &Network,
-    account: AccountUuid,
-) -> anyhow::Result<MigrationProposal> {
+///
+/// Generic over the wallet and network only so tests can drive it with a synthetic wallet; the
+/// JNI layer calls it with its `WalletDb` and `Network`.
+pub(crate) fn propose_orchard_to_ironwood<DbT, P>(
+    db_data: &mut DbT,
+    network: &P,
+    account: <DbT as InputSource>::AccountId,
+) -> anyhow::Result<MigrationProposal<<DbT as InputSource>::NoteRef>>
+where
+    DbT: WalletWrite
+        + InputSource<Error = <DbT as WalletRead>::Error, AccountId = <DbT as WalletRead>::AccountId>,
+    <DbT as InputSource>::NoteRef: Copy + Eq + Ord + std::fmt::Debug + std::fmt::Display,
+    <DbT as WalletRead>::Error: std::fmt::Display + std::fmt::Debug,
+    P: Parameters + Clone,
+{
     // Before NU6.3 an Orchard-receiver payment is built as an Orchard output,
     // so this would be a fee-costing no-op rather than a migration. After it,
     // the Orchard turnstile (a consensus rule) forbids adding value to the

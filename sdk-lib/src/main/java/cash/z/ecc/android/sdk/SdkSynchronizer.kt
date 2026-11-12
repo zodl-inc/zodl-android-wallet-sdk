@@ -82,11 +82,13 @@ import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
+import cash.z.ecc.android.sdk.model.SubmitRejection
 import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionOutput
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionPool
 import cash.z.ecc.android.sdk.model.TransactionRecipient
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
@@ -412,6 +414,12 @@ class SdkSynchronizer private constructor(
             started = SharingStarted.WhileSubscribed(), // stop immediately
             initialValue = ObserveFiatCurrencyResult()
         )
+
+    override val rejectedTransactions: Flow<Map<TransactionId, SubmitRejection>>
+        get() = pendingSubmitPlanStore.rejectedTransactions
+
+    override val rejectedTransactionIds: Flow<Set<TransactionId>>
+        get() = pendingSubmitPlanStore.rejectedTransactionIds
 
     override val allTransactions
         get() =
@@ -1248,8 +1256,9 @@ class SdkSynchronizer private constructor(
     @Throws(TransactionEncoderException.ProposalFromUriException::class)
     override suspend fun proposeFulfillingPaymentUri(
         account: Account,
-        uri: String
-    ): Proposal = txManager.proposeTransferFromUri(account, uri)
+        uri: String,
+        sizeBound: TransactionSizeBound
+    ): Proposal = txManager.proposeTransferFromUri(account, uri, sizeBound)
 
     /**
      * @throws TransactionEncoderException.ProposalFromParametersException in case the proposal creation failed
@@ -1261,8 +1270,9 @@ class SdkSynchronizer private constructor(
         account: Account,
         recipient: String,
         amount: Zatoshi,
-        memo: String
-    ): Proposal = txManager.proposeTransfer(account, recipient, amount, memo)
+        memo: String,
+        sizeBound: TransactionSizeBound
+    ): Proposal = txManager.proposeTransfer(account, recipient, amount, memo, sizeBound)
 
     /**
      * @throws TransactionEncoderException.ProposalFromParametersException in case the proposal
@@ -1270,19 +1280,26 @@ class SdkSynchronizer private constructor(
      */
     @Throws(TransactionEncoderException.ProposalFromParametersException::class)
     override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal =
-        txManager.proposeOrchardToIronwoodMigration(account)
+        txManager
+            .proposeOrchardToIronwoodMigration(account)
+            .also { pendingSubmitPlanStore.migrationMarks.markProposal(it) }
 
     @Throws(
         TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalTooLargeException::class,
+        TransactionEncoderException.ProposalSyncRequiredException::class,
+        TransactionEncoderException.ProposalRecipientCannotReceiveMemoException::class,
+        TransactionEncoderException.ProposalUnsupportedRecipientException::class,
         TransactionEncoderException.ProposalFromParametersException::class
     )
     override suspend fun proposeSendMax(
         account: Account,
         recipient: RecipientAddress,
-        memo: MemoContent?
+        memo: MemoContent?,
+        sizeBound: TransactionSizeBound
     ): Proposal {
         require(recipient.network == network) { "The recipient is for a different network" }
-        return txManager.proposeSendMax(account, recipient, memo)
+        return txManager.proposeSendMax(account, recipient, memo, sizeBound)
     }
 
     /**
@@ -1306,7 +1323,8 @@ class SdkSynchronizer private constructor(
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy
+        ovkPolicy: OvkPolicy,
+        sizeBound: TransactionSizeBound
     ): Flow<TransactionSubmitResult> {
         // This preserves the legacy API contract by creating locally, then submitting each
         // created transaction to the builder-configured default endpoint.
@@ -1314,16 +1332,22 @@ class SdkSynchronizer private constructor(
             proposal = proposal,
             usk = usk,
             endpoint = defaultSubmitEndpoint,
-            ovkPolicy = ovkPolicy
+            ovkPolicy = ovkPolicy,
+            sizeBound = sizeBound
         )
     }
 
     override suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
-        proposal: Proposal
+        proposal: Proposal,
+        sizeBound: TransactionSizeBound
     ): Pczt {
         proposal.requireSingleStepForPczt()
-        return txManager.createPcztFromProposal(accountUuid, proposal)
+        return txManager.createPcztFromProposal(accountUuid, proposal, sizeBound).also { pczt ->
+            // Marked by its transaction id, which signing and proving do not change, so that the transaction is
+            // never rejected however the PCZT is carried, reparsed or stored before it is submitted.
+            pendingSubmitPlanStore.migrationMarks.markPcztOf(proposal, pczt)
+        }
     }
 
     override suspend fun redactPcztForSigner(pczt: Pczt) = txManager.redactPcztForSigner(pczt)

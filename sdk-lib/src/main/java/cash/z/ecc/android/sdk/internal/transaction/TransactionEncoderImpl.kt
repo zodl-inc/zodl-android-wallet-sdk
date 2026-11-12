@@ -18,6 +18,7 @@ import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RecipientAddress
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import kotlin.coroutines.cancellation.CancellationException
@@ -51,11 +52,16 @@ internal class TransactionEncoderImpl(
      */
     @Throws(
         TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalTooLargeException::class,
+        TransactionEncoderException.ProposalSyncRequiredException::class,
+        TransactionEncoderException.ProposalRecipientCannotReceiveMemoException::class,
+        TransactionEncoderException.ProposalUnsupportedRecipientException::class,
         TransactionEncoderException.ProposalFromUriException::class
     )
     override suspend fun proposeTransferFromUri(
         account: Account,
-        uri: String
+        uri: String,
+        sizeBound: TransactionSizeBound
     ): Proposal {
         Twig.debug {
             "creating proposal from URI: $uri"
@@ -64,7 +70,8 @@ internal class TransactionEncoderImpl(
         return runCatching {
             backend.proposeTransferFromUri(
                 account,
-                uri
+                uri,
+                sizeBound
             )
         }.onSuccess {
             Twig.info { "Result of proposeTransferFromUri: ${it.toPrettyString()}" }
@@ -97,13 +104,18 @@ internal class TransactionEncoderImpl(
 
     @Throws(
         TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalTooLargeException::class,
+        TransactionEncoderException.ProposalSyncRequiredException::class,
+        TransactionEncoderException.ProposalRecipientCannotReceiveMemoException::class,
+        TransactionEncoderException.ProposalUnsupportedRecipientException::class,
         TransactionEncoderException.ProposalFromParametersException::class
     )
     override suspend fun proposeTransfer(
         account: Account,
         recipient: String,
         amount: Zatoshi,
-        memo: ByteArray?
+        memo: ByteArray?,
+        sizeBound: TransactionSizeBound
     ): Proposal {
         Twig.debug {
             "creating proposal to spend $amount zatoshi to" +
@@ -115,7 +127,8 @@ internal class TransactionEncoderImpl(
                 account,
                 recipient,
                 amount.value,
-                memo
+                memo,
+                sizeBound
             )
         }.onSuccess {
             Twig.info { "Result of proposeTransfer: ${it.toPrettyString()}" }
@@ -129,6 +142,8 @@ internal class TransactionEncoderImpl(
 
     @Throws(
         TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalTooLargeException::class,
+        TransactionEncoderException.ProposalSyncRequiredException::class,
         TransactionEncoderException.ProposalShieldingException::class
     )
     override suspend fun proposeShielding(
@@ -150,17 +165,22 @@ internal class TransactionEncoderImpl(
 
     @Throws(
         TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalTooLargeException::class,
+        TransactionEncoderException.ProposalSyncRequiredException::class,
+        TransactionEncoderException.ProposalRecipientCannotReceiveMemoException::class,
+        TransactionEncoderException.ProposalUnsupportedRecipientException::class,
         TransactionEncoderException.ProposalFromParametersException::class
     )
     override suspend fun proposeSendMax(
         account: Account,
         recipient: RecipientAddress,
-        memo: MemoContent?
+        memo: MemoContent?,
+        sizeBound: TransactionSizeBound
     ): Proposal {
         Twig.debug { "creating proposal to send the maximum spendable amount" }
 
         return runCatching {
-            backend.proposeSendMaxTransfer(account, recipient, memo)
+            backend.proposeSendMaxTransfer(account, recipient, memo, sizeBound)
         }.onSuccess {
             Twig.info {
                 "Result of proposeSendMax: ${it.transactionCount()} transaction(s), " +
@@ -186,7 +206,8 @@ internal class TransactionEncoderImpl(
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy
+        ovkPolicy: OvkPolicy,
+        sizeBound: TransactionSizeBound
     ): List<EncodedTransaction> {
         Twig.debug {
             "creating transactions for proposal"
@@ -198,7 +219,7 @@ internal class TransactionEncoderImpl(
                     saplingParamFetcher.forceDownload()
                     Twig.debug { "params exist! attempting to send..." }
                 }
-                backend.createProposedTransactions(proposal, usk, ovkPolicy)
+                backend.createProposedTransactions(proposal, usk, ovkPolicy, sizeBound)
             }.onFailure {
                 Twig.error(it) { "Caught exception while creating transaction." }
             }.onSuccess { result ->
@@ -220,12 +241,14 @@ internal class TransactionEncoderImpl(
 
     override suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
-        proposal: Proposal
+        proposal: Proposal,
+        sizeBound: TransactionSizeBound
     ): Pczt =
         runCatching {
             backend.createPcztFromProposal(
                 account = Account.new(accountUuid),
-                proposal = proposal
+                proposal = proposal,
+                sizeBound = sizeBound
             )
         }.onSuccess {
             Twig.debug { "Result of createPcztFromProposal: $it" }
@@ -233,7 +256,12 @@ internal class TransactionEncoderImpl(
             Twig.error(it) { "Caught exception while creating PCZT." }
         }.getOrElse {
             if (it is CancellationException) throw it
-            throw PcztException.CreatePcztFromProposalException(it.message, it.asAnchorNotFoundException() ?: it.cause)
+            // The backend's suppressed exceptions are copied over, so a transaction too large for a
+            // block is still recognized by proposalTooLargeReason; class, message and cause are
+            // unchanged.
+            throw PcztException
+                .CreatePcztFromProposalException(it.message, it.asAnchorNotFoundException() ?: it.cause)
+                .apply { it.suppressed.forEach(::addSuppressed) }
         }
 
     override suspend fun redactPcztForSigner(pczt: Pczt): Pczt =

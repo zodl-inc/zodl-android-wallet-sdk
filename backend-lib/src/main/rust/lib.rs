@@ -16,7 +16,7 @@ use bytes::Bytes;
 use http_body_util::BodyExt;
 use jni::{
     JNIEnv,
-    objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue},
+    objects::{JByteArray, JClass, JLongArray, JObject, JObjectArray, JString, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jobject, jobjectArray, jstring},
 };
 use nonempty::NonEmpty;
@@ -107,6 +107,10 @@ use zip32::{
     ChainCode, ChildIndex, DiversifierIndex, fingerprint::SeedFingerprint, registered::PathElement,
 };
 
+use crate::proposal_error::{
+    ProposalRejection, classify, classify_payment_error, classify_zip321_error,
+};
+use crate::size_bound::TransactionSizeBound;
 use crate::utils::{
     catch_unwind, exception::unwrap_exc_or, java_nullable_string_to_rust, java_string_to_rust,
 };
@@ -128,14 +132,19 @@ mod migration_send_max;
 mod ohttp;
 mod ohttp_config;
 mod payment_uri;
+mod pczt_txid;
+mod proposal_error;
 mod proving;
 mod send_max;
+mod signer_budget;
+mod size_bound;
 mod tor;
 mod tor_http;
 #[cfg(test)]
 mod unified_r0;
 mod utils;
 mod voting;
+mod zip317_fee;
 
 /// The Slipstream sync engine's JNI binding, folded in as a module so its
 /// `Java_com_zodl_slipstream_*` `#[unsafe(no_mangle)]` exports link directly into this cdylib
@@ -2629,6 +2638,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
     db_data: JString<'local>,
     account_uuid: JByteArray<'local>,
     payment_uri: JString<'local>,
+    size_bound: JLongArray<'local>,
     network_id: jint,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
@@ -2637,9 +2647,16 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
         let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_uuid = account_id_from_jni(env, account_uuid)?;
         let payment_uri = utils::java_string_to_rust(env, &payment_uri)?;
+        let bound = size_bound_from_jni(env, &size_bound)?;
 
-        let proposal =
-            propose_transfer_from_uri_inner(&mut db_data, &network, account_uuid, &payment_uri)?;
+        let proposal = propose_transfer_from_uri_inner(
+            &mut db_data,
+            &network,
+            account_uuid,
+            &payment_uri,
+            &bound,
+        )
+        .inspect_err(|e| throw_if_proposal_rejection(env, e))?;
 
         Ok(utils::rust_bytes_to_java(env, proposal.encode_to_vec().as_ref())?.into_raw())
     });
@@ -2650,12 +2667,14 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
 /// splitting change by the policy [`change_split_policy`] selects for the account's source.
 ///
 /// This is the whole database-level body of `proposeTransferFromUri`; the JNI entry point only
-/// decodes its arguments, opens the wallet, and encodes the returned proposal.
+/// decodes its arguments, opens the wallet, and encodes the returned proposal. A proposal that
+/// exceeds `bound` is refused (see [`size_bound::check_within`]).
 pub(crate) fn propose_transfer_from_uri_inner<DbT, P>(
     db_data: &mut DbT,
     network: &P,
     account_uuid: AccountUuid,
     payment_uri: &str,
+    bound: &TransactionSizeBound,
 ) -> anyhow::Result<Proposal>
 where
     DbT: WalletRead<AccountId = AccountUuid>
@@ -2672,8 +2691,12 @@ where
     let (change_strategy, input_selector) =
         zip317_helper(None, change_split_policy(Some(account.source())));
 
-    let request = TransactionRequest::from_uri(payment_uri)
-        .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
+    let request = TransactionRequest::from_uri(payment_uri).map_err(|e| {
+        rejection_error(
+            "Error creating transaction request",
+            classify_zip321_error(e),
+        )
+    })?;
 
     let proposal = propose_transfer::<_, _, _, _, Infallible>(
         db_data,
@@ -2687,7 +2710,9 @@ where
         None,
         None,
     )
-    .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
+    .map_err(|e| rejection_error("Error creating transaction proposal", classify(e)))?;
+    size_bound::check_within(&proposal, network, bound)
+        .map_err(|e| rejection_error("Error creating transaction proposal", e))?;
 
     Ok(Proposal::from_standard_proposal(&proposal))
 }
@@ -2696,7 +2721,8 @@ where
 /// splitting change by the policy [`change_split_policy`] selects for the account's source.
 ///
 /// This is the whole database-level body of `proposeTransfer`; the JNI entry point only decodes
-/// its arguments, opens the wallet, and encodes the returned proposal.
+/// its arguments, opens the wallet, and encodes the returned proposal. A proposal that exceeds
+/// `bound` is refused (see [`size_bound::check_within`]).
 pub(crate) fn propose_transfer_inner<DbT, P>(
     db_data: &mut DbT,
     network: &P,
@@ -2704,6 +2730,7 @@ pub(crate) fn propose_transfer_inner<DbT, P>(
     to: ZcashAddress,
     value: Zatoshis,
     memo: Option<MemoBytes>,
+    bound: &TransactionSizeBound,
 ) -> anyhow::Result<Proposal>
 where
     DbT: WalletRead<AccountId = AccountUuid>
@@ -2722,8 +2749,9 @@ where
         zip317_helper(None, change_split_policy(Some(account.source())));
 
     let request = TransactionRequest::new(vec![
-        Payment::new(to, Some(value), memo, None, None, vec![])
-            .map_err(|e| anyhow!("Unable to construct payment: {}.", e))?,
+        Payment::new(to, Some(value), memo, None, None, vec![]).map_err(|e| {
+            rejection_error("Unable to construct payment", classify_payment_error(e))
+        })?,
     ])
     .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
@@ -2739,7 +2767,9 @@ where
         None,
         None,
     )
-    .map_err(|e| anyhow!("Error creating transaction proposal: {}", e))?;
+    .map_err(|e| rejection_error("Error creating transaction proposal", classify(e)))?;
+    size_bound::check_within(&proposal, network, bound)
+        .map_err(|e| rejection_error("Error creating transaction proposal", e))?;
 
     Ok(Proposal::from_standard_proposal(&proposal))
 }
@@ -2753,6 +2783,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
     to: JString<'local>,
     value: jlong,
     memo: JByteArray<'local>,
+    size_bound: JLongArray<'local>,
     network_id: jint,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
@@ -2774,8 +2805,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeTr
             .transpose()
             .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
 
-        let proposal =
-            propose_transfer_inner(&mut db_data, &network, account_uuid, to, value, memo)?;
+        let bound = size_bound_from_jni(env, &size_bound)?;
+
+        let proposal = propose_transfer_inner(
+            &mut db_data,
+            &network,
+            account_uuid,
+            to,
+            value,
+            memo,
+            &bound,
+        )
+        .inspect_err(|e| throw_if_proposal_rejection(env, e))?;
 
         Ok(utils::rust_bytes_to_java(env, proposal.encode_to_vec().as_ref())?.into_raw())
     });
@@ -2810,7 +2851,9 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSh
             shielding_threshold,
             memo.as_deref(),
             transparent_receiver.as_deref(),
-        )? {
+        )
+        .inspect_err(|e| throw_if_proposal_rejection(env, e))?
+        {
             Some(proposal) => {
                 Ok(utils::rust_bytes_to_java(env, proposal.encode_to_vec().as_ref())?.into_raw())
             }
@@ -2946,7 +2989,7 @@ where
         CoinbaseFilter::AllTransparentOutputs,
         None,
     )
-    .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
+    .map_err(|e| rejection_error("Error while shielding transaction", classify(e)))?;
 
     Ok(Some(Proposal::from_standard_proposal(&proposal)))
 }
@@ -2964,6 +3007,11 @@ const ANCHOR_NOT_FOUND_EXCEPTION_CLASS: &str =
 /// message text. `utils::exception::throw_object` owns the pending-exception contract: the
 /// typed throw wins when it succeeds and the generic `RuntimeException` remains the fallback
 /// when it does not.
+///
+/// A [`ProposalError::TransactionTooLarge`] failure is thrown as exactly the generic
+/// `RuntimeException`, with exactly the message, that every other failure gets, so no caller
+/// sees a different exception; the `transaction_too_large` `ProposalRejectedException` is
+/// attached to it only as a suppressed exception (see [`throw_with_suppressed_rejection`]).
 fn map_proposal_error<DE, TE, SE, FE, CE, N>(
     env: &mut JNIEnv,
     context: &str,
@@ -2989,7 +3037,42 @@ where
             )
         });
     }
-    anyhow!("{}: {}", context, e)
+    let error = anyhow!("{}: {}", context, e);
+    if let DataApiError::Proposal(ProposalError::TransactionTooLarge { .. }) = &e {
+        throw_with_suppressed_rejection(
+            env,
+            &error.to_string(),
+            &ProposalRejection::TransactionTooLarge,
+        );
+    }
+    error
+}
+
+/// Throws the generic `java.lang.RuntimeException(message)` that `unwrap_exc_or` would throw for
+/// this failure, with the `ProposalRejectedException` for `rejection` added to it as a suppressed
+/// exception (`Throwable.addSuppressed`). The exception's class, message and cause are therefore
+/// those of the generic path; only `getSuppressed()` carries the typed reason. If anything here
+/// fails, nothing is left pending and the generic path throws the same exception without it.
+fn throw_with_suppressed_rejection(env: &mut JNIEnv, message: &str, rejection: &ProposalRejection) {
+    if !has_typed_exception(rejection) {
+        return;
+    }
+    utils::exception::throw_object(env, "java/lang/RuntimeException", |env| {
+        let message = env.new_string(message)?;
+        let exception = env.new_object(
+            "java/lang/RuntimeException",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&message)],
+        )?;
+        let suppressed = new_rejection_exception(env, rejection)?;
+        env.call_method(
+            &exception,
+            "addSuppressed",
+            "(Ljava/lang/Throwable;)V",
+            &[JValue::Object(&suppressed)],
+        )?;
+        Ok(exception)
+    });
 }
 
 /// Returns the [`OvkPolicy`] selected over JNI: the account's OVK, or none at all.
@@ -3070,6 +3153,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
     spend_params: JString<'local>,
     output_params: JString<'local>,
     discard_ovk: jboolean,
+    size_bound: JLongArray<'local>,
     network_id: jint,
 ) -> jobjectArray {
     let res = catch_unwind(&mut env, |env| {
@@ -3077,10 +3161,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
         let network = parse_network(network_id)?;
         let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let usk = decode_usk(env, usk)?;
+        let bound = size_bound_from_jni(env, &size_bound)?;
 
         let proposal = Proposal::decode(utils::java_bytes_to_rust(env, &proposal)?.as_slice())
             .map_err(|e| anyhow!("Invalid proposal: {}", e))?
             .try_into_standard_proposal(&network, &db_data)?;
+        check_bound_before_creating(
+            env,
+            "Error while creating transactions",
+            &proposal,
+            &network,
+            &bound,
+        )?;
 
         let txids = create_transactions_for_proposal(
             env,
@@ -3138,10 +3230,162 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposalR
 const INSUFFICIENT_FUNDS_EXCEPTION_CLASS: &str =
     "cash/z/ecc/android/sdk/internal/jni/ProposalInsufficientFundsException";
 
+/// The JVM class thrown when a proposal is rejected for a reason other than insufficient funds.
+/// Its `(String)` constructor, taking one of the [`ProposalRejection::rejection_reason`]
+/// categories, is part of the JNI contract with the Kotlin class.
+const PROPOSAL_REJECTED_EXCEPTION_CLASS: &str =
+    "cash/z/ecc/android/sdk/internal/jni/ProposalRejectedException";
+
+/// The JVM class thrown when a proposal exceeds a count limit of the size bound its caller asked
+/// for. Its `(String, String, long, long)` constructor, taking the
+/// [`size_bound::SizeBoundViolation::dimension`], the pool name (or null), the count and the
+/// limit, is part of the JNI contract with the Kotlin class.
+const PROPOSAL_SIZE_BOUND_EXCEPTION_CLASS: &str =
+    "cash/z/ecc/android/sdk/internal/jni/ProposalSizeBoundException";
+
+/// Whether `rejection` is reported as a typed JVM exception (see [`new_rejection_exception`]).
+fn has_typed_exception(rejection: &ProposalRejection) -> bool {
+    matches!(
+        rejection,
+        ProposalRejection::InsufficientFunds { .. } | ProposalRejection::ExceedsSizeBound { .. }
+    ) || rejection.rejection_reason().is_some()
+}
+
+/// Constructs the typed JVM exception for a classified proposal failure: insufficient funds as
+/// `ProposalInsufficientFundsException`, an exceeded size bound as `ProposalSizeBoundException`,
+/// and every other category as `ProposalRejectedException`. Must only be called when
+/// [`has_typed_exception`] holds.
+///
+/// None of them carries the recipient or the memo: the insufficient-funds message states only
+/// amounts, a size bound only the exceeded limit, and a rejection only its category.
+fn new_rejection_exception<'local>(
+    env: &mut JNIEnv<'local>,
+    rejection: &ProposalRejection,
+) -> jni::errors::Result<JObject<'local>> {
+    match rejection {
+        ProposalRejection::InsufficientFunds { .. } => {
+            let message = env.new_string(rejection.to_string())?;
+            env.new_object(
+                INSUFFICIENT_FUNDS_EXCEPTION_CLASS,
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(&message)],
+            )
+        }
+        ProposalRejection::ExceedsSizeBound { violation, .. } => {
+            let dimension = env.new_string(violation.dimension())?;
+            let pool = match violation.pool() {
+                Some(pool) => JObject::from(env.new_string(shielded_pool_name(pool))?),
+                None => JObject::null(),
+            };
+            let (count, limit) = violation.count_and_limit();
+            env.new_object(
+                PROPOSAL_SIZE_BOUND_EXCEPTION_CLASS,
+                "(Ljava/lang/String;Ljava/lang/String;JJ)V",
+                &[
+                    JValue::Object(&dimension),
+                    JValue::Object(&pool),
+                    JValue::Long(count as jlong),
+                    JValue::Long(limit as jlong),
+                ],
+            )
+        }
+        _ => {
+            let reason = env.new_string(rejection.rejection_reason().unwrap_or_default())?;
+            env.new_object(
+                PROPOSAL_REJECTED_EXCEPTION_CLASS,
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(&reason)],
+            )
+        }
+    }
+}
+
+/// The name a [`ShieldedPool`] crosses JNI as, matching the Kotlin `TransactionPool` constants.
+fn shielded_pool_name(pool: ShieldedPool) -> &'static str {
+    match pool {
+        ShieldedPool::Sapling => "SAPLING",
+        ShieldedPool::Orchard => "ORCHARD",
+        ShieldedPool::Ironwood => "IRONWOOD",
+    }
+}
+
+/// Throws the typed JVM exception for a classified proposal failure (see
+/// [`new_rejection_exception`]). [`ProposalRejection::Other`] throws nothing here, so it reaches
+/// the JVM as the generic `RuntimeException` `unwrap_exc_or` raises.
+pub(crate) fn throw_proposal_rejection(env: &mut JNIEnv, error: &ProposalRejection) {
+    if !has_typed_exception(error) {
+        return;
+    }
+    utils::exception::throw_object(env, "typed proposal rejection", |env| {
+        new_rejection_exception(env, error)
+    });
+}
+
+/// Reads the size bound the Kotlin `TransactionSizeBound` sends over JNI (see
+/// [`TransactionSizeBound::decode`]): a null array is consensus alone.
+fn size_bound_from_jni(
+    env: &mut JNIEnv,
+    encoded: &JLongArray,
+) -> anyhow::Result<TransactionSizeBound> {
+    if encoded.is_null() {
+        return TransactionSizeBound::decode(None);
+    }
+    let len = usize::try_from(env.get_array_length(encoded)?)?;
+    let mut values = vec![0i64; len];
+    env.get_long_array_region(encoded, 0, &mut values)?;
+    TransactionSizeBound::decode(Some(&values))
+}
+
+/// Refuses to create the transactions (or PCZT) of a proposal that exceeds `bound`, before any
+/// of them is built. The failure is thrown exactly as a proposal too large for a block is when it
+/// is created: as the generic `RuntimeException` described by `context`, with the typed exception
+/// attached only as a suppressed exception (see [`throw_with_suppressed_rejection`]).
+///
+/// Consensus alone ([`TransactionSizeBound::CONSENSUS`]) is not checked here, so creating a
+/// proposal without a bound fails exactly as it always has.
+fn check_bound_before_creating<P: Parameters>(
+    env: &mut JNIEnv,
+    context: &str,
+    proposal: &zcash_client_backend::proposal::Proposal<
+        StandardFeeRule,
+        zcash_client_sqlite::ReceivedNoteId,
+    >,
+    network: &P,
+    bound: &TransactionSizeBound,
+) -> anyhow::Result<()> {
+    if *bound == TransactionSizeBound::CONSENSUS {
+        return Ok(());
+    }
+    size_bound::check_within(proposal, network, bound).map_err(|rejection| {
+        let error = anyhow!("{}: {}", context, rejection);
+        throw_with_suppressed_rejection(env, &error.to_string(), &rejection);
+        error
+    })
+}
+
+/// Reports a classified failure of a proposing function as the `anyhow` error it returns: a
+/// [`ProposalRejection::Other`] is described in `context`, as the entry point always has, and
+/// every other category is carried as the [`ProposalRejection`] itself, so that the JNI entry
+/// point can throw its typed exception (see [`throw_if_proposal_rejection`]).
+fn rejection_error(context: &str, rejection: ProposalRejection) -> anyhow::Error {
+    match rejection {
+        ProposalRejection::Other(description) => anyhow!("{}: {}", context, description),
+        rejection => rejection.into(),
+    }
+}
+
+/// Throws the typed JVM exception (see [`throw_proposal_rejection`]) when `error` carries a
+/// classified [`ProposalRejection`]; any other error is left to the generic exception path.
+fn throw_if_proposal_rejection(env: &mut JNIEnv, error: &anyhow::Error) {
+    if let Some(rejection) = error.downcast_ref::<ProposalRejection>() {
+        throw_proposal_rejection(env, rejection);
+    }
+}
+
 /// Proposes sending the account's entire currently spendable shielded balance to `to`, with
-/// the ZIP 317 fee deducted from it (see [`send_max::propose_send_max`]). When the spendable
-/// value does not exceed the fee, throws `ProposalInsufficientFundsException`, so callers can
-/// tell that case apart without matching message text.
+/// the ZIP 317 fee deducted from it (see [`send_max::SendMaxRequest::spendable_to`]). A
+/// classified failure is thrown as a typed exception (see [`throw_proposal_rejection`]), so callers
+/// can tell it apart without matching message text.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSendMaxTransfer<
     'local,
@@ -3152,6 +3396,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSe
     account_uuid: JByteArray<'local>,
     to: JString<'local>,
     memo: JByteArray<'local>,
+    size_bound: JLongArray<'local>,
     network_id: jint,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
@@ -3170,19 +3415,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeSe
             .transpose()
             .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?;
 
-        let proposal = send_max::propose_send_max(&mut db_data, &network, account_uuid, to, memo)
-            .inspect_err(|e| {
-            if e.downcast_ref::<send_max::InsufficientFunds>().is_some() {
-                utils::exception::throw_object(env, INSUFFICIENT_FUNDS_EXCEPTION_CLASS, |env| {
-                    let message = env.new_string(e.to_string())?;
-                    env.new_object(
-                        INSUFFICIENT_FUNDS_EXCEPTION_CLASS,
-                        "(Ljava/lang/String;)V",
-                        &[JValue::Object(&message)],
-                    )
-                });
-            }
-        })?;
+        let bound = size_bound_from_jni(env, &size_bound)?;
+        let request = send_max::SendMaxRequest::spendable_to(to, memo).within(bound);
+        let proposal = send_max::propose(&mut db_data, &network, account_uuid, request)
+            .inspect_err(|e| throw_proposal_rejection(env, e))?;
 
         Ok(utils::rust_bytes_to_java(
             env,
@@ -3210,6 +3446,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
     db_data: JString<'local>,
     account_uuid: JByteArray<'local>,
     proposal: JByteArray<'local>,
+    size_bound: JLongArray<'local>,
     network_id: jint,
 ) -> jbyteArray {
     let res = catch_unwind(&mut env, |env| {
@@ -3217,10 +3454,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPcz
         let network = parse_network(network_id)?;
         let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
         let account_id = account_id_from_jni(env, account_uuid)?;
+        let bound = size_bound_from_jni(env, &size_bound)?;
 
         let proposal = Proposal::decode(utils::java_bytes_to_rust(env, &proposal)?.as_slice())
             .map_err(|e| anyhow!("Invalid proposal: {}", e))?
             .try_into_standard_proposal(&network, &db_data)?;
+        check_bound_before_creating(
+            env,
+            "Error creating PCZT from single-step proposal",
+            &proposal,
+            &network,
+            &bound,
+        )?;
 
         if proposal.steps().len() == 1 {
             let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
@@ -5217,21 +5462,16 @@ mod tests {
     }
 
     use zcash_client_backend::data_api::{
-        MaxSpendMode,
-        testing::{AddressType, TestBuilder, TestState},
-        wallet::{
-            ConfirmationsPolicy, SpendingKeys, create_proposed_transactions,
-            input_selection::LockedInputPolicy, propose_send_max_transfer,
-        },
+        testing::{TestBuilder, TestState},
+        wallet::{SpendingKeys, create_proposed_transactions},
     };
-    use zcash_client_backend::{fees::StandardFeeRule, wallet::OvkPolicy};
+    use zcash_client_backend::wallet::OvkPolicy;
     use zcash_client_sqlite::testing::{
         BlockCache,
         db::{TestDb, TestDbFactory},
     };
     use zcash_keys::address::{Address, UnifiedAddress};
     use zcash_primitives::block::BlockHash;
-    use zcash_protocol::value::Zatoshis;
 
     use super::*;
 
@@ -5529,8 +5769,16 @@ mod tests {
             .expect("the fixture address parses the way `proposeTransfer` parses it");
         let value =
             Zatoshis::from_nonnegative_i64(value_zat).expect("the fixture amount is in range");
-        let proposal = propose_transfer_inner(st.wallet_mut(), &network, account, to, value, None)
-            .unwrap_or_else(|e| panic!("the transfer must propose: {e:#}"));
+        let proposal = propose_transfer_inner(
+            st.wallet_mut(),
+            &network,
+            account,
+            to,
+            value,
+            None,
+            &TransactionSizeBound::CONSENSUS,
+        )
+        .unwrap_or_else(|e| panic!("the transfer must propose: {e:#}"));
         first_step_change_output_count(&proposal)
     }
 
@@ -5561,8 +5809,14 @@ mod tests {
     ) -> usize {
         let network = *st.network();
         let uri = format!("zcash:{to_address}?amount=0.1");
-        let proposal = propose_transfer_from_uri_inner(st.wallet_mut(), &network, account, &uri)
-            .unwrap_or_else(|e| panic!("the payment URI must propose: {e:#}"));
+        let proposal = propose_transfer_from_uri_inner(
+            st.wallet_mut(),
+            &network,
+            account,
+            &uri,
+            &TransactionSizeBound::CONSENSUS,
+        )
+        .unwrap_or_else(|e| panic!("the payment URI must propose: {e:#}"));
         first_step_change_output_count(&proposal)
     }
 
@@ -5767,39 +6021,10 @@ mod tests {
         let (receiver_tip, _) = receiver.generate_empty_block();
         receiver.scan_cached_blocks(receiver_tip, 1);
 
-        let mut sender = TestBuilder::new()
-            .with_data_store_factory(TestDbFactory::default())
-            .with_block_cache(BlockCache::new())
-            .with_account_from_sapling_activation(BlockHash([0; 32]))
-            .build();
-        let sender_fvk =
-            orchard::keys::FullViewingKey::from(sender.test_account().unwrap().usk().orchard());
-        let (funded_at, _, _) = sender.generate_next_block(
-            &sender_fvk,
-            AddressType::DefaultExternal,
-            Zatoshis::const_from_u64(100_000),
-        );
-        for _ in 0..10 {
-            sender.generate_empty_block();
-        }
-        sender.scan_cached_blocks(funded_at, 11);
+        let mut sender = send_max::tests::funded_wallet(send_max::tests::Received::Orchard);
 
         let network = *sender.network();
-        let account = sender.test_account().unwrap().id();
-        let proposal = propose_send_max_transfer::<_, _, _, std::convert::Infallible>(
-            sender.wallet_mut(),
-            &network,
-            account,
-            &crate::send_max::SEND_MAX_POOLS,
-            &StandardFeeRule::Zip317,
-            receiver_address,
-            None,
-            MaxSpendMode::MaxSpendable,
-            ConfirmationsPolicy::default(),
-            &LockedInputPolicy::Exclude,
-            None,
-        )
-        .expect("proposes sending the sender's Orchard note");
+        let proposal = send_max::tests::propose_max_to(&mut sender, receiver_address);
         let usk = sender.test_account().unwrap().usk().clone();
         let clock = sender.clock().clone();
         let txids = create_proposed_transactions::<

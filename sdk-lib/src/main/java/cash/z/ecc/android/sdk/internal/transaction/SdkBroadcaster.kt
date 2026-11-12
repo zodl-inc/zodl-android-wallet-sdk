@@ -6,6 +6,7 @@ import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -25,11 +26,12 @@ internal class SdkBroadcaster(
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy
+        ovkPolicy: OvkPolicy,
+        sizeBound: TransactionSizeBound
     ): List<CreatedTransaction> =
-        pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
+        pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan(isMigration = isMigrationProposal(proposal)) {
             txManager
-                .createProposedTransactions(proposal, usk, ovkPolicy)
+                .createProposedTransactions(proposal, usk, ovkPolicy, sizeBound)
                 .map { it.toCreatedTransaction() }
         }
 
@@ -50,18 +52,25 @@ internal class SdkBroadcaster(
         endpoint: LightWalletEndpoint
     ): TransactionSubmitResult = recordingEndpointAfterSubmit(transaction, endpoint)
 
+    // A migration's transactions are marked by id when they are created, so that they are never rejected. A PCZT's
+    // transaction was marked by id when the PCZT was created from a migration proposal (see
+    // MigrationTransactionMarks), so creating a transaction from a PCZT marks nothing more.
+    private suspend fun isMigrationProposal(proposal: Proposal) =
+        pendingSubmitPlanStore.migrationMarks.isMigrationProposal(proposal)
+
     // Legacy Synchronizer APIs route through the same plan-store machinery as the public
     // Broadcaster so the sync-loop's resubmit step skips in-flight submits.
     internal suspend fun createAndSubmitProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
         endpoint: LightWalletEndpoint,
-        ovkPolicy: OvkPolicy = OvkPolicy.Sender
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Flow<TransactionSubmitResult> =
         pendingSubmitPlanStore
-            .createAndMarkAwaitingSubmitPlan {
+            .createAndMarkAwaitingSubmitPlan(isMigration = isMigrationProposal(proposal)) {
                 txManager
-                    .createProposedTransactions(proposal, usk, ovkPolicy)
+                    .createProposedTransactions(proposal, usk, ovkPolicy, sizeBound)
                     .map { it.toCreatedTransaction() }
             }.createSubmitResultFlow { transaction ->
                 recordingEndpointAfterSubmit(transaction, endpoint)
@@ -87,18 +96,27 @@ internal class SdkBroadcaster(
     // Record the endpoint after submit returns so the in-flight window stays at AwaitingPlan
     // and the sync loop's resubmit step doesn't race it. finally + NonCancellable fires on
     // every exit (Success/Failure/throw) — AwaitingPlan strands the tx (resubmit skips that
-    // state), Ready is the state the resubmit loop retries through SubmitPlanExecutor.
+    // state), Ready is the state the resubmit loop retries through SubmitPlanExecutor. The
+    // endpoint's answer is recorded with it, so a transaction an endpoint refused for good, once every endpoint
+    // answered and none accepted, becomes Rejected, which the resubmit loop skips. The submission is recorded as
+    // started first, so that while it has not answered (or if it never does: it threw or was cancelled, perhaps
+    // after the request was sent) another endpoint's refusal cannot reject a transaction this one may accept.
+    // The result returned carries the SDK's verdict, not the raw answer: Success once any endpoint accepted the
+    // transaction, and a Failure's rejection only when the store recorded it as Rejected.
     private suspend fun recordingEndpointAfterSubmit(
         transaction: CreatedTransaction,
         endpoint: LightWalletEndpoint
     ): TransactionSubmitResult {
+        var result: TransactionSubmitResult? = null
+        pendingSubmitPlanStore.recordSubmitStarted(transaction.txId, endpoint)
         try {
-            return transactionSubmitter.submit(transaction, endpoint)
+            result = transactionSubmitter.submit(transaction, endpoint)
         } finally {
             withContext(NonCancellable) {
-                pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint)
+                pendingSubmitPlanStore.addSubmitEndpoint(transaction, endpoint, result)
             }
         }
+        return pendingSubmitPlanStore.withVerdict(transaction.txId, checkNotNull(result))
     }
 }
 

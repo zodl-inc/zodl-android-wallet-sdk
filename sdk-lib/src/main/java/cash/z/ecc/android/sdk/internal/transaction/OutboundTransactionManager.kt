@@ -8,6 +8,7 @@ import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RecipientAddress
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
@@ -29,7 +30,8 @@ internal interface OutboundTransactionManager {
      */
     suspend fun proposeTransferFromUri(
         account: Account,
-        uri: String
+        uri: String,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal
 
     /**
@@ -46,7 +48,8 @@ internal interface OutboundTransactionManager {
         account: Account,
         recipient: String,
         amount: Zatoshi,
-        memo: String
+        memo: String,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal
 
     /**
@@ -90,7 +93,8 @@ internal interface OutboundTransactionManager {
     suspend fun proposeSendMax(
         account: Account,
         recipient: RecipientAddress,
-        memo: MemoContent?
+        memo: MemoContent?,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal
 
     /**
@@ -106,7 +110,8 @@ internal interface OutboundTransactionManager {
     suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy = OvkPolicy.Sender
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): List<EncodedTransaction>
 
     /**
@@ -121,7 +126,8 @@ internal interface OutboundTransactionManager {
 
     suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
-        proposal: Proposal
+        proposal: Proposal,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Pczt
 
     suspend fun redactPcztForSigner(pczt: Pczt): Pczt

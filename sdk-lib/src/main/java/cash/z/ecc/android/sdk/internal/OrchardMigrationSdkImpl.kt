@@ -62,6 +62,8 @@ import cash.z.ecc.android.sdk.internal.model.migration.JniTransferProposal
 import cash.z.ecc.android.sdk.internal.storage.preference.PreferenceHolder
 import cash.z.ecc.android.sdk.internal.storage.preference.api.PreferenceProvider
 import cash.z.ecc.android.sdk.internal.storage.preference.keys.EncryptedPreferenceKeys
+import cash.z.ecc.android.sdk.internal.transaction.MigrationTransactionMarks
+import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
 import cash.z.ecc.android.sdk.internal.transaction.isLocalRefusal
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -99,6 +101,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
@@ -353,10 +356,7 @@ internal class OrchardMigrationSdkImpl(
                 // the caller. Propagate immediately, silently.
                 throw e
             } catch (e: Throwable) {
-                val looksLikeSyncRace =
-                    e.message?.contains("InsufficientFunds") == true ||
-                        e.message?.contains("database is locked") == true
-                if (looksLikeSyncRace && attempt <= RACE_RETRY_MAX_ATTEMPTS) {
+                if (e.looksLikeSyncRace() && attempt <= RACE_RETRY_MAX_ATTEMPTS) {
                     Twig.error(e) {
                         "MIGRATION_DIAG OrchardMigrationSdk: $operation failed (attempt $attempt/" +
                             "$RACE_RETRY_MAX_ATTEMPTS, looks like a sync race) — retrying in $RACE_RETRY_DELAY"
@@ -509,7 +509,14 @@ internal class OrchardMigrationSdkImpl(
             val account = account ?: noAccountAvailable()
             migrationBackend
                 .createUnsignedPreparationPczts(dbDataPath, network, account, schedule.proposalHandle)
-                .map { UnsignedPreparationPczt(id = it.id, layer = it.layer, index = it.index, pczt = Pczt(it.pcztBytes)) }
+                .map {
+                    UnsignedPreparationPczt(
+                        id = it.id,
+                        layer = it.layer,
+                        index = it.index,
+                        pczt = Pczt(it.pcztBytes)
+                    )
+                }
         }
 
     override suspend fun storeSignedSchedulePczts(signed: List<Pair<Long, Pczt>>) =
@@ -602,7 +609,10 @@ internal class OrchardMigrationSdkImpl(
         loggedRead("proposeImmediateMigration") {
             val dbDataPath = dbDataPath()
             val account = account ?: noAccountAvailable()
-            Proposal.fromByteArray(migrationBackend.proposeImmediateSendMax(dbDataPath, network, account))
+            Proposal.fromByteArray(migrationBackend.proposeImmediateSendMax(dbDataPath, network, account)).also {
+                // The transactions created from it are never reported as rejected (see MigrationTransactionMarks).
+                markMigration { markProposal(it) }
+            }
         }
 
     override suspend fun signAndStoreMigrationSchedule(schedule: MigrationSchedule, usk: UnifiedSpendingKey) =
@@ -685,12 +695,31 @@ internal class OrchardMigrationSdkImpl(
      */
     private suspend fun serializedBroadcast(plan: PreparedBroadcast): TransactionSubmitResult =
         BROADCAST_MUTEX.withLock {
+            // A scheduled transaction this engine broadcasts is never reported as rejected by a resubmission (see
+            // MigrationTransactionMarks). The mark is recorded before anything is sent: when it cannot be, this
+            // attempt fails before the transaction is broadcast, so that an unmarked migration transaction is never
+            // submitted.
+            markMigration { markTransactions(listOf(FirstClassByteArray(plan.prepared.txid))) }
             plan.inFlightPrefs?.putString(
                 EncryptedPreferenceKeys.MIGRATION_BROADCAST_IN_FLIGHT_UNTIL.key,
                 (Clock.System.now().epochSeconds + BROADCAST_IN_FLIGHT_WINDOW_SECONDS).toString(),
             )
             broadcast(plan.rawTx, plan.prepared.txid, useTor = plan.useTor, endpoint = plan.endpoint)
         }
+
+    /**
+     * Records a mark in this wallet's [MigrationTransactionMarks], shared through the preferences with its
+     * synchronizer, so that the migration's transactions are resubmitted until they expire and never reported as
+     * rejected. A failure to record it is thrown: the proposal is not returned, or the transaction is not
+     * broadcast, so that an unmarked migration transaction can never be submitted. The caller retries as after
+     * any other failure of that call.
+     */
+    private suspend fun markMigration(mark: suspend MigrationTransactionMarks.() -> Unit) {
+        MigrationTransactionMarks(
+            preferenceProviderHolder(),
+            PendingSubmitPlanStore.namespaceFor(network.id, alias)
+        ).mark()
+    }
 
     /**
      * F2: probe for a duplicate/already-on-chain rejection before mapping (see [mapSubmitResult]).
@@ -2016,6 +2045,14 @@ private fun JniMigrationTransferState.toPublic(): MigrationTransferState =
         // natural anchor).
         anchorBoundaryHeight = anchorBoundaryHeight.takeIf { it >= 0L },
     )
+
+/**
+ * Whether this migration failure looks like the transient sync race [OrchardMigrationSdkImpl] retries:
+ * its message mentions `InsufficientFunds` or a database lock.
+ */
+internal fun Throwable.looksLikeSyncRace(): Boolean =
+    message?.contains("InsufficientFunds") == true ||
+        message?.contains("database is locked") == true
 
 private fun JniMigrationTransferStates.toPublic(): MigrationTransferStates =
     MigrationTransferStates(

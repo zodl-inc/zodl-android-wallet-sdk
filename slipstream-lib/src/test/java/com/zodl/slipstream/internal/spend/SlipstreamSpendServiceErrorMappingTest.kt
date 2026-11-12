@@ -3,6 +3,8 @@ package com.zodl.slipstream.internal.spend
 import cash.z.ecc.android.sdk.exception.PcztException
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.internal.Backend
+import cash.z.ecc.android.sdk.internal.jni.ProposalInsufficientFundsException
+import cash.z.ecc.android.sdk.internal.jni.ProposalRejectedException
 import cash.z.ecc.android.sdk.internal.model.ProposalUnsafe
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -19,6 +21,9 @@ import org.junit.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
+import kotlin.reflect.KClass
+import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
 
@@ -173,6 +178,67 @@ class SlipstreamSpendServiceErrorMappingTest {
         }
 
     @Test
+    fun proposeTransferMapsEachRejectionToItsTypedException() =
+        assertEachRejectionMaps(
+            TransactionEncoderException.ProposalFromParametersException::class
+        ) { backend, refusal ->
+            `when`(backend.proposeTransfer(account.accountUuid.value, RECIPIENT, AMOUNT.value, null)).thenThrow(refusal)
+            service(backend).proposeTransfer(account, RECIPIENT, AMOUNT, "")
+        }
+
+    @Test
+    fun proposeFulfillingPaymentUriMapsEachRejectionToItsTypedException() =
+        assertEachRejectionMaps(
+            TransactionEncoderException.ProposalFromUriException::class
+        ) { backend, refusal ->
+            `when`(backend.proposeTransferFromUri(account.accountUuid.value, URI)).thenThrow(refusal)
+            service(backend).proposeFulfillingPaymentUri(account, URI)
+        }
+
+    @Test
+    fun proposeShieldingMapsEachRejectionToItsTypedException() =
+        assertEachRejectionMaps(
+            TransactionEncoderException.ProposalShieldingException::class
+        ) { backend, refusal ->
+            `when`(backend.proposeShielding(account.accountUuid.value, THRESHOLD.value, null, null)).thenThrow(refusal)
+            service(backend).proposeShielding(account, THRESHOLD, "", null)
+        }
+
+    /**
+     * Asserts that [propose], whose backend call throws each typed refusal the Rust layer raises,
+     * surfaces it as the same typed exception a send-max does, with [fallback] for a rejection that
+     * has no typed exception of its own.
+     */
+    private fun assertEachRejectionMaps(
+        fallback: KClass<out TransactionEncoderException>,
+        propose: suspend (Backend, Exception) -> Unit
+    ) {
+        val expected =
+            mapOf(
+                ProposalInsufficientFundsException(INSUFFICIENT_FUNDS_MESSAGE) to
+                    TransactionEncoderException.InsufficientFundsException::class,
+                ProposalRejectedException(ProposalRejectedException.TRANSACTION_TOO_LARGE) to
+                    TransactionEncoderException.ProposalTooLargeException::class,
+                ProposalRejectedException(ProposalRejectedException.TRANSPARENT_MEMO) to
+                    TransactionEncoderException.ProposalRecipientCannotReceiveMemoException::class,
+                ProposalRejectedException(ProposalRejectedException.UNSUPPORTED_ADDRESS) to
+                    TransactionEncoderException.ProposalUnsupportedRecipientException::class,
+                ProposalRejectedException(ProposalRejectedException.SYNC_REQUIRED) to
+                    TransactionEncoderException.ProposalSyncRequiredException::class,
+                ProposalRejectedException("a_reason_added_later") to fallback
+            )
+
+        for ((refusal, type) in expected) {
+            val backend = mock(Backend::class.java)
+
+            val exception = runBlocking { assertFails { propose(backend, refusal) } }
+
+            assertEquals(type, exception::class, refusal.message)
+            assertSame(refusal, exception.cause)
+        }
+    }
+
+    @Test
     fun createPcztFromProposalRejectsMultiStepProposalsBeforeTouchingTheBackend() =
         runBlocking {
             val backend = mock(Backend::class.java)
@@ -202,6 +268,7 @@ class SlipstreamSpendServiceErrorMappingTest {
         val proposalUnsafe = mock(ProposalUnsafe::class.java)
         `when`(proposalUnsafe.totalFeeRequired()).thenReturn(FEE)
         `when`(proposalUnsafe.transactionCount()).thenReturn(transactionCount)
+        `when`(proposalUnsafe.toByteArray()).thenReturn(byteArrayOf(transactionCount.toByte()))
         return Proposal.fromUnsafe(proposalUnsafe)
     }
 
@@ -219,6 +286,7 @@ class SlipstreamSpendServiceErrorMappingTest {
 
     private companion object {
         const val ACCOUNT_UUID_SIZE = 16
+        const val INSUFFICIENT_FUNDS_MESSAGE = "Insufficient balance (available 0, required 10000)"
         const val RECIPIENT = "recipient"
         const val URI = "zcash:recipient?amount=1"
         const val FEE = 1_000L

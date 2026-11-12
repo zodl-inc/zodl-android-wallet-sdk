@@ -1,6 +1,8 @@
 package cash.z.ecc.android.sdk.exception
 
+import cash.z.ecc.android.sdk.GiftCardRedeemer
 import cash.z.ecc.android.sdk.model.GiftCardLinkError
+import cash.z.ecc.android.sdk.model.TransactionId
 
 /**
  * Failures specific to gift cards. Messages never contain any part of a gift card link, which
@@ -59,6 +61,40 @@ sealed class GiftCardException(
      * in a [cash.z.ecc.android.sdk.GiftCardRedeemer.Redemption] as a failed result instead.
      */
     class RedemptionIncomplete : GiftCardException("The gift card redemption created no transaction")
+
+    /**
+     * The card holds more notes than one transaction can spend within the size bound passed to
+     * [cash.z.ecc.android.sdk.GiftCardRedeemer.redeem], and redeeming it in several rounds is not
+     * available. Nothing more was sent: [sentTxIds] are the transactions of the earlier rounds of a
+     * redemption in several rounds, which stand (empty when it failed in its first round). The
+     * [cause] is the [TransactionEncoderException.ProposalTooLargeException] naming the exceeded
+     * limit.
+     */
+    class TooManyNotes(
+        cause: Throwable? = null,
+        val sentTxIds: List<TransactionId> = emptyList()
+    ) : GiftCardException("The gift card holds too many notes to redeem in one transaction", cause)
+
+    /**
+     * Round [round] of a redemption in several rounds was not accepted by the server; [redemption]
+     * holds its results. The rounds before it, whose transactions are [sentTxIds], were sent and
+     * stand. The round's notes stay locked until its transactions expire; redeem the card again then
+     * to send the rest.
+     */
+    class RoundFailed(
+        val round: Int,
+        val redemption: GiftCardRedeemer.Redemption,
+        val sentTxIds: List<TransactionId> = emptyList()
+    ) : GiftCardException("Round $round of the gift card redemption was not accepted")
+
+    /**
+     * The transactions [txIds] of round [round] of a redemption in several rounds were not mined in
+     * time, or expired. The rounds before it stand; redeem the card again to send the rest.
+     */
+    class RoundExpired(
+        val round: Int,
+        val txIds: List<TransactionId>
+    ) : GiftCardException("Round $round of the gift card redemption was not mined in time")
 
     /**
      * The redeemer was used after [cash.z.ecc.android.sdk.GiftCardRedeemer.close] was called, or

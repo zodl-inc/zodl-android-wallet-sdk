@@ -12,6 +12,9 @@ import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RecipientAddress
+import cash.z.ecc.android.sdk.model.SubmitRejection
+import cash.z.ecc.android.sdk.model.TransactionId
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
@@ -20,16 +23,21 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.`when`
 import java.io.IOException
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+@Suppress("LargeClass")
 class SdkBroadcasterTest {
     @Test
     fun create_proposed_transactions_does_not_submit() =
@@ -68,6 +76,313 @@ class SdkBroadcasterTest {
                 ).toList()
 
             assertEquals(listOf(OvkPolicy.Sender, OvkPolicy.Discard, OvkPolicy.Discard), txManager.ovkPolicies)
+        }
+
+    @Test
+    fun create_and_submit_forwards_the_size_bound() =
+        runBlocking {
+            val txManager = FakeOutboundTransactionManager(proposedTransactions = listOf(encodedTransaction(2)))
+            val broadcaster = SdkBroadcaster(txManager, FakeTransactionSubmitter(), PendingSubmitPlanStore())
+            val bound = TransactionSizeBound(maxShieldedActions = 75)
+
+            broadcaster.createProposedTransactions(fakeProposal(), fakeUsk())
+            broadcaster.createProposedTransactions(fakeProposal(), fakeUsk(), sizeBound = bound)
+            broadcaster
+                .createAndSubmitProposedTransactions(
+                    proposal = fakeProposal(),
+                    usk = fakeUsk(),
+                    endpoint = LightWalletEndpoint("localhost", 9067, false),
+                    sizeBound = bound
+                ).toList()
+
+            assertEquals(listOf(TransactionSizeBound.CONSENSUS, bound, bound), txManager.sizeBounds)
+        }
+
+    @Test
+    fun a_submission_its_endpoint_refuses_for_good_is_rejected() =
+        runBlocking {
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val submitter =
+                FakeTransactionSubmitter(resultFactory = {
+                    TransactionSubmitResult.Failure(it.txId, false, -26, "16: bad-txns-vout-negative")
+                })
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val broadcaster = SdkBroadcaster(FakeOutboundTransactionManager(), submitter, pendingSubmitPlanStore)
+            val transaction = encodedTransaction(2).toCreatedTransactionForTest()
+
+            broadcaster.submit(transaction, endpoint)
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Rejected(-26, "16: bad-txns-vout-negative"),
+                pendingSubmitPlanStore.getSubmitPlan(transaction.txId)
+            )
+        }
+
+    /**
+     * Apps submit one created transaction to every endpoint concurrently, through [SdkBroadcaster.submit], and stop
+     * waiting at a deadline. One endpoint's explicit refusal must not reject a transaction another endpoint, still
+     * submitting, may accept: it stays pending, and the late acceptance wins.
+     */
+    @Test
+    fun a_refusal_then_a_late_acceptance_after_the_deadline_ends_accepted_and_resubmission_continues() =
+        runBlocking<Unit> {
+            val acceptLate = CompletableDeferred<Unit>()
+            val (broadcaster, store, transaction) =
+                multiEndpointBroadcaster(
+                    mapOf(
+                        REFUSING to { tx -> tooLarge(tx) },
+                        LATE to { tx ->
+                            acceptLate.await()
+                            TransactionSubmitResult.Success(tx.txId)
+                        }
+                    )
+                )
+            val late = launch(start = CoroutineStart.UNDISPATCHED) { broadcaster.submit(transaction, LATE) }
+
+            assertEquals(tooLarge(transaction), broadcaster.submit(transaction, REFUSING))
+            // The app's deadline passes with the late endpoint still submitting.
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(store.getSubmitPlan(transaction.txId))
+            assertEquals(emptyMap(), store.rejectedTransactions.first())
+
+            acceptLate.complete(Unit)
+            late.join()
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(REFUSING, LATE))),
+                store.getSubmitPlan(transaction.txId)
+            )
+            assertEquals(emptyMap(), store.rejectedTransactions.first())
+        }
+
+    @Test
+    fun a_refusal_while_another_endpoint_never_answers_stays_pending() =
+        runBlocking<Unit> {
+            val never = CompletableDeferred<TransactionSubmitResult>()
+            val (broadcaster, store, transaction) =
+                multiEndpointBroadcaster(mapOf(REFUSING to { tx -> tooLarge(tx) }, LATE to { never.await() }))
+            val late = launch(start = CoroutineStart.UNDISPATCHED) { broadcaster.submit(transaction, LATE) }
+
+            broadcaster.submit(transaction, REFUSING)
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(store.getSubmitPlan(transaction.txId))
+
+            // The deadline cancels the late submission, whose request may already have been sent.
+            late.cancelAndJoin()
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Ready(TransactionSubmitPlan(listOf(REFUSING, LATE))),
+                store.getSubmitPlan(transaction.txId)
+            )
+            assertEquals(emptyMap(), store.rejectedTransactions.first())
+        }
+
+    @Test
+    fun a_refusal_then_a_transient_failure_is_rejected_with_the_refusal() =
+        runBlocking<Unit> {
+            val answerLate = CompletableDeferred<Unit>()
+            val (broadcaster, store, transaction) =
+                multiEndpointBroadcaster(
+                    mapOf(
+                        REFUSING to { tx -> tooLarge(tx) },
+                        LATE to { tx ->
+                            answerLate.await()
+                            mempoolFull(tx)
+                        }
+                    )
+                )
+            val late = launch(start = CoroutineStart.UNDISPATCHED) { broadcaster.submit(transaction, LATE) }
+            broadcaster.submit(transaction, REFUSING)
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(store.getSubmitPlan(transaction.txId))
+
+            answerLate.complete(Unit)
+            late.join()
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Rejected(-25, TOO_LARGE_TEXT),
+                store.getSubmitPlan(transaction.txId)
+            )
+            assertEquals(
+                mapOf(TransactionId.new(transaction.txId) to SubmitRejection.TOO_LARGE),
+                store.rejectedTransactions.first()
+            )
+        }
+
+    @Test
+    fun a_transient_failure_then_a_refusal_is_rejected_with_the_refusal() =
+        runBlocking<Unit> {
+            val refuseLate = CompletableDeferred<Unit>()
+            val (broadcaster, store, transaction) =
+                multiEndpointBroadcaster(
+                    mapOf(
+                        TRANSIENT to { tx -> mempoolFull(tx) },
+                        LATE to { tx ->
+                            refuseLate.await()
+                            tooLarge(tx)
+                        }
+                    )
+                )
+            val late = launch(start = CoroutineStart.UNDISPATCHED) { broadcaster.submit(transaction, LATE) }
+            broadcaster.submit(transaction, TRANSIENT)
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(store.getSubmitPlan(transaction.txId))
+
+            refuseLate.complete(Unit)
+            late.join()
+
+            assertEquals(
+                PendingSubmitPlanStore.StoredSubmitPlan.Rejected(-25, TOO_LARGE_TEXT),
+                store.getSubmitPlan(transaction.txId)
+            )
+            assertEquals(
+                mapOf(TransactionId.new(transaction.txId) to SubmitRejection.TOO_LARGE),
+                store.rejectedTransactions.first()
+            )
+        }
+
+    @Test
+    fun only_transient_failures_stay_pending() =
+        runBlocking<Unit> {
+            val (broadcaster, store, transaction) =
+                multiEndpointBroadcaster(
+                    mapOf(
+                        TRANSIENT to { tx -> mempoolFull(tx) },
+                        LATE to { tx -> TransactionSubmitResult.Failure(tx.txId, true, 14, "unavailable") }
+                    )
+                )
+
+            listOf(TRANSIENT, LATE)
+                .map { endpoint -> async { broadcaster.submit(transaction, endpoint) } }
+                .forEach { it.await() }
+
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(store.getSubmitPlan(transaction.txId))
+            assertEquals(emptyMap(), store.rejectedTransactions.first())
+        }
+
+    @Test
+    fun a_migration_refused_while_another_endpoint_never_answers_is_resubmitted_as_before() =
+        runBlocking<Unit> {
+            val never = CompletableDeferred<TransactionSubmitResult>()
+            val (broadcaster, store, transaction) =
+                multiEndpointBroadcaster(
+                    mapOf(REFUSING to { tx -> tooLarge(tx) }, LATE to { never.await() }),
+                    isMigration = true
+                )
+            val late = launch(start = CoroutineStart.UNDISPATCHED) { broadcaster.submit(transaction, LATE) }
+            broadcaster.submit(transaction, REFUSING)
+            late.cancelAndJoin()
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(store.getSubmitPlan(transaction.txId))
+
+            // Every endpoint has now refused it for good: a migration is still resubmitted until it expires.
+            never.complete(tooLarge(transaction))
+            broadcaster.submit(transaction, LATE)
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(store.getSubmitPlan(transaction.txId))
+            assertEquals(emptyMap(), store.rejectedTransactions.first())
+        }
+
+    @Test
+    fun submit_returns_the_sdks_verdict_not_the_endpoints_raw_refusal() =
+        runBlocking<Unit> {
+            val accept = CompletableDeferred<Unit>()
+            val (broadcaster, store, transaction) =
+                multiEndpointBroadcaster(
+                    mapOf(
+                        REFUSING to { tx -> tooLarge(tx) },
+                        LATE to { tx ->
+                            accept.await()
+                            TransactionSubmitResult.Success(tx.txId)
+                        }
+                    )
+                )
+            val late = async(start = CoroutineStart.UNDISPATCHED) { broadcaster.submit(transaction, LATE) }
+
+            // Refused for good while another endpoint has not answered: pending, so no rejection.
+            val refused = broadcaster.submit(transaction, REFUSING)
+            assertIs<TransactionSubmitResult.Failure>(refused)
+            assertNull(refused.rejection)
+
+            accept.complete(Unit)
+            assertIs<TransactionSubmitResult.Success>(late.await())
+
+            // Another endpoint accepted it: a later refusal is returned as the acceptance it is.
+            assertIs<TransactionSubmitResult.Success>(broadcaster.submit(transaction, REFUSING))
+            assertEquals(emptyMap(), store.rejectedTransactions.first())
+        }
+
+    @Test
+    fun submit_carries_the_rejection_the_sdk_recorded() =
+        runBlocking<Unit> {
+            val (broadcaster, store, transaction) = multiEndpointBroadcaster(mapOf(REFUSING to { tx -> tooLarge(tx) }))
+
+            val refused = broadcaster.submit(transaction, REFUSING)
+
+            assertIs<TransactionSubmitResult.Failure>(refused)
+            assertEquals(SubmitRejection.TOO_LARGE, refused.rejection)
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Rejected>(store.getSubmitPlan(transaction.txId))
+        }
+
+    @Test
+    fun a_transport_failure_is_returned_without_a_rejection() =
+        runBlocking<Unit> {
+            val (broadcaster, _, transaction) =
+                multiEndpointBroadcaster(
+                    mapOf(LATE to { tx -> TransactionSubmitResult.Failure(tx.txId, true, 4, "DEADLINE_EXCEEDED") })
+                )
+
+            val result = broadcaster.submit(transaction, LATE)
+
+            assertIs<TransactionSubmitResult.Failure>(result)
+            assertNull(result.rejection)
+        }
+
+    private suspend fun multiEndpointBroadcaster(
+        answers: Map<LightWalletEndpoint, suspend (CreatedTransaction) -> TransactionSubmitResult>,
+        isMigration: Boolean = false
+    ): Triple<SdkBroadcaster, PendingSubmitPlanStore, CreatedTransaction> {
+        val store = PendingSubmitPlanStore()
+        val submitter =
+            object : TransactionSubmitter {
+                override suspend fun submit(
+                    transaction: CreatedTransaction,
+                    endpoint: LightWalletEndpoint
+                ) = answers.getValue(endpoint)(transaction)
+            }
+        val txManager = FakeOutboundTransactionManager(proposedTransactions = listOf(encodedTransaction(3)))
+        val broadcaster = SdkBroadcaster(txManager, submitter, store)
+        val proposal = fakeProposal().also { `when`(it.toByteArray()).thenReturn(byteArrayOf(7)) }
+        if (isMigration) store.migrationMarks.markProposal(proposal)
+        val transaction = broadcaster.createProposedTransactions(proposal, fakeUsk()).single()
+        return Triple(broadcaster, store, transaction)
+    }
+
+    @Test
+    fun a_migration_created_through_the_broadcaster_is_never_rejected() =
+        runBlocking<Unit> {
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val submitter =
+                FakeTransactionSubmitter(resultFactory = {
+                    TransactionSubmitResult.Failure(it.txId, false, -26, "16: bad-txns-no-source-of-funds")
+                })
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val txManager = FakeOutboundTransactionManager(proposedTransactions = listOf(encodedTransaction(4)))
+            val broadcaster = SdkBroadcaster(txManager, submitter, pendingSubmitPlanStore)
+            val migration = fakeProposal().also { `when`(it.toByteArray()).thenReturn(byteArrayOf(4)) }
+            pendingSubmitPlanStore.migrationMarks.markProposal(migration)
+            // Creating the migration's PCZT marked its transaction by id (see MigrationTransactionMarks.markPcztOf).
+            pendingSubmitPlanStore.migrationMarks.markTransactions(listOf(encodedTransaction(99).txId))
+            val sweep = broadcaster.createProposedTransactions(migration, fakeUsk()).single()
+            val signedSweep =
+                broadcaster
+                    .createTransactionFromPczt(
+                        Pczt(byteArrayOf(1)),
+                        Pczt(byteArrayOf(2))
+                    ).single()
+
+            broadcaster.submit(sweep, endpoint)
+            broadcaster.submit(signedSweep, endpoint)
+
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(pendingSubmitPlanStore.getSubmitPlan(sweep.txId))
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(
+                pendingSubmitPlanStore.getSubmitPlan(signedSweep.txId)
+            )
+            assertEquals(emptySet(), pendingSubmitPlanStore.rejectedTransactionIds.first())
         }
 
     @Test
@@ -457,17 +772,20 @@ class SdkBroadcasterTest {
         var proposedTransactionCreateCount = 0
         var pcztCreateCount = 0
         val ovkPolicies = mutableListOf<OvkPolicy>()
+        val sizeBounds = mutableListOf<TransactionSizeBound>()
 
         override suspend fun proposeTransferFromUri(
             account: Account,
-            uri: String
+            uri: String,
+            sizeBound: TransactionSizeBound
         ): Proposal = error("Unused")
 
         override suspend fun proposeTransfer(
             account: Account,
             recipient: String,
             amount: Zatoshi,
-            memo: String
+            memo: String,
+            sizeBound: TransactionSizeBound
         ): Proposal = error("Unused")
 
         override suspend fun proposeShielding(
@@ -482,16 +800,19 @@ class SdkBroadcasterTest {
         override suspend fun proposeSendMax(
             account: Account,
             recipient: RecipientAddress,
-            memo: MemoContent?
+            memo: MemoContent?,
+            sizeBound: TransactionSizeBound
         ): Proposal = error("Unused")
 
         override suspend fun createProposedTransactions(
             proposal: Proposal,
             usk: UnifiedSpendingKey,
-            ovkPolicy: OvkPolicy
+            ovkPolicy: OvkPolicy,
+            sizeBound: TransactionSizeBound
         ): List<EncodedTransaction> {
             proposedTransactionCreateCount += 1
             ovkPolicies += ovkPolicy
+            sizeBounds += sizeBound
             beforeReturningProposedTransactions()
             return proposedTransactions
         }
@@ -500,7 +821,8 @@ class SdkBroadcasterTest {
 
         override suspend fun createPcztFromProposal(
             accountUuid: AccountUuid,
-            proposal: Proposal
+            proposal: Proposal,
+            sizeBound: TransactionSizeBound
         ): Pczt = error("Unused")
 
         override suspend fun redactPcztForSigner(pczt: Pczt): Pczt = error("Unused")
@@ -556,7 +878,8 @@ class SdkBroadcasterTest {
         override suspend fun createProposedTransactions(
             proposal: Proposal,
             usk: UnifiedSpendingKey,
-            ovkPolicy: OvkPolicy
+            ovkPolicy: OvkPolicy,
+            sizeBound: TransactionSizeBound
         ): List<CreatedTransaction> {
             proposedTransactionCreateCount += 1
             return createdTransactions
@@ -599,7 +922,20 @@ class SdkBroadcasterTest {
                 expiryHeight = expiryHeight
             )
 
-        private fun fakeProposal(): Proposal = mock(Proposal::class.java)
+        private val REFUSING = LightWalletEndpoint("a.z.cash", 443, true)
+        private val LATE = LightWalletEndpoint("b.z.cash", 443, true)
+        private val TRANSIENT = LightWalletEndpoint("c.z.cash", 443, true)
+
+        private const val TOO_LARGE_TEXT = "exceeding the configured mempool maximum"
+
+        private fun tooLarge(transaction: CreatedTransaction) =
+            TransactionSubmitResult.Failure(transaction.txId, false, -25, TOO_LARGE_TEXT)
+
+        private fun mempoolFull(transaction: CreatedTransaction) =
+            TransactionSubmitResult.Failure(transaction.txId, false, -26, "mempool full")
+
+        private fun fakeProposal(): Proposal =
+            mock(Proposal::class.java).also { `when`(it.toByteArray()).thenReturn(byteArrayOf(0)) }
 
         private fun fakeUsk(): UnifiedSpendingKey = mock(UnifiedSpendingKey::class.java)
     }

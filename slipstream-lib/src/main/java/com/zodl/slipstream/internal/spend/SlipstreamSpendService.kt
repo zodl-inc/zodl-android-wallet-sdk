@@ -8,6 +8,7 @@ import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.ext.clearContents
 import cash.z.ecc.android.sdk.internal.ext.requireSingleStepForPczt
 import cash.z.ecc.android.sdk.internal.ext.toProposalException
+import cash.z.ecc.android.sdk.internal.transaction.MigrationTransactionMarks
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -18,10 +19,12 @@ import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import cash.z.ecc.android.sdk.model.toBackendEncoding
 import co.electriccoin.lightwallet.client.CombinedWalletClient
 import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.internal.runCatchingCancellable
@@ -56,20 +59,35 @@ internal class SlipstreamSpendService(
     private val walletTip: suspend () -> Long?,
     /** Production: `SaplingParams.ensureDownloaded` (over Tor when enabled). Injected so tests never download. */
     private val ensureSaplingParams: suspend () -> Unit,
-    private val readRawTransaction: suspend (FirstClassByteArray) -> FirstClassByteArray
+    private val readRawTransaction: suspend (FirstClassByteArray) -> FirstClassByteArray,
+    /** The wallet's migration marks (see [MigrationTransactionMarks]); in memory by default (tests). */
+    private val migrationMarks: MigrationTransactionMarks = MigrationTransactionMarks(null, "")
 ) {
     @Throws(
         TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalTooLargeException::class,
+        TransactionEncoderException.ProposalSyncRequiredException::class,
+        TransactionEncoderException.ProposalRecipientCannotReceiveMemoException::class,
+        TransactionEncoderException.ProposalUnsupportedRecipientException::class,
         TransactionEncoderException.ProposalFromParametersException::class
     )
     suspend fun proposeTransfer(
         account: Account,
         recipient: String,
         amount: Zatoshi,
-        memo: String
+        memo: String,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal =
         runCatchingCancellable {
-            Proposal.fromUnsafe(backend.proposeTransfer(account.accountUuid.value, recipient, amount.value, memo.toMemoBytesOrNull()))
+            Proposal.fromUnsafe(
+                backend.proposeTransfer(
+                    account.accountUuid.value,
+                    recipient,
+                    amount.value,
+                    memo.toMemoBytesOrNull(),
+                    sizeBound.toBackendEncoding()
+                )
+            )
         }.getOrElse {
             throw it.toProposalException(TransactionEncoderException::ProposalFromParametersException)
         }
@@ -78,23 +96,30 @@ internal class SlipstreamSpendService(
      * Proposes sending the account's entire currently spendable shielded balance to [recipient],
      * with the ZIP 317 fee deducted from it - the same backend call and the same failure mapping
      * the upstream `TransactionEncoderImpl.proposeSendMax` uses, so a nothing-spendable or
-     * fee-exceeds-balance refusal surfaces as [TransactionEncoderException.InsufficientFundsException].
+     * fee-exceeds-balance refusal surfaces as [TransactionEncoderException.InsufficientFundsException]
+     * and a rejected proposal as the typed exception for its reason.
      */
     @Throws(
         TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalTooLargeException::class,
+        TransactionEncoderException.ProposalSyncRequiredException::class,
+        TransactionEncoderException.ProposalRecipientCannotReceiveMemoException::class,
+        TransactionEncoderException.ProposalUnsupportedRecipientException::class,
         TransactionEncoderException.ProposalFromParametersException::class
     )
     suspend fun proposeSendMax(
         account: Account,
         recipient: RecipientAddress,
-        memo: MemoContent?
+        memo: MemoContent?,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal =
         runCatchingCancellable {
             Proposal.fromUnsafe(
                 backend.proposeSendMaxTransfer(
                     account.accountUuid.value,
                     recipient.encoding,
-                    memo?.asMemoBytes()?.bytes?.byteArray
+                    memo?.asMemoBytes()?.bytes?.byteArray,
+                    sizeBound.toBackendEncoding()
                 )
             )
         }.getOrElse {
@@ -103,20 +128,27 @@ internal class SlipstreamSpendService(
 
     @Throws(
         TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalTooLargeException::class,
+        TransactionEncoderException.ProposalSyncRequiredException::class,
+        TransactionEncoderException.ProposalRecipientCannotReceiveMemoException::class,
+        TransactionEncoderException.ProposalUnsupportedRecipientException::class,
         TransactionEncoderException.ProposalFromUriException::class
     )
     suspend fun proposeFulfillingPaymentUri(
         account: Account,
-        uri: String
+        uri: String,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal =
         runCatchingCancellable {
-            Proposal.fromUnsafe(backend.proposeTransferFromUri(account.accountUuid.value, uri))
+            Proposal.fromUnsafe(backend.proposeTransferFromUri(account.accountUuid.value, uri, sizeBound.toBackendEncoding()))
         }.getOrElse {
             throw it.toProposalException(TransactionEncoderException::ProposalFromUriException)
         }
 
     @Throws(
         TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalTooLargeException::class,
+        TransactionEncoderException.ProposalSyncRequiredException::class,
         TransactionEncoderException.ProposalShieldingException::class
     )
     suspend fun proposeShielding(
@@ -147,7 +179,7 @@ internal class SlipstreamSpendService(
             Proposal.fromUnsafe(backend.proposeOrchardToIronwoodMigration(account.accountUuid.value))
         }.getOrElse {
             throw it.toProposalException(TransactionEncoderException::ProposalFromParametersException)
-        }
+        }.also { migrationMarks.markProposal(it) }
 
     /**
      * Store-first (S-SPEND): `create` already wrote the transactions into `data.db`, so the FIRST
@@ -160,7 +192,8 @@ internal class SlipstreamSpendService(
     fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy = OvkPolicy.Sender
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Flow<TransactionSubmitResult> =
         flow {
             ensureSaplingParamsFor(backend, proposal, ensureSaplingParams)
@@ -170,7 +203,8 @@ internal class SlipstreamSpendService(
                     backend.createProposedTransactions(
                         proposal.toUnsafe(),
                         uskBytes,
-                        discardOvk = ovkPolicy == OvkPolicy.Discard
+                        discardOvk = ovkPolicy == OvkPolicy.Discard,
+                        sizeBound = sizeBound.toBackendEncoding()
                     )
                 } finally {
                     uskBytes.clearContents()
@@ -186,10 +220,15 @@ internal class SlipstreamSpendService(
     @Throws(PcztException.MultiStepProposalUnsupportedException::class)
     suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
-        proposal: Proposal
+        proposal: Proposal,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Pczt {
         proposal.requireSingleStepForPczt()
-        return Pczt(backend.createPcztFromProposal(accountUuid.value, proposal.toUnsafe()))
+        return Pczt(backend.createPcztFromProposal(accountUuid.value, proposal.toUnsafe(), sizeBound.toBackendEncoding()))
+            .also { pczt ->
+                // Marked by its transaction id, which signing and proving do not change, however the PCZT is carried.
+                migrationMarks.markPcztOf(proposal, pczt)
+            }
     }
 
     suspend fun redactPcztForSigner(pczt: Pczt): Pczt = Pczt(backend.redactPcztForSigner(pczt.toByteArray()))

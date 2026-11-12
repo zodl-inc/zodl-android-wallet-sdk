@@ -20,6 +20,7 @@ import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.TransactionId
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
@@ -47,6 +48,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
@@ -120,7 +122,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * All functions are safe to call from any coroutine; they are serialized internally.
  */
-@Suppress("LongParameterList", "TooManyFunctions")
+@Suppress("LongParameterList", "TooManyFunctions", "LargeClass")
 class GiftCardRedeemer private constructor(
     private val context: Context,
     val card: GiftCard,
@@ -131,12 +133,27 @@ class GiftCardRedeemer private constructor(
     private val wallets: GiftCardWallets,
     private val aliases: GiftCardAliases,
     /** Where [close] tears the card wallet down, so that the teardown outlives a caller that stops waiting. */
-    private val teardownScope: CoroutineScope
+    private val teardownScope: CoroutineScope,
+    /**
+     * How [redeem] sends a card that does not fit in one transaction within its size bound, in rounds; `null`
+     * ([SendWhatFits.AVAILABLE]) while the backend cannot select what fits, so such a card fails with
+     * [GiftCardException.TooManyNotes] instead.
+     */
+    private val sendWhatFits: SendWhatFits? = SendWhatFits.AVAILABLE
 ) {
     /** The network the card, and the redemption, are on. */
     val network: ZcashNetwork = card.network
 
     private val mutex = Mutex()
+
+    /**
+     * Keeps [redeem]s apart for their whole length. Unlike [mutex], which [check] and [close] take too, it is held
+     * while a round waits to be mined.
+     */
+    private val redeemMutex = Mutex()
+
+    /** Completed as soon as [close] starts the teardown, so that a round waiting to be mined stops waiting. */
+    private val closing = CompletableDeferred<Unit>()
     private var synchronizer: CloseableSynchronizer? = null
     private var isClosed = false
 
@@ -249,14 +266,15 @@ class GiftCardRedeemer private constructor(
          * redemption sweeps only [Balance.spendable] and leaves the rest on the card.
          *
          * @property fee the fee a redemption pays now, as proposed for the card's actual notes.
+         * @property redeemable what a redemption sends to the recipient now: the payment total
+         * ([Proposal.totalPaymentAmount]) of the proposal that sweeps the card's spendable
+         * notes, always positive.
          */
         data class Ready(
             val balance: Balance,
-            val fee: Zatoshi
-        ) : Status {
-            /** What a redemption sends to the recipient now: [Balance.spendable] minus [fee]. */
-            val redeemable: Zatoshi get() = balance.spendable - fee
-        }
+            val fee: Zatoshi,
+            val redeemable: Zatoshi
+        ) : Status
 
         /**
          * The card holds more than the fee, but not enough of it is spendable yet to pay for a
@@ -292,21 +310,58 @@ class GiftCardRedeemer private constructor(
      * way. A destination that owns [redeem]'s `toAddress` finds the funds on its own when it next
      * syncs, as an untrusted receive; a destination the claim does not pay never sees it.
      * @property amount what the redemption sends to the recipient, as its proposal computes it:
-     * what the spent notes hold, minus [fee] and any change; `null` when not known or not
-     * positive.
+     * the payment total of its proposal ([Proposal.totalPaymentAmount]); `null` when not known
+     * or not positive.
+     * @property rounds how many rounds the redemption took: `1` unless the card did not fit in one
+     * transaction within [redeem]'s size bound. [fee], [results] and [amount] are then the totals
+     * of every round, in order.
      */
     data class Redemption(
         val fee: Zatoshi,
         val results: List<TransactionSubmitResult>,
         val recordedInDestination: Boolean = false,
-        val amount: Zatoshi? = null
+        val amount: Zatoshi? = null,
+        val rounds: Int = 1
     ) {
         /**
-         * `true` when every transaction was accepted by the server. [redeem] never returns empty [results], so this is
-         * never vacuously `true`.
+         * `true` when every transaction was accepted. Each of [results] carries the SDK's verdict, not one
+         * endpoint's raw answer: a transaction any endpoint accepted is a [TransactionSubmitResult.Success], and
+         * a [TransactionSubmitResult.Failure.rejection] is set only when the SDK recorded the transaction as
+         * rejected.
+         * [redeem] never returns empty [results], so this is never vacuously `true`.
          */
         val isSubmitted: Boolean get() = results.all { it is TransactionSubmitResult.Success }
     }
+
+    /**
+     * What a card holds after a round of a [redeem]: the funds a later round sends.
+     *
+     * @property value the spendable value that remains.
+     * @property noteCount the notes that hold it.
+     */
+    data class Remainder(
+        val value: Zatoshi,
+        val noteCount: Int
+    ) {
+        companion object {
+            /** Nothing remains: the redemption is complete. */
+            val NONE = Remainder(Zatoshi(0), 0)
+        }
+    }
+
+    /**
+     * A round of a [redeem] whose transactions the server accepted.
+     *
+     * @property round the round, from `1`.
+     * @property txIds the round's transactions.
+     * @property remainder what the card holds for the rounds still to come; [Remainder.NONE] after the last one.
+     * When it is not empty, [redeem] next waits for [txIds] to be mined before it starts the next round.
+     */
+    data class RedeemProgress(
+        val round: Int,
+        val txIds: List<TransactionId>,
+        val remainder: Remainder
+    )
 
     /**
      * Creates the temporary wallet if needed, waits until it has synced to the chain tip, and
@@ -500,11 +555,11 @@ class GiftCardRedeemer private constructor(
         account: Account,
         balance: Balance
     ): Status {
-        if (balance.toStatus() !is Status.Ready) return balance.toStatus()
-        val fee =
+        balance.toStatus()?.let { return it }
+        val probe =
             try {
                 val recipient = wallets.feeEstimateRecipient(synchronizer, account, network)
-                synchronizer.proposeSendMax(account, recipient, null).totalFeeRequired()
+                synchronizer.proposeSendMax(account, recipient, null)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: TransactionEncoderException.InsufficientFundsException) {
@@ -512,10 +567,19 @@ class GiftCardRedeemer private constructor(
             } catch (e: Exception) {
                 throw GiftCardException.SyncFailed(e)
             }
+        val redeemable = probe?.totalPaymentAmount()
         return when {
-            fee != null && balance.spendable.value > fee.value -> Status.Ready(balance, fee)
-            balance.pending.value > 0 -> Status.Pending(balance)
-            else -> Status.Empty
+            probe != null && redeemable != null && redeemable.value > 0 -> {
+                Status.Ready(balance, probe.totalFeeRequired(), redeemable)
+            }
+
+            balance.pending.value > 0 -> {
+                Status.Pending(balance)
+            }
+
+            else -> {
+                Status.Empty
+            }
         }
     }
 
@@ -553,12 +617,22 @@ class GiftCardRedeemer private constructor(
      * claim created but not submitted would hold the card's funds until the redeemer is closed,
      * and one submitted but not recorded would be held by [destination] for 10 confirmations
      * instead of 3; a cancelled caller gets the [CancellationException] once it has. [close] waits
-     * for such a redemption before it tears the card wallet down.
+     * for such a round before it tears the card wallet down, but not for a round waiting for the
+     * one before it to be mined: that wait ends with [GiftCardException.Closed], the rounds before
+     * it having been reported to [onProgress].
      *
      * @param toAddress the user's own address, on [network].
      * @param memo an optional memo for the recipient; must be `null` for a transparent address.
      * @param destination the user's own wallet, to be told about the claim at once; `null` to
      * let it find the funds on its next sync.
+     * @param sizeBound the limits each transaction of the claim must stay within (see
+     * [TransactionSizeBound]); consensus alone by default. A card that holds more notes than fit
+     * fails with [GiftCardException.TooManyNotes], having sent nothing.
+     * @param roundTimeout how long a redemption in several rounds waits for a round's transactions
+     * to be mined before it fails with [GiftCardException.RoundExpired]: by default about the
+     * 40-block expiry of a transaction.
+     * @param onProgress called after each round whose transactions the server accepted. A callback
+     * that throws is logged and ignored: the redemption goes on and returns every transaction sent.
      *
      * @throws GiftCardException.NotChecked if no [check] on this redeemer has completed yet.
      * @throws GiftCardException.NothingToRedeem if the spendable balance does not exceed the
@@ -568,26 +642,84 @@ class GiftCardRedeemer private constructor(
      * network.
      * @throws GiftCardException.RedemptionIncomplete if the proposal created no transaction, so
      * that a [Redemption] would report nothing. Nothing was sent then.
+     * @throws GiftCardException.TooManyNotes if the card's notes do not fit in one transaction
+     * within [sizeBound]. Nothing was sent then.
+     * @throws GiftCardException.RoundFailed if, in a redemption of several rounds, the server did
+     * not accept a round's transactions. The rounds before it stand; redeem again later.
+     * @throws GiftCardException.RoundExpired if, in a redemption of several rounds, a round's
+     * transactions were not mined within [roundTimeout], or expired. The rounds before it stand;
+     * redeem again later.
      * @throws GiftCardException.Closed if [close] was called, including when a [close] stopped
      * waiting for this redemption before it started creating its transaction, or if the card's key
      * was wiped with [GiftCard.wipe].
      * @throws TransactionEncoderException if the transaction could not be created.
      */
-    @Suppress("ThrowsCount")
+    @Suppress("ThrowsCount", "LongParameterList", "LongMethod", "CyclomaticComplexMethod")
     suspend fun redeem(
         toAddress: RecipientAddress,
         memo: MemoContent? = null,
-        destination: Synchronizer? = null
+        destination: Synchronizer? = null,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS,
+        roundTimeout: Duration = DEFAULT_ROUND_TIMEOUT,
+        onProgress: suspend (RedeemProgress) -> Unit = {}
     ): Redemption {
         if (isClosing) throw GiftCardException.Closed()
-        return mutex.withLock {
-            if (toAddress.network != network) throw GiftCardException.NetworkMismatch()
-            if (destination != null && destination.network != network) throw GiftCardException.NetworkMismatch()
-            if (isClosed) throw GiftCardException.Closed()
-            val cardWallet = synchronizer
-            val account = checkedAccount
-            if (cardWallet == null || account == null) throw GiftCardException.NotChecked()
+        return redeemMutex.withLock {
+            val rounds = mutableListOf<Redemption>()
+            var hasNextRound = true
+            while (hasNextRound) {
+                val round = rounds.size + 1
+                // The transactions the earlier rounds sent.
+                val sent = rounds.flatMap { previous -> previous.results.map { TransactionId.new(it.txId) } }
+                // [mutex] is held while the round is proposed and claimed, never while it waits to be mined.
+                val claimed = mutex.withLock { claimRound(round, sent, toAddress, memo, destination, sizeBound) }
+                hasNextRound = claimed != null
+                if (claimed != null) {
+                    val redemption = claimed.redemption
+                    rounds += redemption
+                    val isLastRound = claimed.remainder == null || claimed.remainder.noteCount == 0
+                    if (!redemption.isSubmitted) {
+                        if (round == 1 && isLastRound) return@withLock redemption
+                        throw GiftCardException.RoundFailed(round, redemption, sent)
+                    }
+                    val txIds = redemption.results.map { TransactionId.new(it.txId) }
+                    reportProgress(onProgress, RedeemProgress(round, txIds, claimed.remainder ?: Remainder.NONE))
+                    hasNextRound = !isLastRound
+                    if (hasNextRound) awaitMined(claimed.cardWallet, txIds, round, roundTimeout)
+                }
+            }
+            rounds.combined()
+        }
+    }
 
+    /** One claimed round of a [redeem]: the card wallet it was claimed in, its redemption and what remains. */
+    private class ClaimedRound(
+        val cardWallet: Synchronizer,
+        val redemption: Redemption,
+        val remainder: Remainder?
+    )
+
+    /**
+     * Proposes and claims [round] of a [redeem], under [mutex]; `null` when a round after the first has nothing it
+     * can send. See [redeem] for what it throws.
+     */
+    @Suppress("ThrowsCount", "LongParameterList")
+    private suspend fun claimRound(
+        round: Int,
+        sent: List<TransactionId>,
+        toAddress: RecipientAddress,
+        memo: MemoContent?,
+        destination: Synchronizer?,
+        sizeBound: TransactionSizeBound
+    ): ClaimedRound? {
+        if (toAddress.network != network) throw GiftCardException.NetworkMismatch()
+        if (destination != null && destination.network != network) throw GiftCardException.NetworkMismatch()
+        if (isClosed) throw GiftCardException.Closed()
+        val cardWallet = synchronizer
+        val account = checkedAccount
+        if (cardWallet == null || account == null) throw GiftCardException.NotChecked()
+
+        if (round == 1) {
             val balance =
                 cardWallet.walletBalances.value
                     ?.get(account.accountUuid)
@@ -595,27 +727,116 @@ class GiftCardRedeemer private constructor(
             if (balance == null || balance.spendable.value <= MINIMUM_FEE.value) {
                 throw GiftCardException.NothingToRedeem()
             }
-
-            val proposal =
-                try {
-                    cardWallet.proposeSendMax(account, toAddress, memo)
-                } catch (e: TransactionEncoderException.InsufficientFundsException) {
-                    throw GiftCardException.NothingToRedeem(e)
-                }
-
-            if (isCloseDetached) throw GiftCardException.Closed()
-            val seed = cardSeed()
-            val usk =
-                try {
-                    wallets.deriveSpendingKey(seed, network)
-                } finally {
-                    seed.fill(0)
-                }
-            if (isCloseDetached) throw GiftCardException.Closed()
-            currentCoroutineContext().ensureActive()
-            withContext(NonCancellable) { completeClaim(cardWallet.broadcaster, proposal, usk, destination) }
-                .also { currentCoroutineContext().ensureActive() }
         }
+
+        val (proposal, remainder) =
+            proposeRound(round, sent, cardWallet, account, toAddress, memo, sizeBound) ?: return null
+        return ClaimedRound(cardWallet, claim(cardWallet, proposal, destination, sizeBound), remainder)
+    }
+
+    /**
+     * Calls [onProgress] with [progress]. A callback that throws is logged and ignored, so that the transactions
+     * already sent are never lost to it; a [CancellationException] is rethrown, so that a cancellation is never.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun reportProgress(
+        onProgress: suspend (RedeemProgress) -> Unit,
+        progress: RedeemProgress
+    ) {
+        try {
+            onProgress(progress)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Twig.warn(e) { "A gift card redemption's progress callback failed; the redemption goes on" }
+        }
+    }
+
+    /**
+     * The proposal of [round] of a [redeem], with what remains after it (`null` when the
+     * proposal sends everything, as it always does without [sendWhatFits]); `null` when a round
+     * after the first has nothing it can send.
+     *
+     * @throws GiftCardException.NothingToRedeem when the first round has nothing to send.
+     * @throws GiftCardException.TooManyNotes when the card's notes do not fit within [sizeBound],
+     * naming [sent], the transactions of the earlier rounds.
+     */
+    @Suppress("LongParameterList")
+    private suspend fun proposeRound(
+        round: Int,
+        sent: List<TransactionId>,
+        cardWallet: Synchronizer,
+        account: Account,
+        toAddress: RecipientAddress,
+        memo: MemoContent?,
+        sizeBound: TransactionSizeBound
+    ): Pair<Proposal, Remainder?>? =
+        try {
+            val fits = sendWhatFits
+            if (fits == null) {
+                cardWallet.proposeSendMax(account, toAddress, memo, sizeBound) to null
+            } else {
+                fits.propose(cardWallet, account, toAddress, memo, sizeBound).let { it.proposal to it.remainder }
+            }
+        } catch (e: TransactionEncoderException.InsufficientFundsException) {
+            if (round == 1) throw GiftCardException.NothingToRedeem(e) else null
+        } catch (e: TransactionEncoderException.ProposalTooLargeException) {
+            throw GiftCardException.TooManyNotes(e, sent)
+        }
+
+    /**
+     * Creates, submits and records the claim of one round's [proposal] (see [completeClaim]),
+     * uncancellably once its transactions start being created.
+     *
+     * @throws GiftCardException.Closed if a [close] stopped waiting, or the card's key was wiped,
+     * before the transactions were created.
+     */
+    private suspend fun claim(
+        cardWallet: CloseableSynchronizer,
+        proposal: Proposal,
+        destination: Synchronizer?,
+        sizeBound: TransactionSizeBound
+    ): Redemption {
+        if (isCloseDetached) throw GiftCardException.Closed()
+        val seed = cardSeed()
+        val usk =
+            try {
+                wallets.deriveSpendingKey(seed, network)
+            } finally {
+                seed.fill(0)
+            }
+        if (isCloseDetached) throw GiftCardException.Closed()
+        currentCoroutineContext().ensureActive()
+        return withContext(NonCancellable) {
+            completeClaim(cardWallet.broadcaster, proposal, usk, destination, sizeBound)
+        }.also { currentCoroutineContext().ensureActive() }
+    }
+
+    /**
+     * Waits until every one of [txIds], the transactions of [round], is mined in the card wallet.
+     *
+     * @throws GiftCardException.RoundExpired if one of them expires unmined, or [timeout] passes first.
+     * @throws GiftCardException.Closed if [close] is called while it waits.
+     */
+    private suspend fun awaitMined(
+        cardWallet: Synchronizer,
+        txIds: List<TransactionId>,
+        round: Int,
+        timeout: Duration
+    ) {
+        val wanted = txIds.toSet()
+        val mined =
+            withTimeoutOrNull(timeout) {
+                merge(
+                    cardWallet.allTransactions.mapNotNull { transactions -> roundOutcome(transactions, wanted) },
+                    flow {
+                        closing.await()
+                        emit(false)
+                    }
+                ).first()
+            }
+        if (isClosing) throw GiftCardException.Closed()
+        if (mined != true) throw GiftCardException.RoundExpired(round, txIds)
     }
 
     /**
@@ -642,9 +863,10 @@ class GiftCardRedeemer private constructor(
         broadcaster: Broadcaster,
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        destination: Synchronizer?
+        destination: Synchronizer?,
+        sizeBound: TransactionSizeBound
     ): Redemption {
-        val created = broadcaster.createProposedTransactions(proposal, usk, OvkPolicy.Discard)
+        val created = broadcaster.createProposedTransactions(proposal, usk, OvkPolicy.Discard, sizeBound)
         if (created.isEmpty()) throw GiftCardException.RedemptionIncomplete()
         val results = mutableListOf<TransactionSubmitResult>()
         val interruption =
@@ -660,7 +882,7 @@ class GiftCardRedeemer private constructor(
             fee = proposal.totalFeeRequired(),
             results = results,
             recordedInDestination = recorded,
-            amount = proposal.totalSent().takeIf { it.value > 0 }
+            amount = proposal.totalPaymentAmount().takeIf { it.value > 0 }
         )
     }
 
@@ -810,6 +1032,7 @@ class GiftCardRedeemer private constructor(
             teardownOutcome?.let { return it to false }
             val outcome = CompletableDeferred<Throwable?>()
             teardownOutcome = outcome
+            closing.complete(Unit)
             teardownScope.launch { tearDown(outcome) }
             outcome to true
         }
@@ -1116,6 +1339,12 @@ class GiftCardRedeemer private constructor(
         val DEFAULT_SYNC_TIMEOUT: Duration = 10.minutes
 
         /**
+         * How long a [redeem] of several rounds waits for a round's transactions to be mined, by default: about
+         * their 40-block expiry at the 75-second block target.
+         */
+        val DEFAULT_ROUND_TIMEOUT: Duration = 50.minutes
+
+        /**
          * How long [check] lets the temporary wallet stay unable to reach the server, by default,
          * before giving up.
          */
@@ -1148,9 +1377,11 @@ class GiftCardRedeemer private constructor(
         const val SUBMIT_THREW_CODE = -1
 
         /**
-         * The smallest fee a ZIP 317 transaction pays (`zip317::MINIMUM_FEE` in
-         * `zcash_primitives`: the marginal fee times the grace actions). A card whose spendable
-         * balance does not exceed it cannot pay the recipient anything.
+         * A lower bound on the fee of any redemption: the smallest fee a ZIP 317 transaction
+         * pays (`zip317::MINIMUM_FEE` in `zcash_primitives`: the marginal fee times the grace
+         * actions). Used only to rule out cards cheaply before a redemption is proposed, never
+         * to compute an amount: a card whose spendable balance does not exceed it cannot pay the
+         * recipient anything, but one above it may still not cover the fee its notes require.
          */
         internal val MINIMUM_FEE = Zatoshi(10_000)
 
@@ -1246,7 +1477,8 @@ class GiftCardRedeemer private constructor(
             alias: String,
             wallets: GiftCardWallets,
             aliases: GiftCardAliases,
-            teardownScope: CoroutineScope = PROCESS_TEARDOWN_SCOPE
+            teardownScope: CoroutineScope = PROCESS_TEARDOWN_SCOPE,
+            sendWhatFits: SendWhatFits? = SendWhatFits.AVAILABLE
         ): GiftCardRedeemer {
             if (card.network != network) throw GiftCardException.NetworkMismatch()
             requireNotMainWalletAlias(alias, "A gift card must not use the default wallet alias")
@@ -1262,7 +1494,8 @@ class GiftCardRedeemer private constructor(
                 alias = alias,
                 wallets = wallets,
                 aliases = aliases,
-                teardownScope = teardownScope
+                teardownScope = teardownScope,
+                sendWhatFits = sendWhatFits
             )
         }
     }
@@ -1446,15 +1679,15 @@ internal fun AccountBalance.toGiftCardBalance(): GiftCardRedeemer.Balance {
 }
 
 /**
- * What [GiftCardRedeemer.check] reports for a card with this balance, judged by the minimum fee
- * alone: a redemption pays at least [GiftCardRedeemer.MINIMUM_FEE], so only value above it counts
- * as redeemable. [GiftCardRedeemer.check] then confirms a [GiftCardRedeemer.Status.Ready] card
- * against the fee its notes actually require.
+ * What [GiftCardRedeemer.check] reports for a card with this balance when the minimum fee alone
+ * decides: a redemption pays at least [GiftCardRedeemer.MINIMUM_FEE], so only value above it
+ * counts as redeemable. `null` when that cannot rule out [GiftCardRedeemer.Status.Ready]; the
+ * card is then proposed for real, and the proposal decides the fee and the amount.
  */
-internal fun GiftCardRedeemer.Balance.toStatus(): GiftCardRedeemer.Status =
+internal fun GiftCardRedeemer.Balance.toStatus(): GiftCardRedeemer.Status? =
     when {
         spendable.value > GiftCardRedeemer.MINIMUM_FEE.value -> {
-            GiftCardRedeemer.Status.Ready(this, GiftCardRedeemer.MINIMUM_FEE)
+            null
         }
 
         total.value > GiftCardRedeemer.MINIMUM_FEE.value -> {

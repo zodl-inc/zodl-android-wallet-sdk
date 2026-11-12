@@ -223,6 +223,20 @@ fun Zatoshi?.convertZatoshiToZec(scale: Int = ZEC_FORMATTER.maximumFractionDigit
         ).setScale(scale, ZEC_FORMATTER.roundingMode)
 
 /**
+ * This Zatoshi value as an exact amount of ZEC: a [BigDecimal] with a scale of 8, the number of
+ * decimal places one zatoshi occupies, so `Zatoshi(123_456_789).toZecExact()` is `1.23456789`.
+ * No rounding takes place, and converting the result back with [convertZecToZatoshi] yields this
+ * value again.
+ *
+ * Use it for arithmetic and comparisons on ZEC amounts, such as checking an entered amount against
+ * a maximum. [convertZatoshiToZec] is a display helper instead: by default it rounds to
+ * [Conversions.ZEC_FORMATTER]'s 6 fraction digits with [RoundingMode.HALF_EVEN], so
+ * `1.23456789` ZEC becomes `1.234568`, more than the value it was derived from.
+ */
+@Suppress("MagicNumber")
+fun Zatoshi.toZecExact(): BigDecimal = BigDecimal.valueOf(value, 8)
+
+/**
  * Convert a ZEC value into Zatoshi.
  * Start with ZEC -> End with Zatoshi.
  *

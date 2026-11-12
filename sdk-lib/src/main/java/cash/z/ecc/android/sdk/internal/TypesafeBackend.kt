@@ -28,6 +28,7 @@ import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
@@ -62,7 +63,8 @@ internal interface TypesafeBackend {
 
     suspend fun proposeTransferFromUri(
         account: Account,
-        uri: String
+        uri: String,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal
 
     @Suppress("LongParameterList")
@@ -70,7 +72,8 @@ internal interface TypesafeBackend {
         account: Account,
         to: String,
         value: Long,
-        memo: ByteArray? = null
+        memo: ByteArray? = null,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal
 
     /**
@@ -92,13 +95,15 @@ internal interface TypesafeBackend {
     suspend fun proposeSendMaxTransfer(
         account: Account,
         to: RecipientAddress,
-        memo: MemoContent?
+        memo: MemoContent?,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal
 
     suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy = OvkPolicy.Sender
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): List<FirstClassByteArray>
 
     /**
@@ -119,7 +124,8 @@ internal interface TypesafeBackend {
      */
     suspend fun createPcztFromProposal(
         account: Account,
-        proposal: Proposal
+        proposal: Proposal,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Pczt
 
     /**
