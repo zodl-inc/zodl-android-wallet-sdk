@@ -14,9 +14,10 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
  * in an earlier process), so that a verdict is
  * never drawn from the partial answers left after a restart. Otherwise the transaction is rejected only when
  * every endpoint gave an explicit server answer ([isExplicitServerAnswer]): each of [planEndpoints]
- * and of [outcomes] returned a [TransactionSubmitResult.Failure] from the server itself, and at
- * least one of them is an explicit refusal for good ([serverRefusal]). A transient refusal beside it
- * counts as an answer that neither accepts nor prevents the verdict.
+ * and of [outcomes] returned a [TransactionSubmitResult.Failure] from the server itself, and every
+ * one of them is an explicit refusal for good ([serverRefusal]). A transient refusal from any endpoint
+ * (such as a full mempool) keeps the transaction pending, as the endpoint that gave it may accept the
+ * transaction later, and a rejection would lock the user's notes until the transaction expires.
  *
  * An endpoint without an explicit server answer is inconclusive: the request may have reached the
  * server, which may have accepted the transaction. That is one with no answer, recorded as
@@ -28,7 +29,7 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
  * next block's, or already expired), which the server never saw. While any endpoint is
  * inconclusive no new rejection is drawn and [previous] merely stands: the transaction stays
  * pending and is resubmitted, until an acceptance clears it or a later explicit answer from every
- * endpoint completes the verdict.
+ * endpoint completes the verdict. The same holds while any explicit answer is transient.
  *
  * The stored rejection is [latest]'s when it is one, then [previous] (a rejection recorded earlier,
  * possibly before the process started), then the first explicit refusal in [outcomes].
@@ -47,7 +48,7 @@ internal fun submitRejectionVerdict(
             null
         }
 
-        !everyEndpointAnsweredExplicitly -> {
+        !everyEndpointAnsweredExplicitly || !outcomes.values.all { it.isRefusalForGood() } -> {
             previous
         }
 
@@ -103,3 +104,6 @@ private fun TransactionSubmitResult.asStoredRejection(): StoredRejection? =
     (this as? TransactionSubmitResult.Failure)
         ?.takeIf { it.serverRefusal != null }
         ?.let { StoredRejection(it.code, it.description.orEmpty()) }
+
+private fun TransactionSubmitResult.isRefusalForGood(): Boolean =
+    (this as? TransactionSubmitResult.Failure)?.serverRefusal != null

@@ -144,8 +144,8 @@ published artifacts carry no configuration, so the next release is a major versi
   (`TOO_LARGE`, `EXPIRED`, `INVALID`); show them as failed, not pending, with that reason.
   `Synchronizer.rejectedTransactionIds: Flow<Set<TransactionId>>` is the same set of ids. This is
   the SDK's verdict over every endpoint a transaction was submitted to: it is rejected only when
-  every such endpoint gave an explicit server answer, none accepted it, and at least one refused it
-  explicitly and for good; a transient refusal beside it does not prevent that. A transport
+  every such endpoint gave an explicit server answer, none accepted it, and every one of them refused it
+  explicitly and for good; a transient refusal from any endpoint (such as a full mempool) keeps it pending. A transport
   failure (`TransactionSubmitResult.Failure.grpcError`: the server could not be reached, the call
   timed out or its response was lost) is inconclusive, since the server may have accepted the
   transaction, and so is an endpoint whose submission has not answered (still in flight when an

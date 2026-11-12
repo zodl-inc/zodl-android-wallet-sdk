@@ -26,6 +26,14 @@ class ProposalTest {
     }
 
     @Test
+    fun a_shielding_shaped_proposal_with_no_payments_is_accepted() {
+        val proposal = Proposal.fromUnsafe(unsafe(payment = 0L, fee = 15_000L))
+
+        assertEquals(Zatoshi(0L), proposal.totalPaymentAmount())
+        assertEquals(Zatoshi(15_000L), proposal.totalFeeRequired())
+    }
+
+    @Test
     fun a_proposal_whose_payments_are_negative_is_rejected_instead_of_clamped() {
         assertFailsWith<IllegalArgumentException> {
             Proposal.fromUnsafe(unsafe(payment = -5_000L, fee = 10_000L))

@@ -24,6 +24,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+@Suppress("LargeClass")
 class PendingSubmitPlanStoreTest {
     @Test
     fun created_transactions_wait_for_submit_plan() =
@@ -346,7 +347,7 @@ class PendingSubmitPlanStoreTest {
         }
 
     @Test
-    fun a_refusal_then_a_late_transient_answer_is_rejected_with_the_refusal() =
+    fun a_refusal_then_a_late_transient_answer_stays_pending() =
         runBlocking<Unit> {
             val preferenceProvider = FakePreferenceProvider()
             val transaction = createdTransaction(1)
@@ -357,18 +358,14 @@ class PendingSubmitPlanStoreTest {
 
             store.addSubmitEndpoint(transaction, endpoint("b.z.cash"), mempoolFull(transaction))
 
-            assertEquals(
-                PendingSubmitPlanStore.StoredSubmitPlan.Rejected(-25, TOO_LARGE_TEXT),
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(
                 PendingSubmitPlanStore(preferenceProvider).getSubmitPlan(transaction.txId)
             )
-            assertEquals(
-                mapOf(TransactionId.new(transaction.txId) to SubmitRejection.TOO_LARGE),
-                store.rejectedTransactions.first()
-            )
+            assertEquals(emptyMap(), store.rejectedTransactions.first())
         }
 
     @Test
-    fun a_transient_answer_then_a_refusal_is_rejected_with_the_refusal() =
+    fun a_transient_answer_then_a_refusal_stays_pending_and_a_later_acceptance_still_wins() =
         runBlocking<Unit> {
             val transaction = createdTransaction(1)
             val store = PendingSubmitPlanStore()
@@ -379,13 +376,33 @@ class PendingSubmitPlanStoreTest {
 
             store.addSubmitEndpoint(transaction, endpoint("b.z.cash"), tooLarge(transaction))
 
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(store.getSubmitPlan(transaction.txId))
+            assertEquals(emptyMap(), store.rejectedTransactions.first())
+
+            store.addSubmitEndpoint(
+                transaction,
+                endpoint("a.z.cash"),
+                TransactionSubmitResult.Success(transaction.txId)
+            )
+
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(store.getSubmitPlan(transaction.txId))
+            assertEquals(emptyMap(), store.rejectedTransactions.first())
+        }
+
+    @Test
+    fun two_endpoints_that_both_refuse_for_good_reject_the_transaction() =
+        runBlocking<Unit> {
+            val transaction = createdTransaction(1)
+            val store = PendingSubmitPlanStore()
+            store.recordSubmitStarted(transaction.txId, endpoint("a.z.cash"))
+            store.recordSubmitStarted(transaction.txId, endpoint("b.z.cash"))
+            store.addSubmitEndpoint(transaction, endpoint("a.z.cash"), tooLarge(transaction))
+
+            store.addSubmitEndpoint(transaction, endpoint("b.z.cash"), tooLarge(transaction))
+
             assertEquals(
                 PendingSubmitPlanStore.StoredSubmitPlan.Rejected(-25, TOO_LARGE_TEXT),
                 store.getSubmitPlan(transaction.txId)
-            )
-            assertEquals(
-                mapOf(TransactionId.new(transaction.txId) to SubmitRejection.TOO_LARGE),
-                store.rejectedTransactions.first()
             )
         }
 

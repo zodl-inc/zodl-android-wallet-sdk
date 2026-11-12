@@ -178,6 +178,32 @@ class ProposalUnsafeTest {
     }
 
     @Test
+    fun total_payment_amount_of_a_shielding_proposal_is_zero() {
+        // Shielding pays nobody: everything but the fee comes back as shielded change, so the check on every
+        // proposal sees zero rather than a negative total.
+        val step =
+            singleStep(
+                listOf(transparentInput(60_000L), transparentInput(40_000L)),
+                fee = 15_000L,
+                change = listOf(changeValue(value = 85_000L, isEphemeral = false))
+            )
+
+        assertEquals(0L, ProposalUnsafe(proposal(step)).totalPaymentAmount())
+    }
+
+    @Test
+    fun total_payment_amount_of_a_transfer_to_the_wallet_itself_is_zero() {
+        val step =
+            singleStep(
+                listOf(receivedOutputInput(ValuePool.Sapling, value = 100_000L)),
+                fee = 10_000L,
+                change = listOf(changeValue(value = 90_000L, isEphemeral = false))
+            )
+
+        assertEquals(0L, ProposalUnsafe(proposal(step)).totalPaymentAmount())
+    }
+
+    @Test
     fun total_payment_amount_is_not_clamped() {
         val step = singleStep(listOf(receivedOutputInput(ValuePool.Orchard, value = 5_000L)), fee = 10_000L)
 

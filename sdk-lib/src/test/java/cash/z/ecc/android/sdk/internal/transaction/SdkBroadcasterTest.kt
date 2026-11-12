@@ -176,7 +176,7 @@ class SdkBroadcasterTest {
         }
 
     @Test
-    fun a_refusal_then_a_transient_failure_is_rejected_with_the_refusal() =
+    fun a_refusal_then_a_transient_failure_stays_pending() =
         runBlocking<Unit> {
             val answerLate = CompletableDeferred<Unit>()
             val (broadcaster, store, transaction) =
@@ -196,18 +196,12 @@ class SdkBroadcasterTest {
             answerLate.complete(Unit)
             late.join()
 
-            assertEquals(
-                PendingSubmitPlanStore.StoredSubmitPlan.Rejected(-25, TOO_LARGE_TEXT),
-                store.getSubmitPlan(transaction.txId)
-            )
-            assertEquals(
-                mapOf(TransactionId.new(transaction.txId) to SubmitRejection.TOO_LARGE),
-                store.rejectedTransactions.first()
-            )
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(store.getSubmitPlan(transaction.txId))
+            assertEquals(emptyMap(), store.rejectedTransactions.first())
         }
 
     @Test
-    fun a_transient_failure_then_a_refusal_is_rejected_with_the_refusal() =
+    fun a_transient_failure_then_a_refusal_stays_pending() =
         runBlocking<Unit> {
             val refuseLate = CompletableDeferred<Unit>()
             val (broadcaster, store, transaction) =
@@ -227,14 +221,8 @@ class SdkBroadcasterTest {
             refuseLate.complete(Unit)
             late.join()
 
-            assertEquals(
-                PendingSubmitPlanStore.StoredSubmitPlan.Rejected(-25, TOO_LARGE_TEXT),
-                store.getSubmitPlan(transaction.txId)
-            )
-            assertEquals(
-                mapOf(TransactionId.new(transaction.txId) to SubmitRejection.TOO_LARGE),
-                store.rejectedTransactions.first()
-            )
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(store.getSubmitPlan(transaction.txId))
+            assertEquals(emptyMap(), store.rejectedTransactions.first())
         }
 
     @Test
