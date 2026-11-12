@@ -57,6 +57,9 @@ published artifacts carry no configuration, so the next release is a major versi
 - Replace `OhttpCodec.usesIndependentRelay` with your own check of the relay you configured.
 - Stop passing `ZODL_OHTTP_*` to SDK builds; they have no effect.
 
+### Fixed
+- Debug-level Rust logs of the OHTTP transport (`zodl_slipstream::ohttp`), which name the relay host, are capped at info, so they never reach logcat.
+
 ## [8.0.0] - 2026-11-07
 
 ### Added

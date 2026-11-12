@@ -272,6 +272,12 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_initOnLoa
                     "tower",
                 ]
                 .map(|t| (t, noisy)),
+            )
+            // The OHTTP transport names the relay host in its debug lines: cap it at info so those
+            // lines never reach logcat, in any build.
+            .with_target(
+                "zodl_slipstream::ohttp",
+                std::cmp::min(log_filter, tracing::level_filters::LevelFilter::INFO),
             );
 
         paranoid_android::layer("cash.z.rust.logs")
