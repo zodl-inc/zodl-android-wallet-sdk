@@ -457,12 +457,9 @@ class SlipstreamSynchronizer internal constructor(
      * to), so that a transaction it refused for good is reported in [rejectedTransactionIds] and not
      * resubmitted, and emits it with the SDK's verdict (`SubmitPlanStore.withVerdict`).
      */
-    private fun Flow<TransactionSubmitResult>.recordingOutcomes(proposal: Proposal? = null): Flow<TransactionSubmitResult> =
+    private fun Flow<TransactionSubmitResult>.recordingOutcomes(): Flow<TransactionSubmitResult> =
         map { result ->
             val store = planStore ?: return@map result
-            if (proposal != null && store.migrationMarks.isMigrationProposal(proposal)) {
-                store.migrationMarks.markTransactions(listOf(result.txId))
-            }
             store.recordAnswer(result.txId, defaultEndpoint, result)
             store.withVerdict(result.txId, result)
         }
@@ -1257,7 +1254,7 @@ class SlipstreamSynchronizer internal constructor(
         awaitReady()
         return spendService
             .createProposedTransactions(proposal, usk, ovkPolicy, sizeBound)
-            .recordingOutcomes(proposal)
+            .recordingOutcomes()
     }
 
     override suspend fun createPcztFromProposal(

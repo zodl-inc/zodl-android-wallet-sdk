@@ -209,6 +209,13 @@ internal class SlipstreamSpendService(
                 } finally {
                     uskBytes.clearContents()
                 }
+            // Marked here, before any submit: the transactions are already in the wallet database, so a resubmission
+            // pass may answer for them while this flow is still submitting, or after the submit threw. A mark made
+            // only as the results are emitted would leave that window unmarked, and one refusal for good then
+            // rejects a migration transaction (a migration is never rejected).
+            if (migrationMarks.isMigrationProposal(proposal)) {
+                migrationMarks.markTransactions(txIds.map(::FirstClassByteArray))
+            }
             engine.notifyTxChange()
             for (txId in txIds) {
                 val txIdBytes = FirstClassByteArray(txId)

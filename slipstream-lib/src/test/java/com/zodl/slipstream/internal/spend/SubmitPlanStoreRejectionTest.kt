@@ -386,7 +386,7 @@ class SubmitPlanStoreRejectionTest {
     }
 
     /** A `SharedPreferences` of strings held in memory, as [SubmitPlanStore] uses it. */
-    private class InMemoryPreferences : SharedPreferences {
+    internal class InMemoryPreferences : SharedPreferences {
         private val values = mutableMapOf<String, Any?>()
 
         override fun getAll(): MutableMap<String, *> = values.toMutableMap()

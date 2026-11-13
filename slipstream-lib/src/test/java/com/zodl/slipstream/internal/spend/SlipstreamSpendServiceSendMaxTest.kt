@@ -261,7 +261,10 @@ class SlipstreamSpendServiceSendMaxTest {
     ) {
         val backend: Backend = mock(Backend::class.java)
         val proposalUnsafe: ProposalUnsafe =
-            mock(ProposalUnsafe::class.java).also { `when`(it.totalFeeRequired()).thenReturn(FEE) }
+            mock(ProposalUnsafe::class.java).also {
+                `when`(it.totalFeeRequired()).thenReturn(FEE)
+                `when`(it.toByteArray()).thenReturn(byteArrayOf(4, 2))
+            }
         val proposal: Proposal = Proposal.fromUnsafe(proposalUnsafe)
         val uskBytes = byteArrayOf(1, 2, 3)
         val usk: UnifiedSpendingKey =
