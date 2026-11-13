@@ -41,6 +41,7 @@ class SlipstreamSpendServiceOrderingTest {
 
             val proposalUnsafe = mock(ProposalUnsafe::class.java)
             `when`(proposalUnsafe.totalFeeRequired()).thenReturn(1_000L)
+            `when`(proposalUnsafe.toByteArray()).thenReturn(byteArrayOf(4, 2))
             val proposal = Proposal.fromUnsafe(proposalUnsafe)
 
             val usk = mock(UnifiedSpendingKey::class.java)

@@ -196,7 +196,7 @@ class OrchardMigrationSdkImplTest {
                     migrationBackend = fakeBackend,
                     defaultSubmitEndpoint = LightWalletEndpoint("localhost", 9067, true),
                     chainTipEstimator = FixedChainTipEstimator(POST_NU7_TIP),
-                    preferenceProviderHolder = EncryptedPreferenceProvider(fakeAndroidContext()),
+                    preferenceProviderHolder = FakePreferenceHolder(FakePreferenceProvider()),
                 )
 
             val result = sdk.proposeImmediateMigration()

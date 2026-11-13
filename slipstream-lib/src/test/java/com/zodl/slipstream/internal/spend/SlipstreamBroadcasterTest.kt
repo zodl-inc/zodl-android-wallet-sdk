@@ -2,6 +2,7 @@ package com.zodl.slipstream.internal.spend
 
 import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.model.ProposalUnsafe
+import cash.z.ecc.android.sdk.internal.transaction.MigrationTransactionMarks
 import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
 import cash.z.ecc.android.sdk.model.OvkPolicy
@@ -160,12 +161,16 @@ class SlipstreamBroadcasterTest {
 
         val backend: Backend = mock(Backend::class.java)
         val engine: SlipstreamEngine = mock(SlipstreamEngine::class.java)
-        val planStore: SubmitPlanStore = mock(SubmitPlanStore::class.java)
+        val planStore: SubmitPlanStore =
+            mock(SubmitPlanStore::class.java).also {
+                `when`(it.migrationMarks).thenReturn(MigrationTransactionMarks(null, ""))
+            }
         val transactionReader: SlipstreamTransactionReader = mock(SlipstreamTransactionReader::class.java)
 
         val proposalUnsafe: ProposalUnsafe =
             mock(ProposalUnsafe::class.java).also {
                 `when`(it.totalFeeRequired()).thenReturn(FEE)
+                `when`(it.toByteArray()).thenReturn(byteArrayOf(1))
             }
         val proposal: Proposal = Proposal.fromUnsafe(proposalUnsafe)
 

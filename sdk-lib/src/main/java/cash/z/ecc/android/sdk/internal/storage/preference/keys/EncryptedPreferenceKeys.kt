@@ -11,6 +11,52 @@ internal object EncryptedPreferenceKeys {
         )
 
     /**
+     * The transactions every endpoint explicitly answered, a server refused for good and none accepted, keyed as
+     * [PENDING_SUBMIT_PLANS] is, with the code and reason of the refusal. See
+     * [cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore.StoredSubmitPlan.Rejected].
+     */
+    val PENDING_SUBMIT_REJECTIONS =
+        StringPreferenceDefault(
+            key = PreferenceKey("pending_submit_rejections"),
+            defaultValue = ""
+        )
+
+    /**
+     * The migration transactions, keyed as [PENDING_SUBMIT_PLANS] is (namespace and transaction id):
+     * they are resubmitted until they expire and are never
+     * [cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore.StoredSubmitPlan.Rejected].
+     * See [cash.z.ecc.android.sdk.internal.transaction.MigrationTransactionMarks].
+     */
+    val PENDING_SUBMIT_MIGRATIONS =
+        StringPreferenceDefault(
+            key = PreferenceKey("pending_submit_migrations"),
+            defaultValue = ""
+        )
+
+    /**
+     * The migration proposals, keyed by namespace and a digest of the proposal's bytes: the
+     * transactions created from them are marked in [PENDING_SUBMIT_MIGRATIONS]. See
+     * [cash.z.ecc.android.sdk.internal.transaction.MigrationTransactionMarks].
+     */
+    val PENDING_SUBMIT_MIGRATION_PROPOSALS =
+        StringPreferenceDefault(
+            key = PreferenceKey("pending_submit_migration_proposals"),
+            defaultValue = ""
+        )
+
+    /**
+     * The endpoints that accepted each transaction among [PENDING_SUBMIT_PLANS], keyed as it is, in
+     * its codec: a transaction one accepted is never
+     * [cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore.StoredSubmitPlan.Rejected],
+     * also after a restart.
+     */
+    val PENDING_SUBMIT_ACCEPTANCES =
+        StringPreferenceDefault(
+            key = PreferenceKey("pending_submit_acceptances"),
+            defaultValue = ""
+        )
+
+    /**
      * Epoch-millis string: when sync may resume after a migration transfer was broadcast via the
      * immediate ("send now") path. Empty means no buffer is active. See
      * [cash.z.ecc.android.sdk.OrchardMigrationSdk.isSyncBlocked]'s doc for why this lives here

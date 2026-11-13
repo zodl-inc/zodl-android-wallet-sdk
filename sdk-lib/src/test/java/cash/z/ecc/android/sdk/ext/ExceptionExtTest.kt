@@ -10,7 +10,9 @@ import cash.z.ecc.android.sdk.internal.ext.indicatesInsufficientFunds
 import cash.z.ecc.android.sdk.internal.ext.isScanContinuityError
 import cash.z.ecc.android.sdk.internal.ext.toProposalException
 import cash.z.ecc.android.sdk.internal.jni.ProposalInsufficientFundsException
+import cash.z.ecc.android.sdk.internal.jni.ProposalRejectedException
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertSame
@@ -108,6 +110,94 @@ class ExceptionExtTest {
 
         assertIs<TransactionEncoderException.ProposalFromUriException>(exception)
         assertSame(cause, exception.rootCause)
+    }
+
+    @Test
+    fun to_proposal_exception_maps_a_too_large_rejection() {
+        val cause = ProposalRejectedException(ProposalRejectedException.TRANSACTION_TOO_LARGE)
+
+        val exception = cause.toProposalException(TransactionEncoderException::ProposalFromParametersException)
+
+        assertIs<TransactionEncoderException.ProposalTooLargeException>(exception)
+        assertSame(cause, exception.rootCause)
+    }
+
+    @Test
+    fun to_proposal_exception_maps_a_transparent_memo_rejection() {
+        val cause = ProposalRejectedException(ProposalRejectedException.TRANSPARENT_MEMO)
+
+        val exception = cause.toProposalException(TransactionEncoderException::ProposalFromParametersException)
+
+        assertIs<TransactionEncoderException.ProposalRecipientCannotReceiveMemoException>(exception)
+        assertSame(cause, exception.rootCause)
+    }
+
+    @Test
+    fun to_proposal_exception_maps_an_unsupported_address_rejection() {
+        val cause = ProposalRejectedException(ProposalRejectedException.UNSUPPORTED_ADDRESS)
+
+        val exception = cause.toProposalException(TransactionEncoderException::ProposalFromParametersException)
+
+        assertIs<TransactionEncoderException.ProposalUnsupportedRecipientException>(exception)
+        assertSame(cause, exception.rootCause)
+    }
+
+    @Test
+    fun to_proposal_exception_finds_a_rejection_through_a_nested_cause() {
+        val rejection = ProposalRejectedException(ProposalRejectedException.TRANSACTION_TOO_LARGE)
+        val wrapped = IllegalStateException("proposal failed", rejection)
+
+        val exception = wrapped.toProposalException(TransactionEncoderException::ProposalFromParametersException)
+
+        assertIs<TransactionEncoderException.ProposalTooLargeException>(exception)
+        assertSame(wrapped, exception.rootCause)
+    }
+
+    @Test
+    fun to_proposal_exception_prefers_a_typed_rejection_over_insufficient_funds_text() {
+        val rejection = ProposalRejectedException(ProposalRejectedException.TRANSACTION_TOO_LARGE)
+        val wrapped = IllegalStateException(INSUFFICIENT_BALANCE, rejection)
+
+        val exception = wrapped.toProposalException(TransactionEncoderException::ProposalFromParametersException)
+
+        assertIs<TransactionEncoderException.ProposalTooLargeException>(exception)
+        assertSame(wrapped, exception.rootCause)
+    }
+
+    @Test
+    fun to_proposal_exception_maps_a_sync_required_rejection() {
+        val cause = ProposalRejectedException(ProposalRejectedException.SYNC_REQUIRED)
+
+        for (fallback in listOf<(Throwable) -> TransactionEncoderException>(
+            TransactionEncoderException::ProposalFromParametersException,
+            TransactionEncoderException::ProposalFromUriException,
+            TransactionEncoderException::ProposalShieldingException
+        )) {
+            val exception = cause.toProposalException(fallback)
+
+            assertIs<TransactionEncoderException.ProposalSyncRequiredException>(exception)
+            assertSame(cause, exception.rootCause)
+        }
+    }
+
+    @Test
+    fun to_proposal_exception_falls_back_for_a_rejection_without_a_typed_exception() {
+        val cause = ProposalRejectedException("a_reason_added_later")
+
+        val exception = cause.toProposalException(TransactionEncoderException::ProposalFromParametersException)
+
+        assertIs<TransactionEncoderException.ProposalFromParametersException>(exception)
+        assertSame(cause, exception.rootCause)
+    }
+
+    @Test
+    fun rejection_messages_carry_only_the_reason() {
+        val cause = ProposalRejectedException(ProposalRejectedException.TRANSPARENT_MEMO)
+
+        val exception = cause.toProposalException(TransactionEncoderException::ProposalFromParametersException)
+
+        assertEquals("proposal rejected: transparent_memo", cause.message)
+        assertFalse { exception.message.orEmpty().contains(cause.message.orEmpty()) }
     }
 
     /** A [Throwable] whose cause can be pointed at another instance, so a cycle can be constructed. */

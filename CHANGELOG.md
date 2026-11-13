@@ -19,6 +19,124 @@ published artifacts carry no configuration, so the next release is a major versi
   by `zodl-ohttp-client` 1.0; a refused value throws `IllegalArgumentException` naming the network, the field
   and the rule, never the value, and nothing is installed. `toString` of the configuration shows only which
   values are set. `Ohttp.configuration` and `Ohttp.isOn(isTestnet)` read it back.
+- `Throwable.proposalTooLargeReason()`, in `cash.z.ecc.android.sdk.exception`, returns the
+  `TransactionEncoderException.ProposalTooLargeException` for a failure caused by a transaction
+  that would spend too many notes to fit in a block, and `null` for any other failure.
+  `Synchronizer.createProposedTransactions` and `Synchronizer.createPcztFromProposal` still fail
+  for such a transaction with exactly the exception, message and cause they always have; use this
+  to tell the case apart. No existing call site changes.
+- `Proposal.totalPaymentAmount()`: the sum of the proposal's payments to recipients, excluding
+  fee and change, as a `Zatoshi`. A proposal whose payments would be negative is corrupt and is
+  rejected with `IllegalArgumentException` by `Proposal.fromUnsafe` / `Proposal.fromByteArray`;
+  the amount is never clamped to zero.
+- `Zatoshi.toZecExact(): BigDecimal` (in `cash.z.ecc.android.sdk.ext`), the exact ZEC value of a
+  `Zatoshi`: scale 8, no rounding, so `Zatoshi(123_456_789).toZecExact()` is `1.23456789`. Use it
+  for arithmetic and comparisons on ZEC amounts. `convertZatoshiToZec` is a display helper that by
+  default rounds to 6 fraction digits (`HALF_EVEN`), so it can return more than the zatoshi value
+  it came from (`1.23456789` becomes `1.234568`).
+- `Zip317.marginalFee()`, a `suspend` function returning the ZIP 317 marginal fee (5,000
+  zatoshi) as a `Zatoshi`, read from librustzcash through the Rust backend so that apps do not
+  restate it. It is safe to call from any dispatcher, including the main one: the first call
+  loads the native library if nothing has yet without blocking the caller, and the value is
+  cached for later calls.
+- `TransactionSizeBound` (in `cash.z.ecc.android.sdk.model`): limits each transaction of a
+  proposal below what consensus allows, by estimated serialized size (`maxBytes`), shielded
+  actions after padding (`maxShieldedActions`, the ZIP 218 measure), actions per pool
+  (`maxSaplingActions`, `maxOrchardActions`, `maxIronwoodActions`; `0` forbids the pool),
+  transparent inputs and outputs, and shielded payment outputs. Every cap is nullable (no cap);
+  `TransactionSizeBound.CONSENSUS` caps nothing. `intersect(other)` combines bounds, e.g. a
+  relay's, the device's and a signer's. `TransactionSizeBound.forProvingMemory(availableBytes)`
+  caps shielded actions so that proving fits in that memory (about 550 MiB plus 20 MiB per
+  action, at most 75 and at least `MIN_PROVING_ACTIONS`, 16, actions); which memory figure to pass
+  is the app's decision, and an app that needs a lower cap intersects one. The counts are computed
+  by the Rust backend and match the transaction that is built; the byte limit holds each
+  transaction of a multi-transaction proposal (such as a send to a TEX address) on its own. A
+  later release of the backend counts shielded actions conservatively instead (each spend and
+  output plus the padding minimum), so the same cap will then admit about two fewer notes per
+  pool: treat a cap of N actions as about N − 2 notes.
+- `Synchronizer.proposeTransfer`, `proposeSendMax`, `proposeFulfillingPaymentUri`,
+  `createProposedTransactions` and `createPcztFromProposal`, and `Broadcaster.createProposedTransactions`,
+  take an optional `sizeBound: TransactionSizeBound`, defaulting to `TransactionSizeBound.CONSENSUS`,
+  on both the SDK and Slipstream synchronizers. A proposal over the bound fails with
+  `TransactionEncoderException.ProposalTooLargeException`; creating transactions or a PCZT from a
+  proposal over the bound fails before anything is built, and `proposalTooLargeReason()` returns
+  the `ProposalTooLargeException` for it. A Send Max over the bound fails rather than sending
+  less. Shielding and the Orchard to Ironwood migration are never bounded. Callers that pass no
+  bound are unaffected.
+- `TransactionEncoderException.ProposalTooLargeException.violation: SizeBoundViolation?`: the cap
+  of the caller's `TransactionSizeBound` the transaction exceeds (`SizeBoundViolation.dimension`,
+  the `pool` for a per-pool cap, the transaction's `count` and the `limit`); `null` when it
+  exceeds a byte limit, a block's or the bound's `maxBytes`.
+- `TransactionSubmitResult.Failure.rejection: SubmitRejection?`: why the server refused the
+  transaction for good (`TOO_LARGE`: over the relay's configured mempool maximum, the next
+  block's ZIP 218 budget or the maximum transaction size; `EXPIRED`; `INVALID`), or `null` for a
+  transient failure. The principle: a refusal counts as final only when it can never become valid,
+  that is when its text, with RPC code `-25` or `-26`, is on an explicit allow-list; everything
+  else is inconclusive and resubmitted. The lists, matched as case-insensitive substrings and the
+  same on every SDK:
+  - accepted (the node already holds the transaction; never a refusal, whatever the code):
+    `already-in`, `txn-already-known`, `already in block chain`, `already exists in mempool`;
+  - inconclusive (checked first): `unknown-anchor`, `duplicate-nullifier`, `inputs-spent`,
+    `inputs-missingorspent`, `txn-mempool-conflict`, `missing inputs`, `min relay fee`,
+    `too-long-mempool-chain`, `non-final`, `bad-tx-` and `tx-version` (a node lagging behind a
+    network upgrade refuses a new version or branch id), and any text on no list;
+  - `TOO_LARGE`: `exceeding the configured mempool maximum`, `ZIP 218`, `oversize`;
+  - `EXPIRED`: `tx-overwinter-expired`, `tx-expiring-soon`, `expired`, `greater than its expiry`;
+  - `INVALID`: zcashd's `bad-txns-invalid-joinsplit-signature`, `bad-txns-joinsplit-`,
+    `bad-txns-sapling-bundle-invalid`, `bad-sapling-bundle-authorization`,
+    `bad-orchard-bundle-authorization`, `bad-txns-vout-`, `bad-txns-txouttotal-toolarge`,
+    `bad-txns-txintotal-toolarge`, `bad-txns-oversize`, `mandatory-script-verify-flag-failed`,
+    `bad-txns-no-`, and Zebra's `MUST represent a valid signature`, `proof MUST be valid`,
+    `proof is malformed`, `proof or signature verification failed`, `proof verification failed`,
+    `proof has a non-canonical size`.
+
+  These lists are grounded in zcashd's (`main.cpp`, `rawtransaction.cpp`) and Zebra's sources,
+  and still need confirmation from the node teams. It is the SDK's verdict, not one endpoint's raw answer: a trailing constructor
+  parameter with a default of `null`, set by the SDK only when it recorded the transaction as
+  rejected over every endpoint (see `rejectedTransactions` below). A transaction another endpoint
+  accepted, in the same or an earlier submission, is returned by `Broadcaster.submit` (and the
+  `createAndSubmit*` flows) as `Success`; a refusal while another endpoint is pending or
+  inconclusive is a `Failure` with no rejection.
+- `Synchronizer.rejectedTransactions: Flow<Map<TransactionId, SubmitRejection>>`: the wallet's
+  transactions the SDK recorded as rejected, each with the explicit refusal for good it recorded
+  (`TOO_LARGE`, `EXPIRED`, `INVALID`); show them as failed, not pending, with that reason.
+  `Synchronizer.rejectedTransactionIds: Flow<Set<TransactionId>>` is the same set of ids. This is
+  the SDK's verdict over every endpoint a transaction was submitted to: it is rejected only when
+  every such endpoint gave an explicit server answer, none accepted it, and every one of them refused it
+  explicitly and for good; a transient refusal from any endpoint (such as a full mempool) keeps it pending. A transport
+  failure (`TransactionSubmitResult.Failure.grpcError`: the server could not be reached, the call
+  timed out or its response was lost) is inconclusive, since the server may have accepted the
+  transaction, and so is an endpoint whose submission has not answered (still in flight when an
+  app stops waiting for a concurrent `Broadcaster.submit` to several endpoints, or one that threw
+  or was cancelled, possibly after its request was sent): the transaction stays pending and is
+  resubmitted; when the endpoint answers a resubmission, a late acceptance clears the verdict and
+  explicit answers from every endpoint with a refusal for good make it. Acceptances are persisted with the
+  endpoint that gave them, so after a restart a transaction any endpoint accepted is never
+  rejected, and no verdict is drawn from the partial answers a restart leaves. Any acceptance
+  removes the transaction from the set, and an answer that the server already holds the
+  transaction (such as `txn-already-known` or `already exists in mempool`) is an acceptance. Slipstream's background resubmission submits to every
+  endpoint of a transaction's plan, as the SDK's does, so a transaction submitted to several
+  endpoints can still be judged after a restart. Rejected transactions are no
+  longer resubmitted; they stay in `allTransactions` as unmined, with their notes unspendable,
+  until they expire and become `TransactionState.Expired`, and then leave the set. A transaction
+  no server explicitly refused is never in it and is resubmitted as before. Orchard to Ironwood
+  migration transactions (from `OrchardMigrationSdk.proposeImmediateMigration` or
+  `Synchronizer.proposeOrchardToIronwoodMigration`, including their PCZTs, and the scheduled
+  transactions the migration engine broadcasts) are never in it: they are resubmitted until they
+  expire, as before. The SDK marks them by transaction id, persisted when the proposal, its PCZT
+  (whose id signing and proving do not change) or its transactions are created and when the engine
+  broadcasts, so the guarantee holds when the proposal or PCZT is serialized and reparsed, across a
+  restart, and on both the SDK and Slipstream synchronizers. A mark that cannot be recorded fails
+  the call that records it (`proposeImmediateMigration`, or the engine's broadcast before anything
+  is sent), so an unmarked migration transaction is never submitted. A transaction's mark is erased
+  with its submit plan; proposal marks and marks of transactions that never got a plan (an
+  abandoned PCZT's) are erased with the wallet and once older than 30 days. The interface provides defaults that report no
+  rejection, so other implementations keep compiling; the SDK and Slipstream synchronizers report them.
+- `ExternalSignerBudgets.qrSigningRoundMaxActions(): Int` (in `cash.z.ecc.android.sdk.model`), a
+  `suspend` function returning the most Orchard-family actions one signing round of a QR-code signer
+  such as Keystone may carry, across every transaction in the round. Read from librustzcash
+  (`zcash_pool_migration`'s `SigningRoundBudget::KEYSTONE`), so apps do not restate it; it needs no
+  wallet and no migration, and is cached after the first call.
 
 ### Changed
 - The `User-Agent` sent to the OHTTP relay (the encapsulated request, the key configuration fetch and the
@@ -38,11 +156,66 @@ published artifacts carry no configuration, so the next release is a major versi
   configuration instead of build values.
 - The SDK build no longer reads any `ZODL_OHTTP_*` variable or `ZODL_OHTTP_REQUIRE`, and the CI workflows no
   longer pass them: a build of the SDK, including the published artifacts, carries no OHTTP endpoint or key.
+- Implementations of `Synchronizer` (including test fakes) must add the
+  `sizeBound: TransactionSizeBound` parameter to their overrides of `proposeTransfer`,
+  `proposeSendMax`, `proposeFulfillingPaymentUri`, `createProposedTransactions` and
+  `createPcztFromProposal`, and implementations of `Broadcaster` to their override of
+  `createProposedTransactions`; an override without it no longer compiles. Kotlin callers are
+  unaffected. The break is intentional: `@JvmOverloads` cannot be applied to interface members, so
+  Java callers of these interface methods pass the bound explicitly (`TransactionSizeBound.CONSENSUS`
+  for the previous behaviour), and code compiled against the previous signatures must be recompiled.
+- `TransactionEncoderException` has three new subtypes, `ProposalTooLargeException`,
+  `ProposalRecipientCannotReceiveMemoException` and `ProposalUnsupportedRecipientException`, each
+  carrying the failure as `rootCause`; their messages are fixed and never contain the recipient
+  or the memo. An exhaustive `when` over `TransactionEncoderException` stops compiling until the
+  new cases are handled.
+- `Synchronizer.proposeSendMax` now throws
+  `TransactionEncoderException.ProposalTooLargeException` when the transaction would spend too
+  many notes to fit in a block (such a wallet cannot send its maximum in one transaction until
+  its notes are consolidated),
+  `TransactionEncoderException.ProposalRecipientCannotReceiveMemoException` when a memo is given
+  for a transparent or TEX recipient, or a unified address whose only receiver is transparent
+  (pass `memo = null` for such a recipient), and
+  `TransactionEncoderException.ProposalUnsupportedRecipientException` when the recipient has no
+  receiver the wallet can pay, instead of `ProposalFromParametersException`. The backend reports
+  each of these cases as a typed error, so none depends on the wording of its message.
+- `Synchronizer.proposeTransfer` and `Synchronizer.proposeFulfillingPaymentUri` now throw
+  `ProposalTooLargeException` when the transaction would spend too many notes to fit in a
+  block, `ProposalRecipientCannotReceiveMemoException` when a memo is given (or requested by the
+  URI) for a recipient that cannot receive one, and `ProposalUnsupportedRecipientException` when
+  a recipient has no receiver the wallet can pay, instead of `ProposalFromParametersException`
+  (`ProposalFromUriException` for the URI). `Synchronizer.proposeShielding` now throws
+  `ProposalTooLargeException` instead of `ProposalShieldingException` when the shielding
+  transaction would not fit in a block. These are the exceptions `proposeSendMax` throws for the
+  same failures, so re-proposing a Send Max payment for review fails the same way. A caller that
+  handles only the per-operation wrapper should also handle the new subtypes.
+- `TransactionEncoderException` has a new subtype, `ProposalSyncRequiredException(rootCause)`:
+  the wallet has not scanned enough of the chain to create a proposal, so sync further and
+  propose again. Its message is fixed. `Synchronizer.proposeTransfer`, `proposeSendMax`,
+  `proposeFulfillingPaymentUri` and `proposeShielding` now throw it on both the SDK and Slipstream
+  synchronizers instead of `ProposalFromParametersException` (`ProposalFromUriException` for the
+  URI, `ProposalShieldingException` for shielding). Unlike `IncompleteScanException` it carries no
+  scanned height, and unlike `AnchorNotFoundException` (raised when creating transactions from an
+  existing proposal) it is raised before any proposal exists. An exhaustive `when` over
+  `TransactionEncoderException` stops compiling until the new case is handled; a caller that
+  handles only the per-operation wrapper should also handle it.
 
 ### Removed
 - `OhttpCodec.usesIndependentRelay(gatewayHost)` and the SHA-256 digests of the relay URLs it compared with: the
   app chooses its relay, so whether that relay is independent of the gateway operator is the app's to decide.
 - `BuildConfig.OHTTP_GATEWAY_HOST_MAINNET` / `_TESTNET` of the lightwallet-client module.
+
+### Known limitations
+- The legs of a multi-transaction proposal that depend on a rejected transaction (the spend after a
+  shielding, the second leg of a TEX send) are never submitted and never judged: they stay waiting
+  for a submit plan, with the notes they spend locked, until they expire. No API releases them
+  earlier.
+- The size bound counts, for a later leg of a multi-transaction proposal, one extra shielded action
+  per shielded note it spends from an earlier leg, on top of the backend's padded action count for
+  its own notes. That can over-count (a false `ProposalTooLargeException`, never a transaction over
+  the bound) only when a leg spends a shielded output of an earlier one; the proposals the backend
+  makes today (shielding, TEX) carry only transparent outputs between legs, which are counted
+  exactly.
 
 ### Migration
 - Call `Ohttp.configure` once at startup (for example in `Application.onCreate`, before any other SDK call)
@@ -60,6 +233,18 @@ published artifacts carry no configuration, so the next release is a major versi
   connection; do not offer one then.
 - Replace `OhttpCodec.usesIndependentRelay` with your own check of the relay you configured.
 - Stop passing `ZODL_OHTTP_*` to SDK builds; they have no effect.
+- Code that catches `ProposalFromParametersException`, `ProposalFromUriException` or
+  `ProposalShieldingException` around `proposeTransfer`, `proposeSendMax`,
+  `proposeFulfillingPaymentUri` or `proposeShielding` no longer sees those types for the failures
+  above: the SDK now throws `ProposalTooLargeException`,
+  `ProposalRecipientCannotReceiveMemoException`, `ProposalUnsupportedRecipientException` or
+  `ProposalSyncRequiredException` instead. All four are sibling subtypes of
+  `TransactionEncoderException`, not subtypes of the per-operation wrappers, so a `catch` of a
+  wrapper alone stops matching them. Add a `catch` (or `when` branch) for each new type, or catch
+  `TransactionEncoderException`; an exhaustive `when` over `TransactionEncoderException` must add
+  the four cases to compile. A typed rejection now takes precedence over an insufficient-funds
+  message found in its cause chain, so `InsufficientFundsException` is raised only when the
+  backend did not report one of these typed rejections.
 
 ### Fixed
 - Debug-level Rust logs of the OHTTP transport (`zodl_slipstream::ohttp`), which name the relay host, are capped at info, so they never reach logcat.

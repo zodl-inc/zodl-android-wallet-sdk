@@ -8,10 +8,12 @@ import cash.z.ecc.android.sdk.internal.model.JniUnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountKeyOverlap
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import kotlinx.coroutines.runBlocking
 import org.mockito.ArgumentMatchers
+import org.mockito.ArgumentMatchers.isNull
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
@@ -31,7 +33,7 @@ class TypesafeBackendImplTest {
 
             var capturedUskBytes: ByteArray? = null
             val backend = mock(Backend::class.java)
-            `when`(backend.createProposedTransactions(eq(proposal.toUnsafe()), any(), eq(false)))
+            `when`(backend.createProposedTransactions(eq(proposal.toUnsafe()), any(), eq(false), isNull()))
                 .thenAnswer { invocation ->
                     val passedBytes = invocation.getArgument<ByteArray>(1)
                     capturedUskBytes = passedBytes
@@ -43,6 +45,28 @@ class TypesafeBackendImplTest {
 
             val wipedBytes = assertNotNull(capturedUskBytes)
             assertContentEquals(ByteArray(32), wipedBytes, "the transient usk copy must be wiped after use")
+        }
+
+    @Test
+    fun a_size_bound_reaches_the_backend_in_its_encoding_and_consensus_as_null() =
+        runBlocking {
+            val usk = UnifiedSpendingKey(JniUnifiedSpendingKey(bytes = ByteArray(32) { 1 }))
+            val proposal = Proposal.fromByteArray(fakeProposalBytes())
+            val bound = TransactionSizeBound(maxShieldedActions = 75, maxOrchardActions = 0)
+            val captured = mutableListOf<LongArray?>()
+            val backend = mock(Backend::class.java)
+            // `any()` matches `null` too, so this one stub answers both calls.
+            `when`(backend.createProposedTransactions(eq(proposal.toUnsafe()), any(), eq(false), any()))
+                .thenAnswer { invocation ->
+                    captured += invocation.getArgument<LongArray?>(3)
+                    listOf(byteArrayOf(9))
+                }
+
+            TypesafeBackendImpl(backend).createProposedTransactions(proposal, usk, sizeBound = bound)
+            TypesafeBackendImpl(backend).createProposedTransactions(proposal, usk)
+
+            assertContentEquals(longArrayOf(-1, 75, -1, 0, -1, -1, -1, -1), captured[0])
+            assertNull(captured[1])
         }
 
     @Test

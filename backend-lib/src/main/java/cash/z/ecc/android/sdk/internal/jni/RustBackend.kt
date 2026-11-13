@@ -449,7 +449,8 @@ class RustBackend private constructor(
 
     override suspend fun proposeTransferFromUri(
         accountUuid: ByteArray,
-        uri: String
+        uri: String,
+        sizeBound: LongArray?
     ): ProposalUnsafe =
         withContext(SdkDispatchers.DATABASE_IO) {
             ProposalUnsafe.parse(
@@ -457,6 +458,7 @@ class RustBackend private constructor(
                     dataDbFile.absolutePath,
                     accountUuid,
                     uri,
+                    sizeBound,
                     networkId = networkId,
                 )
             )
@@ -466,7 +468,8 @@ class RustBackend private constructor(
         accountUuid: ByteArray,
         to: String,
         value: Long,
-        memo: ByteArray?
+        memo: ByteArray?,
+        sizeBound: LongArray?
     ): ProposalUnsafe =
         withContext(SdkDispatchers.DATABASE_IO) {
             ProposalUnsafe.parse(
@@ -476,6 +479,7 @@ class RustBackend private constructor(
                     to,
                     value,
                     memo,
+                    sizeBound,
                     networkId = networkId,
                 )
             )
@@ -516,7 +520,8 @@ class RustBackend private constructor(
     override suspend fun proposeSendMaxTransfer(
         accountUuid: ByteArray,
         to: String,
-        memo: ByteArray?
+        memo: ByteArray?,
+        sizeBound: LongArray?
     ): ProposalUnsafe =
         withContext(SdkDispatchers.DATABASE_IO) {
             ProposalUnsafe.parse(
@@ -525,6 +530,7 @@ class RustBackend private constructor(
                     accountUuid,
                     to,
                     memo,
+                    sizeBound,
                     networkId = networkId,
                 )
             )
@@ -533,7 +539,8 @@ class RustBackend private constructor(
     override suspend fun createProposedTransactions(
         proposal: ProposalUnsafe,
         unifiedSpendingKey: ByteArray,
-        discardOvk: Boolean
+        discardOvk: Boolean,
+        sizeBound: LongArray?
     ): List<ByteArray> =
         withContext(SdkDispatchers.DATABASE_IO) {
             createProposedTransactions(
@@ -543,6 +550,7 @@ class RustBackend private constructor(
                 spendParamsPath = saplingSpendFile.absolutePath,
                 outputParamsPath = saplingOutputFile.absolutePath,
                 discardOvk = discardOvk,
+                sizeBound = sizeBound,
                 networkId = networkId
             ).asList()
         }
@@ -558,13 +566,15 @@ class RustBackend private constructor(
 
     override suspend fun createPcztFromProposal(
         accountUuid: ByteArray,
-        proposal: ProposalUnsafe
+        proposal: ProposalUnsafe,
+        sizeBound: LongArray?
     ): ByteArray =
         withContext(SdkDispatchers.DATABASE_IO) {
             createPcztFromProposal(
                 dbDataPath = dataDbFile.absolutePath,
                 accountUuid = accountUuid,
                 proposal = proposal.toByteArray(),
+                sizeBound = sizeBound,
                 networkId = networkId
             )
         }
@@ -1054,6 +1064,7 @@ class RustBackend private constructor(
             dbDataPath: String,
             accountUuid: ByteArray,
             uri: String,
+            sizeBound: LongArray?,
             networkId: Int,
         ): ByteArray
 
@@ -1072,6 +1083,7 @@ class RustBackend private constructor(
             to: String,
             value: Long,
             memo: ByteArray?,
+            sizeBound: LongArray?,
             networkId: Int,
         ): ByteArray
 
@@ -1093,6 +1105,7 @@ class RustBackend private constructor(
             accountUuid: ByteArray,
             to: String,
             memo: ByteArray?,
+            sizeBound: LongArray?,
             networkId: Int,
         ): ByteArray
 
@@ -1105,6 +1118,7 @@ class RustBackend private constructor(
             spendParamsPath: String,
             outputParamsPath: String,
             discardOvk: Boolean,
+            sizeBound: LongArray?,
             networkId: Int
         ): Array<ByteArray>
 
@@ -1116,10 +1130,12 @@ class RustBackend private constructor(
         ): Boolean
 
         @JvmStatic
+        @Suppress("LongParameterList")
         private external fun createPcztFromProposal(
             dbDataPath: String,
             accountUuid: ByteArray,
             proposal: ByteArray,
+            sizeBound: LongArray?,
             networkId: Int,
         ): ByteArray
 

@@ -3,6 +3,8 @@ package cash.z.ecc.android.sdk.internal.ext
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.internal.Twig
 import cash.z.ecc.android.sdk.internal.jni.ProposalInsufficientFundsException
+import cash.z.ecc.android.sdk.internal.jni.ProposalRejectedException
+import cash.z.ecc.android.sdk.internal.jni.ProposalSizeBoundException
 
 @Suppress("SwallowedException", "TooGenericExceptionCaught")
 internal inline fun <R> tryNull(block: () -> R): R? =
@@ -86,43 +88,83 @@ internal const val ADDITIONAL_CHANGE_OUTPUT_REQUIRED =
 private const val CAUSE_CHAIN_MAX_DEPTH = 10
 
 /**
+ * This error followed by its causes: at most the first [CAUSE_CHAIN_MAX_DEPTH] links, and each one
+ * once. The walk is bounded and cycle-safe, as a cause chain coming across the FFI is not guaranteed
+ * to be either.
+ */
+private fun Throwable.causeChain(): Sequence<Throwable> {
+    val visited = mutableSetOf<Throwable>()
+    return generateSequence(this) { it.cause }
+        .take(CAUSE_CHAIN_MAX_DEPTH)
+        .takeWhile { visited.add(it) }
+}
+
+/**
  * Check whether this error - or any error within the first [CAUSE_CHAIN_MAX_DEPTH] links of its cause
  * chain - is the Rust layer reporting that the account lacks the spendable funds a proposal needs:
  * a [ProposalInsufficientFundsException], where the backend raises one, or otherwise an error whose
  * message carries one of the backend's insufficient-funds texts.
- * The walk is bounded and cycle-safe, as a cause chain coming across the FFI is not guaranteed to be
- * either.
  *
  * @return true in case of the check match, false otherwise
  */
 internal fun Throwable.indicatesInsufficientFunds(): Boolean {
     val markers = listOf(INSUFFICIENT_BALANCE, ADDITIONAL_CHANGE_OUTPUT_REQUIRED)
-    val visited = mutableSetOf<Throwable>()
-    var current: Throwable? = this
-    var depth = 0
-    while (current != null && depth < CAUSE_CHAIN_MAX_DEPTH && visited.add(current)) {
+    return causeChain().any { current ->
         val message = current.message
-        val matchesText = message != null && markers.any { message.contains(it, ignoreCase = true) }
-        if (current is ProposalInsufficientFundsException || matchesText) {
-            return true
-        }
-        current = current.cause
-        depth++
+        current is ProposalInsufficientFundsException ||
+            (message != null && markers.any { message.contains(it, ignoreCase = true) })
     }
-    return false
 }
 
 /**
- * Maps a failed proposal attempt onto the typed exception that describes it: an insufficient-funds
- * failure - whatever the propose operation was - becomes
+ * The typed exception for a [ProposalSizeBoundException] or [ProposalRejectedException] within the
+ * first [CAUSE_CHAIN_MAX_DEPTH] links of this error's cause chain, or `null` when there is none or
+ * its reason has no typed exception of its own.
+ */
+private fun Throwable.toRejectedProposalException(): TransactionEncoderException? {
+    causeChain().filterIsInstance<ProposalSizeBoundException>().firstOrNull()?.let {
+        return TransactionEncoderException.ProposalTooLargeException(this, it.toViolation())
+    }
+    return when (causeChain().filterIsInstance<ProposalRejectedException>().firstOrNull()?.reason) {
+        ProposalRejectedException.TRANSACTION_TOO_LARGE -> {
+            TransactionEncoderException.ProposalTooLargeException(this)
+        }
+
+        ProposalRejectedException.TRANSPARENT_MEMO -> {
+            TransactionEncoderException.ProposalRecipientCannotReceiveMemoException(this)
+        }
+
+        ProposalRejectedException.UNSUPPORTED_ADDRESS -> {
+            TransactionEncoderException.ProposalUnsupportedRecipientException(this)
+        }
+
+        ProposalRejectedException.SYNC_REQUIRED -> {
+            TransactionEncoderException.ProposalSyncRequiredException(this)
+        }
+
+        else -> {
+            null
+        }
+    }
+}
+
+/**
+ * Maps a failed proposal attempt onto the typed exception that describes it: a proposal the backend
+ * rejected with a [ProposalRejectedException] becomes the typed exception for its reason; otherwise
+ * an insufficient-funds failure - whatever the propose operation was - becomes
  * [TransactionEncoderException.InsufficientFundsException]; anything else is handed to the
  * per-operation [fallback] wrapper.
+ *
+ * The typed rejection is checked first: it is the backend's own classification, while
+ * [indicatesInsufficientFunds] also matches message texts anywhere in the cause chain, which a
+ * typed rejection's chain may happen to contain.
  */
 internal fun Throwable.toProposalException(
     fallback: (Throwable) -> TransactionEncoderException
 ): TransactionEncoderException =
-    if (indicatesInsufficientFunds()) {
-        TransactionEncoderException.InsufficientFundsException(this)
-    } else {
-        fallback(this)
-    }
+    toRejectedProposalException()
+        ?: if (indicatesInsufficientFunds()) {
+            TransactionEncoderException.InsufficientFundsException(this)
+        } else {
+            fallback(this)
+        }

@@ -26,6 +26,7 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.mockito.Mockito.mock
@@ -40,6 +41,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -141,6 +143,94 @@ class CompactBlockProcessorTest {
 
             verify(txManager, never()).submit(encodedTransaction)
             assertTrue(submitter.submissions.contains(Submission(encodedTransaction.txId, endpoint)))
+        }
+    }
+
+    @Test
+    fun resubmission_skips_a_transaction_every_endpoint_rejected() {
+        runBlocking {
+            val transaction = transactionOverview(1)
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val repository = mock(DerivedDataRepository::class.java)
+            val txManager = mock(OutboundTransactionManager::class.java)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val submitter = FakeTransactionSubmitter()
+            val processor = processor(repository, txManager, pendingSubmitPlanStore, submitter)
+            val created = CreatedTransaction(transaction.rawId, FirstClassByteArray(byteArrayOf(0x01)), null)
+
+            pendingSubmitPlanStore.addSubmitEndpoint(created, endpoint, tooLarge(transaction.rawId))
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(listOf(transaction))
+            `when`(repository.findEncodedTransactionByTxId(transaction.rawId))
+                .thenReturn(encodedTransaction(transaction.rawId))
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+
+            assertTrue(submitter.submissions.isEmpty())
+            verify(txManager, never()).submit(encodedTransaction(transaction.rawId))
+        }
+    }
+
+    /**
+     * Characterization: migration transactions keep main's resubmission (every pass until expiry), even when every
+     * endpoint refuses them for good.
+     */
+    @Test
+    fun a_unanimously_rejected_migration_tx_is_still_resubmitted_next_pass() {
+        runBlocking {
+            val transaction = transactionOverview(1)
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val repository = mock(DerivedDataRepository::class.java)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val submitter = FakeTransactionSubmitter { tooLarge(it.txId) }
+            val processor =
+                processor(repository, mock(OutboundTransactionManager::class.java), pendingSubmitPlanStore, submitter)
+            val created = CreatedTransaction(transaction.rawId, FirstClassByteArray(byteArrayOf(0x01)), null)
+
+            pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan(isMigration = true) { listOf(created) }
+            pendingSubmitPlanStore.addSubmitEndpoint(created, endpoint, tooLarge(transaction.rawId))
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(listOf(transaction))
+            `when`(repository.findEncodedTransactionByTxId(transaction.rawId))
+                .thenReturn(encodedTransaction(transaction.rawId))
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+
+            assertEquals(2, submitter.submissions.size)
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Ready>(
+                pendingSubmitPlanStore.getSubmitPlan(transaction.rawId)
+            )
+            assertEquals(emptySet(), pendingSubmitPlanStore.rejectedTransactionIds.first())
+        }
+    }
+
+    @Test
+    fun a_resubmission_every_endpoint_rejects_is_not_retried_again() {
+        runBlocking {
+            val transaction = transactionOverview(1)
+            val endpoint = LightWalletEndpoint("submit.z.cash", 443, true)
+            val repository = mock(DerivedDataRepository::class.java)
+            val pendingSubmitPlanStore = PendingSubmitPlanStore()
+            val submitter = FakeTransactionSubmitter { tooLarge(it.txId) }
+            val processor =
+                processor(repository, mock(OutboundTransactionManager::class.java), pendingSubmitPlanStore, submitter)
+
+            pendingSubmitPlanStore.storeSubmitPlan(
+                CreatedTransaction(transaction.rawId, FirstClassByteArray(byteArrayOf(0x01)), null),
+                TransactionSubmitPlan(listOf(endpoint))
+            )
+            `when`(repository.findUnminedTransactionsWithinExpiry(BlockHeight(100))).thenReturn(listOf(transaction))
+            `when`(repository.findEncodedTransactionByTxId(transaction.rawId))
+                .thenReturn(encodedTransaction(transaction.rawId))
+
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+            val attempts = submitter.submissions.size
+            processor.resubmitUnminedTransactionsForTest(BlockHeight(100))
+
+            assertTrue(attempts > 0)
+            assertEquals(attempts, submitter.submissions.size)
+            assertIs<PendingSubmitPlanStore.StoredSubmitPlan.Rejected>(
+                pendingSubmitPlanStore.getSubmitPlan(transaction.rawId)
+            )
         }
     }
 
@@ -512,11 +602,15 @@ class CompactBlockProcessorTest {
             sdkFlags = SdkFlags(isTorEnabled = false, isExchangeRateEnabled = false),
             saplingParamFetcher = mock(SaplingParamFetcher::class.java),
             pendingSubmitPlanStore = pendingSubmitPlanStore,
-            submitPlanExecutor = SubmitPlanExecutor(submitter)
+            submitPlanExecutor = SubmitPlanExecutor(submitter, pendingSubmitPlanStore)
         )
     }
 
-    private class FakeTransactionSubmitter : TransactionSubmitter {
+    private class FakeTransactionSubmitter(
+        private val result: (CreatedTransaction) -> TransactionSubmitResult = {
+            TransactionSubmitResult.Success(it.txId)
+        }
+    ) : TransactionSubmitter {
         val submissions = mutableListOf<Submission>()
 
         override suspend fun submit(
@@ -524,7 +618,7 @@ class CompactBlockProcessorTest {
             endpoint: LightWalletEndpoint
         ): TransactionSubmitResult {
             submissions += Submission(transaction.txId, endpoint)
-            return TransactionSubmitResult.Success(transaction.txId)
+            return result(transaction)
         }
     }
 
@@ -534,6 +628,14 @@ class CompactBlockProcessorTest {
     )
 
     companion object {
+        private fun tooLarge(txId: FirstClassByteArray) =
+            TransactionSubmitResult.Failure(
+                txId = txId,
+                grpcError = false,
+                code = -25,
+                description = "exceeding the configured mempool maximum"
+            )
+
         private fun transactionOverview(index: Int) =
             DbTransactionOverview(
                 rawId = FirstClassByteArray(byteArrayOf(index.toByte())),

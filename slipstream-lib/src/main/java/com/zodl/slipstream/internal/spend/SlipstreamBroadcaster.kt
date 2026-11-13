@@ -12,9 +12,11 @@ import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.SdkFlags
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import cash.z.ecc.android.sdk.model.toBackendEncoding
 import cash.z.ecc.android.sdk.util.WalletClientFactory
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import com.zodl.slipstream.internal.SlipstreamEngine
@@ -68,7 +70,8 @@ internal class SlipstreamBroadcaster(
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy
+        ovkPolicy: OvkPolicy,
+        sizeBound: TransactionSizeBound
     ): List<CreatedTransaction> {
         ensureSaplingParamsFor(backend, proposal, ensureSaplingParams)
         val uskBytes = usk.copyBytes()
@@ -77,12 +80,15 @@ internal class SlipstreamBroadcaster(
                 backend.createProposedTransactions(
                     proposal.toUnsafe(),
                     uskBytes,
-                    discardOvk = ovkPolicy == OvkPolicy.Discard
+                    discardOvk = ovkPolicy == OvkPolicy.Discard,
+                    sizeBound = sizeBound.toBackendEncoding()
                 )
             } finally {
                 uskBytes.clearContents()
             }
-        val created = txIds.map { txId -> storeAsAwaitingSubmission(FirstClassByteArray(txId)) }
+        val isMigration = planStore.migrationMarks.isMigrationProposal(proposal)
+        val created =
+            txIds.map { txId -> storeAsAwaitingSubmission(FirstClassByteArray(txId), isMigration) }
         engine.notifyTxChange()
         return created
     }
@@ -92,28 +98,54 @@ internal class SlipstreamBroadcaster(
         pcztWithSignatures: Pczt
     ): List<CreatedTransaction> {
         val txId = backend.extractAndStoreTxFromPczt(pcztWithProofs.toByteArray(), pcztWithSignatures.toByteArray())
-        val created = listOf(storeAsAwaitingSubmission(FirstClassByteArray(txId)))
+        // A migration PCZT's transaction was marked by id when the PCZT was created (see MigrationTransactionMarks).
+        val created = listOf(storeAsAwaitingSubmission(FirstClassByteArray(txId), isMigration = false))
         engine.notifyTxChange()
         return created
     }
 
+    @Suppress("TooGenericExceptionCaught")
     override suspend fun submit(
         transaction: CreatedTransaction,
         endpoint: LightWalletEndpoint
     ): TransactionSubmitResult {
         val client = walletClientFactory.create(endpoint)
+        // Until this submission answers, another endpoint's refusal cannot reject the transaction.
+        planStore.recordSubmitStarted(transaction.txId, endpoint)
         try {
-            val result = client.submitTransaction(transaction.raw, transaction.txId, sdkFlags, network, walletTip)
-            planStore.recordSubmitEndpoint(transaction.txId, endpoint)
+            val result =
+                try {
+                    client.submitTransaction(transaction.raw, transaction.txId, sdkFlags, network, walletTip)
+                } catch (e: Throwable) {
+                    // A submission that returned nothing, though its request may have been sent, does not accept the
+                    // transaction and keeps it from being rejected.
+                    withContext(NonCancellable) {
+                        planStore.recordAnswer(
+                            transaction.txId,
+                            endpoint,
+                            TransactionSubmitResult.NotAttempted(transaction.txId)
+                        )
+                    }
+                    throw e
+                }
+            planStore.recordAnswer(transaction.txId, endpoint, result)
             engine.notifyTxChange()
-            return result
+            // The SDK's verdict, not this endpoint's raw answer.
+            return planStore.withVerdict(transaction.txId, result)
         } finally {
             withContext(NonCancellable) { client.dispose() }
         }
     }
 
-    private suspend fun storeAsAwaitingSubmission(txId: FirstClassByteArray): CreatedTransaction {
+    private suspend fun storeAsAwaitingSubmission(
+        txId: FirstClassByteArray,
+        isMigration: Boolean
+    ): CreatedTransaction {
         planStore.markAwaitingSubmission(txId)
+        if (isMigration) {
+            planStore.migrationMarks.markTransactions(listOf(txId))
+            planStore.markMigration(txId)
+        }
         return transactionReader.readCreatedTransaction(txId)
     }
 }

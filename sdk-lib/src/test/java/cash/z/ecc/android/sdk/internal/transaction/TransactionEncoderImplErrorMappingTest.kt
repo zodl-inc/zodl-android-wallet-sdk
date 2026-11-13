@@ -3,16 +3,23 @@ package cash.z.ecc.android.sdk.internal.transaction
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.TypesafeBackend
+import cash.z.ecc.android.sdk.internal.jni.ProposalInsufficientFundsException
+import cash.z.ecc.android.sdk.internal.jni.ProposalRejectedException
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
+import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.Zatoshi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
+import kotlin.reflect.KClass
+import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertSame
 
 /**
@@ -141,6 +148,47 @@ class TransactionEncoderImplErrorMappingTest {
         }
 
     @Test
+    fun proposeSendMaxMapsInsufficientFunds() {
+        val refusal = ProposalInsufficientFundsException("Insufficient balance (available 0, required 10000)")
+
+        val exception = assertIs<TransactionEncoderException.InsufficientFundsException>(sendMaxFailure(refusal))
+
+        assertSame(refusal, exception.rootCause)
+    }
+
+    @Test
+    fun proposeSendMaxMapsEachRejectionToItsTypedException() {
+        val expected =
+            mapOf(
+                ProposalRejectedException.TRANSACTION_TOO_LARGE to
+                    TransactionEncoderException.ProposalTooLargeException::class,
+                ProposalRejectedException.TRANSPARENT_MEMO to
+                    TransactionEncoderException.ProposalRecipientCannotReceiveMemoException::class,
+                ProposalRejectedException.UNSUPPORTED_ADDRESS to
+                    TransactionEncoderException.ProposalUnsupportedRecipientException::class,
+                ProposalRejectedException.SYNC_REQUIRED to
+                    TransactionEncoderException.ProposalSyncRequiredException::class
+            )
+
+        for ((reason, type) in expected) {
+            val refusal = ProposalRejectedException(reason)
+
+            val exception = sendMaxFailure(refusal)
+
+            assertEquals(type, exception::class, reason)
+            assertSame(refusal, exception.cause)
+        }
+    }
+
+    @Test
+    fun proposeSendMaxMapsOtherFailuresToTheParametersWrapper() {
+        val exception =
+            assertIs<TransactionEncoderException.ProposalFromParametersException>(sendMaxFailure(unrelated))
+
+        assertSame(unrelated, exception.rootCause)
+    }
+
+    @Test
     fun proposeTransferRethrowsCancellationInsteadOfWrapping(): Unit =
         runBlocking {
             val backend = mock(TypesafeBackend::class.java)
@@ -190,6 +238,76 @@ class TransactionEncoderImplErrorMappingTest {
             }
         }
 
+    @Test
+    fun proposeTransferMapsEachRejectionToItsTypedException() =
+        assertEachRejectionMaps(
+            TransactionEncoderException.ProposalFromParametersException::class
+        ) { backend, refusal ->
+            `when`(backend.proposeTransfer(account, RECIPIENT, AMOUNT.value, null)).thenThrow(refusal)
+            encoder(backend).proposeTransfer(account, RECIPIENT, AMOUNT, null)
+        }
+
+    @Test
+    fun proposeTransferFromUriMapsEachRejectionToItsTypedException() =
+        assertEachRejectionMaps(
+            TransactionEncoderException.ProposalFromUriException::class
+        ) { backend, refusal ->
+            `when`(backend.proposeTransferFromUri(account, URI)).thenThrow(refusal)
+            encoder(backend).proposeTransferFromUri(account, URI)
+        }
+
+    @Test
+    fun proposeShieldingMapsEachRejectionToItsTypedException() =
+        assertEachRejectionMaps(
+            TransactionEncoderException.ProposalShieldingException::class
+        ) { backend, refusal ->
+            `when`(backend.proposeShielding(account, THRESHOLD.value, null, null)).thenThrow(refusal)
+            encoder(backend).proposeShielding(account, THRESHOLD, null, null)
+        }
+
+    /**
+     * Asserts that [propose], whose backend call throws each typed refusal the Rust layer raises,
+     * surfaces it as the same typed exception a send-max does, with [fallback] for a rejection that
+     * has no typed exception of its own.
+     */
+    private fun assertEachRejectionMaps(
+        fallback: KClass<out TransactionEncoderException>,
+        propose: suspend (TypesafeBackend, Exception) -> Unit
+    ) {
+        val expected =
+            mapOf(
+                ProposalInsufficientFundsException(INSUFFICIENT_FUNDS_MESSAGE) to
+                    TransactionEncoderException.InsufficientFundsException::class,
+                ProposalRejectedException(ProposalRejectedException.TRANSACTION_TOO_LARGE) to
+                    TransactionEncoderException.ProposalTooLargeException::class,
+                ProposalRejectedException(ProposalRejectedException.TRANSPARENT_MEMO) to
+                    TransactionEncoderException.ProposalRecipientCannotReceiveMemoException::class,
+                ProposalRejectedException(ProposalRejectedException.UNSUPPORTED_ADDRESS) to
+                    TransactionEncoderException.ProposalUnsupportedRecipientException::class,
+                ProposalRejectedException(ProposalRejectedException.SYNC_REQUIRED) to
+                    TransactionEncoderException.ProposalSyncRequiredException::class,
+                ProposalRejectedException("a_reason_added_later") to fallback
+            )
+
+        for ((refusal, type) in expected) {
+            val backend = mock(TypesafeBackend::class.java)
+
+            val exception = runBlocking { assertFails { propose(backend, refusal) } }
+
+            assertEquals(type, exception::class, refusal.message)
+            assertSame(refusal, exception.cause)
+        }
+    }
+
+    /** What [TransactionEncoderImpl.proposeSendMax] throws when the backend's send-max call throws [backendFailure]. */
+    private fun sendMaxFailure(backendFailure: Exception): Throwable =
+        runBlocking {
+            val backend = mock(TypesafeBackend::class.java)
+            val recipient = mock(RecipientAddress::class.java)
+            `when`(backend.proposeSendMaxTransfer(account, recipient, null)).thenThrow(backendFailure)
+            assertFails { encoder(backend).proposeSendMax(account, recipient, null) }
+        }
+
     private fun encoder(backend: TypesafeBackend): TransactionEncoderImpl =
         TransactionEncoderImpl(
             backend = backend,
@@ -199,6 +317,7 @@ class TransactionEncoderImplErrorMappingTest {
 
     private companion object {
         const val ACCOUNT_UUID_SIZE = 16
+        const val INSUFFICIENT_FUNDS_MESSAGE = "Insufficient balance (available 0, required 10000)"
         const val RECIPIENT = "recipient"
         const val URI = "zcash:recipient?amount=1"
         val AMOUNT = Zatoshi(100_000L)
