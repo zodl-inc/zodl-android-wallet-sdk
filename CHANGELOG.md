@@ -21,6 +21,10 @@ published artifacts carry no configuration, so the next release is a major versi
   values are set. `Ohttp.configuration` and `Ohttp.isOn(isTestnet)` read it back.
 
 ### Changed
+- The `User-Agent` sent to the OHTTP relay (the encapsulated request, the key configuration fetch and the
+  resolver lookups) and the `user-agent` of the inner (encrypted) gRPC request are both `zodl-ohttp/1`, the same
+  value for every Zodl client (they were `ZODL-OHTTP/1.0` and `zodl-ohttp-grpc/1.0`), so neither the relay nor the
+  gateway can group users by platform or library version. No other inner header changed.
 - `zodl-ohttp-client` 1.0.1 and `zodl-slipstream` 0.5.0, both from crates.io: the configuration is passed in
   at runtime, and
   requests are padded to fixed size buckets. The Slipstream engine takes the same configuration.
