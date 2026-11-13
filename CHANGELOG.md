@@ -19,47 +19,6 @@ published artifacts carry no configuration, so the next release is a major versi
   by `zodl-ohttp-client` 1.0; a refused value throws `IllegalArgumentException` naming the network, the field
   and the rule, never the value, and nothing is installed. `toString` of the configuration shows only which
   values are set. `Ohttp.configuration` and `Ohttp.isOn(isTestnet)` read it back.
-
-### Changed
-- `zodl-ohttp-client` 1.0.1 and `zodl-slipstream` 0.5.0, both from crates.io: the configuration is passed in
-  at runtime, and
-  requests are padded to fixed size buckets. The Slipstream engine takes the same configuration.
-- Without a configuration (`Ohttp.configure` never called, or a network passed as null), OHTTP is off for that
-  network: `LightWalletClient.ohttpGatewayHost(isTestnet)` returns null, no host is a gateway
-  (`LightWalletClient.isOhttpGateway` is false, so an endpoint on the gateway host is a plain lightwalletd
-  server), `OhttpHttpClient.isConfigured` is false and its calls fail before anything is sent, and voting
-  sessions reach the predefined vote and PIR servers like custom ones (directly with Tor off). With a
-  configuration for the wallet's network, voting with Tor off rides the gateway and fails closed, as before.
-- `LightWalletClient.ohttpGatewayHost(isTestnet)` and the gateway recognition read the installed
-  configuration instead of build values.
-- The SDK build no longer reads any `ZODL_OHTTP_*` variable or `ZODL_OHTTP_REQUIRE`, and the CI workflows no
-  longer pass them: a build of the SDK, including the published artifacts, carries no OHTTP endpoint or key.
-
-### Removed
-- `OhttpCodec.usesIndependentRelay(gatewayHost)` and the SHA-256 digests of the relay URLs it compared with: the
-  app chooses its relay, so whether that relay is independent of the gateway operator is the app's to decide.
-- `BuildConfig.OHTTP_GATEWAY_HOST_MAINNET` / `_TESTNET` of the lightwallet-client module.
-
-### Migration
-- Call `Ohttp.configure` once at startup (for example in `Application.onCreate`, before any other SDK call)
-  with the values your build has, or with null to leave OHTTP off:
-  ```kotlin
-  Ohttp.configure(
-      OhttpConfiguration(
-          mainnet = OhttpNetworkConfiguration(gatewayHost, relayUrl, keysDnsName, signingPublicKey),
-          testnet = null, // OHTTP off for testnet
-      )
-  )
-  ```
-  A build that skips it has OHTTP off everywhere; nothing fails, but no traffic uses OHTTP.
-- Treat `LightWalletClient.ohttpGatewayHost(isTestnet) == null` as "OHTTP off" when you list a private
-  connection; do not offer one then.
-- Replace `OhttpCodec.usesIndependentRelay` with your own check of the relay you configured.
-- Stop passing `ZODL_OHTTP_*` to SDK builds; they have no effect.
-
-## [8.0.0] - 2026-11-07
-
-### Added
 - `Throwable.proposalTooLargeReason()`, in `cash.z.ecc.android.sdk.exception`, returns the
   `TransactionEncoderException.ProposalTooLargeException` for a failure caused by a transaction
   that would spend too many notes to fit in a block, and `null` for any other failure.
@@ -179,6 +138,114 @@ published artifacts carry no configuration, so the next release is a major versi
   such as Keystone may carry, across every transaction in the round. Read from librustzcash
   (`zcash_pool_migration`'s `SigningRoundBudget::KEYSTONE`), so apps do not restate it; it needs no
   wallet and no migration, and is cached after the first call.
+
+### Changed
+- `zodl-ohttp-client` 1.0.1 and `zodl-slipstream` 0.5.0, both from crates.io: the configuration is passed in
+  at runtime, and
+  requests are padded to fixed size buckets. The Slipstream engine takes the same configuration.
+- Without a configuration (`Ohttp.configure` never called, or a network passed as null), OHTTP is off for that
+  network: `LightWalletClient.ohttpGatewayHost(isTestnet)` returns null, no host is a gateway
+  (`LightWalletClient.isOhttpGateway` is false, so an endpoint on the gateway host is a plain lightwalletd
+  server), `OhttpHttpClient.isConfigured` is false and its calls fail before anything is sent, and voting
+  sessions reach the predefined vote and PIR servers like custom ones (directly with Tor off). With a
+  configuration for the wallet's network, voting with Tor off rides the gateway and fails closed, as before.
+- `LightWalletClient.ohttpGatewayHost(isTestnet)` and the gateway recognition read the installed
+  configuration instead of build values.
+- The SDK build no longer reads any `ZODL_OHTTP_*` variable or `ZODL_OHTTP_REQUIRE`, and the CI workflows no
+  longer pass them: a build of the SDK, including the published artifacts, carries no OHTTP endpoint or key.
+- Implementations of `Synchronizer` (including test fakes) must add the
+  `sizeBound: TransactionSizeBound` parameter to their overrides of `proposeTransfer`,
+  `proposeSendMax`, `proposeFulfillingPaymentUri`, `createProposedTransactions` and
+  `createPcztFromProposal`, and implementations of `Broadcaster` to their override of
+  `createProposedTransactions`; an override without it no longer compiles. Kotlin callers are
+  unaffected. The break is intentional: `@JvmOverloads` cannot be applied to interface members, so
+  Java callers of these interface methods pass the bound explicitly (`TransactionSizeBound.CONSENSUS`
+  for the previous behaviour), and code compiled against the previous signatures must be recompiled.
+- `TransactionEncoderException` has three new subtypes, `ProposalTooLargeException`,
+  `ProposalRecipientCannotReceiveMemoException` and `ProposalUnsupportedRecipientException`, each
+  carrying the failure as `rootCause`; their messages are fixed and never contain the recipient
+  or the memo. An exhaustive `when` over `TransactionEncoderException` stops compiling until the
+  new cases are handled.
+- `Synchronizer.proposeSendMax` now throws
+  `TransactionEncoderException.ProposalTooLargeException` when the transaction would spend too
+  many notes to fit in a block (such a wallet cannot send its maximum in one transaction until
+  its notes are consolidated),
+  `TransactionEncoderException.ProposalRecipientCannotReceiveMemoException` when a memo is given
+  for a transparent or TEX recipient, or a unified address whose only receiver is transparent
+  (pass `memo = null` for such a recipient), and
+  `TransactionEncoderException.ProposalUnsupportedRecipientException` when the recipient has no
+  receiver the wallet can pay, instead of `ProposalFromParametersException`. The backend reports
+  each of these cases as a typed error, so none depends on the wording of its message.
+- `Synchronizer.proposeTransfer` and `Synchronizer.proposeFulfillingPaymentUri` now throw
+  `ProposalTooLargeException` when the transaction would spend too many notes to fit in a
+  block, `ProposalRecipientCannotReceiveMemoException` when a memo is given (or requested by the
+  URI) for a recipient that cannot receive one, and `ProposalUnsupportedRecipientException` when
+  a recipient has no receiver the wallet can pay, instead of `ProposalFromParametersException`
+  (`ProposalFromUriException` for the URI). `Synchronizer.proposeShielding` now throws
+  `ProposalTooLargeException` instead of `ProposalShieldingException` when the shielding
+  transaction would not fit in a block. These are the exceptions `proposeSendMax` throws for the
+  same failures, so re-proposing a Send Max payment for review fails the same way. A caller that
+  handles only the per-operation wrapper should also handle the new subtypes.
+- `TransactionEncoderException` has a new subtype, `ProposalSyncRequiredException(rootCause)`:
+  the wallet has not scanned enough of the chain to create a proposal, so sync further and
+  propose again. Its message is fixed. `Synchronizer.proposeTransfer`, `proposeSendMax`,
+  `proposeFulfillingPaymentUri` and `proposeShielding` now throw it on both the SDK and Slipstream
+  synchronizers instead of `ProposalFromParametersException` (`ProposalFromUriException` for the
+  URI, `ProposalShieldingException` for shielding). Unlike `IncompleteScanException` it carries no
+  scanned height, and unlike `AnchorNotFoundException` (raised when creating transactions from an
+  existing proposal) it is raised before any proposal exists. An exhaustive `when` over
+  `TransactionEncoderException` stops compiling until the new case is handled; a caller that
+  handles only the per-operation wrapper should also handle it.
+
+### Removed
+- `OhttpCodec.usesIndependentRelay(gatewayHost)` and the SHA-256 digests of the relay URLs it compared with: the
+  app chooses its relay, so whether that relay is independent of the gateway operator is the app's to decide.
+- `BuildConfig.OHTTP_GATEWAY_HOST_MAINNET` / `_TESTNET` of the lightwallet-client module.
+
+### Known limitations
+- The legs of a multi-transaction proposal that depend on a rejected transaction (the spend after a
+  shielding, the second leg of a TEX send) are never submitted and never judged: they stay waiting
+  for a submit plan, with the notes they spend locked, until they expire. No API releases them
+  earlier.
+- The size bound counts, for a later leg of a multi-transaction proposal, one extra shielded action
+  per shielded note it spends from an earlier leg, on top of the backend's padded action count for
+  its own notes. That can over-count (a false `ProposalTooLargeException`, never a transaction over
+  the bound) only when a leg spends a shielded output of an earlier one; the proposals the backend
+  makes today (shielding, TEX) carry only transparent outputs between legs, which are counted
+  exactly.
+
+### Migration
+- Call `Ohttp.configure` once at startup (for example in `Application.onCreate`, before any other SDK call)
+  with the values your build has, or with null to leave OHTTP off:
+  ```kotlin
+  Ohttp.configure(
+      OhttpConfiguration(
+          mainnet = OhttpNetworkConfiguration(gatewayHost, relayUrl, keysDnsName, signingPublicKey),
+          testnet = null, // OHTTP off for testnet
+      )
+  )
+  ```
+  A build that skips it has OHTTP off everywhere; nothing fails, but no traffic uses OHTTP.
+- Treat `LightWalletClient.ohttpGatewayHost(isTestnet) == null` as "OHTTP off" when you list a private
+  connection; do not offer one then.
+- Replace `OhttpCodec.usesIndependentRelay` with your own check of the relay you configured.
+- Stop passing `ZODL_OHTTP_*` to SDK builds; they have no effect.
+- Code that catches `ProposalFromParametersException`, `ProposalFromUriException` or
+  `ProposalShieldingException` around `proposeTransfer`, `proposeSendMax`,
+  `proposeFulfillingPaymentUri` or `proposeShielding` no longer sees those types for the failures
+  above: the SDK now throws `ProposalTooLargeException`,
+  `ProposalRecipientCannotReceiveMemoException`, `ProposalUnsupportedRecipientException` or
+  `ProposalSyncRequiredException` instead. All four are sibling subtypes of
+  `TransactionEncoderException`, not subtypes of the per-operation wrappers, so a `catch` of a
+  wrapper alone stops matching them. Add a `catch` (or `when` branch) for each new type, or catch
+  `TransactionEncoderException`; an exhaustive `when` over `TransactionEncoderException` must add
+  the four cases to compile. A typed rejection now takes precedence over an insufficient-funds
+  message found in its cause chain, so `InsufficientFundsException` is raised only when the
+  backend did not report one of these typed rejections.
+
+## [8.0.0] - 2026-11-07
+
+### Added
 - OHTTP request-health evidence (package `co.electriccoin.lightwallet.client.health`, `Synchronizer.observeOhttpHealth`).
   Every OHTTP request of the Kotlin client, and every request of the Slipstream engine, is recorded as a typed
   observation (scope, outcome, stage, purpose, optional user operation): only an unreachable route or an outer
@@ -238,66 +305,7 @@ published artifacts carry no configuration, so the next release is a major versi
   same policy (predefined → OHTTP when Tor OFF, custom → Direct). With `IS_SLIPSTREAM_ENABLED=false`,
   Tor-off voting against predefined servers is unavailable (fails closed).
 
-### Known limitations
-- The legs of a multi-transaction proposal that depend on a rejected transaction (the spend after a
-  shielding, the second leg of a TEX send) are never submitted and never judged: they stay waiting
-  for a submit plan, with the notes they spend locked, until they expire. No API releases them
-  earlier.
-- The size bound counts, for a later leg of a multi-transaction proposal, one extra shielded action
-  per shielded note it spends from an earlier leg, on top of the backend's padded action count for
-  its own notes. That can over-count (a false `ProposalTooLargeException`, never a transaction over
-  the bound) only when a leg spends a shielded output of an earlier one; the proposals the backend
-  makes today (shielding, TEX) carry only transparent outputs between legs, which are counted
-  exactly.
-
 ### Changed
-- Implementations of `Synchronizer` (including test fakes) must add the
-  `sizeBound: TransactionSizeBound` parameter to their overrides of `proposeTransfer`,
-  `proposeSendMax`, `proposeFulfillingPaymentUri`, `createProposedTransactions` and
-  `createPcztFromProposal`, and implementations of `Broadcaster` to their override of
-  `createProposedTransactions`; an override without it no longer compiles. Kotlin callers are
-  unaffected. The break is intentional: `@JvmOverloads` cannot be applied to interface members, so
-  Java callers of these interface methods pass the bound explicitly (`TransactionSizeBound.CONSENSUS`
-  for the previous behaviour), and code compiled against the previous signatures must be recompiled.
-- `TransactionEncoderException.ProposalTooLargeException` gained the trailing `violation`
-  component: source that constructs it or destructures `rootCause` still compiles, but its
-  generated `copy` and `componentN` change, so code compiled against the previous class must be
-  recompiled.
-- `TransactionEncoderException` has three new subtypes, `ProposalTooLargeException`,
-  `ProposalRecipientCannotReceiveMemoException` and `ProposalUnsupportedRecipientException`, each
-  carrying the failure as `rootCause`; their messages are fixed and never contain the recipient
-  or the memo. An exhaustive `when` over `TransactionEncoderException` stops compiling until the
-  new cases are handled.
-- `Synchronizer.proposeSendMax` now throws
-  `TransactionEncoderException.ProposalTooLargeException` when the transaction would spend too
-  many notes to fit in a block (such a wallet cannot send its maximum in one transaction until
-  its notes are consolidated),
-  `TransactionEncoderException.ProposalRecipientCannotReceiveMemoException` when a memo is given
-  for a transparent or TEX recipient, or a unified address whose only receiver is transparent
-  (pass `memo = null` for such a recipient), and
-  `TransactionEncoderException.ProposalUnsupportedRecipientException` when the recipient has no
-  receiver the wallet can pay, instead of `ProposalFromParametersException`. The backend reports
-  each of these cases as a typed error, so none depends on the wording of its message.
-- `Synchronizer.proposeTransfer` and `Synchronizer.proposeFulfillingPaymentUri` now throw
-  `ProposalTooLargeException` when the transaction would spend too many notes to fit in a
-  block, `ProposalRecipientCannotReceiveMemoException` when a memo is given (or requested by the
-  URI) for a recipient that cannot receive one, and `ProposalUnsupportedRecipientException` when
-  a recipient has no receiver the wallet can pay, instead of `ProposalFromParametersException`
-  (`ProposalFromUriException` for the URI). `Synchronizer.proposeShielding` now throws
-  `ProposalTooLargeException` instead of `ProposalShieldingException` when the shielding
-  transaction would not fit in a block. These are the exceptions `proposeSendMax` throws for the
-  same failures, so re-proposing a Send Max payment for review fails the same way. A caller that
-  handles only the per-operation wrapper should also handle the new subtypes.
-- `TransactionEncoderException` has a new subtype, `ProposalSyncRequiredException(rootCause)`:
-  the wallet has not scanned enough of the chain to create a proposal, so sync further and
-  propose again. Its message is fixed. `Synchronizer.proposeTransfer`, `proposeSendMax`,
-  `proposeFulfillingPaymentUri` and `proposeShielding` now throw it on both the SDK and Slipstream
-  synchronizers instead of `ProposalFromParametersException` (`ProposalFromUriException` for the
-  URI, `ProposalShieldingException` for shielding). Unlike `IncompleteScanException` it carries no
-  scanned height, and unlike `AnchorNotFoundException` (raised when creating transactions from an
-  existing proposal) it is raised before any proposal exists. An exhaustive `when` over
-  `TransactionEncoderException` stops compiling until the new case is handled; a caller that
-  handles only the per-operation wrapper should also handle it.
 - **OHTTP endpoints are build-time configuration.** `zodl-ohttp-client` now comes from
   `zodl-inc/zodl-ohttp` (the same revision the Slipstream engine pins, so there is one copy of the core)
   and carries no built-in endpoint. The gateway hosts, relay URLs, signing public keys and DNS TXT names of
@@ -419,20 +427,6 @@ published artifacts carry no configuration, so the next release is a major versi
 - Sapling parameter downloads no longer fail with `FileNotFoundException` when the destination
   directory does not exist; the directory is now created (with a clear error if creation fails)
   before the temporary file is opened, on both the Tor and direct download paths.
-
-### Migration
-- Code that catches `ProposalFromParametersException`, `ProposalFromUriException` or
-  `ProposalShieldingException` around `proposeTransfer`, `proposeSendMax`,
-  `proposeFulfillingPaymentUri` or `proposeShielding` no longer sees those types for the failures
-  above: the SDK now throws `ProposalTooLargeException`,
-  `ProposalRecipientCannotReceiveMemoException`, `ProposalUnsupportedRecipientException` or
-  `ProposalSyncRequiredException` instead. All four are sibling subtypes of
-  `TransactionEncoderException`, not subtypes of the per-operation wrappers, so a `catch` of a
-  wrapper alone stops matching them. Add a `catch` (or `when` branch) for each new type, or catch
-  `TransactionEncoderException`; an exhaustive `when` over `TransactionEncoderException` must add
-  the four cases to compile. A typed rejection now takes precedence over an insufficient-funds
-  message found in its cause chain, so `InsufficientFundsException` is raised only when the
-  backend did not report one of these typed rejections.
 
 ## [6.0.0] - 2026-10-28
 
@@ -1840,7 +1834,6 @@ Both of the following were picked up from the librustzcash update:
 ### Internal
 - The shielded-voting native surface (`zcash_voting`, the `chp-voting` feature and `mod voting`)
   is commented out, so no `Java_..._VotingRustBackend_*` JNI symbols are emitted.
-
 
 ## [2.6.5] - 2026-06-19
 
