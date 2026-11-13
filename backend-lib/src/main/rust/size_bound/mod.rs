@@ -184,8 +184,8 @@ impl TransactionSizeBound {
         let values: &[i64; ENCODED_LEN] = values.try_into().map_err(|_| {
             anyhow!(
                 "A transaction size bound has {} values, not {}",
-                ENCODED_LEN,
-                values.len()
+                values.len(),
+                ENCODED_LEN
             )
         })?;
         let cap = |value: i64| -> anyhow::Result<Option<usize>> {

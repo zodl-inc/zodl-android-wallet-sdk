@@ -149,6 +149,13 @@ fn the_jni_encoding_is_read_in_its_fixed_order() {
 fn a_malformed_encoding_is_refused() {
     assert!(TransactionSizeBound::decode(Some(&[NONE; ENCODED_LEN - 1])).is_err());
     assert!(TransactionSizeBound::decode(Some(&[NONE; ENCODED_LEN + 1])).is_err());
+    // The message names the number of values received, then the number expected.
+    assert_eq!(
+        TransactionSizeBound::decode(Some(&[NONE; 5]))
+            .unwrap_err()
+            .to_string(),
+        format!("A transaction size bound has 5 values, not {ENCODED_LEN}")
+    );
     let mut negative = [NONE; ENCODED_LEN];
     negative[1] = -2;
     assert!(TransactionSizeBound::decode(Some(&negative)).is_err());
