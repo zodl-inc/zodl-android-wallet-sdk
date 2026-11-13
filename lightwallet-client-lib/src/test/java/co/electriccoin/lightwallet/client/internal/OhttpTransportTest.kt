@@ -744,7 +744,7 @@ class OhttpTransportTest {
     }
 
     private companion object {
-        val FIXED_USER_AGENT = listOf("User-Agent" to "ZODL-OHTTP/1.0")
+        val FIXED_USER_AGENT = listOf("User-Agent" to "zodl-ohttp/1")
         val FIXED_GET_HEADERS = listOf("Accept-Encoding" to "identity") + FIXED_USER_AGENT
     }
 }
