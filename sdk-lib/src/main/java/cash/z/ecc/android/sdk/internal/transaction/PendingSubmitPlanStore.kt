@@ -459,7 +459,7 @@ internal class PendingSubmitPlanStore(
         ) : StoredSubmitPlan
 
         /**
-         * Every endpoint answered explicitly, one refused the transaction for good, and none accepted it: it
+         * Every endpoint answered explicitly, none accepted the transaction and every refusal was for good: it
          * is not resubmitted, and is pruned at its expiry like any other plan. [code] and [reason]
          * are the recorded refusal (see [submitRejectionVerdict]), as the server reported it.
          */

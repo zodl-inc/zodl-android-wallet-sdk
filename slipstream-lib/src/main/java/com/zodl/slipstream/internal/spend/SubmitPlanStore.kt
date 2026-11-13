@@ -102,7 +102,7 @@ internal class SubmitPlanStore(
     private val rejected = MutableStateFlow(rejections.value.keys)
 
     /**
-     * The transactions every endpoint explicitly answered, one refused for good and none accepted,
+     * The transactions every endpoint explicitly answered, none accepted and every refusal was for good,
      * with that refusal (`Synchronizer.rejectedTransactions`).
      */
     val rejectedTransactions: StateFlow<Map<TransactionId, SubmitRejection>> = rejections.asStateFlow()

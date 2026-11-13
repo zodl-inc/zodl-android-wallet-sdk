@@ -42,10 +42,8 @@ internal class ResubmissionTicker(
     private val resubmit: suspend (ResubmissionCandidate) -> Unit,
     private val notifyTxChange: suspend () -> Unit,
     /**
-     * Whether a candidate is rejected (every endpoint answered explicitly, one refused it for good,
-     * none accepted it), so it is
-     * not resubmitted. Production:
-     * [SubmitPlanStore.rejectionFor].
+     * Whether a candidate is rejected (every endpoint answered explicitly, none accepted it and every
+     * refusal was for good), so it is not resubmitted. Production: [SubmitPlanStore.rejectionFor].
      */
     private val isRejected: (ResubmissionCandidate) -> Boolean = { false },
     /**

@@ -558,7 +558,7 @@ interface Synchronizer {
      * @throws TransactionEncoderException.ProposalUnsupportedRecipientException if [recipient] has
      * no receiver this wallet is able to pay
      * @throws TransactionEncoderException.ProposalFromParametersException if the proposal cannot
-     * be created for any other reason, including a wallet that has not synced far enough
+     * be created for any other reason
      */
     suspend fun proposeSendMax(
         account: Account,
@@ -593,7 +593,7 @@ interface Synchronizer {
      * @throws TransactionEncoderException.ProposalUnsupportedRecipientException if a recipient has
      * no receiver this wallet is able to pay
      * @throws TransactionEncoderException.ProposalFromUriException if the proposal cannot be created
-     * for any other reason, including a wallet that has not synced far enough
+     * for any other reason
      */
     suspend fun proposeFulfillingPaymentUri(
         account: Account,

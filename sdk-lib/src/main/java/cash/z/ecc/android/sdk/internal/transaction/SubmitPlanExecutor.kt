@@ -7,7 +7,7 @@ import cash.z.ecc.android.sdk.model.TransactionSubmitResult
  * Submits a transaction to the endpoints of its plan in turn, until one does not fail. Each
  * endpoint's answer is recorded in [pendingSubmitPlanStore], when there is one, so that a
  * transaction becomes [PendingSubmitPlanStore.StoredSubmitPlan.Rejected] only once every endpoint
- * gave an explicit server answer, none accepted and one refused it for good. A transport failure
+ * gave an explicit server answer, none accepted and every refusal was for good. A transport failure
  * (timeout, gRPC or I/O error) or a submission that throws is inconclusive: it is recorded as such,
  * keeps the transaction pending and the next endpoint is tried.
  */

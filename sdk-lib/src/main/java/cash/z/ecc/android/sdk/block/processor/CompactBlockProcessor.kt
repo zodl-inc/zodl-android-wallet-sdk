@@ -2865,7 +2865,8 @@ class CompactBlockProcessor internal constructor(
 
     /**
      * Why a transaction with this submit plan is not resubmitted: it waits for a plan from the caller of
-     * [cash.z.ecc.android.sdk.Broadcaster], or an endpoint rejected it for good and none accepted it; `null` when it is.
+     * [cash.z.ecc.android.sdk.Broadcaster], or it is rejected (every endpoint answered explicitly, none accepted it
+     * and every refusal was for good); `null` when it is resubmitted.
      */
     private fun PendingSubmitPlanStore.StoredSubmitPlan?.skipReason(): String? =
         when (this) {
