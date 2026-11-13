@@ -66,8 +66,7 @@ published artifacts carry no configuration, so the next release is a major versi
 - `TransactionEncoderException.ProposalTooLargeException.violation: SizeBoundViolation?`: the cap
   of the caller's `TransactionSizeBound` the transaction exceeds (`SizeBoundViolation.dimension`,
   the `pool` for a per-pool cap, the transaction's `count` and the `limit`); `null` when it
-  exceeds a byte limit, a block's or the bound's `maxBytes`. It is a new trailing constructor
-  parameter with a default, so existing construction and `rootCause` destructuring still compile.
+  exceeds a byte limit, a block's or the bound's `maxBytes`.
 - `TransactionSubmitResult.Failure.rejection: SubmitRejection?`: why the server refused the
   transaction for good (`TOO_LARGE`: over the relay's configured mempool maximum, the next
   block's ZIP 218 budget or the maximum transaction size; `EXPIRED`; `INVALID`), or `null` for a
@@ -1834,6 +1833,7 @@ Both of the following were picked up from the librustzcash update:
 ### Internal
 - The shielded-voting native surface (`zcash_voting`, the `chp-voting` feature and `mod voting`)
   is commented out, so no `Java_..._VotingRustBackend_*` JNI symbols are emitted.
+
 
 ## [2.6.5] - 2026-06-19
 
