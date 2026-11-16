@@ -139,6 +139,7 @@ published artifacts carry no configuration, so the next release is a major versi
   wallet and no migration, and is cached after the first call.
 
 ### Changed
+- The Slipstream engine, `zodl-slipstream`, moves from 0.5.0 to 0.6.0, which sends the fixed OHTTP user agent.
 - The `User-Agent` sent to the OHTTP relay (the encapsulated request, the key configuration fetch and the
   resolver lookups) and the `user-agent` of the inner (encrypted) gRPC request are both `zodl-ohttp/1`, the same
   value for every Zodl client (they were `ZODL-OHTTP/1.0` and `zodl-ohttp-grpc/1.0`), so neither the relay nor the
