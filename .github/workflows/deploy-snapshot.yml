@@ -95,7 +95,10 @@ jobs:
           df -h /
       - name: Setup
         id: setup
-        timeout-minutes: 50
+        # Builds the 4-ABI Rust backend (about 8 minutes per ABI on a cold cache) and the demo app.
+        # It took 48 to 50 minutes up to 6.0.0 and hit the old 50-minute limit on 2026-11-16, so no
+        # 8.1.0 snapshot was published.
+        timeout-minutes: 90
         uses: ./.github/actions/setup
         with:
           cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
