@@ -44,6 +44,9 @@ import cash.z.ecc.android.sdk.internal.model.TorDormantMode
 import cash.z.ecc.android.sdk.internal.model.TorHttp
 import cash.z.ecc.android.sdk.internal.model.TreeState
 import cash.z.ecc.android.sdk.internal.requireNotMainWalletAlias
+import cash.z.ecc.android.sdk.internal.storage.preference.EncryptedPreferenceProvider
+import cash.z.ecc.android.sdk.internal.transaction.MigrationTransactionMarks
+import cash.z.ecc.android.sdk.internal.transaction.PendingSubmitPlanStore
 import cash.z.ecc.android.sdk.internal.transaction.submitTransaction
 import cash.z.ecc.android.sdk.internal.transaction.walletTipForSubmission
 import cash.z.ecc.android.sdk.ledger.LedgerAccountBinding
@@ -68,10 +71,12 @@ import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
+import cash.z.ecc.android.sdk.model.SubmitRejection
 import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionOutput
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionRecipient
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
@@ -117,6 +122,7 @@ import com.zodl.slipstream.internal.spend.SaplingParams
 import com.zodl.slipstream.internal.spend.SlipstreamBroadcaster
 import com.zodl.slipstream.internal.spend.SlipstreamSpendService
 import com.zodl.slipstream.internal.spend.SubmitPlanStore
+import com.zodl.slipstream.internal.spend.resubmitToPlanEndpoints
 import com.zodl.slipstream.internal.spend.submitPlanPreferencesName
 import com.zodl.slipstream.internal.toProcessorInfo
 import com.zodl.slipstream.internal.validateAlias
@@ -149,6 +155,7 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
@@ -276,6 +283,11 @@ class SlipstreamSynchronizer internal constructor(
     private var startBirthday: BlockHeight,
     /** `null` means "already prepared" - the instance is [PrepareState.Ready] from the first line of init. */
     private val prepareInputs: PrepareInputs? = null,
+    /**
+     * Where the answers of every submission are recorded, for [rejectedTransactionIds]. Shared with
+     * [broadcasterImpl] and [resubmissionTicker]; `null` records nothing and reports no rejection.
+     */
+    private val planStore: SubmitPlanStore? = null,
 ) : CloseableSynchronizer {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -433,6 +445,24 @@ class SlipstreamSynchronizer internal constructor(
         get() = startBirthday
 
     override val broadcaster: Broadcaster get() = broadcasterImpl
+
+    override val rejectedTransactions: Flow<Map<TransactionId, SubmitRejection>>
+        get() = planStore?.rejectedTransactions ?: flowOf(emptyMap())
+
+    override val rejectedTransactionIds: Flow<Set<TransactionId>>
+        get() = planStore?.rejectedTransactionIds ?: flowOf(emptySet())
+
+    /**
+     * Records each result, an answer of [defaultEndpoint] (the server the legacy create calls submit
+     * to), so that a transaction it refused for good is reported in [rejectedTransactionIds] and not
+     * resubmitted, and emits it with the SDK's verdict (`SubmitPlanStore.withVerdict`).
+     */
+    private fun Flow<TransactionSubmitResult>.recordingOutcomes(): Flow<TransactionSubmitResult> =
+        map { result ->
+            val store = planStore ?: return@map result
+            store.recordAnswer(result.txId, defaultEndpoint, result)
+            store.withVerdict(result.txId, result)
+        }
 
     /**
      * Leads with `null` ("not loaded yet") so a collector attached during preparation gets an
@@ -1154,10 +1184,11 @@ class SlipstreamSynchronizer internal constructor(
         account: Account,
         recipient: String,
         amount: Zatoshi,
-        memo: String
+        memo: String,
+        sizeBound: TransactionSizeBound
     ): Proposal {
         awaitReady()
-        return spendService.proposeTransfer(account, recipient, amount, memo)
+        return spendService.proposeTransfer(account, recipient, amount, memo, sizeBound)
     }
 
     /**
@@ -1168,25 +1199,35 @@ class SlipstreamSynchronizer internal constructor(
      * @throws IllegalArgumentException if [recipient] is for another network.
      * @throws cash.z.ecc.android.sdk.exception.TransactionEncoderException.InsufficientFundsException
      * if nothing is spendable, or the spendable balance does not cover the fee.
+     * @throws cash.z.ecc.android.sdk.exception.TransactionEncoderException.ProposalTooLargeException
+     * if the transaction would spend too many notes to fit in a block.
+     * @throws cash.z.ecc.android.sdk.exception.TransactionEncoderException.ProposalSyncRequiredException
+     * if the wallet has not scanned enough of the chain to create the proposal; sync, then retry.
+     * @throws cash.z.ecc.android.sdk.exception.TransactionEncoderException.ProposalRecipientCannotReceiveMemoException
+     * if [memo] is given for a recipient that cannot receive one.
+     * @throws cash.z.ecc.android.sdk.exception.TransactionEncoderException.ProposalUnsupportedRecipientException
+     * if [recipient] has no receiver this wallet is able to pay.
      * @throws cash.z.ecc.android.sdk.exception.TransactionEncoderException.ProposalFromParametersException
      * if the proposal cannot be created for any other reason.
      */
     override suspend fun proposeSendMax(
         account: Account,
         recipient: RecipientAddress,
-        memo: MemoContent?
+        memo: MemoContent?,
+        sizeBound: TransactionSizeBound
     ): Proposal {
         require(recipient.network == network) { "The recipient is for a different network" }
         awaitReady()
-        return spendService.proposeSendMax(account, recipient, memo)
+        return spendService.proposeSendMax(account, recipient, memo, sizeBound)
     }
 
     override suspend fun proposeFulfillingPaymentUri(
         account: Account,
-        uri: String
+        uri: String,
+        sizeBound: TransactionSizeBound
     ): Proposal {
         awaitReady()
-        return spendService.proposeFulfillingPaymentUri(account, uri)
+        return spendService.proposeFulfillingPaymentUri(account, uri, sizeBound)
     }
 
     override suspend fun proposeShielding(
@@ -1207,18 +1248,22 @@ class SlipstreamSynchronizer internal constructor(
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy
+        ovkPolicy: OvkPolicy,
+        sizeBound: TransactionSizeBound
     ): Flow<TransactionSubmitResult> {
         awaitReady()
-        return spendService.createProposedTransactions(proposal, usk, ovkPolicy)
+        return spendService
+            .createProposedTransactions(proposal, usk, ovkPolicy, sizeBound)
+            .recordingOutcomes()
     }
 
     override suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
-        proposal: Proposal
+        proposal: Proposal,
+        sizeBound: TransactionSizeBound
     ): Pczt {
         awaitReady()
-        return runCatchingCancellable { spendService.createPcztFromProposal(accountUuid, proposal) }
+        return runCatchingCancellable { spendService.createPcztFromProposal(accountUuid, proposal, sizeBound) }
             .getOrElse {
                 throw when (it) {
                     is PcztException.MultiStepProposalUnsupportedException -> it
@@ -1250,7 +1295,9 @@ class SlipstreamSynchronizer internal constructor(
         pcztWithSignatures: Pczt
     ): Flow<TransactionSubmitResult> {
         awaitReady()
-        return spendService.createTransactionFromPczt(pcztWithProofs, pcztWithSignatures)
+        return spendService
+            .createTransactionFromPczt(pcztWithProofs, pcztWithSignatures)
+            .recordingOutcomes()
     }
 
     override suspend fun signPcztWithLedger(
@@ -2319,6 +2366,13 @@ class SlipstreamSynchronizer internal constructor(
             val transactionReader = SlipstreamTransactionReader(dbFile)
             val transactionsController = TransactionsController(transactionReader, engine, typesafeBackend, zcashNetwork)
 
+            // The wallet's migration marks, shared through the SDK's preferences with the migration SDK, which marks
+            // the transactions it broadcasts: a migration is never reported as rejected.
+            val migrationMarks =
+                MigrationTransactionMarks(
+                    EncryptedPreferenceProvider(applicationContext)(),
+                    PendingSubmitPlanStore.namespaceFor(zcashNetwork.id, alias)
+                )
             val spendService =
                 SlipstreamSpendService(
                     backend = backend,
@@ -2330,7 +2384,8 @@ class SlipstreamSynchronizer internal constructor(
                     ensureSaplingParams = {
                         SaplingParams.ensureDownloaded(saplingParamsDir, saplingParamsTorHttpClientProvider)
                     },
-                    readRawTransaction = transactionReader::readRawTransaction
+                    readRawTransaction = transactionReader::readRawTransaction,
+                    migrationMarks = migrationMarks
                 )
 
             val submitPlanPreferences =
@@ -2338,6 +2393,7 @@ class SlipstreamSynchronizer internal constructor(
                     submitPlanPreferencesName(zcashNetwork.id, alias),
                     Context.MODE_PRIVATE
                 )
+            val planStore = SubmitPlanStore(submitPlanPreferences, migrationMarks)
             val broadcaster =
                 SlipstreamBroadcaster(
                     backend = backend,
@@ -2346,7 +2402,7 @@ class SlipstreamSynchronizer internal constructor(
                     network = zcashNetwork,
                     walletTip = { walletTipForSubmission(typesafeBackend) },
                     engine = engine,
-                    planStore = SubmitPlanStore(submitPlanPreferences),
+                    planStore = planStore,
                     saplingParamsDir = saplingParamsDir,
                     transactionReader = transactionReader,
                     saplingParamsTorHttpClientProvider = saplingParamsTorHttpClientProvider
@@ -2356,14 +2412,32 @@ class SlipstreamSynchronizer internal constructor(
                 ResubmissionTicker(
                     findCandidates = transactionReader::findResubmissionCandidates,
                     resubmit = { candidate ->
-                        walletClient.submitTransaction(
-                            FirstClassByteArray(candidate.raw),
-                            FirstClassByteArray(candidate.txId),
-                            sdkFlags,
-                            zcashNetwork
-                        ) { walletTipForSubmission(typesafeBackend) }
+                        val txId = FirstClassByteArray(candidate.txId)
+                        val raw = FirstClassByteArray(candidate.raw)
+                        // Every endpoint of the plan is asked again, so that each can answer explicitly.
+                        resubmitToPlanEndpoints(planStore, txId, lightWalletEndpoint) { endpoint ->
+                            if (endpoint == lightWalletEndpoint) {
+                                walletClient.submitTransaction(raw, txId, sdkFlags, zcashNetwork) {
+                                    walletTipForSubmission(typesafeBackend)
+                                }
+                            } else {
+                                val client = walletClientFactory.create(endpoint)
+                                try {
+                                    client.submitTransaction(raw, txId, sdkFlags, zcashNetwork) {
+                                        walletTipForSubmission(typesafeBackend)
+                                    }
+                                } finally {
+                                    withContext(NonCancellable) { client.dispose() }
+                                }
+                            }
+                        }
                     },
-                    notifyTxChange = engine::notifyTxChange
+                    notifyTxChange = engine::notifyTxChange,
+                    isRejected = { planStore.rejectionFor(FirstClassByteArray(it.txId)) != null },
+                    retainRejections = { candidates ->
+                        planStore.retainTransactions(candidates.mapTo(mutableSetOf()) { FirstClassByteArray(it.txId) })
+                    },
+                    beforeScan = planStore::beginRetentionScan
                 )
 
             /*
@@ -2440,7 +2514,8 @@ class SlipstreamSynchronizer internal constructor(
                  * [SlipstreamSynchronizer.latestBirthdayHeight].
                  */
                 startBirthday = requestedBirthday ?: zcashNetwork.saplingActivationHeight,
-                prepareInputs = prepareInputs
+                prepareInputs = prepareInputs,
+                planStore = planStore
             )
         }
 
@@ -2584,7 +2659,32 @@ class SlipstreamSynchronizer internal constructor(
                         filesDeleted && preferencesDeleted
                     }
                 eraseLegacyLayout?.invoke()
+                eraseMigrationMarks(applicationContext, network, alias)
                 deleted
+            }
+        }
+
+        /**
+         * Erases the wallet's migration marks, which this engine shares through the SDK's encrypted preferences
+         * with the migration SDK (see [MigrationTransactionMarks]). Best-effort: the marks are bounded anyway
+         * ([MigrationTransactionMarks.pruneStale]), so a failure is logged by its type only and never fails the
+         * erase.
+         */
+        @Suppress("TooGenericExceptionCaught")
+        private suspend fun eraseMigrationMarks(
+            applicationContext: Context,
+            network: ZcashNetwork,
+            alias: String
+        ) {
+            try {
+                MigrationTransactionMarks.eraseNamespace(
+                    EncryptedPreferenceProvider(applicationContext)(),
+                    PendingSubmitPlanStore.namespaceFor(network.id, alias)
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Twig.warn { "Slipstream erase could not erase the migration marks: ${e::class.simpleName}" }
             }
         }
 

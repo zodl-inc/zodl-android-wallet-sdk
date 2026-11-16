@@ -92,4 +92,47 @@ class ResubmissionTickerTest {
             repeat(ResubmissionTicker.RESUBMIT_EVERY) { ticker.onTick(isSynced = true, chainTip = 100L) }
             assertEquals(0, notifyCalls)
         }
+
+    @Test
+    fun a_rejected_candidate_is_not_resubmitted_and_every_candidate_is_retained() =
+        runBlocking {
+            val rejected = ResubmissionCandidate(byteArrayOf(1), byteArrayOf(1))
+            val pending = ResubmissionCandidate(byteArrayOf(2), byteArrayOf(2))
+            val resubmitted = mutableListOf<ResubmissionCandidate>()
+            var retained: List<ResubmissionCandidate>? = null
+            val ticker =
+                ResubmissionTicker(
+                    findCandidates = { listOf(rejected, pending) },
+                    resubmit = { resubmitted += it },
+                    notifyTxChange = {},
+                    isRejected = { it === rejected },
+                    retainRejections = { retained = it }
+                )
+
+            repeat(ResubmissionTicker.RESUBMIT_EVERY) { ticker.onTick(isSynced = true, chainTip = 100L) }
+
+            assertEquals(listOf(pending), resubmitted)
+            assertEquals(listOf(rejected, pending), retained)
+        }
+
+    @Test
+    fun the_retention_scope_is_taken_before_the_candidates_are_read() =
+        runBlocking {
+            val events = mutableListOf<String>()
+            val ticker =
+                ResubmissionTicker(
+                    findCandidates = {
+                        events += "scan"
+                        emptyList()
+                    },
+                    resubmit = {},
+                    notifyTxChange = {},
+                    retainRejections = { events += "retain" },
+                    beforeScan = { events += "begin" }
+                )
+
+            repeat(ResubmissionTicker.RESUBMIT_EVERY) { ticker.onTick(isSynced = true, chainTip = 100L) }
+
+            assertEquals(listOf("begin", "scan", "retain"), events)
+        }
 }

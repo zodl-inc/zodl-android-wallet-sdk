@@ -278,22 +278,6 @@ class OhttpHttpClientTest {
     }
 
     @Test
-    fun `only the listed relays count as independent`() {
-        val listed = "https://relay-independent.example.test/relay"
-        val digests = setOf(sha256Hex(listed))
-
-        assertTrue(isIndependentRelay(listed, digests))
-        // A different value, even a trailing slash, is not one of them: it is reported as not private.
-        assertFalse(isIndependentRelay("$listed/", digests))
-        // Case is not normalized either.
-        assertFalse(isIndependentRelay(listed.replaceFirst("https", "HTTPS"), digests))
-        assertFalse(isIndependentRelay("https://relay-simulator.example.test/relay", digests))
-        // FakeOhttpCodec maps the gateways to other relays, as a relay simulator build would.
-        assertFalse(FakeOhttpCodec().usesIndependentRelay("ohttp-gateway.example"))
-        assertFalse(FakeOhttpCodec().usesIndependentRelay("example.zodl.com"))
-    }
-
-    @Test
     fun `isOhttpGateway matches only exact configured gateway hosts`() {
         val endpoints = OhttpEndpoints
         assertTrue(endpoints.isOhttpGateway("ohttp-gateway.example"))

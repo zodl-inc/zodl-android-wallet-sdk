@@ -7,6 +7,7 @@ import cash.z.ecc.android.sdk.internal.db.DatabaseCoordinator
 import cash.z.ecc.android.sdk.internal.model.Checkpoint
 import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.FirstClassByteArray
+import cash.z.ecc.android.sdk.model.SizeBoundViolation
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import co.electriccoin.lightwallet.client.model.BlockHeightUnsafe
 
@@ -680,6 +681,69 @@ sealed class TransactionEncoderException(
     ) : TransactionEncoderException(
             "The proposal could not be created because the wallet lacks sufficient spendable funds: " +
                 "${rootCause.message}",
+            rootCause
+        )
+
+    /**
+     * Signals that a proposal could not be created because its transaction would spend too many
+     * notes to fit in a block, or to stay within the
+     * [cash.z.ecc.android.sdk.model.TransactionSizeBound] the caller passed. A send-max cannot back
+     * off to a smaller amount, so the wallet's notes must first be consolidated (or the amount sent
+     * in several transactions).
+     *
+     * @property violation the count cap of the caller's size bound the transaction exceeds, or
+     * `null` when it exceeds a byte limit: a block's, or the bound's
+     * [cash.z.ecc.android.sdk.model.TransactionSizeBound.maxBytes].
+     */
+    data class ProposalTooLargeException(
+        val rootCause: Throwable,
+        val violation: SizeBoundViolation? = null
+    ) : TransactionEncoderException(
+            "The proposal could not be created because its transaction would spend too many notes",
+            rootCause
+        )
+
+    /**
+     * Signals that a proposal could not be created because a memo was given for a recipient that
+     * cannot receive one: a transparent address, a TEX address, or a unified address whose only
+     * receiver is transparent. Propose again without the memo.
+     */
+    data class ProposalRecipientCannotReceiveMemoException(
+        val rootCause: Throwable
+    ) : TransactionEncoderException(
+            "The proposal could not be created because its recipient cannot receive a memo",
+            rootCause
+        )
+
+    /**
+     * Signals that a proposal could not be created because its recipient has no receiver the
+     * wallet is able to pay.
+     */
+    data class ProposalUnsupportedRecipientException(
+        val rootCause: Throwable
+    ) : TransactionEncoderException(
+            "The proposal could not be created because the wallet cannot pay its recipient",
+            rootCause
+        )
+
+    /**
+     * Signals that a proposal could not be created because the wallet has not scanned enough of the
+     * chain to select notes and an anchor for it: the backend reported that a scan is required.
+     * Let the synchronizer catch up, then propose again.
+     *
+     * Raised by the propose operations (`proposeTransfer`, `proposeSendMax`,
+     * `proposeFulfillingPaymentUri`/`proposeTransferFromUri` and `proposeShielding`) in place of the
+     * generic [ProposalFromParametersException]/[ProposalFromUriException]/[ProposalShieldingException].
+     *
+     * Unlike [IncompleteScanException], it carries no scanned height: the backend does not report
+     * how far the wallet has scanned when it refuses the proposal, so none is invented here. Unlike
+     * [AnchorNotFoundException], which is raised when *creating transactions* from an existing
+     * proposal, this is raised before any proposal exists.
+     */
+    data class ProposalSyncRequiredException(
+        val rootCause: Throwable
+    ) : TransactionEncoderException(
+            "The proposal could not be created because the wallet must sync further first",
             rootCause
         )
 }

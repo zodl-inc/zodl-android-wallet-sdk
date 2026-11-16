@@ -22,15 +22,13 @@ concurrency:
 # Default to no token scopes at all; every job that needs one declares it below.
 permissions: {}
 
-# The OHTTP endpoint configuration (ZODL_OHTTP_*) and the Cargo App that fetches the private
-# crates are secrets of the protected `deployment` environment (zodl-inc/github-config): it runs
-# only for release/* and candidate/* branches and every run waits for an android-wallet
-# maintainer. Environment secrets are visible to jobs that declare the environment, not at the
-# workflow level, so every job that builds or fetches the private crates declares it and sets the
-# values in its own env. Pull requests from forks skip those jobs (no secrets for fork code).
+# No OHTTP configuration is involved in building or testing the SDK: the library is generic and
+# the app passes the configuration in at runtime (cash.z.ecc.android.sdk.Ohttp.configure). The
+# Rust and Kotlin tests use example values (RFC 2606 names).
+
 jobs:
   validate_gradle_wrapper:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -49,7 +47,7 @@ jobs:
         uses: gradle/actions/wrapper-validation@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
 
   check_firebase_secrets:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     # Reads no repository content — it only reports whether secrets are configured.
     permissions: {}
     outputs:
@@ -66,17 +64,8 @@ jobs:
   check_properties:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -100,7 +89,7 @@ jobs:
           make check-properties
 
   static_analysis_shellcheck:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -121,15 +110,6 @@ jobs:
   static_analysis_detekt:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: validate_gradle_wrapper
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
@@ -174,15 +154,6 @@ jobs:
   static_analysis_ktlint:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: validate_gradle_wrapper
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
@@ -227,17 +198,8 @@ jobs:
   static_analysis_android_lint:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: validate_gradle_wrapper
-    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.LINUX_RUNNER_LONG || vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -288,15 +250,6 @@ jobs:
   test_rust_unit:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: validate_gradle_wrapper
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
@@ -329,15 +282,6 @@ jobs:
   static_analysis_clippy:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: validate_gradle_wrapper
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
@@ -371,17 +315,8 @@ jobs:
   static_analysis_rustfmt:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -410,7 +345,7 @@ jobs:
   # the pinned version and fail if the committed copy differs.
   check_proposal_proto:
     needs: validate_gradle_wrapper
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -436,17 +371,8 @@ jobs:
   check_slipstream_disabled:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: validate_gradle_wrapper
-    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.LINUX_RUNNER_LONG || vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -475,15 +401,6 @@ jobs:
   test_android_modules_unit:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: [validate_gradle_wrapper]
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
@@ -618,15 +535,6 @@ jobs:
   test_android_modules_emulator:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: [validate_gradle_wrapper]
     runs-on: ubuntu-latest
     permissions:
@@ -760,17 +668,8 @@ jobs:
   demo_app_release_build:
     environment: deployment
     if: github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: validate_gradle_wrapper
-    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.LINUX_RUNNER_LONG || vars.LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:

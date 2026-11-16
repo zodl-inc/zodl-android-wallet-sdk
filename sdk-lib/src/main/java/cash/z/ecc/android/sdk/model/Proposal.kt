@@ -31,6 +31,7 @@ class Proposal(
     // Check for type errors eagerly, to ensure that the caller won't encounter these errors later.
     private fun check() {
         totalFeeRequired()
+        totalPaymentAmount()
     }
 
     /**
@@ -59,10 +60,12 @@ class Proposal(
     fun totalFeeRequired(): Zatoshi = Zatoshi(inner.totalFeeRequired())
 
     /**
-     * Returns the total value this proposal sends to its recipients, after fees and change. See
-     * [ProposalUnsafe.totalSent].
+     * Returns the sum of this proposal's payments to recipients, excluding fee and change.
+     *
+     * A proposal whose payments would be negative is corrupt, and [fromUnsafe] and [fromByteArray] reject it. See
+     * [ProposalUnsafe.totalPaymentAmount].
      */
-    internal fun totalSent(): Zatoshi = Zatoshi(inner.totalSent().coerceAtLeast(0))
+    fun totalPaymentAmount(): Zatoshi = Zatoshi(inner.totalPaymentAmount())
 
     /**
      * Returns whether this proposal directly spends any Orchard note. See

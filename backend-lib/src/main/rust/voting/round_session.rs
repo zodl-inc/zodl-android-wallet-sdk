@@ -23,8 +23,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use super::db::db_from_handle;
 use super::helpers::*;
-use super::route::{ZodlOhttpRoute, ZodlVotingRoute};
+use super::route::{ZodlOhttpRoute, ZodlVotingRoute, ohttp_on_for};
 use super::*;
+use crate::ohttp_config::installed_networks;
 
 use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
 use zeroize::Zeroizing;
@@ -226,6 +227,9 @@ pub(super) unsafe fn resolve_tor_runtime<'a>(
 /// - Tor ON (valid tor_runtime pointer): [`SessionRoute::Tor`]
 /// - Tor OFF + custom server: [`SessionRoute::Direct`] (user decision to use
 ///   custom endpoint implies accepting direct routing)
+/// - Tor OFF + predefined server + OHTTP off for the wallet's network (the app
+///   installed no OHTTP configuration for it): [`SessionRoute::Direct`], as with
+///   a library without OHTTP
 /// - Tor OFF + predefined server + OHTTP-eligible: [`SessionRoute::Ohttp`]
 /// - Tor OFF + predefined server + NOT OHTTP-eligible: fails with error
 ///
@@ -265,8 +269,13 @@ pub(super) fn resolve_session_route(
                 // Custom servers always use direct routing (user decision)
                 Ok(SessionRoute::Direct(DirectRoute::new()))
             } else {
+                let networks = installed_networks();
+                if !ohttp_on_for(&networks, network) {
+                    // OHTTP off for this network: predefined servers are plain servers.
+                    return Ok(SessionRoute::Direct(DirectRoute::new()));
+                }
                 // Predefined servers: try OHTTP, fail closed if unsupported
-                match ZodlOhttpRoute::new(endpoint_url, network) {
+                match ZodlOhttpRoute::new(networks, endpoint_url, network) {
                     Ok(ohttp_route) => Ok(SessionRoute::Ohttp(ohttp_route)),
                     Err(e) => Err(anyhow!(
                         "Cannot reach predefined vote server at {} with Tor disabled: {}",
@@ -513,20 +522,23 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_ope
         let is_custom = is_custom_server != 0;
 
         // Check eligibility of all known endpoints when opening with Tor OFF + predefined
-        if tor_runtime == 0 && !is_custom {
+        let networks = installed_networks();
+        if tor_runtime == 0 && !is_custom && ohttp_on_for(&networks, network) {
             let all_urls = chain_endpoints
                 .iter()
                 .chain(configured_helper_urls.iter())
                 .chain(vote_tree_node_urls.iter());
 
             for url in all_urls {
-                ZodlOhttpRoute::new(url, network).map_err(|e| {
-                    anyhow!(
-                        "Cannot reach predefined endpoint {} with Tor disabled: {}",
-                        url,
-                        e
-                    )
-                })?;
+                ZodlOhttpRoute::new(std::sync::Arc::clone(&networks), url, network).map_err(
+                    |e| {
+                        anyhow!(
+                            "Cannot reach predefined endpoint {} with Tor disabled: {}",
+                            url,
+                            e
+                        )
+                    },
+                )?;
             }
         }
 
@@ -849,6 +861,63 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
 mod tests {
     use super::*;
 
+    /// Both OHTTP networks configured with the example values for the calling test.
+    fn configured() -> crate::ohttp_config::InstalledGuard {
+        let guard = crate::ohttp_config::lock_installed();
+        guard.set(Some(crate::ohttp_config::example::networks()));
+        guard
+    }
+
+    #[test]
+    fn predefined_servers_are_reached_directly_while_ohttp_is_off_for_the_network() {
+        use voting::types::Network;
+        let guard = crate::ohttp_config::lock_installed();
+        let route = resolve_session_route(
+            0,
+            false,
+            "https://voting.valargroup.dev/api",
+            Network::Mainnet,
+        )
+        .expect("no configuration: direct");
+        assert!(matches!(route, SessionRoute::Direct(_)));
+        // Only testnet configured: a mainnet session stays direct, a testnet one rides OHTTP.
+        guard.set(Some(
+            zodl_ohttp_client::OhttpNetworks::new(
+                None,
+                Some(crate::ohttp_config::example::config(
+                    crate::ohttp_config::example::TESTNET,
+                )),
+            )
+            .unwrap(),
+        ));
+        let route = resolve_session_route(
+            0,
+            false,
+            "https://voting.valargroup.dev/api",
+            Network::Mainnet,
+        )
+        .expect("mainnet off: direct");
+        assert!(matches!(route, SessionRoute::Direct(_)));
+        let route = resolve_session_route(
+            0,
+            false,
+            "https://voting.valargroup.dev/api",
+            Network::Testnet,
+        )
+        .expect("testnet on: OHTTP");
+        assert!(matches!(route, SessionRoute::Ohttp(_)));
+        // With OHTTP on, an unsupported predefined host still fails closed.
+        assert!(
+            resolve_session_route(
+                0,
+                false,
+                "https://unsupported.example.com/api",
+                Network::Testnet
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn round_session_handles_are_send_and_sync() {
         // A RoundSessionHandle must not embed a borrowed lock guard or
@@ -884,6 +953,7 @@ mod tests {
 
     #[test]
     fn resolve_session_route_tor_off_custom_server_uses_direct() {
+        let _ohttp = configured();
         use voting::types::Network;
         // Custom servers with Tor OFF use direct routing (user decision to use
         // a custom endpoint implies accepting direct routing)
@@ -899,6 +969,7 @@ mod tests {
 
     #[test]
     fn resolve_session_route_tor_off_predefined_ohttp_eligible_uses_ohttp() {
+        let _ohttp = configured();
         use voting::types::Network;
         // Predefined servers with Tor OFF that are OHTTP-eligible use OHTTP routing
         let route = resolve_session_route(
@@ -913,6 +984,7 @@ mod tests {
 
     #[test]
     fn resolve_session_route_tor_off_predefined_not_ohttp_eligible_fails() {
+        let _ohttp = configured();
         use voting::types::Network;
         // Predefined servers with Tor OFF that are NOT OHTTP-eligible fail closed
         let result = resolve_session_route(
@@ -928,6 +1000,7 @@ mod tests {
 
     #[test]
     fn resolve_session_route_case_insensitive_host_matching() {
+        let _ohttp = configured();
         use voting::types::Network;
         // Host comparison should be case-insensitive
         let route = resolve_session_route(
@@ -946,6 +1019,7 @@ mod tests {
 
     #[test]
     fn resolve_session_route_testnet_vs_mainnet_gateway() {
+        let _ohttp = configured();
         use voting::types::Network;
         // Network parameter should select the correct gateway
         let mainnet_route = resolve_session_route(
@@ -971,6 +1045,7 @@ mod tests {
 
     #[test]
     fn resolve_session_route_tor_off_pir_endpoints_use_ohttp() {
+        let _ohttp = configured();
         use voting::types::Network;
         // PIR endpoints with Tor OFF must route through OHTTP, never Direct.
         // This is the privacy guarantee: Tor-off predefined-server delegation
@@ -1006,6 +1081,7 @@ mod tests {
 
     #[test]
     fn resolve_session_route_tor_off_pir_with_trailing_slash() {
+        let _ohttp = configured();
         use voting::types::Network;
         // Host parsing must tolerate trailing slashes in URLs
         let route = resolve_session_route(
@@ -1020,6 +1096,7 @@ mod tests {
 
     #[test]
     fn resolve_session_route_tor_off_custom_server_pir_not_in_list_uses_direct() {
+        let _ohttp = configured();
         use voting::types::Network;
         // Custom voting configs can have PIR endpoints not in OHTTP_VOTE_HOSTS.
         // With Tor OFF + is_custom_server=true, these must route to Direct (user decision

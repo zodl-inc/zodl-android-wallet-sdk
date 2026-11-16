@@ -4,6 +4,7 @@ import co.electriccoin.lightwallet.client.OhttpCodecRequest
 import co.electriccoin.lightwallet.client.OhttpException
 import co.electriccoin.lightwallet.client.OhttpInternalException
 import co.electriccoin.lightwallet.client.OhttpRequestTooLargeException
+import co.electriccoin.lightwallet.client.OhttpSender
 import co.electriccoin.lightwallet.client.health.OHTTP_HEALTH_CALL_OPTION
 import io.grpc.CallOptions
 import io.grpc.ClientCall
@@ -588,7 +589,7 @@ internal class OhttpClientCall<RequestT, ResponseT>(
 
     companion object {
         private const val GRPC_CONTENT_TYPE = "application/grpc"
-        private const val USER_AGENT = "zodl-ohttp-grpc/1.0"
+        private const val USER_AGENT = OhttpSender.FIXED_USER_AGENT
         private const val GRPC_UNCOMPRESSED_FLAG = 0
         private const val GRPC_LENGTH_FIELD_SIZE = 4
         private const val DEFAULT_TIMEOUT_MS = 75_000

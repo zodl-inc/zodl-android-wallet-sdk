@@ -34,7 +34,8 @@ use super::round_session::{
     fallback_runtime, optional_seconds, resolve_session_route, resolve_tor_runtime,
     unix_now_seconds,
 };
-use super::route::ZodlOhttpRoute;
+use super::route::{ZodlOhttpRoute, ohttp_on_for};
+use crate::ohttp_config::installed_networks;
 
 use super::*;
 
@@ -173,15 +174,18 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_VotingRustBackend_run
         // When Tor is OFF and server is not custom, verify all endpoints are OHTTP-eligible
         // (not just the first). The route itself carries no per-endpoint state, but eligibility
         // is a per-URL property.
-        if tor_runtime == 0 && !is_custom {
+        let networks = installed_networks();
+        if tor_runtime == 0 && !is_custom && ohttp_on_for(&networks, network) {
             for url in &configured_helper_urls {
-                ZodlOhttpRoute::new(url, network).map_err(|e| {
-                    anyhow!(
-                        "cannot reach predefined helper at {} with Tor disabled: {}",
-                        url,
-                        e
-                    )
-                })?;
+                ZodlOhttpRoute::new(std::sync::Arc::clone(&networks), url, network).map_err(
+                    |e| {
+                        anyhow!(
+                            "cannot reach predefined helper at {} with Tor disabled: {}",
+                            url,
+                            e
+                        )
+                    },
+                )?;
             }
         }
 

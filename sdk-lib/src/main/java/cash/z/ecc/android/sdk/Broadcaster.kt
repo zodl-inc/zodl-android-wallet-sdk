@@ -5,6 +5,7 @@ import cash.z.ecc.android.sdk.model.CreatedTransaction
 import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
@@ -26,6 +27,10 @@ interface Broadcaster {
      *
      * @param ovkPolicy the outgoing viewing key to encrypt the transactions' outputs to. Use
      *        [OvkPolicy.Discard] when nobody holding the spending key may learn the recipients.
+     * @param sizeBound the limits the transactions must stay within; consensus alone by default.
+     *        Nothing is built when a transaction exceeds it, and
+     *        [cash.z.ecc.android.sdk.exception.proposalTooLargeReason] on the failure returns the
+     *        [TransactionEncoderException.ProposalTooLargeException] naming the exceeded cap.
      *
      * @throws TransactionEncoderException.AnchorNotFoundException if the transactions could
      *         not be created because no anchor was computable at the height the proposal
@@ -39,7 +44,8 @@ interface Broadcaster {
     suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy = OvkPolicy.Sender
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): List<CreatedTransaction>
 
     /**

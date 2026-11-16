@@ -53,10 +53,12 @@ import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
+import cash.z.ecc.android.sdk.model.SubmitRejection
 import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionOutput
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.TransactionRecipient
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
@@ -87,6 +89,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
@@ -161,6 +164,44 @@ interface Synchronizer {
      * A flow of all the transactions that are on the blockchain.
      */
     val allTransactions: Flow<List<TransactionOverview>>
+
+    /**
+     * The transactions this wallet created that the SDK recorded as rejected, each with the
+     * explicit refusal for good ([cash.z.ecc.android.sdk.model.SubmitRejection]) it recorded. Show
+     * them as failed, not pending, with that reason. They are not resubmitted, and remain in
+     * [allTransactions] as unmined until their expiry height passes and they become
+     * [cash.z.ecc.android.sdk.model.TransactionState.Expired]; their notes stay unspendable until then.
+     *
+     * This is the SDK's verdict over every endpoint a transaction was submitted to, not one
+     * endpoint's answer: a transaction is rejected only when every such endpoint gave an explicit
+     * server answer, none accepted it, and every one refused it explicitly and for good. A
+     * transient refusal from any endpoint (such as a full mempool) keeps it pending. A transport failure
+     * ([cash.z.ecc.android.sdk.model.TransactionSubmitResult.Failure.grpcError]: unreachable, timed
+     * out, response lost) is inconclusive, as the server may have accepted the transaction, and so
+     * is an endpoint whose submission has not answered (still in flight, or it threw or was
+     * cancelled, possibly after the request was sent): the transaction stays pending and is
+     * resubmitted; when an endpoint answers a resubmission, the verdict is drawn again. Any
+     * acceptance, including a late one, removes the transaction from this map; so does its expiry.
+     * The results [Broadcaster.submit] returns carry the same verdict: a
+     * [cash.z.ecc.android.sdk.model.TransactionSubmitResult.Failure.rejection] is set only once the
+     * transaction is in this map.
+     *
+     * A transaction no server explicitly refused is never in it and is resubmitted as before.
+     * Orchard to Ironwood migration transactions are never in it: they are resubmitted until they
+     * expire.
+     *
+     * The default implementation never reports a rejection; SDK-backed synchronizers override it.
+     */
+    val rejectedTransactions: Flow<Map<TransactionId, SubmitRejection>>
+        get() = flowOf(emptyMap())
+
+    /**
+     * The ids of [rejectedTransactions], as they change.
+     *
+     * The default implementation never reports a rejection; SDK-backed synchronizers override it.
+     */
+    val rejectedTransactionIds: Flow<Set<TransactionId>>
+        get() = flowOf(emptySet())
 
     //
     // Latest Properties
@@ -424,11 +465,24 @@ interface Synchronizer {
      * @param recipient the recipient's address.
      * @param amount the amount of zatoshi to send.
      * @param memo the optional memo to include as part of the proposal's transactions.
+     * @param sizeBound the limits the proposal's transactions must stay within; consensus alone by
+     *        default. A transaction over it fails with
+     *        [TransactionEncoderException.ProposalTooLargeException], whose `violation` names the
+     *        exceeded cap.
      *
      * @return the proposal or an exception
      *
      * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
      * requested amount together with the required fee
+     * @throws TransactionEncoderException.ProposalTooLargeException if the transaction would spend
+     * too many notes to fit in a block
+     * @throws TransactionEncoderException.ProposalSyncRequiredException
+     * if the wallet has not scanned enough of the chain to create the proposal; sync, then retry
+     * @throws TransactionEncoderException.ProposalRecipientCannotReceiveMemoException if [memo] is
+     * given for a recipient that cannot receive one (a transparent or TEX address, or a unified
+     * address whose only receiver is transparent)
+     * @throws TransactionEncoderException.ProposalUnsupportedRecipientException if [recipient] has
+     * no receiver this wallet is able to pay
      * @throws TransactionEncoderException.ProposalFromParametersException if the proposal cannot be
      * created for any other reason
      */
@@ -436,7 +490,8 @@ interface Synchronizer {
         account: Account,
         recipient: String,
         amount: Zatoshi,
-        memo: String = ""
+        memo: String = "",
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal
 
     /**
@@ -484,18 +539,32 @@ interface Synchronizer {
      * @param recipient the recipient's address, on this synchronizer's [network].
      * @param memo the optional memo for the recipient. Must be `null` for a transparent
      *        recipient.
+     * @param sizeBound the limits the transaction must stay within; consensus alone by
+     *        default. A Send Max over it fails, rather than sending less, with
+     *        [TransactionEncoderException.ProposalTooLargeException], whose `violation` names the
+     *        exceeded cap.
      *
      * @return the proposal or an exception
      *
      * @throws TransactionEncoderException.InsufficientFundsException if nothing is spendable, or
      * the spendable balance does not cover the fee
+     * @throws TransactionEncoderException.ProposalTooLargeException if the transaction would spend
+     * too many notes to fit in a block
+     * @throws TransactionEncoderException.ProposalSyncRequiredException
+     * if the wallet has not scanned enough of the chain to create the proposal; sync, then retry
+     * @throws TransactionEncoderException.ProposalRecipientCannotReceiveMemoException if [memo] is
+     * given for a recipient that cannot receive one (a transparent or TEX address, or a unified
+     * address whose only receiver is transparent)
+     * @throws TransactionEncoderException.ProposalUnsupportedRecipientException if [recipient] has
+     * no receiver this wallet is able to pay
      * @throws TransactionEncoderException.ProposalFromParametersException if the proposal cannot
      * be created for any other reason
      */
     suspend fun proposeSendMax(
         account: Account,
         recipient: RecipientAddress,
-        memo: MemoContent? = null
+        memo: MemoContent? = null,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal =
         throw UnsupportedOperationException(
             "proposeSendMax is unavailable for this Synchronizer implementation."
@@ -506,17 +575,30 @@ interface Synchronizer {
      *
      * @param account the account from which to transfer funds.
      * @param uri a ZIP-321 compliant payment URI String
+     * @param sizeBound the limits the proposal's transactions must stay within; consensus alone by
+     *        default. A transaction over it fails with
+     *        [TransactionEncoderException.ProposalTooLargeException], whose `violation` names the
+     *        exceeded cap.
      *
      * @return the proposal or an exception
      *
      * @throws TransactionEncoderException.InsufficientFundsException if the account cannot cover the
      * requested payment together with the required fee
+     * @throws TransactionEncoderException.ProposalTooLargeException if the transaction would spend
+     * too many notes to fit in a block
+     * @throws TransactionEncoderException.ProposalSyncRequiredException
+     * if the wallet has not scanned enough of the chain to create the proposal; sync, then retry
+     * @throws TransactionEncoderException.ProposalRecipientCannotReceiveMemoException if the URI
+     * requests a memo for a recipient that cannot receive one
+     * @throws TransactionEncoderException.ProposalUnsupportedRecipientException if a recipient has
+     * no receiver this wallet is able to pay
      * @throws TransactionEncoderException.ProposalFromUriException if the proposal cannot be created
      * for any other reason
      */
     suspend fun proposeFulfillingPaymentUri(
         account: Account,
-        uri: String
+        uri: String,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal
 
     /**
@@ -536,6 +618,10 @@ interface Synchronizer {
      *
      * @throws TransactionEncoderException.InsufficientFundsException if the transparent funds do not
      *         cover the required fee
+     * @throws TransactionEncoderException.ProposalTooLargeException if the transaction would spend
+     *         too many transparent outputs to fit in a block
+     * @throws TransactionEncoderException.ProposalSyncRequiredException
+     *         if the wallet has not scanned enough of the chain to create the proposal; sync, then retry
      * @throws TransactionEncoderException.ProposalShieldingException if the proposal cannot be
      *         created for any other reason, e.g. if `transparentReceiver` is null and there are
      *         transparent funds in more than one of the account's transparent receivers.
@@ -557,6 +643,10 @@ interface Synchronizer {
      *            default, [OvkPolicy.Sender], lets the wallet recover what it sent. Use
      *            [OvkPolicy.Discard] when nobody holding [usk] may learn the recipients, values
      *            or memos, e.g. when sweeping a gift card whose issuer can rederive its key.
+     * @param sizeBound the limits the transactions must stay within; consensus alone by default.
+     *        Nothing is built when a transaction exceeds it, and
+     *        [cash.z.ecc.android.sdk.exception.proposalTooLargeReason] on the failure returns the
+     *        [TransactionEncoderException.ProposalTooLargeException] naming the exceeded cap.
      *
      * @return a flow of result objects for the transactions that were created as part of
      *         the proposal, indicating whether they were submitted to the network or if
@@ -569,12 +659,16 @@ interface Synchronizer {
      *         the failed proposal anchors to the same height, so retrying it unchanged is not
      *         expected to succeed on its own.
      * @throws TransactionEncoderException.TransactionNotCreatedException if the transactions
-     *         could not be created for another reason.
+     *         could not be created for another reason. When a transaction would spend too many
+     *         notes to fit in a block, the failure is the one it always was, and
+     *         [cash.z.ecc.android.sdk.exception.proposalTooLargeReason] on it returns the
+     *         [TransactionEncoderException.ProposalTooLargeException].
      */
     suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy = OvkPolicy.Sender
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Flow<TransactionSubmitResult>
 
     /**
@@ -585,6 +679,10 @@ interface Synchronizer {
      *
      * @param accountUuid The account for which the proposal was created.
      * @param proposal The proposal for which to create the transaction.
+     * @param sizeBound the limits the transaction must stay within; consensus alone by default.
+     *        Nothing is built when the transaction exceeds it, and
+     *        [cash.z.ecc.android.sdk.exception.proposalTooLargeReason] on the failure returns the
+     *        [TransactionEncoderException.ProposalTooLargeException] naming the exceeded cap.
      *
      * @return The partially created transaction in [Pczt] format.
      *
@@ -593,7 +691,9 @@ interface Synchronizer {
      * @throws PcztException.CreatePcztFromProposalException as a common indicator of the operation failure.
      *         When the failure is that no anchor was computable at the height the proposal
      *         anchors to, its `cause` is a [TransactionEncoderException.AnchorNotFoundException];
-     *         sync further, then create a new proposal.
+     *         sync further, then create a new proposal. When the transaction would spend too many
+     *         notes to fit in a block, [cash.z.ecc.android.sdk.exception.proposalTooLargeReason]
+     *         on it returns the [TransactionEncoderException.ProposalTooLargeException].
      */
     @Throws(
         PcztException.MultiStepProposalUnsupportedException::class,
@@ -601,7 +701,8 @@ interface Synchronizer {
     )
     suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
-        proposal: Proposal
+        proposal: Proposal,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Pczt
 
     /**
@@ -1631,7 +1732,7 @@ interface Synchronizer {
                                 network = zcashNetwork,
                                 walletTip = { walletTipForSubmission(backend) }
                             )
-                        val submitPlanExecutor = SubmitPlanExecutor(transactionSubmitter)
+                        val submitPlanExecutor = SubmitPlanExecutor(transactionSubmitter, pendingSubmitPlanStore)
                         val processor =
                             DefaultSynchronizerFactory.defaultProcessor(
                                 backend = backend,
@@ -1772,7 +1873,8 @@ private object UnavailableBroadcaster : Broadcaster {
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy
+        ovkPolicy: OvkPolicy,
+        sizeBound: TransactionSizeBound
     ): List<CreatedTransaction> = throw UnsupportedOperationException(
         "Synchronizer.broadcaster is unavailable for this Synchronizer implementation."
     )

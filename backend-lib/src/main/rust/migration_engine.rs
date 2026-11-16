@@ -21,7 +21,7 @@ use zcash_client_backend::data_api::MaxSpendMode;
 use zcash_client_backend::data_api::wallet::TargetHeight;
 use zcash_client_backend::data_api::wallet::input_selection::{LockFilter, LockedInputPolicy};
 use zcash_client_backend::data_api::wallet::{ConfirmationsPolicy, propose_send_max_transfer};
-use zcash_client_backend::data_api::{Account, InputSource, WalletRead};
+use zcash_client_backend::data_api::{Account, InputSource, WalletRead, WalletWrite};
 use zcash_client_backend::fees::StandardFeeRule;
 use zcash_client_backend::proposal::Proposal;
 use zcash_client_sqlite::AccountUuid;
@@ -39,8 +39,6 @@ use zcash_pool_migration::engine::{
 use zcash_pool_migration::satisfiability::{ReorgSettleDepth, StepSatisfiability};
 use zcash_pool_migration::scheduling::SchedulingParams;
 use zcash_protocol::TxId;
-
-use crate::migration::Wallet;
 
 type SpendableNote = (OrchardNote, Position, u64);
 
@@ -380,11 +378,21 @@ where
 /// reuses that same derivation, not a second one. `zcash_keys` encodes the address at ZIP 316
 /// revision 0, the same encoding the ordinary migration proposal gives its recipient. The wallet
 /// stores the address, and the app shows it in history.
-pub fn propose_immediate_send_max(
-    params: &Network,
-    wallet: &mut Wallet,
-    account: AccountUuid,
-) -> anyhow::Result<Proposal<StandardFeeRule, <Wallet as InputSource>::NoteRef>> {
+///
+/// Generic over the wallet and network only so tests can drive it with a synthetic wallet; the
+/// JNI layer calls it with `migration::Wallet` and `Network`.
+pub fn propose_immediate_send_max<DbT, P>(
+    params: &P,
+    wallet: &mut DbT,
+    account: <DbT as InputSource>::AccountId,
+) -> anyhow::Result<Proposal<StandardFeeRule, <DbT as InputSource>::NoteRef>>
+where
+    DbT: WalletWrite
+        + InputSource<Error = <DbT as WalletRead>::Error, AccountId = <DbT as WalletRead>::AccountId>,
+    <DbT as InputSource>::NoteRef: Copy + Eq + Ord + std::fmt::Debug + std::fmt::Display,
+    <DbT as WalletRead>::Error: std::fmt::Display + std::fmt::Debug,
+    P: Parameters + Clone,
+{
     let orchard_fvk = wallet
         .get_account(account)
         .map_err(|e| anyhow::anyhow!("account lookup failed: {e}"))?
@@ -413,3 +421,6 @@ pub fn propose_immediate_send_max(
     )
     .map_err(|e| anyhow::anyhow!("Error proposing immediate send-max: {:?}", e))
 }
+
+#[cfg(test)]
+mod behaviour_tests;

@@ -9,6 +9,7 @@ import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
@@ -33,14 +34,16 @@ internal class OutboundTransactionManagerImpl(
      */
     override suspend fun proposeTransferFromUri(
         account: Account,
-        uri: String
-    ): Proposal = encoder.proposeTransferFromUri(account, uri)
+        uri: String,
+        sizeBound: TransactionSizeBound
+    ): Proposal = encoder.proposeTransferFromUri(account, uri, sizeBound)
 
     override suspend fun proposeTransfer(
         account: Account,
         recipient: String,
         amount: Zatoshi,
-        memo: String
+        memo: String,
+        sizeBound: TransactionSizeBound
     ): Proposal {
         val memoBytes =
             if (memo.isBlank()) {
@@ -48,7 +51,7 @@ internal class OutboundTransactionManagerImpl(
             } else {
                 memo.toByteArray()
             }
-        return encoder.proposeTransfer(account, recipient, amount, memoBytes)
+        return encoder.proposeTransfer(account, recipient, amount, memoBytes, sizeBound)
     }
 
     override suspend fun proposeOrchardToIronwoodMigration(account: Account): Proposal =
@@ -72,22 +75,25 @@ internal class OutboundTransactionManagerImpl(
     override suspend fun proposeSendMax(
         account: Account,
         recipient: RecipientAddress,
-        memo: MemoContent?
-    ): Proposal = encoder.proposeSendMax(account, recipient, memo)
+        memo: MemoContent?,
+        sizeBound: TransactionSizeBound
+    ): Proposal = encoder.proposeSendMax(account, recipient, memo, sizeBound)
 
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy
-    ): List<EncodedTransaction> = encoder.createProposedTransactions(proposal, usk, ovkPolicy)
+        ovkPolicy: OvkPolicy,
+        sizeBound: TransactionSizeBound
+    ): List<EncodedTransaction> = encoder.createProposedTransactions(proposal, usk, ovkPolicy, sizeBound)
 
     override suspend fun submit(encodedTransaction: EncodedTransaction): TransactionSubmitResult =
         walletClient.submitTransaction(encodedTransaction.raw, encodedTransaction.txId, sdkFlags, network, walletTip)
 
     override suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
-        proposal: Proposal
-    ) = encoder.createPcztFromProposal(accountUuid, proposal)
+        proposal: Proposal,
+        sizeBound: TransactionSizeBound
+    ) = encoder.createPcztFromProposal(accountUuid, proposal, sizeBound)
 
     override suspend fun redactPcztForSigner(pczt: Pczt): Pczt = encoder.redactPcztForSigner(pczt)
 

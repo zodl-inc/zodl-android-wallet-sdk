@@ -188,7 +188,7 @@ class DirectOhttpSenderConnectionReuseTest {
         assertEquals("message/ohttp-chunked-req", request.getHeader("Content-Type"))
         assertEquals("message/ohttp-chunked-res", request.getHeader("Accept"))
         assertEquals("identity", request.getHeader("Accept-Encoding"))
-        assertEquals(OhttpSender.FIXED_USER_AGENT, request.getHeader("User-Agent"))
+        assertEquals("zodl-ohttp/1", request.getHeader("User-Agent"))
         assertEquals("keep-alive", request.getHeader("Connection")?.lowercase())
         assertEquals(listOf<Byte>(1, 2, 3), request.body.readByteArray().toList())
     }
@@ -206,7 +206,7 @@ class DirectOhttpSenderConnectionReuseTest {
                     "Content-Type" to "message/ohttp-chunked-req",
                     "Accept" to "message/ohttp-chunked-res",
                     "Accept-Encoding" to "identity",
-                    "User-Agent" to "ZODL-OHTTP/1.0",
+                    "User-Agent" to "zodl-ohttp/1",
                 ),
                 TIMEOUT_MS,
             )
@@ -214,7 +214,7 @@ class DirectOhttpSenderConnectionReuseTest {
 
         val request = relay.takeRequest()
         assertEquals(listOf("identity"), request.headers.values("Accept-Encoding"))
-        assertEquals(listOf("ZODL-OHTTP/1.0"), request.headers.values("User-Agent"))
+        assertEquals(listOf("zodl-ohttp/1"), request.headers.values("User-Agent"))
         assertEquals(
             setOf("content-type", "accept", "accept-encoding", "user-agent", "host", "content-length", "connection"),
             request.headerNames(),
@@ -233,7 +233,7 @@ class DirectOhttpSenderConnectionReuseTest {
             request.headerNames(),
         )
         assertEquals("identity", request.getHeader("Accept-Encoding"))
-        assertEquals(OhttpSender.FIXED_USER_AGENT, request.getHeader("User-Agent"))
+        assertEquals("zodl-ohttp/1", request.getHeader("User-Agent"))
     }
 
     /** The header names the relay saw, lower-cased (OkHttp and the caller may differ in case). */

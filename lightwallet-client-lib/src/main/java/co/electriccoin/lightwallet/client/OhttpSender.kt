@@ -85,7 +85,7 @@ interface OhttpSender : Disposable {
          * Relay"). The transport sends it on every request; `DirectOhttpSender` also fills it in for a caller
          * that passes none, so the HTTP layer's own agent string is never sent.
          */
-        const val FIXED_USER_AGENT: String = "ZODL-OHTTP/1.0"
+        const val FIXED_USER_AGENT: String = "zodl-ohttp/1"
 
         /** A `Retry-After` value in the delay-seconds form, or null (absent, an HTTP date, malformed). */
         fun retryAfterSeconds(value: String?): Long? = value?.trim()?.toLongOrNull()?.takeIf { it >= 0 }

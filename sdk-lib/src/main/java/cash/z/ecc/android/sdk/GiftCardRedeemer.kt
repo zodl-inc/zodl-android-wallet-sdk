@@ -660,7 +660,7 @@ class GiftCardRedeemer private constructor(
             fee = proposal.totalFeeRequired(),
             results = results,
             recordedInDestination = recorded,
-            amount = proposal.totalSent().takeIf { it.value > 0 }
+            amount = proposal.totalPaymentAmount().takeIf { it.value > 0 }
         )
     }
 
