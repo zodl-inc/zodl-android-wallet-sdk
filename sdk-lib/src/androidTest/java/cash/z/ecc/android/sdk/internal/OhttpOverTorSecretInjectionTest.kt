@@ -30,8 +30,8 @@ import kotlin.time.Duration.Companion.seconds
  * cmc.zodl.com and near.zodl.com, so it only runs when the instrumentation argument
  * `ohttpLive=true` is passed (skipped otherwise). The SDK carries no OHTTP configuration: the
  * mainnet one is passed as the instrumentation arguments `ohttpGatewayHost`, `ohttpRelayUrl`,
- * `ohttpKeysDnsName` and `ohttpSigningPubkey` (for example from the `ZODL_OHTTP_*_MAINNET`
- * values in AWS Secrets Manager), and the test installs it with [Ohttp.configure]:
+ * `ohttpKeysDnsName` and `ohttpSigningPubkey` (the mainnet values the app build is
+ * configured with), and the test installs it with [Ohttp.configure]:
  *
  *   ./gradlew :sdk-lib:connectedDebugAndroidTest \
  *     -Pandroid.testInstrumentationRunnerArguments.class=<this class's fully qualified name> \

@@ -6,8 +6,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.1.0] - 2026-11-16
+
 The OHTTP configuration moves from the SDK build to the app at runtime. This changes the public API and the
-published artifacts carry no configuration, so the next release is a major version (9.0.0).
+published artifacts carry no configuration: the app installs it with `Ohttp.configure` at startup (see Added).
 
 ### Added
 - `cash.z.ecc.android.sdk.Ohttp.configure(OhttpConfiguration?)`: the app installs the OHTTP configuration of
@@ -144,7 +146,7 @@ published artifacts carry no configuration, so the next release is a major versi
   resolver lookups) and the `user-agent` of the inner (encrypted) gRPC request are both `zodl-ohttp/1`, the same
   value for every Zodl client (they were `ZODL-OHTTP/1.0` and `zodl-ohttp-grpc/1.0`), so neither the relay nor the
   gateway can group users by platform or library version. No other inner header changed.
-- `zodl-ohttp-client` 1.0.1 and `zodl-slipstream` 0.5.0, both from crates.io: the configuration is passed in
+- `zodl-ohttp-client` 1.0.1 and `zodl-slipstream` 0.6.0, both from crates.io: the configuration is passed in
   at runtime, and
   requests are padded to fixed size buckets. The Slipstream engine takes the same configuration.
 - Without a configuration (`Ohttp.configure` never called, or a network passed as null), OHTTP is off for that
