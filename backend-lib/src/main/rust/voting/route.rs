@@ -84,6 +84,12 @@ const OHTTP_VOTE_HOSTS: &[&str] = &[
     "zvote.keplr.app",
     "zvote.zfnd.org",
     "v.ombie.cash",
+    "svote.zcashlabs.com",
+    "207-180-214-226.sslip.io",
+    "vote.atlasstaking.com",
+    "zvote.polkachu.com",
+    "zvote.cros-nest.net",
+    "vote.infra.cypherpunk.com",
     // PIR endpoints (delegation) — fail closed through OHTTP when Tor OFF + predefined servers
     "lb-pir-primary.valargroup.org",
     "lb-pir-backup.valargroup.org",
@@ -594,7 +600,7 @@ mod tests {
         // (infra repo, kubernetes/apps/ohttp-gateway/deployment.yaml).
         // Source of truth: BACKENDS env var in mainnet and testnet gateway pods.
         //
-        // Expected: 12 vote servers + 3 PIR endpoints (as of 2026-10-02).
+        // Expected: 18 vote servers + 3 PIR endpoints (as of 2026-11-16).
         let expected_hosts = vec![
             // Vote servers (predefined endpoints)
             "vote.zodl.com",
@@ -609,6 +615,12 @@ mod tests {
             "zvote.keplr.app",
             "zvote.zfnd.org",
             "v.ombie.cash",
+            "svote.zcashlabs.com",
+            "207-180-214-226.sslip.io",
+            "vote.atlasstaking.com",
+            "zvote.polkachu.com",
+            "zvote.cros-nest.net",
+            "vote.infra.cypherpunk.com",
             // PIR endpoints (delegation hosts)
             "lb-pir-primary.valargroup.org",
             "lb-pir-backup.valargroup.org",

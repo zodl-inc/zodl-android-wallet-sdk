@@ -252,6 +252,7 @@ published artifacts carry no configuration: the app installs it with `Ohttp.conf
 ### Fixed
 - Debug-level Rust logs of the OHTTP transport (`zodl_slipstream::ohttp`), which name the relay host, are capped at info, so they never reach logcat.
 - Tor connections (`TorClient`, and Slipstream sync with Tor enabled) no longer fail while the Tor network's consensus omits its `bandwidth-weights` line, as it has intermittently since 2026-11-15. With Arti 0.43 every guard relay then weighed zero, so no guard was found, no circuit was built, and Tor startup timed out. The Rust core now uses Arti 0.44, which picks guards uniformly at random while the weights are missing, so Tor can be slower than usual until the consensus carries them again. `zcash_client_backend` and `zodl-slipstream` 0.6.0 are temporarily built from patch branches on their release tags through `[patch.crates-io]`, to be removed once releases ship Arti 0.44 or later. No caller changes are required.
+- Coinholder voting with Tor off on predefined servers no longer refuses to open a round session whose vote servers include `svote.zcashlabs.com`, `207-180-214-226.sslip.io`, `vote.atlasstaking.com`, `zvote.polkachu.com`, `zvote.cros-nest.net` or `vote.infra.cypherpunk.com`. They were missing from the OHTTP host list, so opening the session failed before anything was sent ("host ... not supported by OHTTP gateway"). They now go through OHTTP like the other predefined servers, and the OHTTP gateway forwards them. No caller changes are required.
 
 ## [8.0.0] - 2026-11-07
 
