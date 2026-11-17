@@ -31,11 +31,16 @@ interface Backend {
 
     suspend fun initBlockMetaDb(): Int
 
+    /**
+     * @param sizeBound the transaction size bound the proposal must stay within, as
+     * `TransactionSizeBound`'s backend encoding: `null` for consensus alone.
+     */
     suspend fun proposeTransfer(
         accountUuid: ByteArray,
         to: String,
         value: Long,
-        memo: ByteArray? = null
+        memo: ByteArray? = null,
+        sizeBound: LongArray? = null
     ): ProposalUnsafe
 
     /**
@@ -53,7 +58,8 @@ interface Backend {
     @Throws(RuntimeException::class)
     suspend fun proposeTransferFromUri(
         accountUuid: ByteArray,
-        uri: String
+        uri: String,
+        sizeBound: LongArray? = null
     ): ProposalUnsafe
 
     suspend fun proposeShielding(
@@ -74,7 +80,8 @@ interface Backend {
     suspend fun proposeSendMaxTransfer(
         accountUuid: ByteArray,
         to: String,
-        memo: ByteArray? = null
+        memo: ByteArray? = null,
+        sizeBound: LongArray? = null
     ): ProposalUnsafe
 
     /**
@@ -83,11 +90,14 @@ interface Backend {
      * @param discardOvk when `true`, the transactions are created with no outgoing viewing key,
      * so their outputs cannot be recovered by anyone holding the account's keys. Otherwise the
      * account's own OVK is used.
+     * @param sizeBound the transaction size bound the proposal must stay within, as
+     * `TransactionSizeBound`'s backend encoding: `null` for consensus alone.
      */
     suspend fun createProposedTransactions(
         proposal: ProposalUnsafe,
         unifiedSpendingKey: ByteArray,
-        discardOvk: Boolean = false
+        discardOvk: Boolean = false,
+        sizeBound: LongArray? = null
     ): List<ByteArray>
 
     /**
@@ -112,7 +122,8 @@ interface Backend {
     @Throws(RuntimeException::class)
     suspend fun createPcztFromProposal(
         accountUuid: ByteArray,
-        proposal: ProposalUnsafe
+        proposal: ProposalUnsafe,
+        sizeBound: LongArray? = null
     ): ByteArray
 
     /**

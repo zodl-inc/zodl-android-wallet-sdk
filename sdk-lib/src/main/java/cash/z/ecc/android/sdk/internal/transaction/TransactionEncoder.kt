@@ -10,6 +10,7 @@ import cash.z.ecc.android.sdk.model.OvkPolicy
 import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RecipientAddress
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 
@@ -28,7 +29,8 @@ internal interface TransactionEncoder {
     @Throws(TransactionEncoderException.ProposalFromUriException::class)
     suspend fun proposeTransferFromUri(
         account: Account,
-        uri: String
+        uri: String,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal
 
     /**
@@ -48,7 +50,8 @@ internal interface TransactionEncoder {
         account: Account,
         recipient: String,
         amount: Zatoshi,
-        memo: ByteArray? = byteArrayOf()
+        memo: ByteArray? = byteArrayOf(),
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal
 
     /**
@@ -93,7 +96,9 @@ internal interface TransactionEncoder {
      *
      * @throws TransactionEncoderException.AnchorNotFoundException if no anchor was computable
      * at the height the proposal anchors to; sync further, then create a new proposal.
-     * @throws TransactionEncoderException.TransactionNotCreatedException
+     * @throws TransactionEncoderException.TransactionNotCreatedException; when a transaction would
+     * spend too many notes to fit in a block, [cash.z.ecc.android.sdk.exception.proposalTooLargeReason]
+     * recognizes it.
      * @throws TransactionEncoderException.TransactionNotFoundException
      */
     @Throws(
@@ -104,7 +109,8 @@ internal interface TransactionEncoder {
     suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy = OvkPolicy.Sender
+        ovkPolicy: OvkPolicy = OvkPolicy.Sender,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): List<EncodedTransaction>
 
     /**
@@ -113,22 +119,36 @@ internal interface TransactionEncoder {
      *
      * @throws TransactionEncoderException.InsufficientFundsException if nothing is spendable or
      * the spendable value does not cover the fee
+     * @throws TransactionEncoderException.ProposalTooLargeException if the transaction would spend
+     * too many notes to fit in a block
+     * @throws TransactionEncoderException.ProposalSyncRequiredException
+     * if the wallet has not scanned enough of the chain to create the proposal; sync, then retry
+     * @throws TransactionEncoderException.ProposalRecipientCannotReceiveMemoException if a memo is
+     * given for a recipient that cannot receive one
+     * @throws TransactionEncoderException.ProposalUnsupportedRecipientException if the recipient
+     * has no receiver the wallet is able to pay
      * @throws TransactionEncoderException.ProposalFromParametersException if the proposal cannot
      * be created for any other reason
      */
     @Throws(
         TransactionEncoderException.InsufficientFundsException::class,
+        TransactionEncoderException.ProposalTooLargeException::class,
+        TransactionEncoderException.ProposalSyncRequiredException::class,
+        TransactionEncoderException.ProposalRecipientCannotReceiveMemoException::class,
+        TransactionEncoderException.ProposalUnsupportedRecipientException::class,
         TransactionEncoderException.ProposalFromParametersException::class
     )
     suspend fun proposeSendMax(
         account: Account,
         recipient: RecipientAddress,
-        memo: MemoContent?
+        memo: MemoContent?,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Proposal
 
     suspend fun createPcztFromProposal(
         accountUuid: AccountUuid,
-        proposal: Proposal
+        proposal: Proposal,
+        sizeBound: TransactionSizeBound = TransactionSizeBound.CONSENSUS
     ): Pczt
 
     suspend fun redactPcztForSigner(pczt: Pczt): Pczt

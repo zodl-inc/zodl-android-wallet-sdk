@@ -259,6 +259,39 @@ class RustOhttpTool private constructor() : OhttpCodec {
         }
 
         /**
+         * Checks and installs the OHTTP configuration in the native library, once per process (see
+         * `ohttp_config.rs`): every native OHTTP path reads it. The library must be loaded; the app
+         * passes its configuration through `cash.z.ecc.android.sdk.Ohttp.configure`. A null gateway host
+         * turns OHTTP off for that network. Installing an equal configuration again changes nothing.
+         *
+         * @throws IllegalArgumentException when a value breaks its rule; the message names the network,
+         *   the field and the rule, never the value, and nothing is installed
+         * @throws IllegalStateException when a different configuration is already installed
+         */
+        @Suppress("LongParameterList")
+        fun configureNative(
+            mainnetGatewayHost: String?,
+            mainnetRelayUrl: String?,
+            mainnetKeysDnsName: String?,
+            mainnetSigningPublicKey: String?,
+            testnetGatewayHost: String?,
+            testnetRelayUrl: String?,
+            testnetKeysDnsName: String?,
+            testnetSigningPublicKey: String?,
+        ) {
+            nativeConfigure(
+                mainnetGatewayHost,
+                mainnetRelayUrl,
+                mainnetKeysDnsName,
+                mainnetSigningPublicKey,
+                testnetGatewayHost,
+                testnetRelayUrl,
+                testnetKeysDnsName,
+                testnetSigningPublicKey,
+            )
+        }
+
+        /**
          * Maps a failure of the native core to the exceptions of the [OhttpCodec] contract: a rejected
          * key configuration is a [KeyConfigVerificationFailedException], an answer that does not open
          * (AEAD, chunk framing, Binary HTTP) an [OhttpInternalException], a request over the size cap
@@ -340,10 +373,26 @@ class RustOhttpTool private constructor() : OhttpCodec {
         ): String
 
         /**
+         * Installs the OHTTP configuration in the native library; a null gateway host turns OHTTP off
+         * for that network. Throws [IllegalArgumentException] or [IllegalStateException], see [configure].
+         */
+        @JvmStatic
+        @Suppress("LongParameterList")
+        private external fun nativeConfigure(
+            mainnetGatewayHost: String?,
+            mainnetRelayUrl: String?,
+            mainnetKeysDnsName: String?,
+            mainnetSigningPublicKey: String?,
+            testnetGatewayHost: String?,
+            testnetRelayUrl: String?,
+            testnetKeysDnsName: String?,
+            testnetSigningPublicKey: String?,
+        )
+
+        /**
          * Returns the relay URL for a given gateway host, or null if the host is not the gateway of a
-         * network the native library was built with (OHTTP unavailable for it). There are no built-in
-         * values: gateway hosts and relay URLs are build-time configuration (`ZODL_OHTTP_GATEWAY_HOST_*`,
-         * `ZODL_OHTTP_RELAY_URL_*`).
+         * network the installed OHTTP configuration turns on (OHTTP unavailable for it). There are no
+         * built-in values: the app installs them (`cash.z.ecc.android.sdk.Ohttp.configure`).
          */
         @JvmStatic
         private external fun nativeRelayUrlFor(gatewayHost: String): String?
@@ -361,10 +410,9 @@ class RustOhttpTool private constructor() : OhttpCodec {
         private external fun profileInfo(profile: Int): JniOhttpProfile
 
         /**
-         * Returns the DNS name of the signed Key Configuration TXT record for [gatewayHost], as the
-         * library was built with it (`ZODL_OHTTP_KEYS_DNS_NAME_MAINNET` / `_TESTNET`). Throws a
-         * key-configuration [JniOhttpException] when [gatewayHost] is not a configured gateway or
-         * the build set no DNS name for its network (OHTTP DNS source unavailable).
+         * Returns the DNS name of the signed Key Configuration TXT record for [gatewayHost], from the
+         * installed OHTTP configuration of its network. Throws a key-configuration [JniOhttpException]
+         * when [gatewayHost] is not a configured gateway (OHTTP DNS source unavailable).
          */
         @JvmStatic
         private external fun nativeKeyConfigDnsName(gatewayHost: String): String

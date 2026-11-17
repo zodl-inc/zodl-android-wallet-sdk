@@ -28,11 +28,13 @@ import cash.z.ecc.android.sdk.model.Pczt
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SingleUseTransparentAddress
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.UnifiedAddressRequest
 import cash.z.ecc.android.sdk.model.UnifiedFullViewingKey
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
+import cash.z.ecc.android.sdk.model.toBackendEncoding
 import kotlinx.coroutines.withContext
 
 @Suppress("TooManyFunctions")
@@ -114,12 +116,14 @@ internal class TypesafeBackendImpl(
 
     override suspend fun proposeTransferFromUri(
         account: Account,
-        uri: String
+        uri: String,
+        sizeBound: TransactionSizeBound
     ): Proposal =
         Proposal.fromUnsafe(
             backend.proposeTransferFromUri(
                 account.accountUuid.value,
-                uri
+                uri,
+                sizeBound.toBackendEncoding()
             )
         )
 
@@ -128,14 +132,16 @@ internal class TypesafeBackendImpl(
         account: Account,
         to: String,
         value: Long,
-        memo: ByteArray?
+        memo: ByteArray?,
+        sizeBound: TransactionSizeBound
     ): Proposal =
         Proposal.fromUnsafe(
             backend.proposeTransfer(
                 account.accountUuid.value,
                 to,
                 value,
-                memo
+                memo,
+                sizeBound.toBackendEncoding()
             )
         )
 
@@ -165,20 +171,23 @@ internal class TypesafeBackendImpl(
     override suspend fun proposeSendMaxTransfer(
         account: Account,
         to: RecipientAddress,
-        memo: MemoContent?
+        memo: MemoContent?,
+        sizeBound: TransactionSizeBound
     ): Proposal =
         Proposal.fromUnsafe(
             backend.proposeSendMaxTransfer(
                 account.accountUuid.value,
                 to.encoding,
-                memo?.asMemoBytes()?.bytes?.byteArray
+                memo?.asMemoBytes()?.bytes?.byteArray,
+                sizeBound.toBackendEncoding()
             )
         )
 
     override suspend fun createProposedTransactions(
         proposal: Proposal,
         usk: UnifiedSpendingKey,
-        ovkPolicy: OvkPolicy
+        ovkPolicy: OvkPolicy,
+        sizeBound: TransactionSizeBound
     ): List<FirstClassByteArray> {
         val uskBytes = usk.copyBytes()
         return try {
@@ -186,7 +195,8 @@ internal class TypesafeBackendImpl(
                 .createProposedTransactions(
                     proposal.toUnsafe(),
                     uskBytes,
-                    discardOvk = ovkPolicy == OvkPolicy.Discard
+                    discardOvk = ovkPolicy == OvkPolicy.Discard,
+                    sizeBound = sizeBound.toBackendEncoding()
                 ).map { FirstClassByteArray(it) }
         } finally {
             uskBytes.clearContents()
@@ -198,16 +208,19 @@ internal class TypesafeBackendImpl(
 
     override suspend fun createPcztFromProposal(
         account: Account,
-        proposal: Proposal
+        proposal: Proposal,
+        sizeBound: TransactionSizeBound
     ): Pczt =
         Pczt(
             backend.createPcztFromProposal(
                 account.accountUuid.value,
-                proposal.toUnsafe()
+                proposal.toUnsafe(),
+                sizeBound.toBackendEncoding()
             )
         )
 
-    override suspend fun redactPcztForSigner(pczt: Pczt): Pczt = Pczt(backend.redactPcztForSigner(pczt.toByteArray()))
+    override suspend fun redactPcztForSigner(pczt: Pczt): Pczt =
+        Pczt(backend.redactPcztForSigner(pczt.toByteArray()))
 
     override suspend fun pcztRequiresSaplingProofs(pczt: Pczt): Boolean =
         backend.pcztRequiresSaplingProofs(pczt.toByteArray())

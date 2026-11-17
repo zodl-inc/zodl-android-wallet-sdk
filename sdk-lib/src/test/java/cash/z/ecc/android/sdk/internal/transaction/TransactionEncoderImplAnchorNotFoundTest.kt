@@ -2,9 +2,11 @@ package cash.z.ecc.android.sdk.internal.transaction
 
 import cash.z.ecc.android.sdk.exception.PcztException
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
+import cash.z.ecc.android.sdk.exception.proposalTooLargeReason
 import cash.z.ecc.android.sdk.internal.SaplingParamFetcher
 import cash.z.ecc.android.sdk.internal.TypesafeBackend
 import cash.z.ecc.android.sdk.internal.jni.ProposalAnchorNotFoundException
+import cash.z.ecc.android.sdk.internal.jni.ProposalRejectedException
 import cash.z.ecc.android.sdk.internal.repository.DerivedDataRepository
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -23,6 +25,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertSame
 
 /**
+ * Also pins the create-time handling of a transaction too large to fit in a block (MOB-2165): the
+ * failure is exactly what it always was, and only [proposalTooLargeReason] finds the
+ * [ProposalRejectedException] the backend attaches as a suppressed exception.
+ *
  * Pins the mapping MOB-1616 exists for: a native [ProposalAnchorNotFoundException] reaching
  * [TransactionEncoderImpl] through [TypesafeBackend.createProposedTransactions] or
  * [TypesafeBackend.createPcztFromProposal] must surface as the typed
@@ -40,6 +46,11 @@ class TransactionEncoderImplAnchorNotFoundTest {
 
     private val anchorNotFound =
         ProposalAnchorNotFoundException("no anchor is computable at height $ANCHOR_HEIGHT", ANCHOR_HEIGHT)
+
+    private val tooLargeReason = ProposalRejectedException(ProposalRejectedException.TRANSACTION_TOO_LARGE)
+
+    // As the backend throws it: the generic exception, with the typed reason only suppressed.
+    private val tooLarge = RuntimeException(TOO_LARGE_TEXT).apply { addSuppressed(tooLargeReason) }
 
     private val unrelated = RuntimeException("the database is locked")
 
@@ -105,6 +116,55 @@ class TransactionEncoderImplAnchorNotFoundTest {
             assertNull(exception.cause)
         }
 
+    /**
+     * Characterizes the immediate Orchard to Ironwood migration: its proposal is not size-gated
+     * when proposed (see `migration_engine/behaviour_tests.rs`), so a sweep too large for a block
+     * fails when its transaction is built. The failure must be exactly main's: a
+     * [TransactionEncoderException.TransactionNotCreatedException] (not a subtype) whose
+     * `rootCause` is the backend's generic exception with its message, and no `cause`. The typed
+     * reason is reachable only through [proposalTooLargeReason].
+     */
+    @Test
+    fun anImmediateMigrationTooLargeToBuildFailsExactlyAsOnMain() =
+        runBlocking {
+            val backend = mock(TypesafeBackend::class.java)
+            `when`(backend.proposalRequiresSaplingProofs(proposal)).thenReturn(false)
+            `when`(backend.createProposedTransactions(proposal, usk)).thenThrow(tooLarge)
+
+            val exception =
+                runCatching { encoder(backend).createProposedTransactions(proposal, usk) }.exceptionOrNull()
+
+            assertEquals(
+                TransactionEncoderException.TransactionNotCreatedException::class,
+                exception?.let { it::class }
+            )
+            check(exception is TransactionEncoderException.TransactionNotCreatedException)
+            assertSame(tooLarge, exception.rootCause)
+            assertEquals(
+                "The transactions have not been successfully created due to: $TOO_LARGE_TEXT",
+                exception.message
+            )
+            assertNull(exception.cause)
+            assertSame(tooLargeReason, exception.proposalTooLargeReason()?.rootCause)
+        }
+
+    /** The PCZT path for the same failure: main's class, message and (null) cause. */
+    @Test
+    fun anImmediateMigrationTooLargeForAPcztFailsExactlyAsOnMain() =
+        runBlocking {
+            val backend = mock(TypesafeBackend::class.java)
+            `when`(backend.createPcztFromProposal(account, proposal)).thenThrow(tooLarge)
+
+            val exception =
+                runCatching { encoder(backend).createPcztFromProposal(accountUuid, proposal) }.exceptionOrNull()
+
+            assertEquals(PcztException.CreatePcztFromProposalException::class, exception?.let { it::class })
+            check(exception != null)
+            assertEquals("Failed to create PCZT from proposal with message: $TOO_LARGE_TEXT", exception.message)
+            assertNull(exception.cause)
+            assertSame(tooLargeReason, exception.proposalTooLargeReason()?.rootCause)
+        }
+
     @Test
     fun addProofsToPcztRethrowsCancellationInsteadOfWrapping(): Unit =
         runBlocking {
@@ -127,5 +187,7 @@ class TransactionEncoderImplAnchorNotFoundTest {
     private companion object {
         const val ACCOUNT_UUID_SIZE = 16
         const val ANCHOR_HEIGHT = 2_800_000L
+        const val TOO_LARGE_TEXT =
+            "Error while creating transactions: The proposed transaction is too large to fit in a block"
     }
 }

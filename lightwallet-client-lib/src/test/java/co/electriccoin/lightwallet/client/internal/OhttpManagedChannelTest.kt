@@ -112,6 +112,9 @@ class OhttpManagedChannelTest {
 
         assertTrue("call must close", closed.await(5, TimeUnit.SECONDS))
         assertEquals(Status.Code.OK, closeStatus?.code)
+        // The inner request carries the same fixed user agent as the outer one.
+        val innerHeaders = codec.sealedRequests.single().headers
+        assertEquals(listOf("user-agent" to "zodl-ohttp/1"), innerHeaders.filter { it.first == "user-agent" })
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         while (registry.isNotEmpty() && System.nanoTime() < deadline) Thread.sleep(10)
         assertTrue("completed call must leave the registry", registry.isEmpty())

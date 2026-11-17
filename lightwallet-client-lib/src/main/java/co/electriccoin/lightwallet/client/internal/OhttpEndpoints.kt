@@ -1,12 +1,14 @@
 package co.electriccoin.lightwallet.client.internal
 
-import co.electriccoin.lightwallet.client.BuildConfig
+import co.electriccoin.lightwallet.client.InternalOhttpApi
+import co.electriccoin.lightwallet.client.model.OhttpConfiguration
 
 /**
  * OHTTP (RFC 9458) gateway hosts.
  *
  * A [co.electriccoin.lightwallet.client.model.LightWalletEndpoint] whose host is one of the OHTTP
- * gateways of this build is served through an OHTTP relay instead of a direct gRPC connection:
+ * gateways of the installed configuration is served through an OHTTP relay instead of a direct gRPC
+ * connection:
  *
  *   app ──HPKE-encrypted──▶ relay (sees IP, not content) ──▶ gateway (sees content, not IP) ──▶ lightwalletd
  *
@@ -14,28 +16,122 @@ import co.electriccoin.lightwallet.client.BuildConfig
  * [co.electriccoin.lightwallet.client.OhttpCodec.signedConfigUrl]); which network a gateway host serves,
  * and so which signing key is trusted for it, is decided by the same codec.
  *
- * Nothing here is hardcoded: the gateway hosts come from the build environment
- * (`ZODL_OHTTP_GATEWAY_HOST_MAINNET` / `_TESTNET`, see build.gradle.kts), the same values the native
- * `zodl-ohttp-client` compiles in together with the relay URLs, key DNS names and signing keys. A build
- * without them has no gateway: OHTTP is off and no host is treated as one.
+ * Nothing here is hardcoded and nothing comes from the build: the app installs the configuration once at
+ * startup (`cash.z.ecc.android.sdk.Ohttp.configure`), which puts the same values into the native library.
+ * Until then, and for a network the configuration leaves null, OHTTP is off and no host is a gateway.
+ *
+ * The configuration is set once per process: the first successful [install] wins (`null`, OHTTP off, is a
+ * configuration too); installing an equal one again changes nothing, a different one throws.
  */
-internal object OhttpEndpoints {
-    /** This build's gateway hosts; tests replace them with example hosts. */
+object OhttpEndpoints {
+    private val lock = Any()
+
+    /** Whether [install] has succeeded; [installed] is meaningful only then. */
     @Volatile
-    internal var gatewayHosts: OhttpGatewayHosts =
-        OhttpGatewayHosts(
-            mainnet = BuildConfig.OHTTP_GATEWAY_HOST_MAINNET.ifEmpty { null },
-            testnet = BuildConfig.OHTTP_GATEWAY_HOST_TESTNET.ifEmpty { null },
-        )
+    private var isInstalled = false
+
+    @Volatile
+    private var installed: OhttpConfiguration? = null
 
     /**
-     * True only for the exact gateway hosts of this build. A prefix match would route a custom server
-     * such as `ohttp-gateway.example.org` into relay selection, which would fail.
+     * Whether SDK code read the OHTTP state before [install]: it then saw OHTTP off and may still act on
+     * that, so a later [install] is refused rather than turning OHTTP on for only part of the process.
      */
-    fun isOhttpGateway(host: String): Boolean = gatewayHosts.let { host == it.mainnet || host == it.testnet }
+    @Volatile
+    private var readBeforeInstall = false
+
+    @Volatile
+    private var hosts: OhttpGatewayHosts = OhttpGatewayHosts(mainnet = null, testnet = null)
+
+    /** The gateway hosts of the installed configuration; tests replace them with example hosts. */
+    internal var gatewayHosts: OhttpGatewayHosts
+        get() {
+            markRead()
+            return hosts
+        }
+        set(value) {
+            hosts = value
+        }
+
+    /** The installed configuration, or null while none is installed (or the installed one is null). */
+    @InternalOhttpApi
+    val configuration: OhttpConfiguration?
+        get() {
+            markRead()
+            return installed
+        }
+
+    private fun markRead() {
+        if (!isInstalled) readBeforeInstall = true
+    }
+
+    /**
+     * Installs [configuration] for the process, once. [installNative] runs first, under the same lock, and
+     * throws when the native library refuses a value; only then does this holder change, so both layers
+     * hold the same configuration. A caller whose native library is not loaded yet passes a no-op and
+     * applies the native part when the library loads (see `cash.z.ecc.android.sdk.Ohttp.configure`).
+     *
+     * @throws IllegalArgumentException when [installNative] refuses a value; nothing is installed and a
+     *   later call may try again
+     * @throws IllegalStateException when a different configuration is already installed (it stays), or
+     *   when the SDK already read the OHTTP state before any configuration was installed
+     */
+    @InternalOhttpApi
+    fun install(
+        configuration: OhttpConfiguration?,
+        installNative: (OhttpConfiguration?) -> Unit = {},
+    ) = synchronized(lock) {
+        if (isInstalled) {
+            check(installed == configuration) {
+                "A different OHTTP configuration is already installed; it is set once per process"
+            }
+            return@synchronized
+        }
+        check(!readBeforeInstall) {
+            "The SDK read the OHTTP configuration before it was installed; configure OHTTP before any other " +
+                "SDK call"
+        }
+        installNative(configuration)
+        installed = configuration
+        hosts =
+            OhttpGatewayHosts(
+                mainnet = configuration?.mainnet?.gatewayHost,
+                testnet = configuration?.testnet?.gatewayHost,
+            )
+        isInstalled = true
+    }
+
+    /**
+     * Turns OHTTP off for the rest of the process after the native library refused the installed
+     * configuration when it loaded: no host is a gateway any more and every OHTTP route fails closed. The
+     * holder stays installed (with OHTTP off), so a later [install] of any configuration other than null
+     * is refused.
+     */
+    @InternalOhttpApi
+    fun failClosed() =
+        synchronized(lock) {
+            installed = null
+            hosts = OhttpGatewayHosts(mainnet = null, testnet = null)
+            isInstalled = true
+        }
+
+    /** Forgets the installed configuration, for tests that install their own. */
+    internal fun resetForTest() =
+        synchronized(lock) {
+            isInstalled = false
+            installed = null
+            readBeforeInstall = false
+            hosts = OhttpGatewayHosts(mainnet = null, testnet = null)
+        }
+
+    /**
+     * True only for the exact gateway hosts of the installed configuration. A prefix match would route a
+     * custom server such as `ohttp-gateway.example.org` into relay selection, which would fail.
+     */
+    internal fun isOhttpGateway(host: String): Boolean = gatewayHosts.let { host == it.mainnet || host == it.testnet }
 }
 
-/** The gateway host of each network, null when the build configured none. */
+/** The gateway host of each network, null when OHTTP is off for it. */
 internal data class OhttpGatewayHosts(
     val mainnet: String?,
     val testnet: String?,

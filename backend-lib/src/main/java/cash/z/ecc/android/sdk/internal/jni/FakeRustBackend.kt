@@ -121,7 +121,8 @@ class FakeRustBackend(
 
     override suspend fun proposeTransferFromUri(
         accountUuid: ByteArray,
-        uri: String
+        uri: String,
+        sizeBound: LongArray?
     ): ProposalUnsafe {
         error("Intentionally not implemented yet.")
     }
@@ -130,7 +131,8 @@ class FakeRustBackend(
         accountUuid: ByteArray,
         to: String,
         value: Long,
-        memo: ByteArray?
+        memo: ByteArray?,
+        sizeBound: LongArray?
     ): ProposalUnsafe {
         error("Intentionally not implemented yet.")
     }
@@ -151,7 +153,8 @@ class FakeRustBackend(
     override suspend fun proposeSendMaxTransfer(
         accountUuid: ByteArray,
         to: String,
-        memo: ByteArray?
+        memo: ByteArray?,
+        sizeBound: LongArray?
     ): ProposalUnsafe {
         error("Intentionally not implemented yet.")
     }
@@ -159,7 +162,8 @@ class FakeRustBackend(
     override suspend fun createProposedTransactions(
         proposal: ProposalUnsafe,
         unifiedSpendingKey: ByteArray,
-        discardOvk: Boolean
+        discardOvk: Boolean,
+        sizeBound: LongArray?
     ): List<ByteArray> {
         error("Intentionally not implemented yet.")
     }
@@ -170,7 +174,8 @@ class FakeRustBackend(
 
     override suspend fun createPcztFromProposal(
         accountUuid: ByteArray,
-        proposal: ProposalUnsafe
+        proposal: ProposalUnsafe,
+        sizeBound: LongArray?
     ): ByteArray {
         error("Intentionally not implemented yet.")
     }

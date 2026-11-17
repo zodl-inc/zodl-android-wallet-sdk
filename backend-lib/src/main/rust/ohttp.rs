@@ -38,10 +38,12 @@ use jni::{
 };
 use zodl_ohttp_client::{
     BhttpRequest, ChunkedResponseDecoder, ChunkedResponseOpener, ClientProfile, Error, Field,
-    KEY_BYTES, KeyConfig, Network, OuterOutcome, OuterResponse, ResponseEvent, SizeGuard,
-    check_size, classify_outer_response, encapsulate_chunked_request, pack_fields,
+    KEY_BYTES, KeyConfig, Network, OhttpNetworks, OuterOutcome, OuterResponse, ResponseEvent,
+    SizeGuard, check_size, classify_outer_response, encapsulate_chunked_request, pack_fields,
     signed_config_url, unpack_fields, verify_signed_config, verify_signed_config_with,
 };
+
+use crate::ohttp_config::installed_networks;
 
 use crate::utils::{
     self, catch_unwind, exception::unwrap_exc_or, java_bytes_to_rust, java_nullable_string_to_rust,
@@ -156,36 +158,23 @@ unsafe fn take_opener(handle: jlong) -> Option<ChunkedResponseOpener> {
 
 /// The network the gateway at `host` serves, under `profile`'s rule.
 ///
-/// The gateway hosts are build-time configuration of `zodl-ohttp-client`
-/// (`ZODL_OHTTP_GATEWAY_HOST_MAINNET` / `_TESTNET`); a host of no network the build turned on
-/// (all of them, when the build set none) is a key-configuration failure: OHTTP is unavailable
-/// for it. The unit tests resolve their example hosts ([`TEST_GATEWAYS`]) first, so that they run
-/// the same whether or not the `ZODL_OHTTP_*` variables are set; that table is empty outside
-/// `cfg(test)`.
-fn network_of(profile: &ClientProfile, host: &str) -> Result<Network, Failure> {
-    if let Some((_, network)) = TEST_GATEWAYS.iter().find(|(gateway, _)| *gateway == host) {
-        return Ok(*network);
-    }
-    Ok(profile.network_rule.network_for(host)?)
+/// The gateway hosts are the configuration the app installed (`ohttp_config.rs`); a host that is
+/// the gateway of no configured network (every host, while none is installed) is a
+/// key-configuration failure: OHTTP is unavailable for it.
+fn network_of(
+    profile: &ClientProfile,
+    networks: &OhttpNetworks,
+    host: &str,
+) -> Result<Network, Failure> {
+    Ok(profile.network_rule.network_for(networks, host)?)
 }
 
 /// [`network_of`] under the rule every preset uses (`NetworkRule::KnownHosts`).
-fn known_network_of(host: &str) -> Result<Network, Failure> {
-    network_of(&ClientProfile::ANDROID, host)
+fn known_network_of(networks: &OhttpNetworks, host: &str) -> Result<Network, Failure> {
+    network_of(&ClientProfile::ANDROID, networks, host)
 }
 
-#[cfg(not(test))]
-const TEST_GATEWAYS: &[(&str, Network)] = &[];
-
-/// Example gateway hosts (RFC 2606 names) of the unit tests.
-#[cfg(test)]
-const TEST_GATEWAYS: &[(&str, Network)] = &[
-    ("ohttp-gateway.example", Network::Mainnet),
-    ("ohttp-gateway-testnet.example", Network::Testnet),
-];
-
-/// The failure for a network whose build set no DNS name for its signed key configuration:
-/// the DNS source is off for it.
+/// The failure for a network without an installed configuration: the DNS source is off for it.
 fn no_dns_name(network: Network) -> Failure {
     Failure {
         kind: KIND_KEY_CONFIG,
@@ -204,18 +193,19 @@ struct VerifiedKey {
 }
 
 /// The gateway key in the signed envelope `json` fetched from the relay, for the gateway
-/// `host`. `signer` replaces the key pinned for the network (tests only; the JNI entry point
-/// always passes `None`).
+/// `host` of `networks`. `signer` replaces the network's configured signing key (tests only; the
+/// JNI entry point always passes `None`).
 fn verify_key_config_with(
     profile: &ClientProfile,
+    networks: &OhttpNetworks,
     host: &str,
     json: &[u8],
     now_secs: u64,
     signer: Option<&zodl_ohttp_client::VerifyingKey>,
 ) -> Result<VerifiedKey, Failure> {
-    let network = network_of(profile, host)?;
+    let network = network_of(profile, networks, host)?;
     let signed = match signer {
-        None => verify_signed_config(json, network, now_secs, &profile.signed_config)?,
+        None => verify_signed_config(networks, json, network, now_secs, &profile.signed_config)?,
         Some(signer) => verify_signed_config_with(
             json,
             network.as_str(),
@@ -527,7 +517,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_verifyK
         let json = java_bytes_to_rust(env, &json)?;
         let now_secs = u64::try_from(now_secs)
             .map_err(|_| raise(env, Failure::argument("a negative time")))?;
-        let verified = verify_key_config_with(&profile, &host, &json, now_secs, None)
+        let networks = installed_networks();
+        let verified = verify_key_config_with(&profile, &networks, &host, &json, now_secs, None)
             .map_err(|f| raise(env, f))?;
 
         let key = env.byte_array_from_slice(&verified.key)?;
@@ -804,9 +795,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_signedC
 }
 
 /// Returns the relay URL for a given gateway host, or null if the host is not the gateway of a
-/// network this build turned on (OHTTP unavailable for it). Gateway hosts and relay URLs are
-/// build-time configuration of `zodl-ohttp-client` (`ZODL_OHTTP_GATEWAY_HOST_*`,
-/// `ZODL_OHTTP_RELAY_URL_*`); there are no built-in values.
+/// network the installed configuration turns on (OHTTP unavailable for it). There are no
+/// built-in values: the app installs them (`ohttp_config.rs`).
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeRelayUrlFor<
     'local,
@@ -817,7 +807,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeR
 ) -> jstring {
     let res = catch_unwind(&mut env, |env| {
         let gateway_host = java_string_to_rust(env, &gateway_host)?;
-        match zodl_ohttp_client::relay_for(&gateway_host) {
+        match installed_networks().relay_for(&gateway_host) {
             Some(relay_url) => Ok(env.new_string(relay_url)?.into_raw()),
             None => Ok(ptr::null_mut()),
         }
@@ -918,9 +908,8 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_profile
 }
 
 /// Returns the DNS name of the signed Key Configuration TXT record for the gateway at
-/// `gateway_host` (build-time `ZODL_OHTTP_KEYS_DNS_NAME_MAINNET` / `_TESTNET`). Throws a
-/// key-configuration `JniOhttpException` when the host is not a configured gateway or the build
-/// set no DNS name for its network.
+/// `gateway_host`, from the installed configuration of its network. Throws a key-configuration
+/// `JniOhttpException` when the host is not a configured gateway.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeKeyConfigDnsName<
     'local,
@@ -930,19 +919,20 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeK
     gateway_host: JString<'local>,
 ) -> jstring {
     let res = catch_unwind(&mut env, |env| {
-        use zodl_ohttp_client::key_config_dns_name;
         let host = java_string_to_rust(env, &gateway_host)?;
-        let network = known_network_of(&host).map_err(|f| raise(env, f))?;
-        let dns_name =
-            key_config_dns_name(network).ok_or_else(|| raise(env, no_dns_name(network)))?;
+        let networks = installed_networks();
+        let network = known_network_of(&networks, &host).map_err(|f| raise(env, f))?;
+        let dns_name = networks
+            .get(network)
+            .map(|config| config.keys_dns_name())
+            .ok_or_else(|| raise(env, no_dns_name(network)))?;
         Ok(env.new_string(dns_name)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
 }
 
 /// Returns the DoH query URL for the resolver and gateway: the JSON API URL to fetch the TXT record.
-/// Throws a key-configuration `JniOhttpException` when the host is not a configured gateway or the
-/// build set no DNS name for its network.
+/// Throws a key-configuration `JniOhttpException` when the host is not a configured gateway.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeDohQueryUrl<
     'local,
@@ -956,9 +946,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeD
         use zodl_ohttp_client::doh_query_url;
         let resolver = java_string_to_rust(env, &resolver)?;
         let host = java_string_to_rust(env, &gateway_host)?;
-        let network = known_network_of(&host).map_err(|f| raise(env, f))?;
-        let url =
-            doh_query_url(&resolver, network).ok_or_else(|| raise(env, no_dns_name(network)))?;
+        let networks = installed_networks();
+        let network = known_network_of(&networks, &host).map_err(|f| raise(env, f))?;
+        let url = doh_query_url(&networks, &resolver, network)
+            .ok_or_else(|| raise(env, no_dns_name(network)))?;
         Ok(env.new_string(url)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
@@ -979,9 +970,10 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustOhttpTool_nativeE
         use zodl_ohttp_client::envelope_from_doh_json;
         let body = java_bytes_to_rust(env, &doh_body)?;
         let host = java_string_to_rust(env, &gateway_host)?;
-        let network = known_network_of(&host).map_err(|f| raise(env, f))?;
-        let envelope =
-            envelope_from_doh_json(&body, network).map_err(|e| raise(env, Failure::from(e)))?;
+        let networks = installed_networks();
+        let network = known_network_of(&networks, &host).map_err(|f| raise(env, f))?;
+        let envelope = envelope_from_doh_json(&networks, &body, network)
+            .map_err(|e| raise(env, Failure::from(e)))?;
         Ok(env.byte_array_from_slice(&envelope)?.into_raw())
     });
     unwrap_exc_or(&mut env, res, ptr::null_mut())
@@ -1139,6 +1131,7 @@ mod tests {
     fn verified_key() -> VerifiedKey {
         verify_key_config_with(
             &android(),
+            &crate::ohttp_config::example::networks(),
             TESTNET_HOST,
             &envelope(&signer(), "testnet", NOW - 3600, NOW + 3600),
             NOW,
@@ -1329,6 +1322,7 @@ mod tests {
         for (host, json, trusted) in attempts {
             let failure = verify_key_config_with(
                 &android(),
+                &crate::ohttp_config::example::networks(),
                 host,
                 &json,
                 NOW,
@@ -1734,6 +1728,41 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(failure.kind, KIND_BHTTP_FORMAT);
+    }
+
+    #[test]
+    fn without_a_configuration_no_host_is_a_gateway() {
+        let off = OhttpNetworks::default();
+        let failure = verify_key_config_with(
+            &android(),
+            &off,
+            TESTNET_HOST,
+            &envelope(&signer(), "testnet", NOW - 3600, NOW + 3600),
+            NOW,
+            Some(&signer().verifying_key()),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(failure.kind, KIND_KEY_CONFIG);
+        assert!(known_network_of(&off, TESTNET_HOST).is_err());
+        assert!(off.relay_for(TESTNET_HOST).is_none());
+    }
+
+    #[test]
+    fn the_installed_configuration_decides_the_network_of_a_gateway() {
+        let guard = crate::ohttp_config::lock_installed();
+        assert!(known_network_of(&installed_networks(), TESTNET_HOST).is_err());
+        guard.set(Some(crate::ohttp_config::example::networks()));
+        let networks = installed_networks();
+        assert_eq!(
+            known_network_of(&networks, TESTNET_HOST).unwrap(),
+            Network::Testnet
+        );
+        assert_eq!(
+            known_network_of(&networks, "ohttp-gateway.example").unwrap(),
+            Network::Mainnet
+        );
+        assert!(known_network_of(&networks, "lightwalletd.example").is_err());
     }
 
     #[test]

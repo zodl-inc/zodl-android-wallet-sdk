@@ -521,8 +521,15 @@ fn start_session(
     // internal performance tuning keeps its production defaults (owned by the engine, not
     // exposed here). The v0.7-only config surface is intentionally NOT set — this is the
     // v0.6.0 host recipe.
-    let mut cfg = EngineConfig::new(h.network, h.wallet_db_path.clone(), h.endpoint.clone())
-        .scaled_for_device_memory(h.total_memory_bytes);
+    // The OHTTP configuration the app installed (`ohttp_config.rs`), read once per start: the
+    // pass keeps it, so a gateway host is a gateway (or a plain server) for the whole pass.
+    let mut cfg = EngineConfig::new(
+        h.network,
+        h.wallet_db_path.clone(),
+        h.endpoint.clone(),
+        (*crate::ohttp_config::installed_networks()).clone(),
+    )
+    .scaled_for_device_memory(h.total_memory_bytes);
 
     // [MOB-1455 fix] Protect the checkpoint(s) any not-yet-broadcast migration transfer is
     // anchored to from this session's own checkpoint pruning — delegates to
@@ -1025,7 +1032,8 @@ pub extern "C" fn Java_com_zodl_slipstream_SlipstreamNative_restoreAnchor<'local
             // `From<Network>` (network.rs). `EngineConfig::new` / `WalletSession::open` take
             // `impl Into<SlipstreamNetwork>` and accept a bare `Network`, so only this call
             // needs the explicit `.into()`.
-            restore_anchor(&endpoint, network.into(), intent, tor_conn.as_ref()).await
+            let networks = crate::ohttp_config::installed_networks();
+            restore_anchor(&networks, &endpoint, network.into(), intent, tor_conn.as_ref()).await
         });
 
         // Copy the treestate into a jbyteArray (or null); the Rust Vec is dropped here.

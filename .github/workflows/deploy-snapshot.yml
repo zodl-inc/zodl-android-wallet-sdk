@@ -24,11 +24,10 @@ on:
 
 concurrency: deploy_snapshot
 
-# The OHTTP endpoint configuration (ZODL_OHTTP_*) is a set of secrets of the protected
-# `deployment` environment (zodl-inc/github-config). Environment secrets are visible only to jobs
-# that declare the environment, not at the workflow level, so deploy_snapshot sets them in its
-# own env. ZODL_OHTTP_REQUIRE=1 makes the build fail instead of publishing a snapshot with OHTTP
-# off when a value is missing.
+# No OHTTP configuration is involved in building or testing the SDK: the library is generic and
+# the app passes the configuration in at runtime (cash.z.ecc.android.sdk.Ohttp.configure). The
+# Rust and Kotlin tests use example values (RFC 2606 names).
+
 jobs:
   validate_gradle_wrapper:
     runs-on: ubuntu-latest
@@ -64,16 +63,6 @@ jobs:
 
   deploy_snapshot:
     environment: deployment
-    env:
-      ZODL_OHTTP_REQUIRE: "1"
-      ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
-      ZODL_OHTTP_GATEWAY_HOST_TESTNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_TESTNET }}
-      ZODL_OHTTP_RELAY_URL_MAINNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_MAINNET }}
-      ZODL_OHTTP_RELAY_URL_TESTNET: ${{ secrets.ZODL_OHTTP_RELAY_URL_TESTNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_MAINNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_MAINNET }}
-      ZODL_OHTTP_SIGNING_PUBKEY_TESTNET: ${{ secrets.ZODL_OHTTP_SIGNING_PUBKEY_TESTNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_MAINNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_MAINNET }}
-      ZODL_OHTTP_KEYS_DNS_NAME_TESTNET: ${{ secrets.ZODL_OHTTP_KEYS_DNS_NAME_TESTNET }}
     needs: [validate_gradle_wrapper, check_secrets]
     if: needs.check_secrets.outputs.has-secrets == 'true'
     runs-on: ubuntu-latest
@@ -106,7 +95,10 @@ jobs:
           df -h /
       - name: Setup
         id: setup
-        timeout-minutes: 50
+        # Builds the 4-ABI Rust backend (about 8 minutes per ABI on a cold cache) and the demo app.
+        # It took 48 to 50 minutes up to 6.0.0 and hit the old 50-minute limit on 2026-11-16, so no
+        # 8.1.0 snapshot was published.
+        timeout-minutes: 90
         uses: ./.github/actions/setup
         with:
           cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
@@ -114,8 +106,10 @@ jobs:
           rust-cache: true
       # Note that GitHub Actions appears to have issues with environment variables that contain periods,
       # so the GPG variables are done as command line arguments instead.
+      # Builds the native libraries as well (the cargoBuild tasks have no up-to-date check), which
+      # does not fit in 8 minutes (the step timed out on 2026-11-09).
       - name: Deploy to Maven Central
-        timeout-minutes: 8
+        timeout-minutes: 60
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}

@@ -107,98 +107,23 @@ impl OutputProver for NoSaplingProver {
 /// recognized as needing them.
 #[cfg(test)]
 mod tests {
-    use zcash_client_backend::data_api::{
-        Account as _, MaxSpendMode,
-        testing::{AddressType, TestBuilder, TestFvk, TestState},
-        wallet::{
-            ConfirmationsPolicy, SpendingKeys, create_proposed_transactions,
-            input_selection::LockedInputPolicy, propose_send_max_transfer,
-        },
-    };
-    use zcash_client_backend::{fees::StandardFeeRule, wallet::OvkPolicy};
-    use zcash_client_sqlite::testing::{BlockCache, db::TestDbFactory};
-    use zcash_keys::address::{Address, UnifiedAddress};
-    use zcash_primitives::block::BlockHash;
-    use zcash_protocol::value::Zatoshis;
+    use zcash_client_backend::data_api::wallet::{SpendingKeys, create_proposed_transactions};
+    use zcash_client_backend::wallet::OvkPolicy;
 
     use super::*;
-    use crate::send_max::SEND_MAX_POOLS;
+    use crate::send_max::tests::{
+        Received, TestProposal, TestWallet, external_recipient, funded_wallet, propose_max_to,
+    };
 
-    /// A wallet whose only funds are one note received by `fvk`, spendable under the default
-    /// confirmations policy.
-    fn funded_wallet<F: TestFvk>(
-        fvk: impl FnOnce(&zcash_keys::keys::UnifiedSpendingKey) -> F,
-    ) -> TestState<
-        BlockCache,
-        zcash_client_sqlite::testing::db::TestDb,
-        zcash_protocol::local_consensus::LocalNetwork,
-    > {
-        let mut st = TestBuilder::new()
-            .with_data_store_factory(TestDbFactory::default())
-            .with_block_cache(BlockCache::new())
-            .with_account_from_sapling_activation(BlockHash([0; 32]))
-            .build();
-        let fvk = fvk(st.test_account().unwrap().usk());
-        let (h, _, _) = st.generate_next_block(
-            &fvk,
-            AddressType::DefaultExternal,
-            Zatoshis::const_from_u64(100_000),
-        );
-        // Received funds need ten confirmations under the default policy.
-        for _ in 0..10 {
-            st.generate_empty_block();
-        }
-        st.scan_cached_blocks(h, 11);
-        st
-    }
-
-    /// An Orchard-only unified address that belongs to nobody in the test wallet.
-    fn external_recipient(
-        st: &TestState<
-            BlockCache,
-            zcash_client_sqlite::testing::db::TestDb,
-            zcash_protocol::local_consensus::LocalNetwork,
-        >,
-    ) -> zcash_address::ZcashAddress {
-        let sk = orchard::keys::SpendingKey::from_bytes([9; 32]).unwrap();
-        let address = orchard::keys::FullViewingKey::from(&sk)
-            .address_at(0u32, orchard::keys::Scope::External);
-        Address::from(
-            UnifiedAddress::from_receivers(Some(address), None, None, None, None).unwrap(),
-        )
-        .to_zcash_address(st.network())
-    }
-
-    /// The same call `send_max::propose_send_max` makes, against the test wallet.
-    fn propose(
-        st: &mut TestState<
-            BlockCache,
-            zcash_client_sqlite::testing::db::TestDb,
-            zcash_protocol::local_consensus::LocalNetwork,
-        >,
-    ) -> Proposal<StandardFeeRule, zcash_client_sqlite::ReceivedNoteId> {
-        let account = st.test_account().unwrap().id();
+    /// The user's Send Max of the test wallet's only note to a recipient outside it.
+    fn propose(st: &mut TestWallet) -> TestProposal {
         let recipient = external_recipient(st);
-        let network = *st.network();
-        propose_send_max_transfer::<_, _, _, std::convert::Infallible>(
-            st.wallet_mut(),
-            &network,
-            account,
-            &SEND_MAX_POOLS,
-            &StandardFeeRule::Zip317,
-            recipient,
-            None,
-            MaxSpendMode::MaxSpendable,
-            ConfirmationsPolicy::default(),
-            &LockedInputPolicy::Exclude,
-            None,
-        )
-        .unwrap()
+        propose_max_to(st, recipient)
     }
 
     #[test]
     fn non_sapling_send_max_builds_without_sapling_parameters() {
-        let mut st = funded_wallet(|usk| orchard::keys::FullViewingKey::from(usk.orchard()));
+        let mut st = funded_wallet(Received::Orchard);
         let proposal = propose(&mut st);
         assert!(!proposal_requires_sapling_proofs(&proposal));
         // Send-max leaves no change.
@@ -237,7 +162,7 @@ mod tests {
 
     #[test]
     fn sapling_send_max_requires_sapling_parameters() {
-        let mut st = funded_wallet(|usk| usk.sapling().to_diversifiable_full_viewing_key());
+        let mut st = funded_wallet(Received::Sapling);
         let proposal = propose(&mut st);
         assert!(proposal_requires_sapling_proofs(&proposal));
     }

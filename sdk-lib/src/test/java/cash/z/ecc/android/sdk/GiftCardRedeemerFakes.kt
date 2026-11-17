@@ -23,6 +23,7 @@ import cash.z.ecc.android.sdk.model.RawTransaction
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.TransactionId
 import cash.z.ecc.android.sdk.model.TransactionOverview
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.TransactionSubmitResult
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.WalletBalance
@@ -106,13 +107,14 @@ internal class FakeCardWallet(
     override suspend fun proposeSendMax(
         account: Account,
         recipient: RecipientAddress,
-        memo: MemoContent?
+        memo: MemoContent?,
+        sizeBound: TransactionSizeBound
     ): Proposal {
         proposed = true
         proposalFailure?.let { throw it }
         val proposal = mock(Proposal::class.java)
         `when`(proposal.totalFeeRequired()).thenReturn(fee)
-        `when`(proposal.totalSent()).thenReturn(Zatoshi(sent ?: (spendable - fee.value).coerceAtLeast(0)))
+        `when`(proposal.totalPaymentAmount()).thenReturn(Zatoshi(sent ?: (spendable - fee.value).coerceAtLeast(0)))
         return proposal
     }
 
@@ -121,7 +123,8 @@ internal class FakeCardWallet(
             override suspend fun createProposedTransactions(
                 proposal: Proposal,
                 usk: UnifiedSpendingKey,
-                ovkPolicy: OvkPolicy
+                ovkPolicy: OvkPolicy,
+                sizeBound: TransactionSizeBound
             ): List<CreatedTransaction> {
                 this@FakeCardWallet.ovkPolicy = ovkPolicy
                 creations++

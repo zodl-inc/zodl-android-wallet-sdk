@@ -2805,10 +2805,8 @@ class CompactBlockProcessor internal constructor(
 
     private suspend fun resubmitTransaction(transaction: DbTransactionOverview) {
         val submitPlan = pendingSubmitPlanStore.getSubmitPlan(transaction.rawId)
-        if (submitPlan == PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan) {
-            Twig.debug {
-                "Trx resubmission: Skipping ${transaction.txIdString()} until a submit plan is registered"
-            }
+        submitPlan.skipReason()?.let { reason ->
+            Twig.debug { "Trx resubmission: Skipping ${transaction.txIdString()} $reason" }
             return
         }
 
@@ -2839,7 +2837,8 @@ class CompactBlockProcessor internal constructor(
                         )
                     }
 
-                    PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan -> {
+                    PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan,
+                    is PendingSubmitPlanStore.StoredSubmitPlan.Rejected -> {
                         TransactionSubmitResult.NotAttempted(transaction.rawId)
                     }
                 }
@@ -2863,6 +2862,18 @@ class CompactBlockProcessor internal constructor(
             }
         }
     }
+
+    /**
+     * Why a transaction with this submit plan is not resubmitted: it waits for a plan from the caller of
+     * [cash.z.ecc.android.sdk.Broadcaster], or it is rejected (every endpoint answered explicitly, none accepted it
+     * and every refusal was for good); `null` when it is resubmitted.
+     */
+    private fun PendingSubmitPlanStore.StoredSubmitPlan?.skipReason(): String? =
+        when (this) {
+            PendingSubmitPlanStore.StoredSubmitPlan.AwaitingPlan -> "until a submit plan is registered"
+            is PendingSubmitPlanStore.StoredSubmitPlan.Rejected -> "which an endpoint rejected ($code)"
+            else -> null
+        }
 
     private suspend fun findTransactionsEligibleForResubmission(
         blockHeight: BlockHeight

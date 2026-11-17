@@ -1,8 +1,10 @@
 package com.zodl.slipstream.internal.spend
 
 import cash.z.ecc.android.sdk.exception.TransactionEncoderException
+import cash.z.ecc.android.sdk.exception.proposalTooLargeReason
 import cash.z.ecc.android.sdk.internal.Backend
 import cash.z.ecc.android.sdk.internal.jni.ProposalInsufficientFundsException
+import cash.z.ecc.android.sdk.internal.jni.ProposalRejectedException
 import cash.z.ecc.android.sdk.internal.model.ProposalUnsafe
 import cash.z.ecc.android.sdk.model.Account
 import cash.z.ecc.android.sdk.model.AccountUuid
@@ -11,6 +13,7 @@ import cash.z.ecc.android.sdk.model.MemoContent
 import cash.z.ecc.android.sdk.model.Proposal
 import cash.z.ecc.android.sdk.model.RecipientAddress
 import cash.z.ecc.android.sdk.model.SdkFlags
+import cash.z.ecc.android.sdk.model.TransactionSizeBound
 import cash.z.ecc.android.sdk.model.UnifiedSpendingKey
 import cash.z.ecc.android.sdk.model.Zatoshi
 import cash.z.ecc.android.sdk.model.ZcashNetwork
@@ -20,12 +23,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
+import org.mockito.ArgumentMatchers
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
 import java.io.IOException
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
@@ -66,6 +71,25 @@ class SlipstreamSpendServiceSendMaxTest {
         }
 
     @Test
+    fun passesTheSizeBoundToTheBackendInItsEncoding() =
+        runBlocking<Unit> {
+            val backend = mock(Backend::class.java)
+            val proposalUnsafe = mock(ProposalUnsafe::class.java)
+            val bound = TransactionSizeBound(maxShieldedActions = 75)
+            var passed: LongArray? = null
+            `when`(backend.proposeSendMaxTransfer(anyArg(), anyArg(), anyArg(), anyArg()))
+                .thenAnswer { invocation ->
+                    passed = invocation.getArgument(3)
+                    proposalUnsafe
+                }
+
+            val proposal = service(backend).proposeSendMax(account, recipient, null, bound)
+
+            assertSame(proposalUnsafe, proposal.toUnsafe())
+            assertContentEquals(longArrayOf(-1, 75, -1, -1, -1, -1, -1, -1), passed)
+        }
+
+    @Test
     fun passesTheMemoAsItsBytes() =
         runBlocking<Unit> {
             val backend = mock(Backend::class.java)
@@ -95,6 +119,44 @@ class SlipstreamSpendServiceSendMaxTest {
         val refusal = RuntimeException("Insufficient balance (have 5000, need 10000 including fee)")
 
         val exception = assertIs<TransactionEncoderException.InsufficientFundsException>(sendMaxFailure(refusal))
+
+        assertSame(refusal, exception.rootCause)
+    }
+
+    @Test
+    fun aTooLargeTransactionIsATooLargeProposal() {
+        val refusal = ProposalRejectedException(ProposalRejectedException.TRANSACTION_TOO_LARGE)
+
+        val exception = assertIs<TransactionEncoderException.ProposalTooLargeException>(sendMaxFailure(refusal))
+
+        assertSame(refusal, exception.rootCause)
+    }
+
+    @Test
+    fun aMemoToATransparentRecipientIsARecipientThatCannotReceiveAMemo() {
+        val refusal = ProposalRejectedException(ProposalRejectedException.TRANSPARENT_MEMO)
+
+        val exception =
+            assertIs<TransactionEncoderException.ProposalRecipientCannotReceiveMemoException>(sendMaxFailure(refusal))
+
+        assertSame(refusal, exception.rootCause)
+    }
+
+    @Test
+    fun anUnpayableRecipientIsAnUnsupportedRecipient() {
+        val refusal = ProposalRejectedException(ProposalRejectedException.UNSUPPORTED_ADDRESS)
+
+        val exception =
+            assertIs<TransactionEncoderException.ProposalUnsupportedRecipientException>(sendMaxFailure(refusal))
+
+        assertSame(refusal, exception.rootCause)
+    }
+
+    @Test
+    fun aWalletThatMustSyncIsASyncRequiredFailure() {
+        val refusal = ProposalRejectedException(ProposalRejectedException.SYNC_REQUIRED)
+
+        val exception = assertIs<TransactionEncoderException.ProposalSyncRequiredException>(sendMaxFailure(refusal))
 
         assertSame(refusal, exception.rootCause)
     }
@@ -161,6 +223,24 @@ class SlipstreamSpendServiceSendMaxTest {
         }
 
     @Test
+    fun creatingATooLargeTransactionFailsExactlyAsTheBackendThrewIt() =
+        runBlocking<Unit> {
+            val send = Send(requiresSapling = false)
+            val reason = ProposalRejectedException(ProposalRejectedException.TRANSACTION_TOO_LARGE)
+            val failure =
+                RuntimeException("Error while creating transactions: too large").apply { addSuppressed(reason) }
+            `when`(send.backend.createProposedTransactions(send.proposalUnsafe, send.uskBytes)).thenThrow(failure)
+
+            val exception =
+                assertFailsWith<RuntimeException> {
+                    service(send.backend).createProposedTransactions(send.proposal, send.usk).toList()
+                }
+
+            assertSame(failure, exception)
+            assertSame(reason, exception.proposalTooLargeReason()?.rootCause)
+        }
+
+    @Test
     fun aFailedSaplingParameterFetchFailsTheSendBeforeAnythingIsCreated() =
         runBlocking<Unit> {
             val send = Send(requiresSapling = true)
@@ -181,7 +261,10 @@ class SlipstreamSpendServiceSendMaxTest {
     ) {
         val backend: Backend = mock(Backend::class.java)
         val proposalUnsafe: ProposalUnsafe =
-            mock(ProposalUnsafe::class.java).also { `when`(it.totalFeeRequired()).thenReturn(FEE) }
+            mock(ProposalUnsafe::class.java).also {
+                `when`(it.totalFeeRequired()).thenReturn(FEE)
+                `when`(it.toByteArray()).thenReturn(byteArrayOf(4, 2))
+            }
         val proposal: Proposal = Proposal.fromUnsafe(proposalUnsafe)
         val uskBytes = byteArrayOf(1, 2, 3)
         val usk: UnifiedSpendingKey =
@@ -221,4 +304,8 @@ class SlipstreamSpendServiceSendMaxTest {
         const val RECIPIENT = "u1recipient"
         const val FEE = 10_000L
     }
+
+    /** `ArgumentMatchers.any()`, typed so that Kotlin does not null-check what it returns. */
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> anyArg(): T = ArgumentMatchers.any<T>() ?: (null as T)
 }

@@ -5,6 +5,13 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
+/** A stored terminal rejection: the server's code and its reason, as it reported them. */
+internal data class StoredRejection(
+    val code: Int,
+    val reason: String
+)
+
+@Suppress("TooManyFunctions")
 internal object PendingSubmitPlanCodec {
     fun decode(storedPlans: String): Map<String, List<LightWalletEndpoint>> {
         val lines =
@@ -79,6 +86,78 @@ internal object PendingSubmitPlanCodec {
         return endpoint
     }
 
+    /** Reads the rejections [encodeRejections] wrote; anything malformed is dropped. */
+    fun decodeRejections(stored: String): Map<String, StoredRejection> {
+        val lines = stored.lineSequence().filter { it.isNotBlank() }.toList()
+        if (!lines.hasSupportedVersion()) {
+            return emptyMap()
+        }
+        return lines
+            .filter { it.contains(KEY_VALUE_SEPARATOR) && it.substringBefore(KEY_VALUE_SEPARATOR) != FIELD_VERSION }
+            .mapNotNull { line ->
+                val fields =
+                    line
+                        .substringAfter(KEY_VALUE_SEPARATOR)
+                        .split(FIELD_SEPARATOR, limit = REJECTION_FIELD_COUNT)
+                val code = fields.firstOrNull()?.toIntOrNull()
+                if (fields.size != REJECTION_FIELD_COUNT || code == null) {
+                    null
+                } else {
+                    line.substringBefore(KEY_VALUE_SEPARATOR) to StoredRejection(code, fields[1].decode())
+                }
+            }.toMap()
+    }
+
+    fun encodeRejections(rejections: Map<String, StoredRejection>): String =
+        buildString {
+            append(FIELD_VERSION)
+            append(KEY_VALUE_SEPARATOR)
+            append(VERSION)
+            rejections.toSortedMap().forEach { (transactionId, rejection) ->
+                appendLine()
+                append(transactionId)
+                append(KEY_VALUE_SEPARATOR)
+                append(rejection.code)
+                append(FIELD_SEPARATOR)
+                append(rejection.reason.encode())
+            }
+        }
+
+    /**
+     * Reads the marks [encodeMarks] wrote, each mapped to when it was made, in seconds since the
+     * epoch; a mark without a readable time (such as one written as a flag, `true`) maps to
+     * [unknownTime].
+     */
+    fun decodeMarks(
+        stored: String,
+        unknownTime: Long
+    ): Map<String, Long> {
+        val lines = stored.lineSequence().filter { it.isNotBlank() }.toList()
+        if (!lines.hasSupportedVersion()) {
+            return emptyMap()
+        }
+        return lines
+            .filter { it.contains(KEY_VALUE_SEPARATOR) && it.substringBefore(KEY_VALUE_SEPARATOR) != FIELD_VERSION }
+            .associate {
+                it.substringBefore(KEY_VALUE_SEPARATOR) to
+                    (it.substringAfter(KEY_VALUE_SEPARATOR).toLongOrNull() ?: unknownTime)
+            }
+    }
+
+    /** Writes [marks], each with when it was made, in seconds since the epoch. */
+    fun encodeMarks(marks: Map<String, Long>): String =
+        buildString {
+            append(FIELD_VERSION)
+            append(KEY_VALUE_SEPARATOR)
+            append(VERSION)
+            marks.toSortedMap().forEach { (key, markedAt) ->
+                appendLine()
+                append(key)
+                append(KEY_VALUE_SEPARATOR)
+                append(markedAt)
+            }
+        }
+
     private fun List<String>.hasSupportedVersion(): Boolean =
         firstOrNull { line ->
             line.contains(KEY_VALUE_SEPARATOR) &&
@@ -98,4 +177,5 @@ internal object PendingSubmitPlanCodec {
     private const val ENDPOINT_HOST_INDEX = 0
     private const val ENDPOINT_PORT_INDEX = 1
     private const val ENDPOINT_IS_SECURE_INDEX = 2
+    private const val REJECTION_FIELD_COUNT = 2
 }

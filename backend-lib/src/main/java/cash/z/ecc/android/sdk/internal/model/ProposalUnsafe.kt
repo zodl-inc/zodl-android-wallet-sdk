@@ -52,12 +52,15 @@ class ProposalUnsafe(
     fun totalFeeRequired(): Long = inner.stepsList.fold(0) { acc, step -> acc + step.balance.feeRequired }
 
     /**
-     * Returns the total value this proposal pays out of the wallet: what its steps spend from the wallet's own
+     * Returns the sum of this proposal's payments to recipients: what its steps spend from the wallet's own
      * notes, minus [totalFeeRequired] and minus the change that comes back to the wallet. Ephemeral outputs are
      * not counted as change, as a later step spends them; inputs that refer to an earlier step's outputs are not
      * counted as spent, as their value was already counted where it left the wallet's notes.
+     *
+     * The result is not clamped: a negative value means the proposal is corrupt, which the type-safe wrapper
+     * rejects.
      */
-    fun totalSent(): Long {
+    fun totalPaymentAmount(): Long {
         val inputs = inner.stepsList.flatMap { it.inputsList }
         val spent = inputs.filter { it.hasReceivedOutput() }.sumOf { it.receivedOutput.value }
         val changes = inner.stepsList.flatMap { it.balance.proposedChangeList }

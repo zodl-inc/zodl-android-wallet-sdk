@@ -1,10 +1,13 @@
 package cash.z.ecc.android.sdk.internal
 
 import androidx.test.platform.app.InstrumentationRegistry
+import cash.z.ecc.android.sdk.Ohttp
 import cash.z.ecc.android.sdk.internal.jni.FakeRustBackend
 import cash.z.ecc.android.sdk.internal.model.TorClient
 import cash.z.ecc.android.sdk.util.OhttpCodecFactory
 import co.electriccoin.lightwallet.client.OhttpHttpClient
+import co.electriccoin.lightwallet.client.model.OhttpConfiguration
+import co.electriccoin.lightwallet.client.model.OhttpNetworkConfiguration
 import kotlinx.coroutines.test.runTest
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -25,16 +28,34 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Requires network access and a running gateway configured to inject secrets for
  * cmc.zodl.com and near.zodl.com, so it only runs when the instrumentation argument
- * `ohttpLive=true` is passed (skipped otherwise):
+ * `ohttpLive=true` is passed (skipped otherwise). The SDK carries no OHTTP configuration: the
+ * mainnet one is passed as the instrumentation arguments `ohttpGatewayHost`, `ohttpRelayUrl`,
+ * `ohttpKeysDnsName` and `ohttpSigningPubkey` (the mainnet values the app build is
+ * configured with), and the test installs it with [Ohttp.configure]:
  *
  *   ./gradlew :sdk-lib:connectedDebugAndroidTest \
  *     -Pandroid.testInstrumentationRunnerArguments.class=<this class's fully qualified name> \
- *     -Pandroid.testInstrumentationRunnerArguments.ohttpLive=true
+ *     -Pandroid.testInstrumentationRunnerArguments.ohttpLive=true \
+ *     -Pandroid.testInstrumentationRunnerArguments.ohttpGatewayHost="$ZODL_OHTTP_GATEWAY_HOST_MAINNET" \
+ *     ... (the other three likewise)
  */
 class OhttpOverTorSecretInjectionTest {
     private fun assumeLive() {
-        val live = InstrumentationRegistry.getArguments().getString("ohttpLive") == "true"
+        val arguments = InstrumentationRegistry.getArguments()
+        val live = arguments.getString("ohttpLive") == "true"
         assumeTrue("set instrumentation argument ohttpLive=true to run the live OHTTP-over-Tor test", live)
+        Ohttp.configure(
+            OhttpConfiguration(
+                mainnet =
+                    OhttpNetworkConfiguration(
+                        gatewayHost = arguments.getString("ohttpGatewayHost").orEmpty(),
+                        relayUrl = arguments.getString("ohttpRelayUrl").orEmpty(),
+                        keysDnsName = arguments.getString("ohttpKeysDnsName").orEmpty(),
+                        signingPublicKey = arguments.getString("ohttpSigningPubkey").orEmpty(),
+                    ),
+                testnet = null,
+            )
+        )
     }
 
     @OptIn(ExperimentalStdlibApi::class)
