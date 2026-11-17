@@ -65,9 +65,13 @@ jobs:
         with:
           cargo-app-id: ${{ secrets.CARGO_PRIVATE_APP_ID }}
           cargo-app-private-key: ${{ secrets.CARGO_PRIVATE_APP_KEY }}
-          rust-cache: true
+          # A published artifact is always built from source: no Rust or Gradle build-output
+          # cache from another run is restored (a poisoned cache must not reach Maven Central).
+          rust-cache: false
+          release-build: true
       # Build the release artifact with Rust dependencies (requires cargo app credentials
-      # for private git dependencies). Warm-cache builds complete in <30 minutes.
+      # for private git dependencies). Builds from source, without build caches: the 4 Rust
+      # ABIs take about 35 minutes on a cold runner.
       # zodl-ohttp-client reads its OHTTP endpoint configuration (gateway hosts, relay URLs,
       # signing public keys, DNS TXT names of the signed key configuration) from these variables
       # when backend-lib is compiled; it has no built-in endpoints. They are repository Actions
@@ -76,7 +80,7 @@ jobs:
       # ZODL_OHTTP_REQUIRE=1 makes the build fail unless all eight are set, so a release library
       # can never be built with OHTTP off.
       - name: Build release
-        timeout-minutes: 30
+        timeout-minutes: 75
         env:
           ZODL_OHTTP_REQUIRE: "1"
           ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}
@@ -195,7 +199,9 @@ jobs:
       # configuration as "Build release": without it the published library would be rebuilt with
       # OHTTP off. ZODL_OHTTP_REQUIRE=1 turns that into a build failure.
       - name: Deploy to Maven Central
-        timeout-minutes: 8
+        # cargo reuses this job's own target directory from "Build release" (same environment),
+        # so the rebuild is short; the margin covers a full rebuild should the environment differ.
+        timeout-minutes: 45
         env:
           ZODL_OHTTP_REQUIRE: "1"
           ZODL_OHTTP_GATEWAY_HOST_MAINNET: ${{ secrets.ZODL_OHTTP_GATEWAY_HOST_MAINNET }}

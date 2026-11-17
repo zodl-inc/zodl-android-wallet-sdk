@@ -18,6 +18,14 @@ inputs:
     description: "Whether to restore and save the Rust build cache for jobs that compile Rust."
     required: false
     default: "false"
+  release-build:
+    description: >-
+      "true" for a job that builds artifacts that are published (Maven Central release): no Rust
+      build cache and no Gradle build-output cache is restored, so nothing compiled by another run
+      can end up in a published artifact; the cache-warming build and the cache saves are skipped.
+      Only the Gradle wrapper and dependency caches (downloads) are restored.
+    required: false
+    default: "false"
 runs:
   using: "composite"
   steps:
@@ -108,6 +116,7 @@ runs:
           ${{ runner.os }}-gradle-deps-
     - name: Gradle Build Cache Restore
       id: gradle-build-cache-restore
+      if: inputs.release-build != 'true'
       uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
@@ -120,7 +129,7 @@ runs:
         restore-keys: |
           ${{ runner.os }}-gradle-build-
     - name: Rust Cache
-      if: inputs.rust-cache == 'true'
+      if: inputs.rust-cache == 'true' && inputs.release-build != 'true'
       id: rust-cache
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae
       env:
@@ -168,7 +177,7 @@ runs:
       run: |
         ./gradlew dependencies :sdk-lib:dependencies :demo-app:dependencies
     - name: Gradle Build
-      if: github.event.pull_request.head.sha == '' && (steps.gradle-binary-cache-restore.outputs.cache-hit != 'true' || steps.gradle-dependency-cache-restore.outputs.cache-hit != 'true' || (inputs.rust-cache == 'true' && steps.rust-cache.outputs.cache-hit != 'true') || steps.gradle-build-cache-restore.outputs.cache-hit != 'true')
+      if: inputs.release-build != 'true' && github.event.pull_request.head.sha == '' && (steps.gradle-binary-cache-restore.outputs.cache-hit != 'true' || steps.gradle-dependency-cache-restore.outputs.cache-hit != 'true' || (inputs.rust-cache == 'true' && steps.rust-cache.outputs.cache-hit != 'true') || steps.gradle-build-cache-restore.outputs.cache-hit != 'true')
       env:
         ORG_GRADLE_PROJECT_IS_MINIFY_APP_ENABLED: "false"
       shell: bash
@@ -178,7 +187,7 @@ runs:
 
     - name: Gradle Binary Cache Save
       id: gradle-binary-cache-save
-      if: github.event.pull_request.head.sha == '' && steps.gradle-binary-cache-restore.outputs.cache-hit != 'true'
+      if: inputs.release-build != 'true' && github.event.pull_request.head.sha == '' && steps.gradle-binary-cache-restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: "3"
@@ -189,7 +198,7 @@ runs:
         key: steps.gradle-binary-cache-restore.key
     - name: Gradle Dependency Cache Save
       id: gradle-dependency-cache-save
-      if: github.event.pull_request.head.sha == '' && steps.gradle-dependency-cache-restore.outputs.cache-hit != 'true'
+      if: inputs.release-build != 'true' && github.event.pull_request.head.sha == '' && steps.gradle-dependency-cache-restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
       with:
         path: |
