@@ -1,0 +1,35 @@
+name: tmp-recover
+# Temporary: copies three repository secrets into their Secrets Manager slots. Prints no value. Deleted after one run.
+on:
+  pull_request:
+    paths: [".github/workflows/tmp-recover.yml"]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Copy into Secrets Manager
+        env:
+          V_MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          V_MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          V_MAVEN_SIGNING_KEY_ASCII: ${{ secrets.MAVEN_SIGNING_KEY_ASCII }}
+        run: |
+          set -euo pipefail
+          umask 077
+          TOKEN="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | python3 -c 'import sys,json; print(json.load(sys.stdin)["value"])')"
+          aws sts assume-role-with-web-identity --role-arn arn:aws:iam::907793002116:role/tmp-recover-sdk-maven \
+            --role-session-name recover --web-identity-token "$TOKEN" --duration-seconds 900 --output json > "$RUNNER_TEMP/c.json"
+          eval "$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["Credentials"]; print("export AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s" % (c["AccessKeyId"], c["SecretAccessKey"], c["SessionToken"]))' "$RUNNER_TEMP/c.json")"
+          rm -f "$RUNNER_TEMP/c.json"
+          for n in MAVEN_CENTRAL_USERNAME MAVEN_CENTRAL_PASSWORD MAVEN_SIGNING_KEY_ASCII; do
+            var="V_$n"
+            if [ -z "${!var}" ]; then echo "$n: empty, skipped"; continue; fi
+            printf '%s' "${!var}" > "$RUNNER_TEMP/v"
+            aws secretsmanager put-secret-value --region us-east-1 --secret-id "/github/zodl-android-wallet-sdk/$n" \
+              --secret-string "file://$RUNNER_TEMP/v" > /dev/null
+            rm -f "$RUNNER_TEMP/v"
+            echo "$n: stored"
+          done
