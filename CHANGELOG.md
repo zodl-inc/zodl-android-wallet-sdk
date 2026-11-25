@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.1.1] - 2026-11-25
+
 ### Fixed
 - With Tor off, the app's own requests to six production vote servers (`svote.zcashlabs.com`,
   `207-180-214-226.sslip.io`, `vote.atlasstaking.com`, `zvote.polkachu.com`, `zvote.cros-nest.net`,
