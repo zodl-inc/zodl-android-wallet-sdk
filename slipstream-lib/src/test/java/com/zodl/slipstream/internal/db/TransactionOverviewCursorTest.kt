@@ -40,7 +40,8 @@ class TransactionOverviewCursorTest {
                         poolCrossingValue = null,
                         trustStatus = null
                     ),
-                latestHeight = BlockHeight.new(1_009)
+                latestHeight = BlockHeight.new(1_009),
+                scannedHeight = BlockHeight.new(1_009)
             )
 
         assertFalse(overview.isSentTransaction)
@@ -75,7 +76,8 @@ class TransactionOverviewCursorTest {
                         poolCrossingValue = null,
                         trustStatus = null
                     ),
-                latestHeight = BlockHeight.new(1_000)
+                latestHeight = BlockHeight.new(1_000),
+                scannedHeight = BlockHeight.new(1_000)
             )
 
         assertTrue(overview.isSentTransaction)
@@ -112,7 +114,8 @@ class TransactionOverviewCursorTest {
                         poolCrossingValue = null,
                         trustStatus = null
                     ),
-                latestHeight = BlockHeight.new(1_000_000)
+                latestHeight = BlockHeight.new(1_000_000),
+                scannedHeight = BlockHeight.new(1_000_000)
             )
 
         assertNull(overview.expiryHeight)
@@ -147,7 +150,8 @@ class TransactionOverviewCursorTest {
                         poolCrossingValue = null,
                         trustStatus = null
                     ),
-                latestHeight = null
+                latestHeight = null,
+                scannedHeight = null
             )
 
         assertEquals(9L, overview.index)
@@ -190,7 +194,8 @@ class TransactionOverviewCursorTest {
                         poolCrossingValue = null,
                         trustStatus = null
                     ),
-                latestHeight = BlockHeight.new(2_000_000)
+                latestHeight = BlockHeight.new(2_000_000),
+                scannedHeight = BlockHeight.new(2_000_000)
             )
 
         assertTrue(overview.isSentTransaction)
@@ -235,6 +240,7 @@ class TransactionOverviewCursorTest {
                         trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(200),
+                scannedHeight = BlockHeight.new(200),
                 nowEpochSeconds = 1_800_000_000L
             )
 
@@ -273,6 +279,7 @@ class TransactionOverviewCursorTest {
             TransactionOverviewCursor.fromRow(
                 row = expiredRowAt(3_000_000),
                 latestHeight = BlockHeight.new(3_000_100),
+                scannedHeight = BlockHeight.new(3_000_100),
                 nowEpochSeconds = 1_800_000_000L,
                 network = ZcashNetwork.Mainnet
             )
@@ -287,6 +294,7 @@ class TransactionOverviewCursorTest {
             TransactionOverviewCursor.fromRow(
                 row = expiredRowAt(nu7 + 100),
                 latestHeight = BlockHeight.new(nu7 + 200),
+                scannedHeight = BlockHeight.new(nu7 + 200),
                 nowEpochSeconds = 1_800_000_000L,
                 network = ZcashNetwork.Mainnet
             )
@@ -301,6 +309,7 @@ class TransactionOverviewCursorTest {
             TransactionOverviewCursor.fromRow(
                 row = expiredRowAt(nu7 - 40),
                 latestHeight = BlockHeight.new(nu7 + 60),
+                scannedHeight = BlockHeight.new(nu7 + 60),
                 nowEpochSeconds = 1_800_000_000L,
                 network = ZcashNetwork.Mainnet
             )
@@ -338,6 +347,7 @@ class TransactionOverviewCursorTest {
                         trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(200),
+                scannedHeight = BlockHeight.new(200),
                 nowEpochSeconds = 1_800_000_000L
             )
 
@@ -374,11 +384,28 @@ class TransactionOverviewCursorTest {
                         trustStatus = null
                     ),
                 latestHeight = BlockHeight.new(200),
+                scannedHeight = BlockHeight.new(200),
                 nowEpochSeconds = 1_800_000_000L
             )
 
         assertEquals(TransactionState.Pending, overview.transactionState)
         assertNull(overview.blockTimeEpochSeconds)
+    }
+
+    /**
+     * A send whose expiry the live tip has passed while the scan is still short of it: the block
+     * that mined it may not be scanned yet, so it stays Pending and gets no expiry timestamp.
+     */
+    @Test
+    fun unmined_send_with_the_tip_past_expiry_stays_pending_until_the_scan_reaches_it() {
+        val row = unminedSendRow(expiryHeight = 100)
+
+        val beforeScan = TransactionOverviewCursor.fromRow(row, BlockHeight.new(200), BlockHeight.new(99))
+        assertEquals(TransactionState.Pending, beforeScan.transactionState)
+        assertNull(beforeScan.blockTimeEpochSeconds)
+
+        val afterScan = TransactionOverviewCursor.fromRow(row, BlockHeight.new(200), BlockHeight.new(100))
+        assertEquals(TransactionState.Expired, afterScan.transactionState)
     }
 
     /** Same shape, `PREPARATION` (note-split) kind — the other migration branch case. */
@@ -409,7 +436,8 @@ class TransactionOverviewCursorTest {
                         poolCrossingValue = null,
                         trustStatus = null
                     ),
-                latestHeight = BlockHeight.new(2_000_000)
+                latestHeight = BlockHeight.new(2_000_000),
+                scannedHeight = BlockHeight.new(2_000_000)
             )
 
         assertTrue(overview.isSentTransaction)
@@ -424,21 +452,24 @@ class TransactionOverviewCursorTest {
      */
     @Test
     fun trust_status_one_maps_to_trusted() {
-        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = 1L), BlockHeight.new(1_001))
+        val height = BlockHeight.new(1_001)
+        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = 1L), height, height)
 
         assertTrue(overview.isTrusted)
     }
 
     @Test
     fun trust_status_zero_maps_to_untrusted() {
-        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = 0L), BlockHeight.new(1_001))
+        val height = BlockHeight.new(1_001)
+        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = 0L), height, height)
 
         assertFalse(overview.isTrusted)
     }
 
     @Test
     fun null_trust_status_maps_to_untrusted() {
-        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = null), BlockHeight.new(1_001))
+        val height = BlockHeight.new(1_001)
+        val overview = TransactionOverviewCursor.fromRow(receivedRow(trustStatus = null), height, height)
 
         assertFalse(overview.isTrusted)
     }
@@ -451,11 +482,11 @@ class TransactionOverviewCursorTest {
 
         assertEquals(
             TransactionState.Pending,
-            TransactionOverviewCursor.fromRow(trusted, atHeight(TRUSTED - 1)).transactionState
+            TransactionOverviewCursor.fromRow(trusted, atHeight(TRUSTED - 1), scannedHeight = null).transactionState
         )
         assertEquals(
             TransactionState.Confirmed,
-            TransactionOverviewCursor.fromRow(trusted, atHeight(TRUSTED)).transactionState
+            TransactionOverviewCursor.fromRow(trusted, atHeight(TRUSTED), scannedHeight = null).transactionState
         )
     }
 
@@ -466,11 +497,11 @@ class TransactionOverviewCursorTest {
 
         assertEquals(
             TransactionState.Pending,
-            TransactionOverviewCursor.fromRow(untrusted, atHeight(UNTRUSTED - 1)).transactionState
+            TransactionOverviewCursor.fromRow(untrusted, atHeight(UNTRUSTED - 1), scannedHeight = null).transactionState
         )
         assertEquals(
             TransactionState.Confirmed,
-            TransactionOverviewCursor.fromRow(untrusted, atHeight(UNTRUSTED)).transactionState
+            TransactionOverviewCursor.fromRow(untrusted, atHeight(UNTRUSTED), scannedHeight = null).transactionState
         )
     }
 
@@ -479,13 +510,26 @@ class TransactionOverviewCursorTest {
         val overview =
             TransactionOverviewCursor.fromRow(
                 receivedRow(trustStatus = null).copy(spentNoteCount = 2, poolCrossingValue = 4_000L),
+                BlockHeight.new(1_001),
                 BlockHeight.new(1_001)
             )
 
         assertEquals(2, overview.spentNoteCount)
         assertEquals(4_000L, overview.poolCrossingValue?.value)
-        assertNull(TransactionOverviewCursor.fromRow(receivedRow(trustStatus = null), null).poolCrossingValue)
+        assertNull(TransactionOverviewCursor.fromRow(receivedRow(trustStatus = null), null, null).poolCrossingValue)
     }
+
+    private fun unminedSendRow(expiryHeight: Long) =
+        receivedRow(trustStatus = null).copy(
+            minedHeight = null,
+            expiryHeight = expiryHeight,
+            accountBalanceDelta = -1,
+            totalSpent = 1,
+            totalReceived = 0,
+            sentNoteCount = 1,
+            receivedNoteCount = 0,
+            blockTime = null
+        )
 
     private fun receivedRow(trustStatus: Long?) =
         SlipstreamTransactionRow(

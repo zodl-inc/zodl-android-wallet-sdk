@@ -15,6 +15,7 @@ import org.junit.Assume.assumeFalse
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
+import java.io.File
 
 @Suppress("ktlint:standard:max-line-length", "ktlint:standard:chain-method-continuation")
 class OhttpHttpClientTest {
@@ -131,6 +132,19 @@ class OhttpHttpClientTest {
         assertFalse(isOhttpProxyAllowedHost("chaindefuser.com"))
         assertFalse(isOhttpProxyAllowedHost("x.prod.vote-chain-primary.valargroup.org"))
         assertFalse(isOhttpProxyAllowedHost("evil-voting.valargroup.dev"))
+    }
+
+    @Test
+    fun `every vote and PIR host of the Rust voting route is allowed`() {
+        val routeSource = File("../backend-lib/src/main/rust/voting/route.rs").readText()
+        val voteHostList =
+            routeSource
+                .substringAfter("const OHTTP_VOTE_HOSTS: &[&str] = &[")
+                .substringBefore("];")
+        val voteHosts = Regex("\"([^\"]+)\"").findAll(voteHostList).map { it.groupValues[1] }.toList()
+
+        assertTrue(voteHosts.isNotEmpty())
+        assertEquals(emptyList<String>(), voteHosts.filterNot { isOhttpProxyAllowedHost(it) })
     }
 
     @Test

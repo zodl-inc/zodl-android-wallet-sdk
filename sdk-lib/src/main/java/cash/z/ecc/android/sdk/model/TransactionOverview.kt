@@ -124,38 +124,53 @@ enum class TransactionState {
          * A mined transaction is [Confirmed] once it has [requiredConfirmations] confirmations;
          * callers take that from [ConfirmationsPolicy.requiredConfirmations]: the trusted count
          * for a received transaction the wallet trusts, the untrusted count otherwise.
+         *
+         * An unmined transaction is [Expired] exactly when its expiry height, the last height at
+         * which it can be mined, is known and non-zero (0 disables expiry) and [scannedHeight] has
+         * reached it; otherwise it is [Pending]. A chain tip past expiry alone does not prove the
+         * transaction was never mined, because the wallet may not have scanned the block that
+         * mined it yet. [scannedHeight] defaults to [latestBlockHeight] for callers whose height
+         * already reflects what the wallet has scanned; `null` keeps an unmined transaction
+         * [Pending].
+         *
+         * [isExpiredUnmined] is never proof of expiry on its own. The database computes it against
+         * the highest scanned block, which can sit above an unscanned gap: the scanner covers the
+         * chain-tip range before older ranges, so the flag can turn true while the block that
+         * mined the transaction is still waiting to be scanned. A true flag therefore yields
+         * [Expired] only when [scannedHeight] has reached the expiry height, which the rule above
+         * already decides; with an unknown expiry height or an unknown [scannedHeight] the
+         * transaction stays [Pending], and a mined transaction ignores the flag. On the legacy
+         * path, where [scannedHeight] is the chain tip and the tip is at or above the highest
+         * scanned block, a true flag still means [Expired].
+         *
+         * A mined transaction counts its confirmations from [latestBlockHeight], one for a
+         * transaction mined in the latest block; with an unknown [latestBlockHeight] it is
+         * [Pending], because the status will change as the wallet syncs.
          */
+        @Suppress("LongParameterList", "UnusedParameter")
         internal fun new(
             latestBlockHeight: BlockHeight?,
             minedHeight: BlockHeight?,
             expiryHeight: BlockHeight?,
             isExpiredUnmined: Boolean?,
-            requiredConfirmations: Int
+            requiredConfirmations: Int,
+            scannedHeight: BlockHeight? = latestBlockHeight
         ): TransactionState {
-            if (isExpiredUnmined != null && isExpiredUnmined) return Expired
+            if (minedHeight == null) {
+                val isExpired =
+                    expiryHeight != null &&
+                        expiryHeight.value != 0L &&
+                        scannedHeight != null &&
+                        expiryHeight <= scannedHeight
+                return if (isExpired) Expired else Pending
+            }
 
             return latestBlockHeight?.let { chainTip ->
-                minedHeight?.let { minedHeight ->
-                    // A transaction mined in the latest block has 1 confirmation.
-                    if ((chainTip + 1 - minedHeight) >= requiredConfirmations) {
-                        Confirmed
-                    } else {
-                        Pending
-                    }
-                } ?: expiryHeight?.let { expiryHeight ->
-                    // Expiry height is the last height at which a transaction can be mined.
-                    // If the chain tip is greater than or equal to the expiry height, the
-                    // transaction can never be mined. A value of 0 disables expiry.
-                    if (expiryHeight.value == 0L || expiryHeight > chainTip) {
-                        Pending
-                    } else {
-                        Expired
-                    }
+                if ((chainTip + 1 - minedHeight) >= requiredConfirmations) {
+                    Confirmed
+                } else {
+                    Pending
                 }
-                // Base case: either we don't know the latest block height (unlikely if we
-                // know about transactions), or the transaction is both unmined and has an
-                // unknown expiry height (because we haven't seen the full transaction).
-                // Treat these as Pending because the status will change as we sync.
             } ?: Pending
         }
     }
