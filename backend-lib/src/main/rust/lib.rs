@@ -202,11 +202,65 @@ pub(crate) fn system_rng() -> SystemRng {
     rand::rand_core::UnwrapErr(rand::rngs::SysRng)
 }
 
+/// Contention settings for the wallet connection that JNI entry points open per call.
+///
+/// `busy_timeout` makes a statement wait for a transient write lock instead of failing at once.
+/// It does not help a *deferred* transaction (rusqlite's default for `transaction()`, which is
+/// what `WalletDb::transactionally` uses): such a transaction reads first and upgrades to a
+/// write later, and if another connection (the synchronizer engine) committed in between, SQLite
+/// fails the upgrade immediately with "database is locked" and never calls the busy handler. A
+/// connection that creates and stores a transaction is therefore opened with
+/// [`rusqlite::TransactionBehavior::Immediate`]: it takes the write lock up front, and
+/// `busy_timeout` then applies — see PRO-502. Read-only entry points keep `Deferred`, so they run
+/// concurrently with a WAL writer instead of waiting for the write slot.
+fn configure_wallet_connection(
+    conn: &mut rusqlite::Connection,
+    behavior: rusqlite::TransactionBehavior,
+) -> anyhow::Result<()> {
+    conn.busy_timeout(std::time::Duration::from_secs(15))
+        .map_err(|e| anyhow!("Error setting wallet busy_timeout: {}", e))?;
+    conn.set_transaction_behavior(behavior);
+    Ok(())
+}
+
 fn wallet_db<P: Parameters, R: CryptoRng>(
     rng: R,
     env: &mut JNIEnv,
     params: P,
     db_data: JString,
+) -> anyhow::Result<WalletDb<rusqlite::Connection, P, SystemClock, R>> {
+    wallet_db_with_behavior(
+        rng,
+        env,
+        params,
+        db_data,
+        rusqlite::TransactionBehavior::Deferred,
+    )
+}
+
+/// Like [`wallet_db`], for the entry points that create and store a transaction: their wallet
+/// transactions start `IMMEDIATE`, see [`configure_wallet_connection`].
+fn wallet_db_for_write<P: Parameters, R: CryptoRng>(
+    rng: R,
+    env: &mut JNIEnv,
+    params: P,
+    db_data: JString,
+) -> anyhow::Result<WalletDb<rusqlite::Connection, P, SystemClock, R>> {
+    wallet_db_with_behavior(
+        rng,
+        env,
+        params,
+        db_data,
+        rusqlite::TransactionBehavior::Immediate,
+    )
+}
+
+fn wallet_db_with_behavior<P: Parameters, R: CryptoRng>(
+    rng: R,
+    env: &mut JNIEnv,
+    params: P,
+    db_data: JString,
+    behavior: rusqlite::TransactionBehavior,
 ) -> anyhow::Result<WalletDb<rusqlite::Connection, P, SystemClock, R>> {
     let retention_interval = anchor_retention_interval(params.network_type());
     let db_path = path_from_jni(env, db_data)?;
@@ -217,12 +271,11 @@ fn wallet_db<P: Parameters, R: CryptoRng>(
     // connection with no way to reach it afterwards, so this replicates its internals (open +
     // load the array vtab module) by hand instead, matching the established pattern in
     // `migration.rs`'s `open_at`.
-    let conn = rusqlite::Connection::open(&db_path)
+    let mut conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
     rusqlite::vtab::array::load_module(&conn)
         .map_err(|e| anyhow!("Error loading SQLite array module: {}", e))?;
-    conn.busy_timeout(std::time::Duration::from_secs(15))
-        .map_err(|e| anyhow!("Error setting wallet busy_timeout: {}", e))?;
+    configure_wallet_connection(&mut conn, behavior)?;
     Ok(WalletDb::from_connection(conn, params, SystemClock, rng)
         .with_anchor_retention_interval(retention_interval))
 }
@@ -3165,7 +3218,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_createPro
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.createProposedTransaction").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
+        let mut db_data = wallet_db_for_write(system_rng(), env, network, db_data)?;
         let usk = decode_usk(env, usk)?;
         let bound = size_bound_from_jni(env, &size_bound)?;
 
@@ -3669,7 +3722,7 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_extractAn
     let res = catch_unwind(&mut env, |env| {
         let _span = tracing::info_span!("RustBackend.extractAndStoreTxFromPczt").entered();
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(system_rng(), env, network, db_data)?;
+        let mut db_data = wallet_db_for_write(system_rng(), env, network, db_data)?;
 
         let pczt_with_proofs = parse_pczt(env, pczt_with_proofs)
             .map_err(|e| anyhow!("Invalid PCZT-with-proofs: {:?}", e))?;
@@ -5406,6 +5459,165 @@ pub extern "C" fn Java_cash_z_ecc_android_sdk_internal_jni_RustBackend_proposeOr
 
 #[cfg(test)]
 mod tests {
+    /// Removes a test directory when dropped, also if the test panics.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        /// A directory no other test or earlier run shares: `create_dir` fails if it exists.
+        fn new(tag: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!("{tag}-{}-{nanos}", std::process::id()));
+            std::fs::create_dir(&dir).unwrap();
+            TempDir(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Set by the engine connection's busy handler: its commit found the write slot taken.
+    static ENGINE_COMMIT_BLOCKED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    /// The busy handler is a plain function, so the flag above is shared: the tests that use it
+    /// take this lock and so never run at the same time.
+    static ENGINE_COMMIT_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn engine_busy_handler(_attempts: i32) -> bool {
+        ENGINE_COMMIT_BLOCKED.store(true, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        true
+    }
+
+    /// Runs the PRO-502 race. The wallet connection opens a transaction and reads, then the
+    /// "engine" connection tries to commit a write, and only once that commit has either gone
+    /// through or found the write slot taken (observed through the engine's busy handler, not
+    /// guessed with a sleep) does the wallet write. Returns the wallet's write result.
+    fn wallet_write_after_engine_commit(
+        behavior: rusqlite::TransactionBehavior,
+    ) -> rusqlite::Result<usize> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, mpsc};
+        use std::time::{Duration, Instant};
+
+        let _serial = ENGINE_COMMIT_TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ENGINE_COMMIT_BLOCKED.store(false, Ordering::SeqCst);
+        let dir = TempDir::new("wallet-conn");
+        let path = dir.0.join("wallet.db");
+        {
+            let setup = rusqlite::Connection::open(&path).unwrap();
+            setup.pragma_update(None, "journal_mode", "WAL").unwrap();
+            setup
+                .execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (1);")
+                .unwrap();
+        }
+
+        let mut wallet = rusqlite::Connection::open(&path).unwrap();
+        super::configure_wallet_connection(&mut wallet, behavior).unwrap();
+        let tx = wallet.transaction().unwrap();
+        let _: i64 = tx
+            .query_row("SELECT count(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+
+        // The wallet has read inside its transaction; now the engine commits.
+        let (read_done, engine_may_start) = mpsc::channel::<()>();
+        let engine_committed = Arc::new(AtomicBool::new(false));
+        let engine_flag = Arc::clone(&engine_committed);
+        let engine_path = path.clone();
+        let engine = std::thread::spawn(move || {
+            engine_may_start.recv().unwrap();
+            let c = rusqlite::Connection::open(&engine_path).unwrap();
+            c.busy_handler(Some(engine_busy_handler)).unwrap();
+            c.execute("INSERT INTO t VALUES (2)", []).unwrap();
+            engine_flag.store(true, Ordering::SeqCst);
+        });
+        read_done.send(()).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !engine_committed.load(Ordering::SeqCst)
+            && !ENGINE_COMMIT_BLOCKED.load(Ordering::SeqCst)
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the engine commit neither finished nor blocked"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        let written = tx.execute("INSERT INTO t VALUES (3)", []);
+        if written.is_ok() {
+            tx.commit().unwrap();
+        } else {
+            drop(tx);
+        }
+        engine.join().unwrap();
+        written
+    }
+
+    /// An `IMMEDIATE` wallet transaction holds the write slot from its start, so a concurrent
+    /// engine commit waits for it and the wallet's own write goes through.
+    #[test]
+    fn immediate_wallet_transaction_survives_a_concurrent_commit() {
+        let written = wallet_write_after_engine_commit(rusqlite::TransactionBehavior::Immediate);
+        assert!(
+            written.is_ok(),
+            "the wallet write must not fail: {written:?}"
+        );
+    }
+
+    /// Pins the failure the `Immediate` behavior avoids: a deferred transaction that read, then
+    /// loses the race to the engine's commit, cannot upgrade to a write and fails at once with
+    /// "database is locked" whatever the busy timeout is. It also shows the test above would
+    /// fail if the wallet connection stayed deferred.
+    #[test]
+    fn deferred_wallet_transaction_fails_after_a_concurrent_commit() {
+        let written = wallet_write_after_engine_commit(rusqlite::TransactionBehavior::Deferred);
+        assert!(
+            written.is_err(),
+            "a deferred read-then-write must lose the race"
+        );
+    }
+
+    /// Read-only entry points keep deferred transactions so they run next to a WAL writer: a
+    /// deferred reader neither takes nor waits for the write slot.
+    #[test]
+    fn deferred_wallet_read_runs_while_another_connection_holds_the_write_slot() {
+        let dir = TempDir::new("wallet-read");
+        let path = dir.0.join("wallet.db");
+        {
+            let setup = rusqlite::Connection::open(&path).unwrap();
+            setup.pragma_update(None, "journal_mode", "WAL").unwrap();
+            setup
+                .execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (1);")
+                .unwrap();
+        }
+        let mut writer = rusqlite::Connection::open(&path).unwrap();
+        let write_tx = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        write_tx.execute("INSERT INTO t VALUES (2)", []).unwrap();
+
+        let mut reader = rusqlite::Connection::open(&path).unwrap();
+        super::configure_wallet_connection(&mut reader, rusqlite::TransactionBehavior::Deferred)
+            .unwrap();
+        // With the busy timeout out of the way, a read that needed the write slot would fail.
+        reader.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let read_tx = reader.transaction().unwrap();
+        let count: i64 = read_tx
+            .query_row("SELECT count(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "the reader sees the committed snapshot");
+        write_tx.commit().unwrap();
+    }
+
     #[test]
     fn tor_http_body_within_the_limit_is_returned_whole() {
         let rt = tokio::runtime::Builder::new_current_thread()

@@ -9,20 +9,24 @@ import cash.z.ecc.android.sdk.model.TransactionState
 import com.zodl.slipstream.internal.SlipstreamEngine
 import com.zodl.slipstream.model.SlipstreamSnapshot
 import com.zodl.slipstream.model.SlipstreamTransactionRow
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.produceIn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -38,6 +42,7 @@ import kotlin.test.assertTrue
 class TransactionsControllerFlowTest {
     private val requeryTicks = MutableSharedFlow<Unit>(replay = 1)
     private val networkHeight = MutableStateFlow<BlockHeight?>(null)
+    private val fullyScannedHeight = MutableStateFlow<BlockHeight?>(null)
     private val lastSnapshot = MutableStateFlow<SlipstreamSnapshot?>(null)
     private val queries = AtomicInteger(0)
 
@@ -45,6 +50,7 @@ class TransactionsControllerFlowTest {
         mock(SlipstreamEngine::class.java).also {
             `when`(it.requeryTicks).thenReturn(requeryTicks)
             `when`(it.networkHeight).thenReturn(networkHeight)
+            `when`(it.fullyScannedHeight).thenReturn(fullyScannedHeight)
             `when`(it.lastSnapshot).thenReturn(lastSnapshot)
         }
 
@@ -192,6 +198,204 @@ class TransactionsControllerFlowTest {
         }
     }
 
+    /**
+     * The resume case: the tip jumps far past the send's expiry while the scan is still short of
+     * it. The send stays Pending, and once the scan records its mined height, which bumps no
+     * requery tick, the advance of the fully scanned height re-reads it as mined.
+     */
+    @Test
+    fun scan_advance_re_reads_an_unmined_send_once_its_mined_height_is_recorded() {
+        val stored = AtomicReference(listOf(sentRow(minedHeight = null)))
+        fullyScannedHeight.value = BlockHeight.new(SENT - 1)
+        withEmissions(controllerOver(stored).allTransactions, tip = EXPIRY + 100) { emissions ->
+            assertEquals(TransactionState.Pending, emissions.nextState())
+
+            stored.set(listOf(sentRow(minedHeight = SENT)))
+            fullyScannedHeight.value = BlockHeight.new(SENT + 1)
+            assertEquals(TransactionState.Confirmed, emissions.nextState())
+            assertEquals(2, queries.get(), "a scan advance over an unmined row must re-read the rows")
+        }
+    }
+
+    /**
+     * The first read is still in flight when the scan records the send's mined height and the fully
+     * scanned height advances. That advance must not be dropped: the read finishes with the rows it
+     * took before the scan, and the send would stay Pending until a later scan advance.
+     */
+    @Test
+    fun scan_advance_during_the_first_read_is_not_lost() {
+        val stored = AtomicReference(listOf(sentRow(minedHeight = null)))
+        val firstReadStarted = CompletableDeferred<Unit>()
+        val releaseFirstRead = CompletableDeferred<Unit>()
+        val source =
+            VisibleTransactionRows { _, _ ->
+                val read = queries.incrementAndGet()
+                val rowsAtStart = stored.get()
+                if (read == 1) {
+                    firstReadStarted.complete(Unit)
+                    releaseFirstRead.await()
+                    rowsAtStart
+                } else {
+                    stored.get()
+                }
+            }
+        val controller = TransactionsController(source, engine, mock(TypesafeBackend::class.java))
+        fullyScannedHeight.value = BlockHeight.new(SENT - 1)
+        withEmissions(controller.allTransactions, tip = EXPIRY + 100) { emissions ->
+            withTimeout(TIMEOUT_MS) { firstReadStarted.await() }
+
+            stored.set(listOf(sentRow(minedHeight = SENT)))
+            fullyScannedHeight.value = BlockHeight.new(SENT + 1)
+            releaseFirstRead.complete(Unit)
+
+            // The first read may still publish its stale Pending rows before the re-read lands.
+            withTimeout(TIMEOUT_MS) {
+                while (emissions.receive().single().transactionState != TransactionState.Confirmed) {
+                    // keep draining until the re-read's rows arrive
+                }
+            }
+            assertTrue(queries.get() >= 2, "the advance during the first read must trigger a second read")
+        }
+    }
+
+    /**
+     * Reads slower than the scan updates: a running read must not be cancelled by every advance, or
+     * the first result never arrives until the updates stop.
+     */
+    @Test
+    fun repeated_scan_advances_do_not_starve_the_first_read() {
+        val stored = AtomicReference(listOf(sentRow(minedHeight = null)))
+        val source =
+            VisibleTransactionRows { _, _ ->
+                queries.incrementAndGet()
+                delay(SLOW_READ_MS)
+                stored.get()
+            }
+        val controller = TransactionsController(source, engine, mock(TypesafeBackend::class.java))
+        fullyScannedHeight.value = BlockHeight.new(SENT - 10)
+        withEmissions(controller.allTransactions, tip = EXPIRY + 100) { emissions ->
+            // The scan keeps advancing faster than a read takes, until the first result arrives.
+            val advancing =
+                CoroutineScope(Dispatchers.Default).launch {
+                    var height = SENT - 9
+                    while (true) {
+                        delay(SLOW_READ_MS / 3)
+                        fullyScannedHeight.value = BlockHeight.new(height++)
+                    }
+                }
+            try {
+                assertEquals(TransactionState.Pending, emissions.nextState())
+            } finally {
+                advancing.cancel()
+            }
+        }
+    }
+
+    /**
+     * A scan advance arrives during a later read, whose previous result held only confirmed rows
+     * and that read captured a newly visible send as pending: the advance must still be judged
+     * against the rows that read returned, so the send is re-read once the scan records its mined height.
+     */
+    @Test
+    fun scan_advance_during_a_later_read_is_judged_against_that_reads_rows() {
+        val stored = AtomicReference(listOf(receivedRow(MINED, null)))
+        val secondReadStarted = CompletableDeferred<Unit>()
+        val releaseSecondRead = CompletableDeferred<Unit>()
+        val source =
+            VisibleTransactionRows { _, _ ->
+                val read = queries.incrementAndGet()
+                val rowsAtStart = stored.get()
+                if (read == 2) {
+                    secondReadStarted.complete(Unit)
+                    releaseSecondRead.await()
+                }
+                rowsAtStart
+            }
+        val controller = TransactionsController(source, engine, mock(TypesafeBackend::class.java))
+        fullyScannedHeight.value = BlockHeight.new(SENT - 1)
+        withEmissions(controller.allTransactions, tip = EXPIRY + 100) { emissions ->
+            withTimeout(TIMEOUT_MS) { emissions.receive() }
+
+            // The new send is visible but not mined yet; the second read captures it as pending.
+            stored.set(listOf(sentRow(minedHeight = null)))
+            requeryTicks.emit(Unit)
+            withTimeout(TIMEOUT_MS) { secondReadStarted.await() }
+
+            // The scan records the mined height and advances while that read is still running.
+            stored.set(listOf(sentRow(minedHeight = SENT)))
+            fullyScannedHeight.value = BlockHeight.new(SENT + 1)
+            releaseSecondRead.complete(Unit)
+
+            withTimeout(TIMEOUT_MS) {
+                while (emissions.receive().single().transactionState != TransactionState.Confirmed) {
+                    // keep draining until the follow-up read's rows arrive
+                }
+            }
+            assertTrue(queries.get() >= 3, "the advance during the later read must queue a follow-up read")
+        }
+    }
+
+    /** A send that is never mined still expires, once the scan reaches its expiry height. */
+    @Test
+    fun scan_advance_past_expiry_expires_a_send_that_was_never_mined() {
+        val stored = AtomicReference(listOf(sentRow(minedHeight = null)))
+        fullyScannedHeight.value = BlockHeight.new(EXPIRY - 1)
+        withEmissions(controllerOver(stored).allTransactions, tip = EXPIRY + 100) { emissions ->
+            assertEquals(TransactionState.Pending, emissions.nextState())
+
+            fullyScannedHeight.value = BlockHeight.new(EXPIRY)
+            assertEquals(TransactionState.Expired, emissions.nextState())
+            assertEquals(2, queries.get())
+        }
+    }
+
+    @Test
+    fun scan_advance_with_every_cached_row_mined_re_reads_nothing() {
+        fullyScannedHeight.value = BlockHeight.new(MINED)
+        withEmissions(controller(maxScannedHeight = null).allTransactions, tip = MINED + 3) { emissions ->
+            assertEquals(TransactionState.Pending, emissions.nextState())
+
+            fullyScannedHeight.value = BlockHeight.new(MINED + 1)
+            fullyScannedHeight.value = BlockHeight.new(MINED + 2)
+            delay(SETTLE_MS)
+            networkHeight.value = BlockHeight.new(MINED + 9)
+            assertEquals(TransactionState.Confirmed, emissions.nextState())
+            assertEquals(1, queries.get(), "a scan advance over mined rows only must not re-read them")
+        }
+    }
+
+    @Test
+    fun needs_read_on_scan_advance_only_above_the_last_read_and_with_an_unmined_row() {
+        val unmined = listOf(sentRow(minedHeight = null))
+        val mined = listOf(sentRow(minedHeight = SENT))
+        val at = BlockHeight.new(SENT)
+        val above = BlockHeight.new(SENT + 1)
+
+        assertFalse(needsReadOnScanAdvance(lastRead = null, fullyScanned = above))
+        assertFalse(needsReadOnScanAdvance(RowsRead(unmined, at), fullyScanned = null))
+        assertFalse(needsReadOnScanAdvance(RowsRead(unmined, at), fullyScanned = at))
+        assertFalse(needsReadOnScanAdvance(RowsRead(unmined, above), fullyScanned = at))
+        assertFalse(needsReadOnScanAdvance(RowsRead(mined, at), fullyScanned = above))
+        assertFalse(needsReadOnScanAdvance(RowsRead(emptyList(), at), fullyScanned = above))
+        assertTrue(needsReadOnScanAdvance(RowsRead(unmined, at), fullyScanned = above))
+        assertTrue(needsReadOnScanAdvance(RowsRead(unmined, scannedHeight = null), fullyScanned = at))
+    }
+
+    /** A row already expired at the last read never gets mined, so it must not re-read on every block. */
+    @Test
+    fun needs_read_on_scan_advance_ignores_rows_already_expired_at_the_last_read() {
+        val expiredAtRead = listOf(sentRow(minedHeight = null).copy(expiryHeight = SENT))
+        val expiresLater = listOf(sentRow(minedHeight = null).copy(expiryHeight = SENT + 5))
+        val neverExpires = listOf(sentRow(minedHeight = null).copy(expiryHeight = 0))
+        val at = BlockHeight.new(SENT)
+        val above = BlockHeight.new(SENT + 1)
+
+        assertFalse(needsReadOnScanAdvance(RowsRead(expiredAtRead, at), fullyScanned = above))
+        assertTrue(needsReadOnScanAdvance(RowsRead(expiredAtRead, scannedHeight = null), fullyScanned = above))
+        assertTrue(needsReadOnScanAdvance(RowsRead(expiresLater, at), fullyScanned = above))
+        assertTrue(needsReadOnScanAdvance(RowsRead(neverExpires, at), fullyScanned = above))
+    }
+
     @Test
     fun needs_scanned_height_first_and_without_a_trustworthy_live_tip() {
         assertTrue(needsScannedHeight(liveChainTip = null, lastResolved = null))
@@ -223,6 +427,27 @@ class TransactionsControllerFlowTest {
             }
         return TransactionsController(rows(trustStatus = null), engine, backend)
     }
+
+    private fun controllerOver(stored: AtomicReference<List<SlipstreamTransactionRow>>): TransactionsController {
+        val source =
+            VisibleTransactionRows { _, _ ->
+                queries.incrementAndGet()
+                stored.get()
+            }
+        return TransactionsController(source, engine, mock(TypesafeBackend::class.java))
+    }
+
+    private fun sentRow(minedHeight: Long?) =
+        receivedRow(minedHeight = minedHeight ?: 0, trustStatus = null).copy(
+            minedHeight = minedHeight,
+            expiryHeight = EXPIRY,
+            accountBalanceDelta = -5_000,
+            totalSpent = 5_000,
+            totalReceived = 0,
+            sentNoteCount = 1,
+            receivedNoteCount = 0,
+            blockTime = null
+        )
 
     private fun snapshot(chainTip: Long) =
         SlipstreamSnapshot(chainTip, 0, 0, 0, 0, 1, 0, false, 0, false, 0, 0, false, 0)
@@ -274,6 +499,10 @@ class TransactionsControllerFlowTest {
 
     companion object {
         private const val MINED = 3_500_000L
+        private const val SENT = MINED + 100
+        private const val EXPIRY = SENT + 40
+        private const val SETTLE_MS = 200L
+        private const val SLOW_READ_MS = 300L
         private const val TIMEOUT_MS = 5_000L
         private const val TRUSTED = ConfirmationsPolicy.TRUSTED_CONFIRMATIONS
         private const val UNTRUSTED = ConfirmationsPolicy.UNTRUSTED_CONFIRMATIONS

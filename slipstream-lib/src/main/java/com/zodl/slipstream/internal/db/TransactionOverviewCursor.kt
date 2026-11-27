@@ -42,12 +42,15 @@ internal object TransactionOverviewCursor {
      * @param latestHeight the engine snapshot's `chainTip` at query time (the adapter's twin of
      *   the upstream SDK folding `processor.networkHeight` into the flow,
      *   `SdkSynchronizer.kt:360-374`); 0 or unknown -> pass `null`.
+     * @param scannedHeight the engine's fully scanned height, which alone decides whether an
+     *   unmined transaction has expired (see [computeTransactionState]); unknown -> pass `null`.
      * @param network when given, the time estimate for an expired transaction without a block time uses the
      *   height-aware target spacing (25 s from NU7); without it the pre-NU7 75 s is assumed.
      */
     fun fromRow(
         row: SlipstreamTransactionRow,
         latestHeight: BlockHeight?,
+        scannedHeight: BlockHeight?,
         nowEpochSeconds: Long = System.currentTimeMillis() / MILLIS_PER_SECOND,
         network: ZcashNetwork? = null
     ): TransactionOverview {
@@ -59,6 +62,7 @@ internal object TransactionOverviewCursor {
         val transactionState =
             computeTransactionState(
                 latestHeight = latestHeight,
+                scannedHeight = scannedHeight,
                 minedHeight = minedBlockHeight,
                 expiryHeight = expiryBlockHeight,
                 isExpiredUnmined = row.isExpiredUnmined?.let { it != 0L },

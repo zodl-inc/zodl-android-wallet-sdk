@@ -6,6 +6,25 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [8.1.1] - 2026-11-25
+
+### Fixed
+- With Tor off, the app's own requests to six production vote servers (`svote.zcashlabs.com`,
+  `207-180-214-226.sslip.io`, `vote.atlasstaking.com`, `zvote.polkachu.com`, `zvote.cros-nest.net`,
+  `vote.infra.cypherpunk.com`) were refused by the OHTTP client: 8.1.0 added them to the voting route's host
+  list in the Rust backend but not to the Kotlin one. Both lists now carry every vote and PIR host, and a test
+  keeps them in step.
+- A send no longer fails at once with "database is locked" when the synchronizer commits to the wallet database
+  while the transaction is being created. The wallet connection that creates and stores a transaction now starts
+  it with the write lock, so its existing 15 s busy timeout applies. Read-only calls such as the wallet summary
+  keep their deferred transactions and still run next to a writer (PRO-502).
+- With the Slipstream synchronizer, a sent transaction that was mined while the synchronizer was
+  stopped no longer shows `TransactionState.Expired` once the chain tip passes its expiry height on
+  resume. An unmined transaction now becomes `Expired` only after the wallet has scanned up to its
+  expiry height; the `expired_unmined` flag of `v_transactions`, which can read true above an
+  unscanned gap, is no longer used for it. The transaction list picks up a mined height recorded
+  by the scan without a relaunch. No change is needed at call sites.
+
 ## [8.1.0] - 2026-11-16
 
 The OHTTP configuration moves from the SDK build to the app at runtime. This changes the public API and the

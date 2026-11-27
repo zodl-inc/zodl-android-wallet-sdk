@@ -6,15 +6,19 @@ import cash.z.ecc.android.sdk.model.BlockHeight
 import cash.z.ecc.android.sdk.model.TransactionOverview
 import cash.z.ecc.android.sdk.model.ZcashNetwork
 import com.zodl.slipstream.internal.SlipstreamEngine
+import com.zodl.slipstream.model.SlipstreamTransactionRow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.mapLatest
-import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Owns `allTransactions` (R18) and backs `getTransactions(accountUuid)` (R23).
@@ -22,7 +26,7 @@ import kotlinx.coroutines.flow.onStart
  * Deliberately deviates from `SDK_ADAPTER_PLAN.md` section 2.1's literal shape - a
  * `MutableStateFlow<List<TransactionOverview>>`, re-set ONLY on [SlipstreamEngine.requeryTicks]
  * and shared hot across every collector. What's actually implemented is a COLD
- * `combine(requeryTicks.onStart { emit(Unit) }.mapLatest { queryVisibleRows }, networkHeight)`
+ * `combine(<sequential reads>, networkHeight)`
  * chain on [Dispatchers.Default]: each collector re-runs its own query on the section 3.2/5.4
  * re-query rule rather than observing one shared re-set value, and re-maps those rows (no SQL)
  * whenever the chain tip moves - full-list replace, never diffed, is still true, just
@@ -60,19 +64,56 @@ internal class TransactionsController(
      *
      * Each collection keeps its own [ScannedHeightCache], so the scanned-height read over JNI
      * happens only when [latestHeight] needs it rather than on every tip change.
+     *
+     * A scan that records the mined height of a transaction the wallet already stores changes
+     * neither count behind `txSetVersion`, so no requery tick follows it. The rows are therefore
+     * also re-read when [SlipstreamEngine.fullyScannedHeight] rises past the height of the last
+     * read while that read holds an unmined row not yet expired (see [needsReadOnScanAdvance]); a
+     * scan advance with every cached row mined or already expired re-reads nothing. Each read
+     * keeps the fully scanned height it was taken at, and an unmined row is judged Expired
+     * against that height rather than the live
+     * tip: the tip runs far ahead of the scan after the engine resumes, and a send mined in a block
+     * not scanned yet must stay Pending until the scan reaches it.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     private fun visibleTransactions(accountUuid: AccountUuid?): Flow<List<TransactionOverview>> =
         flow {
             val cache = ScannedHeightCache()
-            val rows =
-                engine.requeryTicks
-                    .onStart { emit(Unit) }
-                    .mapLatest { reader.queryVisibleRows(isRecovering(), accountUuid) }
+            val reads =
+                channelFlow {
+                    // One read at a time, never cancelled by a later trigger: with reads slower than the scan
+                    // updates, cancelling the running read on every advance would starve the first result.
+                    // A trigger that arrives meanwhile is kept (conflated) and judged once the read finishes.
+                    val wake = Channel<Unit>(Channel.CONFLATED)
+                    val requeryPending = AtomicBoolean(false)
+                    // The first read happens whatever the engine publishes: lastRead is still empty.
+                    wake.trySend(Unit)
+                    launch {
+                        engine.requeryTicks.collect {
+                            requeryPending.set(true)
+                            wake.trySend(Unit)
+                        }
+                    }
+                    launch { engine.fullyScannedHeight.collect { wake.trySend(Unit) } }
+                    var lastRead: RowsRead? = null
+                    while (true) {
+                        wake.receive()
+                        val force = requeryPending.getAndSet(false)
+                        val scannedHeight = engine.fullyScannedHeight.value
+                        // A scan advance alone re-reads only when the rows of the newest read still hold an
+                        // unmined, not yet expired row (see needsReadOnScanAdvance).
+                        if (!force && lastRead != null && !needsReadOnScanAdvance(lastRead, scannedHeight)) continue
+                        val read = RowsRead(reader.queryVisibleRows(isRecovering(), accountUuid), scannedHeight)
+                        lastRead = read
+                        send(read)
+                    }
+                }
             emitAll(
-                combine(rows, engine.networkHeight) { latestRows, networkHeight ->
+                combine(reads, engine.networkHeight) { read, networkHeight ->
                     val latestHeight = latestHeight(networkHeight, cache)
-                    latestRows.map { row -> TransactionOverviewCursor.fromRow(row, latestHeight, network = network) }
+                    read.rows.map { row ->
+                        TransactionOverviewCursor.fromRow(row, latestHeight, read.scannedHeight, network = network)
+                    }
                 }
             )
         }.flowOn(Dispatchers.Default)
@@ -118,6 +159,38 @@ internal class TransactionsController(
         var maxScannedHeight: BlockHeight? = null
         var lastResolved: BlockHeight? = null
     }
+}
+
+/**
+ * One read of the visible rows, with the engine's fully scanned height at the time of the read
+ * (`null` when the engine had not reported one yet).
+ */
+internal class RowsRead(
+    val rows: List<SlipstreamTransactionRow>,
+    val scannedHeight: BlockHeight?
+)
+
+/**
+ * Whether [TransactionsController] must re-read the rows because the engine's fully scanned
+ * height moved to [fullyScanned]: only once a read exists, the new height is known and above the
+ * height of that read, and the read holds an unmined row that had not expired at that read's
+ * height, whose mined height the scan may just have recorded without bumping `txSetVersion`. A
+ * row already expired at the last read stays expired, so it does not keep the re-read armed; a
+ * wallet with one old expired send would otherwise re-read on every block.
+ */
+internal fun needsReadOnScanAdvance(
+    lastRead: RowsRead?,
+    fullyScanned: BlockHeight?
+): Boolean =
+    lastRead != null &&
+        fullyScanned != null &&
+        (lastRead.scannedHeight == null || fullyScanned > lastRead.scannedHeight) &&
+        lastRead.rows.any { it.minedHeight == null && !it.isExpiredAt(lastRead.scannedHeight) }
+
+/** An unmined row has expired at [scannedHeight] when its expiry height is set and not above it. */
+private fun SlipstreamTransactionRow.isExpiredAt(scannedHeight: BlockHeight?): Boolean {
+    val expiry = expiryHeight?.takeIf { it != 0L } ?: return false
+    return scannedHeight != null && expiry <= scannedHeight.value
 }
 
 /**
