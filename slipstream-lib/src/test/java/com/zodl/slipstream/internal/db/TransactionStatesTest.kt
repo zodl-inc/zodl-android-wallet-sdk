@@ -8,10 +8,11 @@ import kotlin.test.assertEquals
 
 class TransactionStatesTest {
     @Test
-    fun expired_unmined_flag_always_wins() {
+    fun expired_unmined_flag_with_the_scan_past_expiry_is_expired() {
         val state =
             computeTransactionState(
                 latestHeight = BlockHeight.new(100),
+                scannedHeight = BlockHeight.new(100),
                 minedHeight = null,
                 expiryHeight = BlockHeight.new(50),
                 isExpiredUnmined = true,
@@ -26,6 +27,7 @@ class TransactionStatesTest {
         val state =
             computeTransactionState(
                 latestHeight = BlockHeight.new(1_009),
+                scannedHeight = BlockHeight.new(1_009),
                 minedHeight = BlockHeight.new(1_000),
                 expiryHeight = null,
                 isExpiredUnmined = false,
@@ -39,6 +41,7 @@ class TransactionStatesTest {
         val state =
             computeTransactionState(
                 latestHeight = BlockHeight.new(1_005),
+                scannedHeight = BlockHeight.new(1_005),
                 minedHeight = BlockHeight.new(1_000),
                 expiryHeight = null,
                 isExpiredUnmined = false,
@@ -52,6 +55,7 @@ class TransactionStatesTest {
         val state =
             computeTransactionState(
                 latestHeight = BlockHeight.new(1_000),
+                scannedHeight = BlockHeight.new(1_000),
                 minedHeight = null,
                 expiryHeight = BlockHeight.new(1_010),
                 isExpiredUnmined = false,
@@ -65,6 +69,7 @@ class TransactionStatesTest {
         val state =
             computeTransactionState(
                 latestHeight = BlockHeight.new(1_020),
+                scannedHeight = BlockHeight.new(1_020),
                 minedHeight = null,
                 expiryHeight = BlockHeight.new(1_010),
                 isExpiredUnmined = false,
@@ -74,10 +79,151 @@ class TransactionStatesTest {
     }
 
     @Test
+    fun unmined_with_the_tip_past_expiry_but_the_scan_short_of_it_is_pending() {
+        val state =
+            computeTransactionState(
+                latestHeight = BlockHeight.new(1_200),
+                scannedHeight = BlockHeight.new(1_009),
+                minedHeight = null,
+                expiryHeight = BlockHeight.new(1_010),
+                isExpiredUnmined = false,
+                requiredConfirmations = UNTRUSTED
+            )
+        assertEquals(TransactionState.Pending, state)
+    }
+
+    @Test
+    fun unmined_with_the_scan_at_expiry_is_expired() {
+        val state =
+            computeTransactionState(
+                latestHeight = BlockHeight.new(1_200),
+                scannedHeight = BlockHeight.new(1_010),
+                minedHeight = null,
+                expiryHeight = BlockHeight.new(1_010),
+                isExpiredUnmined = false,
+                requiredConfirmations = UNTRUSTED
+            )
+        assertEquals(TransactionState.Expired, state)
+    }
+
+    @Test
+    fun unmined_with_an_unknown_scanned_height_is_pending() {
+        val state =
+            computeTransactionState(
+                latestHeight = BlockHeight.new(1_200),
+                scannedHeight = null,
+                minedHeight = null,
+                expiryHeight = BlockHeight.new(1_010),
+                isExpiredUnmined = false,
+                requiredConfirmations = UNTRUSTED
+            )
+        assertEquals(TransactionState.Pending, state)
+    }
+
+    @Test
+    fun expired_unmined_flag_without_a_scanned_height_is_pending() {
+        val state =
+            computeTransactionState(
+                latestHeight = BlockHeight.new(1_200),
+                scannedHeight = null,
+                minedHeight = null,
+                expiryHeight = BlockHeight.new(1_010),
+                isExpiredUnmined = true,
+                requiredConfirmations = UNTRUSTED
+            )
+        assertEquals(TransactionState.Pending, state)
+    }
+
+    /**
+     * The flag is computed against the highest scanned block, which can sit above a gap the
+     * scanner has not filled yet, so it alone cannot prove a send was never mined.
+     */
+    @Test
+    fun expired_unmined_flag_with_the_scan_short_of_expiry_is_pending() {
+        val state =
+            computeTransactionState(
+                latestHeight = BlockHeight.new(200),
+                scannedHeight = BlockHeight.new(40),
+                minedHeight = null,
+                expiryHeight = BlockHeight.new(50),
+                isExpiredUnmined = true,
+                requiredConfirmations = UNTRUSTED
+            )
+        assertEquals(TransactionState.Pending, state)
+    }
+
+    @Test
+    fun expired_unmined_flag_with_an_unknown_expiry_is_pending() {
+        val state =
+            computeTransactionState(
+                latestHeight = BlockHeight.new(200),
+                scannedHeight = BlockHeight.new(200),
+                minedHeight = null,
+                expiryHeight = null,
+                isExpiredUnmined = true,
+                requiredConfirmations = UNTRUSTED
+            )
+        assertEquals(TransactionState.Pending, state)
+    }
+
+    @Test
+    fun expired_unmined_flag_does_not_affect_a_mined_transaction() {
+        assertEquals(
+            TransactionState.Confirmed,
+            computeTransactionState(
+                latestHeight = BlockHeight.new(1_009),
+                scannedHeight = BlockHeight.new(1_009),
+                minedHeight = BlockHeight.new(1_000),
+                expiryHeight = BlockHeight.new(1_005),
+                isExpiredUnmined = true,
+                requiredConfirmations = UNTRUSTED
+            )
+        )
+        assertEquals(
+            TransactionState.Pending,
+            computeTransactionState(
+                latestHeight = BlockHeight.new(1_008),
+                scannedHeight = BlockHeight.new(1_008),
+                minedHeight = BlockHeight.new(1_000),
+                expiryHeight = BlockHeight.new(1_005),
+                isExpiredUnmined = true,
+                requiredConfirmations = UNTRUSTED
+            )
+        )
+    }
+
+    @Test
+    fun mined_confirmations_count_from_the_tip_not_the_scanned_height() {
+        assertEquals(
+            TransactionState.Confirmed,
+            computeTransactionState(
+                latestHeight = BlockHeight.new(1_009),
+                scannedHeight = BlockHeight.new(1_000),
+                minedHeight = BlockHeight.new(1_000),
+                expiryHeight = BlockHeight.new(1_010),
+                isExpiredUnmined = false,
+                requiredConfirmations = UNTRUSTED
+            )
+        )
+        assertEquals(
+            TransactionState.Pending,
+            computeTransactionState(
+                latestHeight = BlockHeight.new(1_008),
+                scannedHeight = BlockHeight.new(2_000),
+                minedHeight = BlockHeight.new(1_000),
+                expiryHeight = BlockHeight.new(1_010),
+                isExpiredUnmined = false,
+                requiredConfirmations = UNTRUSTED
+            )
+        )
+    }
+
+    @Test
     fun unmined_with_zero_expiry_never_expires() {
         val state =
             computeTransactionState(
                 latestHeight = BlockHeight.new(1_000_000),
+                scannedHeight = BlockHeight.new(1_000_000),
                 minedHeight = null,
                 expiryHeight = BlockHeight.new(0),
                 isExpiredUnmined = false,
@@ -91,6 +237,7 @@ class TransactionStatesTest {
         val state =
             computeTransactionState(
                 latestHeight = null,
+                scannedHeight = null,
                 minedHeight = BlockHeight.new(1_000),
                 expiryHeight = BlockHeight.new(1_010),
                 isExpiredUnmined = false,
@@ -104,6 +251,7 @@ class TransactionStatesTest {
         val state =
             computeTransactionState(
                 latestHeight = BlockHeight.new(500),
+                scannedHeight = BlockHeight.new(500),
                 minedHeight = null,
                 expiryHeight = null,
                 isExpiredUnmined = false,
@@ -117,6 +265,7 @@ class TransactionStatesTest {
         val state =
             computeTransactionState(
                 latestHeight = BlockHeight.new(1_009),
+                scannedHeight = BlockHeight.new(1_009),
                 minedHeight = BlockHeight.new(1_000),
                 expiryHeight = null,
                 isExpiredUnmined = null,
@@ -158,6 +307,7 @@ class TransactionStatesTest {
         isTrusted: Boolean
     ) = computeTransactionState(
         latestHeight = BlockHeight.new(MINED + confirmations - 1),
+        scannedHeight = BlockHeight.new(MINED + confirmations - 1),
         minedHeight = BlockHeight.new(MINED),
         expiryHeight = null,
         isExpiredUnmined = false,
